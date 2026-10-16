@@ -16,7 +16,7 @@ Everything executes in a containerized **Sandbox**, one per opened project folde
 - **Interactive Mode** is a human-steered engineering session in a VS Code devcontainer.
 - **Goal Mode** binds an agent session's work to mandatory Goals in a linked worktree on a Goal Branch. The human may steer it or leave the tab working unattended; `/booley-goal` guides entry, changes, and Finish.
 
-The host owns only bootstrap, runtime lifecycle, trusted EDA registrations and Grants, the egress proxy, and idle reaping. It never executes an agent-controlled command.
+The host owns bootstrap, runtime lifecycle, trusted EDA registrations and Grants, the egress proxy, and idle reaping. Developer Agent commands are intended to execute only inside the Sandbox, but [#1529](https://github.com/boldaxolotl/booley/issues/1529) documents an unresolved indirect host-execution path through shared Git metadata.
 
 The preparation sequence is deliberately one-way:
 
@@ -96,16 +96,25 @@ Booley is backend-agnostic. One provider—Claude or Codex—is configured for a
 
 ## Security & Trust Model
 
-Booley treats agent behavior as untrusted, whether caused by error or adversarial input. Agents, MCP tools, Flows, and EDA subprocesses run inside the hardened Sandbox with no direct host command channel. The container receives the Project Root, its Booley Directory, linked worktrees, and explicitly authorized resources; it has no host home, SSH state, or Docker socket, and runs non-root with dropped capabilities, `no-new-privileges`, memory and PID limits, and default-deny egress.
+Booley treats Developer Agent behavior as untrusted, whether caused by error or adversarial input. Developer Agents, MCP tools, Flows, and EDA subprocesses run inside the hardened Sandbox with no direct host command channel. The container receives the Project Root, its Booley Directory, linked worktrees, and explicitly authorized resources; it has no host home, SSH state, or Docker socket, and runs non-root with dropped capabilities, `no-new-privileges`, memory and PID limits, and default-deny egress.
+
+**Known escape hatch:** shared Git metadata remains writable from the Sandbox.
+An agent can plant executable configuration or hooks that a later host Git
+invocation consumes, including Booley's own host-side Git calls. This can execute
+code with the host user's authority without exploiting Docker or the kernel.
+Doctor does not currently detect or prevent it. Remediation is deferred in
+[#1529](https://github.com/boldaxolotl/booley/issues/1529); see the
+[current precautions](../user/TROUBLESHOOTING.md#known-sandbox-escape-through-shared-git-metadata).
 
 Goal work stays on its Goal Branch for review. Protected Input checks guard
 evidence-producing configuration, while the Review Package exposes changed
 files, Targets, and constraints. Goal Mode has no Ticket Scope allowlist.
-Sandbox/worktree isolation contains the process, while git keeps changes recoverable.
+Git records committed changes for review and recovery; shared writable Git
+metadata remains subject to the escape hatch above.
 
 Host-provisioned EDA follows the same boundary. The host grants an explicitly registered installation; Booley mounts it read-only, revalidates it on resume, and limits any licensing path to a policy-owned fixed-destination relay. Invalid, stale, or revoked authority fails before startup rather than falling back to host execution.
 
-This substantially reduces authority but is not absolute isolation. Residual risks include container or kernel escape, incorrect trusted-host provisioning, vendor executable behavior inside the runtime, and deliberately approved license-server traffic.
+This substantially reduces authority but is not absolute isolation. Residual risks include the known shared-Git escape hatch above, container or kernel escape, incorrect trusted-host provisioning, vendor executable behavior inside the runtime, and deliberately approved license-server traffic.
 
 ## Why these choices
 
