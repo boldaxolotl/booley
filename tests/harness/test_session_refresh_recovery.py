@@ -959,10 +959,14 @@ def test_read_only_commands_report_pending_recovery(tmp_path: Path) -> None:
             return_value=(tmp_path,),
             create=True,
         ),
-        patch.object(bootstrap_cli, "reconcile_bootstrap") as reconcile,
+        patch.object(
+            bootstrap_cli,
+            "inspect_bootstrap",
+            return_value=bootstrap_cli.BootstrapResult(bootstrap_cli.Intent.CHECK, ()),
+        ) as inspect,
     ):
-        assert bootstrap_cli.run_bootstrap(args) == 2
-    reconcile.assert_not_called()
+        assert bootstrap_cli.run_bootstrap(args) == 1
+    inspect.assert_called_once()
 
     with (
         patch.object(

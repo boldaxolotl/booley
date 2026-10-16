@@ -3869,7 +3869,7 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
         assert finding.state is bootstrap.BootstrapState.ERROR
         monkeypatch.setattr(
             bootstrap_cli,
-            "reconcile_bootstrap",
+            "inspect_bootstrap",
             lambda *_a, **_kw: bootstrap.BootstrapResult(lifecycle.Intent.ENSURE, (finding,)),
         )
         assert (

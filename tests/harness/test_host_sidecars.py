@@ -812,3 +812,164 @@ def test_failure_helpers_and_docker_adapter() -> None:
             adapter.run(["info"])
     finally:
         sidecars.legacy._run_docker = original
+
+
+def test_check_only_missing_sidecar_images_and_containers_are_pending(
+    monkeypatch, tmp_path, capsys
+):
+    from tests.harness.test_bootstrap import (
+        _inspection_environment,
+        _run_inspection,
+        _tree_snapshot,
+    )
+
+    _inspection_environment(monkeypatch, tmp_path)
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper"):
+        assert f"[!!] {resource}:" in output, f"sidecar {resource} must be pending"
+    assert status == 1
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("resource", ["proxy-image", "reaper-image", "network", "proxy"])
+def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource):
+    from tests.harness.test_bootstrap import (
+        _assert_complete,
+        _inspection_environment,
+        _run_inspection,
+    )
+
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    environment.docker.failure = resource
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert f"[XX] {resource}:" in output
+    assert "access" in output
+
+
+def test_complete_inspection_foreign_container_with_missing_image_remains_error(
+    monkeypatch, tmp_path, capsys
+):
+    from tests.harness.test_bootstrap import (
+        _assert_complete,
+        _inspection_environment,
+        _run_inspection,
+    )
+
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def inspect(name, _docker):
+        if name == sidecars.legacy.PROXY_CONTAINER:
+            return sidecars._ContainerState(True, labels={})
+        return sidecars._ContainerState(False)
+
+    monkeypatch.setattr(sidecars, "_inspect_container", inspect)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert "[XX] proxy:" in output and "foreign name collision" in output
+    assert "[!!] reaper:" in output
+
+
+@pytest.mark.parametrize("error_type", [sidecars.SidecarError, PermissionError])
+def test_complete_inspection_checks_network_and_containers_after_recipe_failure(
+    monkeypatch, error_type
+):
+    def unavailable(_root):
+        raise error_type("packaged recipes unavailable")
+
+    monkeypatch.setattr(sidecars, "_image_specs", unavailable)
+    monkeypatch.setattr(
+        sidecars, "_docker_adapter", lambda: FakeDocker(_cp(1, stderr="No such object"))
+    )
+    result = sidecars.inspect_sidecars(SandboxHostPolicy())
+    assert [finding.resource for finding in result.findings] == [
+        "sidecar-images",
+        "network",
+        "proxy",
+        "reaper",
+    ]
+    assert result.findings[0].state is sidecars.SidecarState.ERROR
+
+
+@pytest.mark.parametrize("blocker", ["foreign", "active-session", "foreign-proxy"])
+def test_check_only_stale_network_blockers_are_errors(monkeypatch, tmp_path, capsys, blocker):
+    from tests.harness.test_bootstrap import (
+        _assert_complete,
+        _inspection_environment,
+        _run_inspection,
+        _tree_snapshot,
+    )
+
+    _inspection_environment(monkeypatch, tmp_path)
+    attached = ("foreign",) if blocker == "foreign" else ()
+    monkeypatch.setattr(
+        sidecars, "_inspect_network", lambda _docker: sidecars._NetworkState(True, False, attached)
+    )
+    active = (_active_session("session-a"),) if blocker == "active-session" else ()
+    monkeypatch.setattr(sidecars, "_active_sessions", lambda _docker: active)
+    if blocker == "foreign-proxy":
+        monkeypatch.setattr(
+            sidecars,
+            "_inspect_container",
+            lambda *_args: sidecars._ContainerState(True, labels={}),
+        )
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    assert "[XX] network:" in output, "blocked network must be ERROR"
+    assert status == 2
+    _assert_complete(output)
+    assert ("foreign" if blocker != "active-session" else "shut down") in output
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_check_only_stale_container_with_active_session_is_error(monkeypatch, tmp_path, capsys):
+    from tests.harness.test_bootstrap import (
+        _assert_complete,
+        _inspection_environment,
+        _run_inspection,
+    )
+
+    _inspection_environment(monkeypatch, tmp_path)
+    images = {
+        spec.reference: ("sha", sidecars._image_labels(spec))
+        for spec in sidecars._image_specs(None)
+    }
+    monkeypatch.setattr(sidecars, "_inspect_image", lambda name, _docker: images[name])
+    monkeypatch.setattr(
+        sidecars,
+        "_inspect_container",
+        lambda name, _docker: (
+            sidecars._ContainerState(True, "old-sha", True, {sidecars.ROLE_LABEL: "egress-proxy"})
+            if name == sidecars.legacy.PROXY_CONTAINER
+            else sidecars._ContainerState(False)
+        ),
+    )
+    monkeypatch.setattr(
+        sidecars, "_active_sessions", lambda _docker: (_active_session("session-a"),)
+    )
+    status, output = _run_inspection(capsys)
+    assert "[XX] proxy:" in output, "blocked container must be ERROR"
+    assert status == 2
+    _assert_complete(output)
+    assert "shut down" in output
+
+
+def test_check_only_pending_container_keeps_differences(monkeypatch, tmp_path, capsys):
+    from tests.harness.test_bootstrap import _inspection_environment, _run_inspection
+
+    _inspection_environment(monkeypatch, tmp_path)
+    images = {
+        spec.reference: ("sha", sidecars._image_labels(spec))
+        for spec in sidecars._image_specs(None)
+    }
+    monkeypatch.setattr(sidecars, "_inspect_image", lambda name, _docker: images[name])
+    monkeypatch.setattr(sidecars, "_active_sessions", lambda _docker: ())
+    monkeypatch.setattr(
+        sidecars, "_inspect_container", lambda *_args: sidecars._ContainerState(False)
+    )
+    status, output = _run_inspection(capsys)
+    assert "image_identity" in output, "pending containers must explain desired-state differences"
+    assert status == 1

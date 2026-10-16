@@ -35,6 +35,11 @@ def _identity() -> HostInstallationIdentity:
 )
 def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, severity):
     bootstrap = host_diagnostics.bootstrap
+    monkeypatch.setattr(
+        bootstrap,
+        "inspect_bootstrap",
+        lambda **_kw: pytest.fail("Doctor must use legacy reconciliation"),
+    )
     calls = []
 
     def reconcile(intent):
