@@ -508,7 +508,7 @@ def test_indexed_uninitialized_gitlink_refuses_scratch_without_mutation(scratch_
         execution._ignored_destination(layout.worktree, base)
     assert "not classified as ignored" in str(failure.value)
     assert "/.baseline-wt-*/" in str(failure.value)
-    assert str(policy) in str(failure.value)
+    assert str(policy.resolve()) in str(failure.value)
     assert "missing rule" not in str(failure.value)
     assert not scratch.exists()
 
@@ -520,7 +520,9 @@ def test_scratch_ignore_query_uses_discovered_owner_despite_leaked_git_dir(
     from tests.goals.conftest import git
 
     layout = scratch_policy
-    (layout.control / ".gitignore").write_bytes(b"/.baseline-wt-*/\n")
+    (layout.control / ".gitignore").write_bytes(b"# no local scratch rule\n")
+    # Only the discovered owner's Git directory provides the deciding rule.
+    (layout.main / ".git/info/exclude").write_bytes(b"/.booley/.baseline-wt-*/\n")
     base = git(layout.main, "rev-parse", "HEAD")
     foreign = tmp_path / "foreign"
     foreign.mkdir()
@@ -553,6 +555,6 @@ def test_scratch_git_failure_retains_context_and_selected_policy(
         execution._ignored_destination(scratch_policy.worktree, "abcdef1")
     message = str(raised.value)
     assert "timed out" in message if failure == "timeout" else "index unavailable" in message
-    assert str(scratch_policy.control / ".gitignore") in message
+    assert str((scratch_policy.control / ".gitignore").resolve()) in message
     assert "not classified" not in message
     assert not list(scratch_policy.control.glob(".baseline-wt-*"))
