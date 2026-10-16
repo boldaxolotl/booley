@@ -56,7 +56,7 @@ def test_signal_error_falls_back_and_continues_other_owned_descendants(tmp_path,
     monkeypatch.setattr(shutdown, "descendants", lambda _: {102, 103})
     monkeypatch.setattr(shutdown, "_identity", lambda pid: {**identity, "pid": pid})
 
-    def deliver(owner, signum):
+    def deliver(owner, signum, **_kwargs):
         if owner["pid"] == 102:
             raise PermissionError("synthetic different-credential descendant")
         signals.append((owner["pid"], signum))
@@ -220,3 +220,64 @@ def test_corrupt_group_metadata_does_not_strand_outer_execution_record(tmp_path)
         if process.poll() is None:
             request_cancellation(paths, force=True)
         process.wait(timeout=8)
+
+
+@pytest.mark.parametrize("reuse", ["before", "during"])
+def test_guardian_pid_reuse_cannot_authorize_force(monkeypatch, reuse):
+    observed, enumerated, signals = [], [], []
+    original = tw.process_identity
+    expected = {**original(os.getpid()), "pid": 313131, "start": 1}
+    replacement = {**expected, "start": 2}
+    with tw.temporary_workspace() as raw:
+        launch = tw.prepare_launch([sys.executable, "-c", "pass"])
+        marker, _ = tw._validated_marker(Path(raw))
+        marker["launches"][launch.token] = {"state": "running", "supervisor": expected}
+        tw._write_marker(Path(raw), marker)
+
+        def identity(pid):
+            if pid != expected["pid"]:
+                return original(pid)
+            observed.append(pid)
+            return expected if reuse == "during" and len(observed) == 1 else replacement
+
+        with monkeypatch.context() as patch:
+            patch.setattr(tw, "process_identity", identity)
+            patch.setattr(shutdown, "descendants", lambda pid: enumerated.append(pid) or {414141})
+            patch.setattr(
+                shutdown, "signal_identity", lambda *args, **kwargs: signals.append(args)
+            )
+            tw.force_guarded_descendants(expected["pid"], launch)
+        assert not signals
+        assert len(enumerated) == (reuse == "during")
+        tw._clear_launch(launch.roots, launch.token, pending_only=False)
+    assert not Path(raw).exists()
+
+
+def test_a_reused_descendant_pid_must_still_have_the_owned_ancestor(monkeypatch):
+    target = tw.process_identity(os.getpid())
+    unrelated_ancestor = {**target, "pid": 313131}
+    descriptors, delivered = [], []
+
+    def pidfd(_libc, name, _number, *args):
+        if name == "pidfd_open":
+            fd = os.open(os.devnull, os.O_RDONLY)
+            descriptors.append(fd)
+            return fd
+        delivered.append(args)
+        return 0
+
+    monkeypatch.setattr(shutdown, "_pidfd_call", pidfd)
+    shutdown.signal_identity(target, signal.SIGKILL, ancestor=unrelated_ancestor)
+    assert not delivered
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+def test_reparented_process_cannot_join_a_reused_parent_identity(monkeypatch):
+    child, parent = {"pid": 10, "start": 1}, {"pid": 20, "start": 2}
+    snapshots = iter(["10 (synthetic) S 20", "10 (synthetic) S 30"])
+    monkeypatch.setattr(
+        shutdown, "Path", lambda _: SimpleNamespace(read_text=lambda: next(snapshots))
+    )
+    monkeypatch.setattr(shutdown, "_identity", lambda pid: child if pid == 10 else parent)
+    assert shutdown._parent_identity(child) is None

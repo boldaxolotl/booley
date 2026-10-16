@@ -42,20 +42,32 @@ def _identity(pid: int) -> dict[str, Any] | None:
 def ancestors(pid: int) -> list[dict[str, Any]]:
     """Capture creation-bound ancestry with an explicit depth limit."""
     result = []
+    identity = _identity(pid)
     for _ in range(64):
-        identity = _identity(pid)
         if identity is None:
             break
         result.append(identity)
-        try:
-            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            break
-        if pid <= 0:
-            break
+        identity = _parent_identity(identity)
     else:
         raise RuntimeError("scratch supervisor ancestry bound exceeded")
     return result
+
+
+def _parent_identity(child: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        path = Path(f"/proc/{child['pid']}/stat")
+        parent_pid = int(path.read_text().rsplit(")", 1)[1].split()[1])
+        parent = _identity(parent_pid)
+        if (
+            parent is None
+            or int(path.read_text().rsplit(")", 1)[1].split()[1]) != parent_pid
+            or _identity(child["pid"]) != child
+            or _identity(parent_pid) != parent
+        ):
+            return None
+        return parent
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def descendants(pid: int) -> set[int]:
@@ -81,7 +93,9 @@ def descendants(pid: int) -> set[int]:
     raise RuntimeError("scratch descendant bound exceeded")
 
 
-def signal_identity(identity: dict[str, Any], signum: int) -> None:
+def signal_identity(
+    identity: dict[str, Any], signum: int, *, ancestor: dict[str, Any] | None = None
+) -> None:
     """Bind signal delivery to the observed process rather than a reusable PID."""
     pid = identity["pid"]
     libc = ctypes.CDLL(None, use_errno=True)
@@ -92,8 +106,11 @@ def signal_identity(identity: dict[str, Any], signum: int) -> None:
             return
         raise OSError(error, os.strerror(error))
     try:
+        authorized = _identity(pid) == identity and (
+            ancestor is None or ancestor in ancestors(pid)
+        )
         if (
-            _identity(pid) == identity
+            authorized
             and _pidfd_call(
                 libc, "pidfd_send_signal", _SYS_PIDFD_SEND_SIGNAL, fd, signum, ctypes.c_void_p(), 0
             )
@@ -302,6 +319,7 @@ class ShutdownGroup:
                 }
 
     def tick(self) -> float | None:
+        authority = _identity(os.getpid())
         chain = ancestors(os.getpid())
         children = descendants(os.getpid())
         with self.locked() as data:
@@ -317,7 +335,7 @@ class ShutdownGroup:
             expired = time.monotonic() >= stop["deadline"]
             for pid in children:
                 identity = _identity(pid)
-                if identity is None or guards.get(pid) == identity:
+                if authority is None or identity is None or guards.get(pid) == identity:
                     continue
                 key = str(pid)
                 delivered = any(
@@ -325,7 +343,11 @@ class ShutdownGroup:
                     for request in data["stops"].values()
                 )
                 if expired or not delivered:
-                    signal_identity(identity, signal.SIGKILL if expired else stop["signal"])
+                    signal_identity(
+                        identity,
+                        signal.SIGKILL if expired else stop["signal"],
+                        ancestor=authority,
+                    )
                     stop["signaled"][key] = identity["start"]
             return stop["deadline"]
 
@@ -403,16 +425,21 @@ class ShutdownGroup:
             values = Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()
             targets = {int(value) for value in values[:65536]}
         expired = time.monotonic() >= self._local_deadline
+        authority = _identity(os.getpid())
         self._local_signaled = {
             pid: start for pid, start in self._local_signaled.items() if pid in targets
         }
         for pid in targets:
             identity = _identity(pid)
-            if identity is None or self._known_guards.get(pid) == identity:
+            if authority is None or identity is None or self._known_guards.get(pid) == identity:
                 continue
             if expired or self._local_signaled.get(pid) != identity["start"]:
                 try:
-                    signal_identity(identity, signal.SIGKILL if expired else self._local_signal)
+                    signal_identity(
+                        identity,
+                        signal.SIGKILL if expired else self._local_signal,
+                        ancestor=authority,
+                    )
                 except OSError as error:
                     logger.debug("Unable to signal owned descendant %s: %s", pid, error)
                 self._local_signaled[pid] = identity["start"]

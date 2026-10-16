@@ -858,7 +858,7 @@ def stop_guarded_process(process: subprocess.Popen[Any]) -> bool:
         try:
             process.wait(timeout=16)
         except subprocess.TimeoutExpired:
-            force_guarded_descendants(process.pid)
+            force_guarded_descendants(process.pid, _PROCESSES[process])
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
@@ -869,24 +869,45 @@ def stop_guarded_process(process: subprocess.Popen[Any]) -> bool:
     return True
 
 
-def force_guarded_descendants(process_id: int) -> None:
-    """Force descendants of an owned, unreaped child without reusing PID authority."""
+def force_guarded_descendants(process_id: int, launch: LeaseLaunch | None) -> None:
+    """Force only descendants still bound to the registered guardian's creation."""
     import signal
 
     from booley.core.lease_shutdown import descendants, signal_identity
 
+    expected = _guardian_identity(process_id, launch)
+    if expected is None or process_identity(process_id) != expected:
+        return
     try:
         pids = descendants(process_id)
     except (OSError, RuntimeError) as error:
         logger.warning("Unable to enumerate guarded descendants; retaining scratch: %s", error)
         return
+    if process_identity(process_id) != expected:
+        return
     for pid in pids:
         identity = process_identity(pid)
         if identity is not None:
             try:
-                signal_identity(identity, signal.SIGKILL)
+                signal_identity(identity, signal.SIGKILL, ancestor=expected)
             except OSError as error:
                 logger.warning("Unable to force guarded descendant %s: %s", pid, error)
+
+
+def _guardian_identity(process_id: int, launch: LeaseLaunch | None) -> dict[str, Any] | None:
+    if launch is None:
+        return None
+    for root in launch.roots:
+        try:
+            marker, _ = _validated_marker(root)
+            state = marker["launches"].get(launch.token)
+            if isinstance(state, dict) and state.get("state") == "running":
+                identity = state["supervisor"]
+                if identity["pid"] == process_id:
+                    return identity
+        except (OSError, ValueError) as error:
+            logger.warning("Guarded force authority unavailable; retaining scratch: %s", error)
+    return None
 
 
 def launch_result(launch: LeaseLaunch) -> int | None:

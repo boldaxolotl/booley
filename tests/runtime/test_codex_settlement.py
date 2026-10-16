@@ -87,7 +87,7 @@ async def test_cancellation_during_cleanup_after_native_completion_propagates(mo
         work.close()
         raise cb._CleanupDeadlineError
 
-    async def cleanup(_):
+    async def cleanup(*_):
         entered.set()
         await asyncio.wait_for(release.wait(), 5)
 

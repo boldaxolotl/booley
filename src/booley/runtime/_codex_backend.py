@@ -647,7 +647,9 @@ async def _spawn_prepared_codex(launch, cmd, params, env):
             env=env,
             **launch.kwargs,
         )
-        return await acquire_task(asyncio.create_task(spawn), _terminate_process)
+        return await acquire_task(
+            asyncio.create_task(spawn), lambda process: _terminate_process(process, launch)
+        )
     except (OSError, asyncio.CancelledError):
         await filesystem_call(launch_failed, launch)
         raise
@@ -728,7 +730,9 @@ async def _drain_codex_stderr(stream: asyncio.StreamReader | None, buffer: bytea
         buffer.extend(chunk)
 
 
-async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+async def _terminate_process(
+    proc: asyncio.subprocess.Process, launch: LeaseLaunch | None = None
+) -> None:
     """Kill a backend process and wait for its resources to be reaped."""
     if proc.returncode is None:
         with contextlib.suppress(ProcessLookupError):
@@ -739,7 +743,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
         from booley.core.temporary_workspace import force_guarded_descendants
         from booley.core.workspace_async import filesystem_call
 
-        await filesystem_call(force_guarded_descendants, proc.pid)
+        await filesystem_call(force_guarded_descendants, proc.pid, launch)
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         with contextlib.suppress(TimeoutError, ProcessLookupError):
@@ -800,7 +804,7 @@ async def _run_codex_work(
     except BaseException as error:
         from booley.core.workspace_async import joined
 
-        cleanup = asyncio.create_task(_terminate_process(proc))
+        cleanup = asyncio.create_task(_terminate_process(proc, launch))
         try:
             await joined(cleanup)
         except (OSError, TimeoutError):
