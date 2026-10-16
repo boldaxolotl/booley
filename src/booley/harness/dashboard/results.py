@@ -51,8 +51,11 @@ def _sequence(value: object) -> Sequence[object]:
 def literal(value: object, *, limit: int = 180) -> str:
     """Accept only finite scalar values; terminal controls never reach the UI."""
     if isinstance(value, str):
-        if any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value):
+        if any(
+            (ord(char) < 32 and char not in "\n\r\t") or 127 <= ord(char) < 160 for char in value
+        ):
             return ""
+        value = value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ").replace("\t", " ")
         return value[:limit] + ("…" if len(value) > limit else "")
     if isinstance(value, bool):
         return "yes" if value else "no"
@@ -76,7 +79,13 @@ def _fields(data: Mapping[str, object], labels: Mapping[str, str]) -> list[Resul
 def _targets(value: object) -> list[tuple[str, Mapping[str, object]]]:
     if isinstance(value, Mapping):
         return [(literal(key), _mapping(row)) for key, row in value.items()]
-    return [(_value(_mapping(row).get("target")), _mapping(row)) for row in _sequence(value)]
+    return [
+        (
+            literal(row) if isinstance(row, str) else _value(_mapping(row).get("target")),
+            _mapping(row),
+        )
+        for row in _sequence(value)
+    ]
 
 
 def _cap(rows: list[ResultLine]) -> tuple[ResultLine, ...]:
@@ -108,14 +117,70 @@ def _ratio(counts: tuple[int, int] | None) -> str:
     return "test counts unavailable" if counts is None else f"{counts[0]}/{counts[1]} tests passed"
 
 
+def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int:
+    counts = _mapping(campaign.get("observation_counts"))
+    # Axes overlap; the largest marginal count is a lower bound, never their sum.
+    bad = {
+        "functional": ("fail", "inconclusive", "not_observed"),
+        "execution": (
+            "error",
+            "timeout",
+            "cancelled",
+            "crash",
+            "aborted",
+            "setup_error",
+            "blocked_by_build",
+            "not_run",
+        ),
+        "assertions": ("fail", "dirty"),
+    }
+    return max(
+        preview,
+        *(
+            sum(as_int(_mapping(counts.get(axis)).get(key)) or 0 for key in keys)
+            for axis, keys in bad.items()
+        ),
+    )
+
+
+def _campaign_axis_counts(campaign: Mapping[str, object]) -> list[ResultLine]:
+    counts = _mapping(campaign.get("observation_counts"))
+    labels = {
+        "execution": "Execution observations",
+        "functional": "Functional observations",
+        "assertions": "Assertion observations",
+    }
+    rows = []
+    for axis, label in labels.items():
+        facts = [
+            f"{literal(key)} {number}"
+            for key, value in _mapping(counts.get(axis)).items()
+            if literal(key) and (number := as_int(value)) is not None and number >= 0
+        ]
+        if facts:
+            rows.append(_row(f"  {label}", ", ".join(facts[:_ITEM_LIMIT])))
+    return rows
+
+
 def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
     observations = [_mapping(item) for item in _sequence(campaign.get("observations"))]
     failures = [
         row
         for row in observations
         if row.get("functional") == "fail"
-        or literal(row.get("execution")) in {"error", "timeout", "cancelled"}
-        or row.get("assertions") == "fail"
+        or row.get("functional") == "inconclusive"
+        or literal(row.get("execution"))
+        in {
+            "error",
+            "timeout",
+            "cancelled",
+            "crash",
+            "aborted",
+            "setup_error",
+            "blocked_by_build",
+            "not_run",
+        }
+        or row.get("assertions") in {"fail", "dirty"}
     ]
     rows = []
     for row in failures[:_ITEM_LIMIT]:
@@ -127,9 +192,9 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
                 "fail",
             )
         )
-    total = as_int(_functional(campaign).get("fail"))
+    total = _campaign_failure_count(campaign, len(failures))
     if total is not None and total > len(rows):
-        rows.append(_row("  Failures", f"{total - len(rows)} more failures in report"))
+        rows.append(_row("  Failures", f"at least {total - len(rows)} more failures in report"))
     if campaign.get("observations_truncated") or (total is not None and total > len(failures)):
         rows.append(
             _row("  Observations", "truncated preview; full report has remaining observations")
@@ -159,19 +224,31 @@ def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
                 _ratio(_counts(_functional(row))) + f" · grade {_value(row.get('grade'))}",
             )
         )
-        rows.extend(_campaign_failures(row))
+    rows.extend(_more_targets(targets))
+    for name, row in targets[:_ITEM_LIMIT]:
+        for fact in [*_campaign_axis_counts(row), *_campaign_failures(row)]:
+            label = f"  {name} · {fact.label.strip()}" if len(targets) > 1 else fact.label
+            rows.append(ResultLine(label, fact.value, fact.semantic))
     grades = [literal(row.get("grade")) for _, row in targets]
-    severity = {"pass": 0, "warn": 1, "fail": 2, "error": 3}
+    severity = {"pass": 0, "warn": 1, "inconclusive": 2, "fail": 3, "error": 4}
     grade = (
         max(grades, key=lambda value: severity.get(value, -1))
         if grades and all(value in severity for value in grades)
         else "unavailable"
     )
-    return _ratio(total) + f" · grade {grade}", rows + _more_targets(targets)
+    return _ratio(total) + f" · grade {grade}", rows
 
 
 def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     targets = _targets(detail.get("targets"))
+    if not any(literal(row.get("evaluation")) for _, row in targets):
+        return "Coverage: evaluation unavailable", [
+            *[
+                _row(f"  {name}", "evaluation unavailable", "unknown")
+                for name, _ in targets[:_ITEM_LIMIT]
+            ],
+            *_more_targets(targets),
+        ]
     met = sum(row.get("evaluation") == "pass" for _, row in targets)
     rows = []
     for name, row in targets[:_ITEM_LIMIT]:
@@ -298,7 +375,9 @@ def _implementation(endpoint: str, detail: Mapping[str, object]) -> tuple[str, l
     ]
     rows.extend(_more_targets(targets))
     for name, data in targets[:_ITEM_LIMIT]:
-        rows.extend(_implementation_target(name, data)[1:])
+        for row in _implementation_target(name, data)[1:]:
+            label = f"  {name} · {row.label.strip()}" if len(targets) > 1 else row.label
+            rows.append(ResultLine(label, row.value, row.semantic))
     summary = _implementation_headline(targets)
     grades = [literal(_mapping(data.get("status")).get("grade")) for _, data in targets]
     if len(targets) > 1:
@@ -363,6 +442,8 @@ def _lint(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
             if literal(target)
         )
     names = list(dict.fromkeys(literal(tool) for tool in tools.values() if literal(tool)))
+    if warnings is None and not rows:
+        return "", []
     return headline + (" · " + ", ".join(names[:_ITEM_LIMIT]) if names else ""), rows
 
 
@@ -385,7 +466,7 @@ def _review(detail: Mapping[str, object], mode: str) -> tuple[str, list[ResultLi
     )
     if isinstance(detail.get("gate_passed"), bool):
         rows.append(_row("Gate", "passed" if detail["gate_passed"] else "failed"))
-    return headline, rows
+    return (headline, rows) if outcome or issues is not None or rows else ("", [])
 
 
 def _mutation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
@@ -408,6 +489,8 @@ def _mutation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     rows.extend(_row("Survivor", item) for item in survivors[:_ITEM_LIMIT] if literal(item))
     if len(survivors) > _ITEM_LIMIT:
         rows.append(_row("Survivors", f"{len(survivors) - _ITEM_LIMIT} more in report"))
+    if not rows and all(as_int(detail.get(key)) is None for key in ("detected", "total_valid")):
+        return "", []
     minimum = literal(detail.get("min_detected"))
     return headline + (f" (min {minimum})" if minimum else ""), rows
 
@@ -421,7 +504,10 @@ def _analysis(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     ):
         if isinstance(detail.get(key), (list, tuple)):
             rows.append(_row(label, len(_sequence(detail[key]))))
-    return f"Coverage analysis: {_value(detail.get('closure_recommendation'))}", rows
+    outcome = literal(detail.get("closure_recommendation"))
+    return (
+        (f"Coverage analysis: {outcome or 'unavailable'}", rows) if outcome or rows else ("", [])
+    )
 
 
 def configuration(argv: object) -> tuple[ResultLine, ...]:
@@ -439,8 +525,13 @@ def configuration(argv: object) -> tuple[ResultLine, ...]:
 
 
 def _mode(report: Mapping[str, object]) -> str:
-    return literal(_mapping(report.get("detail")).get("mode")) or next(
-        (row.value for row in configuration(report.get("argv")) if row.label == "Mode"), ""
+    detail = _mapping(report.get("detail"))
+    return (
+        literal(detail.get("mode"))
+        or literal(_mapping(detail.get("contract")).get("mode"))
+        or next(
+            (row.value for row in configuration(report.get("argv")) if row.label == "Mode"), ""
+        )
     )
 
 
@@ -535,6 +626,10 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
 
 
 _FACT_LABELS = {
+    **_METRICS,
+    "wire_count": "Wires",
+    "period_ns": "Period",
+    "reg2reg_slack_ns": "Register slack",
     "kind": "Kind",
     "state": "State",
     "before": "Before",
@@ -608,6 +703,8 @@ _CONTAINERS = {
     "test_runs",
     "config",
     "evidence_refs",
+    "per_clock",
+    "clocks",
 }
 
 
@@ -634,10 +731,15 @@ def _fact_rows(data: Mapping[str, object], rows: list[ResultLine], *, depth: int
         if len(rows) >= _ROW_LIMIT:
             break
         if key in _FACT_LABELS and literal(value):
-            rows.append(_row(_FACT_LABELS[key], value))
+            rows.append(
+                ResultLine(
+                    _FACT_LABELS[key],
+                    literal(value, limit=300 if key == "review_retarget_effect" else 180),
+                )
+            )
         elif key in _CONTAINERS:
             _container_facts(key, value, rows, depth=depth)
-        elif key not in authority and isinstance(value, (Mapping, list, tuple)):
+        elif key not in authority and key not in _FACT_LABELS:
             extra = True
     if extra and len(rows) < _ROW_LIMIT:
         rows.append(_row("Facts", "Extra data in report", "unknown"))
@@ -645,9 +747,9 @@ def _fact_rows(data: Mapping[str, object], rows: list[ResultLine], *, depth: int
 
 def _container_facts(key: str, value: object, rows: list[ResultLine], *, depth: int) -> None:
     if isinstance(value, Mapping):
-        if key in {"targets", "campaigns"}:
+        if key in {"targets", "campaigns", "per_clock", "clocks"}:
             for name, target in list(value.items())[:_ITEM_LIMIT]:
-                rows.append(_row("Target", name))
+                rows.append(_row("Clock" if key in {"per_clock", "clocks"} else "Target", name))
                 _fact_rows(_mapping(target), rows, depth=depth + 1)
         else:
             _fact_rows(value, rows, depth=depth + 1)

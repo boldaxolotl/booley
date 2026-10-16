@@ -536,3 +536,210 @@ def test_goal_proposal_facts_preserved(monkeypatch):
         and STAMP in text
         and "/a/evidence" in text
     )
+
+
+def test_campaign_producer_failure_axes_are_visible():
+    from booley.harness.dashboard.results import present_report
+
+    for execution, functional, assertions in [
+        ("crash", "not_observed", "not_observed"),
+        ("aborted", "not_observed", "not_observed"),
+        ("setup_error", "not_observed", "not_observed"),
+        ("blocked_by_build", "not_observed", "not_observed"),
+        ("not_run", "not_observed", "not_observed"),
+        ("timeout", "not_observed", "not_observed"),
+        ("completed", "pass", "dirty"),
+        ("completed", "inconclusive", "clean"),
+    ]:
+        observation = {
+            "test": "producer_failure",
+            "execution": execution,
+            "functional": functional,
+            "assertions": assertions,
+            "failure_class": "infrastructure" if execution == "aborted" else "design",
+            "assertion_count": 1 if assertions == "dirty" else 0,
+            "detail": {"reason": "producer diagnostic"},
+            "cycle_count": None,
+        }
+        counts = {
+            axis: {observation[axis]: 1} for axis in ("execution", "functional", "assertions")
+        }
+        report = {
+            "flow": "sim",
+            "exit_code": 1,
+            "detail": {
+                "campaigns": {
+                    "top": {
+                        "grade": "fail",
+                        "observation_counts": counts,
+                        "observations": [observation],
+                    }
+                }
+            },
+        }
+        result = present_report(report)
+        text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
+        assert "producer_failure" in text, "producer failure test name must remain visible"
+        assert observation["failure_class"] in text
+        for axis, label in (
+            ("execution", "Execution observations"),
+            ("functional", "Functional observations"),
+            ("assertions", "Assertion observations"),
+        ):
+            assert f"{label}: {observation[axis]} 1" in text
+
+
+def test_multitarget_implementation_metrics_keep_target_names():
+    from booley.harness.dashboard.results import present_report
+
+    for endpoint in ("synth", "fpga"):
+        targets = {
+            name: {
+                "status": {"grade": "fail", "failure_reasons": [reason]},
+                "metrics": {"area_kge": area, "per_clock": {"clk": {"wns_ns": slack}}},
+            }
+            for name, area, slack, reason in (
+                ("alpha", 12, -1, "alpha timing"),
+                ("beta", 24, -2, "beta timing"),
+            )
+        }
+        result = present_report(
+            {"flow": endpoint, "exit_code": 1, "detail": {"implementation": {"results": targets}}}
+        )
+        text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
+        for name, area, slack, reason in (
+            ("alpha", 12, -1, "alpha timing"),
+            ("beta", 24, -2, "beta timing"),
+        ):
+            assert f"{name} · Area: {area}" in text, (
+                "implementation metrics must identify their Target"
+            )
+            assert f"{name} · Clock clk: WNS: {slack}" in text
+            assert f"{name} · Failure reason: {reason}" in text
+
+
+def test_known_endpoint_unknown_detail_uses_safe_fallback():
+    from booley.harness.dashboard.results import present_report
+
+    for endpoint in ("lint", "reviewer", "mutation_tester", "coverage_analyst"):
+        for detail in (
+            {"eda_tool_error": "launch failed"},
+            {"total_warnings": {"bad": 1}},
+            {"issues": None},
+        ):
+            report = {
+                "flow" if endpoint == "lint" else "mcp_tool": endpoint,
+                "exit_code": 2,
+                "detail": detail,
+                "report_text": 'Executable unavailable\n{"secret": 1}\n\x1b[31mbad',
+            }
+            result = present_report(report)
+            text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
+            assert "Executable unavailable" in text, (
+                "unrecognized endpoint detail must retain fallback diagnostics"
+            )
+            assert '{"' not in text and "\x1b" not in text
+            assert result.flow_result.value == "ERROR"
+
+
+def test_reviewer_done_reads_published_contract_mode():
+    from booley.harness.dashboard.results import present_report
+
+    for outcome in ("advisory", "corrective", "no_findings"):
+        report = {
+            "mcp_tool": "reviewer",
+            "exit_code": 0,
+            "detail": {
+                "contract": {"mode": "done"},
+                "review_outcome": outcome,
+                "issues": 0,
+            },
+        }
+        result = present_report(report)
+        assert result.flow_result.value.startswith(outcome), (
+            "published Reviewer contract determines done mode"
+        )
+        assert "pending" not in result.flow_result.value
+        for code, word in ((1, "FAILED"), (2, "ERROR"), (130, "CANCELLED")):
+            assert present_report({**report, "exit_code": code}).flow_result.value.startswith(word)
+
+
+def test_goal_metric_evidence_keeps_measurements_and_omission_marker():
+    from booley.harness.dashboard.results import project_facts
+
+    facts = {
+        "producer": "synth",
+        "detail": {
+            "area_kge": 12,
+            "cells": 42,
+            "wns_ns": -0.2,
+            "per_clock": {"clk": {"fmax_mhz": 210}},
+            "novel_metric": 99,
+        },
+    }
+    rows = project_facts(facts)
+    text = "\n".join(f"{row.label}: {row.value}" for row in rows)
+    assert "Area: 12" in text, "Goal evidence must preserve producer measurements"
+    assert "Cells: 42" in text and "WNS: -0.2" in text
+    assert "Fmax: 210" in text and "clk" in text
+    assert "Extra data in report" in text
+
+
+def test_multiline_proposal_facts_preserve_human_text():
+    from booley.harness.dashboard.results import project_facts
+
+    for key in ("rationale", "reason", "quote"):
+        rows = project_facts({key: "first line\nsecond\tpart", "source": "human"})
+        text = "\n".join(f"{row.label}: {row.value}" for row in rows)
+        assert "first line second part" in text, (
+            "ordinary multiline human facts must remain readable"
+        )
+        assert "\t" not in text
+    assert "danger" not in str(project_facts({"rationale": "\x1b[31mdanger"}))
+
+
+def test_retarget_warning_preserves_required_followup():
+    from booley.harness.dashboard.results import project_facts
+    from booley.review.goal_package import proposal_facts
+
+    facts = proposal_facts(
+        {
+            "id": "p",
+            "kind": "retarget",
+            "before": None,
+            "after": {"family": "review"},
+            "rationale": "scope",
+        },
+        lambda _: "Review",
+    )
+    rows = project_facts(facts)
+    warning = next(row.value for row in rows if row.label == "Review retarget effect")
+    assert warning.endswith("A new discovery review is required after approval."), (
+        "retarget safety warning must remain complete"
+    )
+
+
+def test_inconclusive_campaign_grade_is_preserved():
+    from booley.harness.dashboard.results import present_report
+
+    data = campaign()
+    data["grade"] = "inconclusive"
+    result = present_report(
+        {"flow": "sim", "exit_code": 1, "detail": {"campaigns": {"top": data}}}
+    )
+    assert "grade inconclusive" in result.flow_result.value, (
+        "published inconclusive grade must remain visible"
+    )
+
+
+def test_coverage_dry_run_does_not_claim_evaluation():
+    from booley.harness.dashboard.results import present_report
+
+    result = present_report(
+        {"flow": "sim", "exit_code": 0, "detail": {"coverage": True, "targets": ["alpha", "beta"]}}
+    )
+    assert "Targets met" not in result.flow_result.value, (
+        "coverage selection is not an evaluated verdict"
+    )
+    text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
+    assert "alpha" in text and "beta" in text and "evaluation unavailable" in text
