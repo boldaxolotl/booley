@@ -39,6 +39,7 @@ def test_audit_inventory_covers_project_resources_and_excludes_shared(tmp_path, 
     docker.networks["shared-network"] = {"Labels": {"booley.role": "shared-egress"}}
     report = resources.snapshot(identity, docker=docker)
     assert len(report.images) == 1 and report.images[0].size == 12345
+    assert report.images[0].references == (resources._project_image_name(identity),)
     assert [row.name for row in report.volumes] == [own]
     assert [row.name for row in report.containers] == ["owned-container"]
     assert [row.name for row in report.networks] == ["owned-network"]
@@ -189,3 +190,38 @@ def test_invalid_retained_identity_fails_closed(tmp_path, monkeypatch, corruptio
     with pytest.raises(resources.ResourceError):
         resources.has_cleanup_identity(str(root))
     assert before == docker.images
+
+
+def test_keeper_observation_never_becomes_an_acquisition_or_alias_claim(tmp_path, monkeypatch):
+    from booley.runtime.session_issuance import keeper_image_for_identity
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    identity = str(tmp_path / "other")
+    keeper = keeper_image_for_identity(identity)
+    docker.tag(image, keeper)
+    resources.retain_cleanup_identity(identity)
+    resources.observe_keeper(identity, docker)
+    docker.remove_tag(resources._project_image_name(str(root)))
+    docker.remove_tag(keeper)
+    assert resources.proven_origin(image, docker)
+    assert resources.snapshot(identity, docker=docker).images[0].image_id == image
+    resources.purge(identity, docker=docker)
+    assert image in docker.image_ids()
+    assert ("remove_tag", image) not in docker.mutations
+
+
+def test_corrupt_claim_cannot_widen_alias_authority(tmp_path, monkeypatch):
+    import json
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    docker.tag(image, "user:foreign")
+    store = resources._store()
+    raw = resources._load(str(root))
+    raw["aliases"]["user:foreign"] = image
+    store.atomic_write_text(resources._name(str(root)), json.dumps(raw))
+    before = dict(docker.images)
+    with pytest.raises(resources.ResourceError, match="namespace"):
+        resources.purge(str(root), docker=docker)
+    assert docker.images == before

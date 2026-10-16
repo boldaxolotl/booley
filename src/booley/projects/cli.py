@@ -132,7 +132,9 @@ def _print_resources(resources: dict, root: Path) -> None:
     for kind in ("images", "volumes", "containers", "networks"):
         for row in resources[kind]:
             size = row["size"] if row["size"] is not None else "unknown"
-            print(f"Retained {kind}: {row['name']} — apparent size {size}; {row['reason']}")
+            aliases = ", ".join(row.get("references", ()))
+            names = f"; references: {aliases}" if aliases else ""
+            print(f"Retained {kind}: {row['name']} — apparent size {size}; {row['reason']}{names}")
     for name in resources["removed"]:
         print(f"Removed: {name}")
     if any(resources[kind] for kind in ("images", "volumes", "containers", "networks")):

@@ -57,13 +57,18 @@ def forget_project(project: Path, *, purge: bool = False) -> tuple[Path, KeeperR
         adapter = image_lifecycle._docker_adapter()
         project_resources.snapshot(identity, docker=adapter)
         project_resources.retain_cleanup_identity(identity)
+        project_resources.observe_keeper(identity, adapter)
         release = _release_root(root)
-        for retained in image_lifecycle.cleanup_owned_images(root, docker=adapter):
-            logger.warning("refresh image cleanup: %s", retained)
-        removed = project_resources.purge(identity, docker=adapter) if purge else []
-        report = project_resources.snapshot(identity, docker=adapter)
-        report.removed = removed
-        project_resources.finish_cleanup_identity(identity, report)
+        try:
+            for retained in image_lifecycle.cleanup_owned_images(root, docker=adapter):
+                logger.warning("refresh image cleanup: %s", retained)
+            removed = project_resources.purge(identity, docker=adapter) if purge else []
+            report = project_resources.snapshot(identity, docker=adapter)
+            report.removed = removed
+            project_resources.compact(adapter)
+            project_resources.finish_cleanup_identity(identity, report)
+        except (RuntimeError, OSError) as exc:
+            raise RuntimeError(f"keeper {release.status}: {release.tag}; {exc}") from exc
         outcomes.append(replace(release, resources=project_resources.report_dict(report)))
 
     try:

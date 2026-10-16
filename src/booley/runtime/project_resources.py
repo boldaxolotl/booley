@@ -37,6 +37,7 @@ class Resource:
     image_id: str | None = None
     size: int | str | None = None
     reason: str = "retained"
+    references: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -73,6 +74,7 @@ def _empty(identity: str) -> dict[str, Any]:
         "aliases": {},
         "origins": {},
         "retirements": {},
+        "observations": {},
     }
 
 
@@ -92,7 +94,7 @@ def _read(name: str) -> dict[str, Any]:
             or type(raw["cleanup"]) is not bool
         ):
             raise ResourceError("invalid Project cleanup identity")
-        for key in ("aliases", "origins", "retirements"):
+        for key in ("aliases", "origins", "retirements", "observations"):
             rows = require_dict(raw[key], field=key)
             if any(not isinstance(k, str) or not isinstance(v, str) for k, v in rows.items()):
                 raise ResourceError("invalid Project resource claim")
@@ -101,9 +103,28 @@ def _read(name: str) -> dict[str, Any]:
                 raise ResourceError("Project resource claim requires exact image IDs")
         if any(origin != project_label_id(identity) for origin in raw["origins"].values()):
             raise ResourceError("invalid Project acquisition origin")
+        _validate_claim_names(raw, identity)
         return raw
     except (BoundaryError, ValueError, OSError) as exc:
         raise ResourceError(f"cannot read Project resource proof: {exc}") from exc
+
+
+def _validate_claim_names(raw: dict[str, Any], identity: str) -> None:
+    from booley.runtime.session_issuance import keeper_image_for_identity
+
+    prefix = _project_image_name(identity)
+
+    def owned(alias: str) -> bool:
+        return alias == prefix or alias.startswith(prefix + "-")
+
+    if any(not owned(alias) for alias in raw["aliases"]):
+        raise ResourceError("alias claim is outside the exact Project namespace")
+    for alias, image in raw["retirements"].items():
+        reference, separator, recorded = alias.rpartition("@")
+        if not separator or recorded != image or not owned(reference):
+            raise ResourceError("invalid Project retirement claim")
+    if any(alias != keeper_image_for_identity(identity) for alias in raw["observations"]):
+        raise ResourceError("invalid Project keeper observation")
 
 
 def _load(identity: str) -> dict[str, Any]:
@@ -120,7 +141,9 @@ def _save(raw: dict[str, Any]) -> None:
     store = _store()
     store.ensure_directory()
     name = _name(raw["project_root"])
-    if not raw["cleanup"] and not any(raw[key] for key in ("aliases", "origins", "retirements")):
+    if not raw["cleanup"] and not any(
+        raw[key] for key in ("aliases", "origins", "retirements", "observations")
+    ):
         (store.root / name).unlink(missing_ok=True)
         return
     store.atomic_write_text(name, json.dumps(raw, sort_keys=True) + "\n")
@@ -179,6 +202,20 @@ def retain_cleanup_identity(identity: str) -> None:
     _save(raw)
 
 
+def observe_keeper(identity: str, docker: DockerPort) -> None:
+    """Retain read-only attribution, separately from every deletion claim."""
+    from booley.runtime.session_issuance import keeper_image_for_identity
+
+    keeper = keeper_image_for_identity(identity)
+    image = docker.image_id(keeper)
+    if image is not None:
+        if not _IMAGE_ID.fullmatch(image):
+            raise ResourceError("keeper observation requires an exact immutable image ID")
+        raw = _load(identity)
+        raw["observations"][keeper] = image
+        _save(raw)
+
+
 def has_cleanup_identity(identity: str) -> bool:
     """Accept only the exact retained absolute spelling; never follow a path."""
     return Path(identity).is_absolute() and _load(identity)["cleanup"]
@@ -225,7 +262,9 @@ def _containers() -> dict[str, dict[str, Any]]:
 
 def _labels(row: dict[str, Any]) -> dict[str, Any]:
     config = row.get("Config", {})
-    labels = config.get("Labels", row.get("Labels", {})) if isinstance(config, dict) else None
+    if not isinstance(config, dict):
+        raise ResourceError("invalid Docker resource configuration")
+    labels = config.get("Labels", row.get("Labels", {}))
     if labels is None:
         return {}
     if not isinstance(labels, dict) or any(
@@ -239,6 +278,11 @@ def _mounts(row: dict[str, Any]) -> set[str]:
     mounts = row.get("Mounts")
     if not isinstance(mounts, list) or any(not isinstance(value, dict) for value in mounts):
         raise ResourceError("invalid container mounts")
+    if any(
+        value.get("Type") == "volume" and not isinstance(value.get("Name"), str)
+        for value in mounts
+    ):
+        raise ResourceError("volume mount inspection lacks its exact name")
     return {value["Name"] for value in mounts if isinstance(value.get("Name"), str)}
 
 
@@ -287,7 +331,12 @@ def _project_image_name(identity: str) -> str:
 
 def _candidate_ids(identity: str, docker: DockerPort) -> set[str]:
     raw = _load(identity)
-    result = set(raw["aliases"].values()) | set(raw["retirements"].values()) | set(raw["origins"])
+    result = (
+        set(raw["observations"].values())
+        | set(raw["aliases"].values())
+        | set(raw["retirements"].values())
+        | set(raw["origins"])
+    )
     from booley.runtime import image_lifecycle
 
     legacy_store = image_lifecycle._owned_store()
@@ -295,6 +344,13 @@ def _candidate_ids(identity: str, docker: DockerPort) -> set[str]:
         for path in legacy_store.root.glob(project_label_id(identity) + "-*.json"):
             _root, _refs, owned = image_lifecycle._read_owned_record(legacy_store, path.name)
             result.update(owned)
+    from booley.runtime.session_issuance import keeper_image_for_identity
+
+    keeper = docker.image_id(keeper_image_for_identity(identity))
+    if keeper is not None:
+        if not _IMAGE_ID.fullmatch(keeper):
+            raise ResourceError("keeper observation requires an exact immutable image ID")
+        result.add(keeper)
     prefix = _project_image_name(identity)
     for row in docker.image_references():
         if row.reference == prefix or row.reference.startswith(prefix + "-"):
@@ -332,6 +388,8 @@ def snapshot(identity: str, *, docker: DockerPort) -> ResourceReport:
     mounted = set().union(*(_mounts(row) for row in containers.values())) if containers else set()
     for image in sorted(_candidate_ids(identity, docker)):
         inspected = _inspect("image", image)
+        if inspected.get("Id") != image:
+            raise ResourceError("image inspection changed its immutable identity")
         size = inspected.get("Size")
         report.images.append(
             Resource(
@@ -339,6 +397,7 @@ def snapshot(identity: str, *, docker: DockerPort) -> ResourceReport:
                 image,
                 size if type(size) is int else sizes.get(image),
                 _image_reason(image, docker),
+                tuple(row.reference for row in docker.image_references() if row.image_id == image),
             )
         )
     for name in sorted(volume_names(identity) & volumes.keys()):
@@ -391,7 +450,11 @@ def _release_aliases(identity: str, docker: DockerPort, removed: list[str]) -> N
 
 
 def _collect_images(identity: str, docker: DockerPort, removed: list[str]) -> None:
-    candidates = _candidate_ids(identity, docker)
+    raw = _load(identity)
+    authorized = (
+        set(raw["aliases"].values()) | set(raw["retirements"].values()) | set(raw["origins"])
+    )
+    candidates = _candidate_ids(identity, docker) & authorized
     # Finite captured set, repeated only to release children before parents.
     for _ in range(len(candidates)):
         progress = False
@@ -443,6 +506,9 @@ def compact(docker: DockerPort) -> None:
     """Retain global origin proof while any extant artifact can need it."""
     existing = docker.image_ids()
     for raw in _records():
+        raw["observations"] = {
+            alias: image for alias, image in raw["observations"].items() if image in existing
+        }
         raw["origins"] = {
             image: origin for image, origin in raw["origins"].items() if image in existing
         }

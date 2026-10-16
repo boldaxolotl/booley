@@ -230,6 +230,8 @@ class FakeDocker:
             return subprocess.CompletedProcess(args, 0, value, "")
         if args[:2] == ["image", "inspect"]:
             value = self.tags.get(args[2])
+            if value is None and args[2] in self.tags.values():
+                value = args[2]
             if value and len(args) == 3:
                 value = json.dumps([{"Id": value, "Config": {"Labels": {}}}])
             return subprocess.CompletedProcess(
