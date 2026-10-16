@@ -8922,3 +8922,103 @@ def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path
     warnings = [m for level, m in rec.events if level == "warn" and "untagged C/C++ harness" in m]
     assert warnings and any("shared/main.cpp" in m for m in warnings)
     assert all("shared/tb.sv" not in m for m in warnings)
+
+
+def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
+    from booley.flows.implementation_publication import target_report_path
+
+    path = target_report_path("synth", "synth", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "synth_mode": "logical",
+                "termination": "completed",
+                "ppa_complete": True,
+                "area_source": "yosys_mapped",
+                "timing_complete": False,
+                "per_clock": [],
+            }
+        )
+    )
+    assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path) == "", (
+        "logical deep Doctor report was rejected"
+    )
+    passed, failed = [], []
+    doctor._report_flow_check_result(
+        SimpleNamespace(),
+        "synth",
+        subprocess.CompletedProcess([], 0, "", ""),
+        target="synth",
+        dry_run=False,
+        label="synth",
+        report_dir=tmp_path,
+        verbose=False,
+        _pass=passed.append,
+        _warn=lambda *a: None,
+        _skip=lambda *a: None,
+        _fail=lambda *a: failed.append(a),
+    )
+    assert passed and not failed
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"ppa_complete": False}, "ppa_complete"),
+        ({"area_source": "other"}, "mapped-area"),
+        ({"area_source": None}, "mapped-area"),
+        ({"termination": "timeout"}, "did not complete"),
+        ({"termination": None}, "did not complete"),
+        ({"synth_mode": "unknown"}, "unknown synthesis mode"),
+        ({"synth_mode": []}, "unknown synthesis mode"),
+        ({"synth_mode": "physical"}, "constrained-clock"),
+        ({"synth_mode": ""}, "constrained-clock"),
+        ({"synth_mode": None}, "unknown synthesis mode"),
+        (
+            {"synth_mode": "physical", "timing_complete": True, "per_clock": []},
+            "constrained-clock",
+        ),
+        ({"synth_mode": "physical", "timing_complete": True, "per_clock": [{"clock": "clk"}]}, ""),
+        ({"synth_mode": "", "timing_complete": True, "per_clock": [{"clock": "clk"}]}, ""),
+    ],
+)
+def test_deep_doctor_synthesis_mode_evidence(tmp_path, changes, expected):
+    from booley.flows.implementation_publication import target_report_path
+
+    report = {
+        "synth_mode": "logical",
+        "ppa_complete": True,
+        "termination": "completed",
+        "area_source": "yosys_mapped",
+        "timing_complete": False,
+    }
+    report.update(changes)
+    path = target_report_path("synth", "synth", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report))
+    error = doctor._synth_deep_report_error("synth", "synth", False, tmp_path)
+    assert expected in error if expected else error == ""
+
+
+def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
+    from booley.flows.implementation_publication import target_report_path
+
+    path = target_report_path("synth", "synth", tmp_path)
+    assert "unreadable" in doctor._synth_deep_report_error("synth", "synth", False, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for content in ("[", "[]", "null", '"text"'):
+        path.write_text(content)
+        assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path)
+    path.write_text(
+        json.dumps(
+            {"ppa_complete": True, "timing_complete": True, "per_clock": [{"clock": "clk"}]}
+        )
+    )
+    assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path) == ""
+    path.write_text(json.dumps({"ppa_complete": True}))
+    assert "constrained-clock" in doctor._synth_deep_report_error(
+        "synth", "synth", False, tmp_path
+    )
+    assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
+    assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
