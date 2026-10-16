@@ -75,7 +75,7 @@ including existing Projects and port setups. Logical mode requires completed
 synthesis (`termination: completed`), `ppa_complete: true`, and Yosys mapped-area
 evidence (`area_source: yosys_mapped`); it makes no constrained-timing claim.
 Physical mode still requires complete PPA and constrained-clock timing with
-nonempty per-clock results. Legacy reports with absent or empty mode follow
+nonempty per-clock results. Reports with absent or empty mode follow
 that physical timing policy; an unknown mode is invalid evidence. This proves
 the Flow wiring, not that the design meets its PPA goals.
 
