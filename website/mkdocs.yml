@@ -56,6 +56,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Demos: demos.md
   - Videos: videos.md
   - Blog: blog/index.md
   - GitHub: https://github.com/boldaxolotl/booley

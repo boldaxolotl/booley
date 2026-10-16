@@ -1,8 +1,8 @@
 """Project site wording contracts, and the facts it must share with the README.
 
-The site (website/docs/index.md) owns the full feature tour; the README keeps a
-summary. The install commands and the pinned demo link appear in both, so these
-tests fail when either copy drifts from the other.
+The site (website/docs/) owns the full feature tour; the README keeps a summary.
+The install commands and the pinned PicoRV32 demo revision appear in both, so
+these tests fail when either copy drifts from the other.
 """
 
 import re
@@ -15,6 +15,7 @@ from booley.goals.translate import translate_goals
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE = (ROOT / "website/docs/index.md").read_text(encoding="utf-8")
+DEMOS = (ROOT / "website/docs/demos.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
@@ -87,10 +88,7 @@ def test_demo_link_uses_the_contract_pinned_revision():
     contract = ROOT / ".github/contracts/picorv32-demo.toml"
     pin = tomllib.loads(contract.read_text())["project_ref"]
 
-    assert (
-        f"https://github.com/boldaxolotl/booley-prj-picorv32/blob/{pin}/README.md"
-        in _site_section("SEE ALSO")
-    )
+    assert f"https://github.com/boldaxolotl/booley-prj-picorv32/blob/{pin}/README.md" in DEMOS
 
 
 def test_readme_links_resolve_to_site_sections():

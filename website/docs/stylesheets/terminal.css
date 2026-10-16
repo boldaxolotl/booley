@@ -115,6 +115,11 @@ body {
   line-height: 1.7;
 }
 
+/* Keep every page at a readable measure, about 80 monospace characters. */
+.md-content__inner.md-typeset {
+  max-width: 82ch;
+}
+
 /* ---------- Links: underlined; hover and focus invert, like a cursor ---------- */
 
 .md-typeset a {

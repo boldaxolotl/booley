@@ -79,10 +79,4 @@ Booley was designed and is maintained by a hardware engineer, not a career softw
 
 Development follows Booley's [coding principles](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md), with isolated branches, pull-request review, type checking, linting, automated tests, coverage requirements, and CI. The project is still young and hasn't yet had extensive review or long-term maintenance from experienced software engineers; those contributions are especially welcome.
 
-## SEE ALSO
-
-<dl class="man-dl">
-<dt><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md">demo</a></dt><dd>A PicoRV32 project already set up for Booley. Clone it and run your own change.</dd>
-</dl>
-
 </div>
