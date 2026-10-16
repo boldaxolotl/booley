@@ -155,9 +155,14 @@ def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
         shutil.copy2(source, destination)
 
 
-def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
+def baseline_worktree_path(project_root: Path, ref: str) -> Path:
+    """Name the scratch checkout using Git's configured, unambiguous abbreviation."""
     short = git_short_sha(ref, project_root)
-    worktree = worktree_state_dir(project_root) / f".baseline-wt-{os.getpid()}-{short}"
+    return worktree_state_dir(project_root) / f".baseline-wt-{os.getpid()}-{short}"
+
+
+def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
+    worktree = baseline_worktree_path(project_root, ref)
     worktree.parent.mkdir(parents=True, exist_ok=True)
     _git(project_root, "config", "gc.worktreePruneExpire", "never", timeout=30)
     result = _git(

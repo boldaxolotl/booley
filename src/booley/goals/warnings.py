@@ -9,7 +9,7 @@ from booley.goals.protected_inputs import (
     ProtectedInputRoots,
     protected_input_violations,
 )
-from booley.goals.rules import WORK_DIR_GUIDANCE
+from booley.goals.rules import work_dir_guidance
 
 
 def protected_warnings(record: GoalRecord, booley_dir: Path, work_dir: Path) -> tuple[str, ...]:
@@ -37,11 +37,13 @@ def goal_warnings(
     work_dir: Path | None,
     session_key: str | None = None,
     other_sessions: Sequence[str] = (),
+    routing_guidance: str | None = None,
 ) -> str:
     """Render warnings shared by Flow, Specialist, and status responses."""
     warnings = list(protected_warnings(record, booley_dir, work_dir or Path(record.worktree_path)))
     if any(key != session_key for key in other_sessions):
         warnings.append("another session shares this Goal worktree")
     if work_dir is None:
-        warnings.append(WORK_DIR_GUIDANCE.replace("`", ""))
+        guidance = routing_guidance if routing_guidance is not None else work_dir_guidance()
+        warnings.append(guidance.replace("`", ""))
     return "\n".join(f"WARNING: {reason}" for reason in warnings)

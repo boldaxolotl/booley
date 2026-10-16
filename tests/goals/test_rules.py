@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import os
+import re
+from copy import deepcopy
+
+import pytest
+
 from booley.goals.rules import goal_mode_rules
+from booley.mcp import catalog
+from booley.mcp.catalog import work_dir_guidance
+from booley.mcp.registry import discover_mcp_tools
+
+
+@pytest.fixture(autouse=True)
+def isolated_guidance_cache():
+    catalog.reset_guidance_cache()
+    yield
+    catalog.reset_guidance_cache()
 
 
 def test_rules_tell_the_agent_to_reproduce_a_bug_red_first() -> None:
@@ -23,7 +39,7 @@ def test_rules_do_not_claim_red_first_is_enforced() -> None:
 
 
 def test_rules_distinguish_routed_calls_from_tools_without_work_dir() -> None:
-    rules = goal_mode_rules()
+    rules = goal_mode_rules(routing_guidance=work_dir_guidance())
     assert "every Booley call" not in rules
     assert "`booley_targets`" in rules
     assert "`booley_report`" in rules
@@ -31,10 +47,71 @@ def test_rules_distinguish_routed_calls_from_tools_without_work_dir() -> None:
         "booley_status",
         "booley_poll",
         "booley_cancel",
-        "booley_sleep",
-        "coverage_evidence",
         "bwave",
     ):
         assert f"`{name}`" in rules
     assert "accept no `work_dir`" in rules
     assert "Project-defined endpoints" in rules
+
+
+def test_work_dir_guidance_tracks_catalog_schema_changes(monkeypatch):
+    definitions = [
+        {"name": "utility_z", "schema": {"properties": {}}},
+        {"name": "utility_a", "schema": {"properties": {"work_dir": {}}}},
+        {
+            "name": "configured_endpoint",
+            "module": "endpoint",
+            "schema": {"properties": {"work_dir": {}}},
+        },
+    ]
+    monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: deepcopy(definitions))
+    first = work_dir_guidance()
+    assert "Goal tools, `utility_a`." in first
+    assert "`utility_z` accept no `work_dir`" in first
+    assert "configured_endpoint" not in first
+    definitions[0]["schema"]["properties"]["work_dir"] = {}
+    definitions[1]["schema"]["properties"].clear()
+    catalog.reset_guidance_cache()
+    second = work_dir_guidance()
+    assert "Goal tools, `utility_z`." in second
+    assert "`utility_a` accept no `work_dir`" in second
+    assert second == work_dir_guidance()
+
+
+def test_work_dir_guidance_uses_default_interactive_catalog(monkeypatch):
+    expected = work_dir_guidance()
+    catalog.reset_guidance_cache()
+    for key, value in {
+        "BOOLEY_MCP_MODE": "other",
+        "BOOLEY_MCP_DEBUG_TOOLS": "1",
+        "BOOLEY_NESTED_AGENT": "1",
+        "BOOLEY_NESTED_MCP_TOOLS": "coverage_evidence",
+        "BOOLEY_MCP_TOOLS": "lint",
+        "BOOLEY_COVERAGE_CAMPAIGN": "campaign",
+        "BOOLEY_COVERAGE_PROJECT": "/project",
+    }.items():
+        monkeypatch.setenv(key, value)
+    before = dict(os.environ)
+    assert work_dir_guidance() == expected
+    assert dict(os.environ) == before
+
+
+def test_guidance_does_not_enumerate_configurable_endpoints():
+    endpoint_names = {info.name for info in discover_mcp_tools()}
+    names = set(re.findall(r"`([a-z_]+)`", work_dir_guidance()))
+    assert not endpoint_names.intersection(names)
+    assert {"booley_report", "booley_targets"} <= names
+
+
+def test_nonaccepting_configurable_endpoint_uses_safe_fallback(monkeypatch):
+    definitions = [
+        {"name": "configured_endpoint", "module": "endpoint", "schema": {"properties": {}}}
+    ]
+    with pytest.raises(ValueError, match="configured_endpoint lacks work_dir"):
+        catalog.partition_work_dir(definitions)
+    monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
+    text = work_dir_guidance()
+    assert text.startswith("Pass `work_dir`")
+    assert "For utilities, follow the advertised schema" in text
+    assert "configured_endpoint" not in text
+    assert "While any Goal Record occupies" in text

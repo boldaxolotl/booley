@@ -68,7 +68,7 @@ jobs:
           echo "wheel_sha256=$(sha256sum dist/booley_rtl-*.whl | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
 
       - name: Retain exact release wheel for both final overlays
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-wheel
           path: dist/booley_rtl-*.whl
@@ -183,7 +183,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore exact release wheel
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-wheel
           path: dist/
@@ -338,7 +338,7 @@ jobs:
             --markdown "${RUNNER_TEMP}/standard-image-evidence/runtime-resources.md"
       - name: Retain standard image evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-standard-image-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/standard-image-evidence/
@@ -396,7 +396,7 @@ jobs:
             --evidence "${VALIDATION_TMP}/summary.json"
       - name: Retain OpenROAD evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-openroad-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/openroad-evidence/
@@ -469,7 +469,7 @@ jobs:
           fi
       - name: Retain host Doctor evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-host-doctor-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-host-doctor/evidence/
@@ -536,7 +536,7 @@ jobs:
           done
       - name: Retain Simulation evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-simulation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/simulation-evidence/
@@ -557,7 +557,7 @@ jobs:
         run: bash .github/scripts/sidecar-build-evidence.sh
       - name: Retain helper image evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-helper-images-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/docker-build-evidence/
@@ -635,7 +635,7 @@ jobs:
             --markdown "${RUNNER_TEMP}/riscv-image-evidence/runtime-resources.md"
       - name: Retain RISC-V image evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-riscv-image-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/riscv-image-evidence/
@@ -694,7 +694,7 @@ jobs:
           done
       - name: Retain demo Goal evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-demo-goal-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/demo-surface-evidence/
@@ -768,7 +768,7 @@ jobs:
             --evidence "${RUNNER_TEMP}/picorv32-evidence/summary.json"
       - name: Retain PicoRV32 evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-picorv32-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/picorv32-evidence/
@@ -830,7 +830,7 @@ jobs:
             --evidence "${RUNNER_TEMP}/ibex-evidence/summary.json"
       - name: Retain Ibex evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-ibex-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ibex-evidence/
