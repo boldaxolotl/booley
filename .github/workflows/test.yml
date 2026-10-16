@@ -268,7 +268,7 @@ jobs:
     # Linux full suites exercise creation-bound guardians for native scratch.
     # PR #1544 reached only 38–56% before the old 20m cap; retain every test.
     # Keep this bound aligned with full-python-matrix.yml; Windows shards stay 15m.
-    timeout-minutes: ${{ matrix.mode == 'full' && matrix.os == 'ubuntu-latest' && 90 || matrix.mode == 'full' && 20 || 15 }}
+    timeout-minutes: ${{ matrix.mode == 'full' && matrix.os == 'ubuntu-latest' && 75 || matrix.mode == 'full' && 20 || 15 }}
     env:
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: 'not native_bwave'

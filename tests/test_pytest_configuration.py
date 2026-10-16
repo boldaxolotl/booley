@@ -452,12 +452,17 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Bound full suites at twenty minutes and shard/compatibility legs at fifteen."""
+    """Bound Linux supervision suites while preserving Windows and per-test limits."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 20 || 15 }}"
-    assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 20
+    assert test_job["timeout-minutes"] == (
+        "${{ matrix.mode == 'full' && matrix.os == 'ubuntu-latest' && 75 "
+        "|| matrix.mode == 'full' && 20 || 15 }}"
+    )
+    assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == (
+        "${{ matrix.os == 'ubuntu-latest' && 75 || 20 }}"
+    )
 
     pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
     assert pytest_steps
@@ -523,7 +528,7 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
     ]
     assert coverage_shards["needs"] == "changes"
     assert coverage_shards["runs-on"] == "ubuntu-latest"
-    assert coverage_shards["timeout-minutes"] == 15
+    assert coverage_shards["timeout-minutes"] == 45
     assert coverage_shards["strategy"]["fail-fast"] is False
 
 
