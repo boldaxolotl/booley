@@ -77,9 +77,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   until the enclosing execution ends; new launches fail safely at the limit.
   Identity-bound graceful signaling requires Linux pidfd support and permission;
   unavailable signaling retains uncertain scratch. On Windows and macOS hosts,
-  each native Codex call retains its marked private home, including ordinary
-  session transcripts, because descendant ownership cannot be proven. Child-free
-  contexts are removed. Windows calls that link canonical credentials need
+  every owned scratch context that attempts a guarded native command is retained,
+  including enclosing contexts, because descendant ownership cannot be proven.
+  This includes native Codex homes and ordinary session transcripts; Git history
+  and pinned-history indices; image-contract and build contexts; Goal input views;
+  Specialist snapshots; and baseline worktrees with their Git registrations.
+  These files and registrations accumulate across calls without automatic sweeping
+  on those platforms. Contexts with no attempted guarded native launch are removed.
+  Windows calls that link canonical credentials need
   symlink creation permission (Developer Mode or elevated administrator rights); link
   failure is reported instead of copying credentials.
 
