@@ -14,7 +14,11 @@ from tests.execution_test_support import runtime_env, wait_for
 from tests.runtime.scratch_support import scratch_process_ownership_supported
 
 from booley.core.temporary_workspace import process_identity
-from booley.runtime.execution_records import execution_paths, gc_terminal_executions
+from booley.runtime.execution_records import (
+    execution_paths,
+    gc_terminal_executions,
+    write_attachment_heartbeat,
+)
 
 pytestmark = pytest.mark.skipif(
     not scratch_process_ownership_supported(), reason="Linux scratch identity"
@@ -36,18 +40,15 @@ def run(value):
     assert result.returncode == 0
     return paths
 old = run('f')
-os.utime(old.record, (1, 1))
 (state / 'ready').write_text(json.dumps(process_identity(os.getpid())['namespace']))
 deadline = time.monotonic() + 30
 while not (state / 'host-finished').exists() and time.monotonic() < deadline:
     time.sleep(.01)
 assert (state / 'host-finished').exists()
-run('e')
-assert not old.root.exists(), 'In-Sandbox supervisor did not collect its old execution'
 """
 
 
-def test_real_pid_namespace_supervisor_collects_records_that_host_cannot_prove(tmp_path: Path):
+def test_real_namespace_retirement_precedes_retention_and_namespace_exit(tmp_path: Path):
     executable = shutil.which("unshare")
     if executable is None:
         pytest.skip("unshare is unavailable")
@@ -58,6 +59,7 @@ def test_real_pid_namespace_supervisor_collects_records_that_host_cannot_prove(t
         "--mount",
         "--pid",
         "--fork",
+        "--kill-child=SIGKILL",
         "--mount-proc",
     ]
     probe = subprocess.run([*namespace, "true"], check=False, capture_output=True, timeout=10)
@@ -76,12 +78,42 @@ def test_real_pid_namespace_supervisor_collects_records_that_host_cannot_prove(t
             ready.exists, failure="PID-namespace supervisor did not become ready", timeout_s=15
         )
         assert json.loads(ready.read_text()) != process_identity(os.getpid())["namespace"]
+        old = execution_paths("f" * 32, booley_dir=tmp_path)
+        assert not list(old.root.glob(".booley-shutdown-*"))
         assert gc_terminal_executions(tmp_path) == []
-        assert execution_paths("f" * 32, booley_dir=tmp_path).record.exists()
+        assert old.record.exists()
         (tmp_path / "host-finished").touch()
         stdout, stderr = process.communicate(timeout=30)
         assert process.returncode == 0, (stdout, stderr)
     finally:
         if process.poll() is None:
-            process.terminate()
+            process.kill()
             process.communicate(timeout=5)
+    os.utime(old.record, (1, 1))
+    _collect_from_new_namespace(tmp_path)
+    assert not old.root.exists()
+
+
+def _collect_from_new_namespace(state: Path) -> None:
+    paths = execution_paths("e" * 32, booley_dir=state)
+    write_attachment_heartbeat(paths, generation=1)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "booley.runtime.execution_supervisor",
+            "run",
+            "--execution-id",
+            paths.root.name,
+            "--attachment-timeout-seconds",
+            "60",
+            "--",
+            "true",
+        ],
+        env=runtime_env(state),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr

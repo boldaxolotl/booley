@@ -683,8 +683,6 @@ def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
         return False
     try:
         entries = list(root.iterdir())
-        if record.stat().st_mtime >= cutoff:
-            return False
     except OSError:
         return False
     groups = [
@@ -696,6 +694,8 @@ def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
     ):
         return False
     try:
+        if record.stat().st_mtime >= cutoff:
+            return False
         for entry in files:
             entry.unlink()
         root.rmdir()

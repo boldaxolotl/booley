@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import contextvars
 import ctypes
+import logging
 import os
 import signal
 import subprocess
@@ -47,6 +48,7 @@ _PR_SET_CHILD_SUBREAPER = 36
 _POLL_SECONDS = 0.02
 _FORCE_REAP_SECONDS = 5.0
 _EXECUTION_HEARTBEAT_SECONDS = 0.25
+logger = logging.getLogger(__name__)
 
 _GROUP: contextvars.ContextVar[ShutdownGroup | None] = contextvars.ContextVar(
     "execution_scratch_group", default=None
@@ -375,6 +377,7 @@ def _finish_owned_tree(
     )
     if tree_terminal and _GROUP.get() is not None:
         _GROUP.get().finish(owner=True)
+        _GROUP.get().remove_terminal(owner=True)
     child.poll()
     root_returncode = child.returncode if root_returncode is None else root_returncode
     late_cancellation = _cancellation_request(paths) if not cancelled else None
@@ -504,6 +507,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _collect_terminal_executions() -> None:
+    try:
+        gc_terminal_executions(resolve_booley_dir())
+    except (OSError, ValueError, RuntimeError) as error:
+        logger.warning("Terminal execution cleanup deferred: %s", error)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     execution_id = ExecutionId(args.execution_id)
@@ -528,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         return 125
-    gc_terminal_executions(resolve_booley_dir())
+    _collect_terminal_executions()
     return supervise(
         paths,
         command,

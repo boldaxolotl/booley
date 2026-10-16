@@ -224,7 +224,7 @@ class ShutdownGroup:
         return group
 
     @contextlib.contextmanager
-    def locked(self, *, initial: bool = False) -> Iterator[dict[str, Any]]:
+    def locked(self, *, initial: bool = False, blocking: bool = True) -> Iterator[dict[str, Any]]:
         from booley.core.file_lock import acquire_descriptor_lock
         from booley.core.temporary_workspace import _open_regular, _publish_json
 
@@ -235,7 +235,7 @@ class ShutdownGroup:
             raise ValueError("scratch shutdown directory is not private")
         fd = _open_regular(self.path / "lock", os.O_CREAT | os.O_RDWR)
         try:
-            acquire_descriptor_lock(fd, blocking=True)
+            acquire_descriptor_lock(fd, blocking=blocking)
             data = {} if initial else self._read()
             self._known_guards = {
                 value["identity"]["pid"]: value["identity"]
@@ -371,14 +371,16 @@ class ShutdownGroup:
         for member in members:
             self._complete_roots(member)
 
-    def _complete_roots(self, member: dict[str, Any]) -> bool:
+    def _complete_roots(self, member: dict[str, Any], *, blocking: bool = True) -> bool:
         complete = True
         for reference in member["roots"]:
-            if not self._complete_root(reference, member):
+            if not self._complete_root(reference, member, blocking=blocking):
                 complete = False
         return complete
 
-    def _complete_root(self, reference: dict[str, Any], member: dict[str, Any]) -> bool:
+    def _complete_root(
+        self, reference: dict[str, Any], member: dict[str, Any], *, blocking: bool
+    ) -> bool:
         from booley.core.temporary_workspace import _exclusion, _validated_marker, _write_marker
 
         root = Path(reference["path"])
@@ -387,7 +389,7 @@ class ShutdownGroup:
                 root.lstat()
             except FileNotFoundError:
                 return True
-            with _exclusion(root.parent):
+            with _exclusion(root.parent, blocking=blocking):
                 marker, _ = _validated_marker(root)
                 if marker["lease"] != reference["lease"] or marker["root"] != reference["root"]:
                     return False
@@ -404,18 +406,23 @@ class ShutdownGroup:
             logger.warning("Terminal scratch proof could not be refreshed for %s: %s", root, exc)
         return False
 
-    def remove_terminal(self) -> bool:
-        """Retire dead terminal metadata only after every scratch proof is independent."""
+    def remove_terminal(self, *, owner: bool = False) -> bool:
+        """Retire reaped metadata only after every scratch proof is independent."""
         from booley.core.temporary_workspace import owner_alive
 
         if sys.platform != "linux":
             return False
         try:
             identity = self.path.lstat()
-            with self.locked() as data:
+            with self.locked(blocking=False) as data:
+                owner_proven = (
+                    data["owner"] == _identity(os.getpid())
+                    if owner
+                    else owner_alive(data["owner"]) is False
+                )
                 if (
                     not data["terminal"]
-                    or owner_alive(data["owner"]) is not False
+                    or not owner_proven
                     or any(
                         owner_alive(member["identity"]) is not False
                         for member in data["members"].values()
@@ -423,9 +430,11 @@ class ShutdownGroup:
                 ):
                     return False
             # Scratch deletion takes its root lock before the group lock. Never invert it.
-            if not all(self._complete_roots(member) for member in data["members"].values()):
+            if not all(
+                self._complete_roots(member, blocking=False) for member in data["members"].values()
+            ):
                 return False
-            with self.locked() as current:
+            with self.locked(blocking=False) as current:
                 return current == data and self._remove_metadata(identity)
         except (OSError, ValueError, RuntimeError) as error:
             logger.debug("Retaining shutdown metadata %s: %s", self.path, error)

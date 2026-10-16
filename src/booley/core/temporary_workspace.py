@@ -112,12 +112,12 @@ def _open_regular(path: Path, flags: int) -> int:
 
 
 @contextlib.contextmanager
-def _exclusion(parent: Path) -> Iterator[None]:
+def _exclusion(parent: Path, *, blocking: bool = True) -> Iterator[None]:
     from booley.core.file_lock import acquire_descriptor_lock
 
     fd = _open_regular(parent / ".booley-registry.lock", os.O_CREAT | os.O_RDWR)
     try:
-        acquire_descriptor_lock(fd, blocking=True)
+        acquire_descriptor_lock(fd, blocking=blocking)
         yield
     finally:
         os.close(fd)

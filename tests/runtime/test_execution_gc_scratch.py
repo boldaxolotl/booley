@@ -46,7 +46,12 @@ def completed_execution(tmp_path):
         f"    tw.run_guarded([sys.executable, '-c', {native!r}, "
         f"str(Path(raw) / tw._MARKER), {str(snapshot)!r}], timeout=15)\n"
     )
-    _run_supervisor(state, paths.root.name, endpoint)
+    _run_supervisor(
+        state,
+        paths.root.name,
+        endpoint,
+        setup="ShutdownGroup.remove_terminal = lambda *args, **kwargs: False",
+    )
     assert read_json(paths.record)["tree_terminal"] is True
     root = Path(receipt.read_text())
     # Replay the authentic running marker: publication after reaping was interrupted.
@@ -54,12 +59,18 @@ def completed_execution(tmp_path):
     return state, paths, root, next(paths.root.glob(".booley-shutdown-*"))
 
 
-def _run_supervisor(state: Path, execution_id: str, endpoint: str) -> None:
+def _run_supervisor(state: Path, execution_id: str, endpoint: str, *, setup: str = "") -> None:
+    bootstrap = (
+        "from booley.core.lease_shutdown import ShutdownGroup\n"
+        "from booley.runtime import execution_supervisor as supervisor\n"
+        f"{setup}\n"
+        "raise SystemExit(supervisor.main())\n"
+    )
     result = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "booley.runtime.execution_supervisor",
+            "-c",
+            bootstrap,
             "run",
             "--execution-id",
             execution_id,
@@ -195,3 +206,36 @@ def test_terminal_gc_never_unlinks_replaced_metadata(completed_execution, monkey
     )
     assert paths.record.exists() and (original / "state.json").exists()
     assert (group / "foreign").read_text() == "preserve"
+
+
+def test_recent_terminal_record_retires_group_before_record_retention(completed_execution):
+    state, paths, root, group = completed_execution
+    assert gc_terminal_executions(state) == []
+    assert paths.record.exists() and not group.exists()
+    assert tw._delete_owned(root, require_dead=True)
+
+
+@pytest.mark.parametrize("lock_kind", ["group", "scratch"])
+def test_terminal_gc_does_not_wait_for_busy_proof_locks(completed_execution, lock_kind):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, paths, root, group_path = completed_execution
+    group = ShutdownGroup(group_path)
+    lock = group.locked() if lock_kind == "group" else tw._exclusion(root.parent)
+    with ThreadPoolExecutor(max_workers=1) as workers, lock:
+        assert workers.submit(group.remove_terminal).result(timeout=1) is False
+    assert paths.record.exists() and group_path.exists()
+
+
+def test_opportunistic_gc_io_failure_does_not_prevent_native_command(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    paths = execution_paths("e" * 32, booley_dir=state)
+    write_attachment_heartbeat(paths, generation=1)
+    _run_supervisor(
+        state,
+        paths.root.name,
+        "pass",
+        setup="def fail(*args): raise OSError('synthetic GC I/O failure')\nsupervisor.gc_terminal_executions = fail",
+    )
+    assert read_json(paths.record)["exit_code"] == 0
