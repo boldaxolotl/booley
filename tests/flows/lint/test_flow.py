@@ -1787,25 +1787,30 @@ class TestConfigDiscovery:
     def test_empty_target_returns_nothing(self, state_file: Path):
         """An explicit empty target never sweeps every declared Target."""
         flow = LintFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "",
-            ]
-        )
+        flow.context._args = flow.request_type(target="")
         assert flow._get_targets() == ()
 
-    def test_target_is_required_by_parser(self, state_file: Path):
+    def test_omitted_target_rejects_empty_catalog_after_parsing(
+        self, state_file: Path, monkeypatch
+    ):
         flow = LintFlow()
-        with pytest.raises(SystemExit):
-            flow.parse_args([])
-
-    def test_run_refuses_an_explicit_empty_target(self, tmp_path):
-        flow = LintFlow()
-        flow.parse_args(["--target", "", "--work-dir", str(tmp_path)])
-        result = flow._run()
+        assert flow.parse_args([]).target == ""
+        monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+        monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+        result = flow.execute(
+            flow.request_type(
+                target="", work_dir=state_file.parent, report_dir=state_file.parent / "reports"
+            )
+        )
         assert result.exit_code == EXIT_ERROR
-        assert "--target is required" in result.report_text
+        assert "Eligible Targets: (none)" in result.outcome.report_text
+
+    def test_run_refuses_an_explicit_empty_target(self, tmp_path, capsys):
+        flow = LintFlow()
+        with pytest.raises(SystemExit) as exc:
+            flow.execute_cli(["--target", "", "--work-dir", str(tmp_path)])
+        assert exc.value.code == EXIT_ERROR
+        assert "--target must contain a nonblank Target selector" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

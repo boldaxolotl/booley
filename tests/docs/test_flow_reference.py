@@ -336,3 +336,19 @@ def test_synth_help_lists_live_policy_keys():
         assert key in policy
         if key != "enabled":
             assert "synth" in SELECTIVE_FLOW_KNOBS[key]
+
+
+def test_target_omission_rule_matches_usage_and_reference() -> None:
+    usage = REFERENCE.parent / "USAGE.md"
+    for document in (REFERENCE, usage):
+        text = " ".join(document.read_text(encoding="utf-8").split())
+        assert all(
+            fragment in text
+            for fragment in (
+                "exactly one eligible Target",
+                "zero or multiple",
+                "announced",
+                "resume",
+            )
+        ), "documented Target omission rule missing"
+    assert "Every run needs `--target`" not in REFERENCE.read_text(encoding="utf-8")

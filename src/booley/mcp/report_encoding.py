@@ -13,7 +13,7 @@ import logging
 import os
 from typing import Any
 
-from booley.flows.endpoint_reporting import _contains_whole_line_block
+from booley.flows.endpoint_reporting import _contains_whole_line_block, automatic_target_notice
 
 logger = logging.getLogger(__name__)
 _DEFAULT_MAX_STDOUT_BYTES = 12_000
@@ -481,6 +481,35 @@ def _append_stream_section(
     return shown, truncated
 
 
+def _report_card_blocks(report: dict[str, Any]) -> list[str]:
+    """Separate only a persisted notice that matches this report's own identity."""
+    original = str(report["report_text"])
+    report_text = original.strip()
+    flow, target = report.get("flow"), report.get("target")
+    if isinstance(flow, str) and flow and isinstance(target, str) and target:
+        notice = automatic_target_notice(flow, target)
+        if report_text == notice:
+            return [notice]
+        if report_text.endswith(f"\n{notice}"):
+            return [report_text[: -len(notice)].rstrip(), notice]
+    return [original]
+
+
+def _unshown_report_card(
+    report: dict[str, Any],
+    streams: tuple[tuple[str, bool], tuple[str, bool]],
+) -> str:
+    """Keep the verdict body's whole-line dedupe and independently dedupe its notice."""
+    return "\n".join(
+        block
+        for block in _report_card_blocks(report)
+        if not any(
+            _contains_whole_line_block(stream, block, leading_truncated=truncated)
+            for stream, truncated in streams
+        )
+    )
+
+
 def _append_report_section(
     parts: list[str],
     report: dict[str, Any] | None,
@@ -498,19 +527,14 @@ def _append_report_section(
         if field not in report:
             continue
         if field == "report_text":
-            report_text = str(report[field]).strip()
-            shown_in_stdout = _contains_whole_line_block(
-                shown_stdout,
-                report_text,
-                leading_truncated=stdout_truncated,
+            report_text = _unshown_report_card(
+                report,
+                ((shown_stdout, stdout_truncated), (shown_stderr, stderr_truncated)),
             )
-            shown_in_stderr = _contains_whole_line_block(
-                shown_stderr,
-                report_text,
-                leading_truncated=stderr_truncated,
-            )
-            if shown_in_stdout or shown_in_stderr:
+            if not report_text and str(report[field]).strip():
                 continue
+            report_lines.append(f"{field}: {report_text or report[field]}")
+            continue
         report_lines.append(f"{field}: {report[field]}")
     detail = report.get("detail")
     if isinstance(detail, dict):

@@ -7,6 +7,7 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+from booley.flows.cli_help import SurfaceHelp
 from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import ExecutionResult
@@ -22,11 +23,19 @@ def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.Argument
         description=flow.description,
         allow_abbrev=False,
     )
+    target_help = flow.target_help
+    if flow.name == "sim":
+        resume_help = " For sim resume, the manifest owns selection."
+        target_help = (
+            SurfaceHelp(str(target_help) + resume_help, cli=target_help.cli + resume_help)
+            if isinstance(target_help, SurfaceHelp)
+            else target_help + resume_help
+        )
     add_common_args(
         parser,
         target_required=flow.target_required,
         accepts_target=flow.accepts_target,
-        target_help=flow.target_help,
+        target_help=target_help,
     )
     flow.argument_adapter.add_common_args(parser)
     flow.argument_adapter.add_args(parser)
@@ -57,6 +66,11 @@ def _parse_cli(flow: BuiltinFlow, argv: list[str] | None):
     parser = build_cli_parser(flow)
     args = parser.parse_args(argv)
     quiet = vars(args).pop("_console_quiet")
+    authored_target = getattr(args, "target", None)
+    if authored_target is not None and not getattr(args, "resume_from", None):
+        values = authored_target if isinstance(authored_target, list) else [authored_target]
+        if not any(token.strip() for value in values for token in value.split(",")):
+            parser.error("--target must contain a nonblank Target selector")
     normalize_endpoint_args(args)
     normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
