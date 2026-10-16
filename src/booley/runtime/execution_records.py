@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.core.lease_shutdown import ShutdownGroup
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.pid import RUNNING, ProcessIdentity, ProcessObservation, observe_process
@@ -686,10 +687,16 @@ def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
             return False
     except OSError:
         return False
-    if any(entry.name not in _PROTOCOL_FILENAMES or not entry.is_file() for entry in entries):
+    groups = [
+        entry for entry in entries if re.fullmatch(r"\.booley-shutdown-[0-9a-f]{32}", entry.name)
+    ]
+    files = [entry for entry in entries if entry not in groups]
+    if any(entry.name not in _PROTOCOL_FILENAMES or not entry.is_file() for entry in files) or any(
+        not ShutdownGroup(group).remove_terminal() for group in groups
+    ):
         return False
     try:
-        for entry in entries:
+        for entry in files:
             entry.unlink()
         root.rmdir()
     except OSError:

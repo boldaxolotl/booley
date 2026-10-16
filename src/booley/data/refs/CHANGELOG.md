@@ -68,8 +68,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   session history are not inherited; only Mutation Tester retains its lock-owned
   native sessions. On Linux, supervised cleanup removes completed calls'
   private homes and recovers proven-dead marked scratch at MCP startup and
-  Specialist launch. A first force cancellation publishes its requested signal
-  with the force intent, avoiding a SIGINT exit status when SIGTERM was requested.
+  Specialist launch. An initial force cancellation publishes its requested signal
+  with the force intent, avoiding a SIGINT exit status when SIGTERM was requested
+  before any graceful cancellation. Terminal execution records release their
+  shutdown metadata only after surviving scratch has independent completion proof.
   Unsupported or uncertain native ownership and old unmarked
   leftovers remain for verified operator cleanup. Sharing auth removes credential
   replicas; concurrent native credential writes remain unserialized and can

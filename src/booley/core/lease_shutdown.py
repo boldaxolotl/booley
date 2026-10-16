@@ -369,29 +369,87 @@ class ShutdownGroup:
         for member in members:
             self._complete_roots(member)
 
-    def _complete_roots(self, member: dict[str, Any]) -> None:
+    def _complete_roots(self, member: dict[str, Any]) -> bool:
+        complete = True
+        for reference in member["roots"]:
+            if not self._complete_root(reference, member):
+                complete = False
+        return complete
+
+    def _complete_root(self, reference: dict[str, Any], member: dict[str, Any]) -> bool:
         from booley.core.temporary_workspace import _exclusion, _validated_marker, _write_marker
 
-        for reference in member["roots"]:
-            root = Path(reference["path"])
+        root = Path(reference["path"])
+        try:
             try:
-                with _exclusion(root.parent):
-                    marker, _ = _validated_marker(root)
-                    if (
-                        marker["lease"] != reference["lease"]
-                        or marker["root"] != reference["root"]
-                    ):
-                        continue
-                    state = marker["launches"].get(member["token"])
-                    if state == {"state": "pending"} or (
-                        isinstance(state, dict) and state.get("supervisor") == member["identity"]
-                    ):
-                        marker["launches"][member["token"]] = {"state": "complete"}
-                        _write_marker(root, marker)
-            except (OSError, ValueError) as exc:
-                logger.warning(
-                    "Terminal scratch proof could not be refreshed for %s: %s", root, exc
-                )
+                root.lstat()
+            except FileNotFoundError:
+                return True
+            with _exclusion(root.parent):
+                marker, _ = _validated_marker(root)
+                if marker["lease"] != reference["lease"] or marker["root"] != reference["root"]:
+                    return False
+                state = marker["launches"].get(member["token"])
+                if state is None or state == {"state": "complete"}:
+                    return True
+                if state == {"state": "pending"} or (
+                    isinstance(state, dict) and state.get("supervisor") == member["identity"]
+                ):
+                    marker["launches"][member["token"]] = {"state": "complete"}
+                    _write_marker(root, marker)
+                    return True
+        except (OSError, ValueError) as exc:
+            logger.warning("Terminal scratch proof could not be refreshed for %s: %s", root, exc)
+        return False
+
+    def remove_terminal(self) -> bool:
+        """Retire dead terminal metadata only after every scratch proof is independent."""
+        from booley.core.temporary_workspace import owner_alive
+
+        try:
+            identity = self.path.lstat()
+            with self.locked() as data:
+                if (
+                    not data["terminal"]
+                    or owner_alive(data["owner"]) is not False
+                    or any(
+                        owner_alive(member["identity"]) is not False
+                        for member in data["members"].values()
+                    )
+                ):
+                    return False
+            # Scratch deletion takes its root lock before the group lock. Never invert it.
+            if not all(self._complete_roots(member) for member in data["members"].values()):
+                return False
+            with self.locked() as current:
+                return current == data and self._remove_metadata(identity)
+        except (OSError, ValueError, RuntimeError) as error:
+            logger.debug("Retaining shutdown metadata %s: %s", self.path, error)
+            return False
+
+    def _remove_metadata(self, identity: os.stat_result) -> bool:
+        fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(fd)
+            expected = (identity.st_dev, identity.st_ino)
+            if (opened.st_dev, opened.st_ino) != expected:
+                return False
+            # A pathname iterator could follow a replacement directory; list the held fd.
+            names = set(os.listdir(fd))  # noqa: PTH208
+            if names != {"state.json", "lock"} or any(
+                not stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode)
+                for name in ("state.json", "lock")
+            ):
+                return False
+            for name in ("lock", "state.json"):
+                os.unlink(name, dir_fd=fd)
+            current = self.path.lstat()
+            if (current.st_dev, current.st_ino) != expected:
+                return False
+            self.path.rmdir()
+            return True
+        finally:
+            os.close(fd)
 
     def active(self) -> bool:
         if self._degraded:
