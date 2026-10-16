@@ -543,6 +543,8 @@ class TerminalProgress:
             self._log_failure()
 
     def footer(self) -> None:
+        if self.abandoned:
+            return
         with self.lock:
             if self.log_path is not None:
                 self._record(f"transcript={self.log_path}")

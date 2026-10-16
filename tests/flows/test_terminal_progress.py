@@ -97,17 +97,9 @@ def test_progress_footer_preserves_each_log_owner(tmp_path):
     assert (sink.target, sink.stage) == ("b", "baseline: checking")
 
 
-def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
-    from booley.core.build_paths import work_root_for
-    from booley.flows.base import SubprocessResult
-    from booley.fusesoc import fusesoc_registry
-
-    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+def write_lint_progress_core(tmp_path, targets):
     source = tmp_path / "top.sv"
     source.write_text("module top; endmodule\n")
-    targets = ("lint_a", "lint_b")
     (tmp_path / "demo.core").write_text(
         "CAPI=2:\nname: ::demo:0\nfilesets:\n  rtl:\n"
         "    files: [top.sv]\n    file_type: systemVerilogSource\ntargets:\n"
@@ -117,6 +109,19 @@ def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
             for target in targets
         )
     )
+    return source
+
+
+def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
+    from booley.core.build_paths import work_root_for
+    from booley.flows.base import SubprocessResult
+    from booley.fusesoc import fusesoc_registry
+
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    targets = ("lint_a", "lint_b")
+    source = write_lint_progress_core(tmp_path, targets)
 
     def resolve(target, *, build_root):
         return fusesoc_registry.ResolvedTarget(
@@ -148,6 +153,25 @@ def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
         artifact = result.outcome.detail["artifacts"][f"log_{target}"]
         assert Path(artifact).parts[-2:] == (target, "run.log")
         assert (tmp_path / artifact).is_file()
+
+
+def test_abandoned_footer_does_not_wait_for_observer_lock(tmp_path):
+    sink = observer(tmp_path)
+    sink.abandoned = True
+    finished = threading.Event()
+
+    def render_footer():
+        sink.footer()
+        finished.set()
+
+    with sink.lock:
+        worker = threading.Thread(target=render_footer, daemon=True)
+        worker.start()
+        completed_without_lock = finished.wait(timeout=1)
+    worker.join(timeout=2)
+    assert completed_without_lock, "abandoned footer waited for observer lock"
+    assert not worker.is_alive()
+    assert sink.stream.getvalue() == ""
 
 
 def test_explicit_watched_owner_pending_temporary_and_reregistration(tmp_path):
