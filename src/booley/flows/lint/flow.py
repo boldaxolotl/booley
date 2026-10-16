@@ -52,7 +52,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, MissingTargetToplevelError, TargetHandle
 from booley.targets.flow_names import config_section
@@ -396,7 +396,7 @@ def _target_summary_line(result: LintConfigResult) -> str:
     files = f", {result.files_linted} files" if result.files_linted >= 0 else ""
     return (
         f"[lint] {result.target:<12} [{result.eda_tool}] {wcount} {label} "
-        f"(target total){files}, {result.duration_s:.1f}s"
+        f"(target total){files}, {format_duration(result.duration_s)}"
     )
 
 

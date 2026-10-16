@@ -73,7 +73,7 @@ from booley.runtime.pid import (
     is_pid_alive,
     observe_process,
 )
-from booley.runtime.timefmt import rfc3339_from_epoch
+from booley.runtime.timefmt import format_duration, rfc3339_from_epoch
 
 __all__ = ["SlotCaps", "parse_caps"]
 
@@ -341,7 +341,7 @@ def _describe_holder(tok: SlotToken, now: float) -> str:
     if started is None:
         return f"pid {tok.pid} ({label})"
     held = max(0, int(now - started))
-    return f"pid {tok.pid} ({label}), held {held // 60}m{held % 60:02d}s"
+    return f"pid {tok.pid} ({label}), held {format_duration(held)}"
 
 
 _default_pid_alive = is_pid_alive

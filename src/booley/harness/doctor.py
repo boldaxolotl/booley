@@ -136,7 +136,7 @@ from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
-from booley.runtime.timefmt import format_human_datetime
+from booley.runtime.timefmt import format_clock, format_duration
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -374,11 +374,6 @@ class DoctorRunResult:
     def clean(self) -> bool:
         """True only when no active FAIL or WARN finding remains."""
         return self.diagnostics.health.clean
-
-
-def _format_minutes(seconds: int) -> str:
-    """Render a timeout budget as whole minutes, rounded up."""
-    return f"{max(1, -(-seconds // 60))} min"
 
 
 def _announce_long_check(label: str, expectation: str) -> None:
@@ -1815,7 +1810,7 @@ def _run_developer_probe(
     _announce_long_check(
         "provider-backed check: Specialist provider memory and authorization probe",
         "one light-tier provider turn; usually seconds, times out after "
-        f"{_format_minutes(developer_probe.PROBE_TIMEOUT_S)}",
+        f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
     )
     try:
         measurement = developer_probe.measure_developer_rss(project.project_root)
@@ -2826,11 +2821,7 @@ def _check_subscription_creds_health(
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:
-        when = (
-            format_human_datetime(datetime.fromtimestamp(expiry).astimezone())
-            if expiry > 0
-            else "epoch 0"
-        )
+        when = format_clock(expiry, now=now) if expiry > 0 else "epoch 0"
         if rotation_free:
             _pass(
                 f"subscription login at {creds_path} is expired ({when}) — harmless: "
@@ -2844,10 +2835,7 @@ def _check_subscription_creds_health(
                 f"booley auth --app {app}  (or refresh the host login and recreate the container)",
             )
     elif expiry is not None:
-        _pass(
-            f"subscription login valid until "
-            f"{format_human_datetime(datetime.fromtimestamp(expiry).astimezone())}"
-        )
+        _pass(f"subscription login valid until {format_clock(expiry, now=now)}")
 
     if not runtime_context.inside_session_runtime():
         return
@@ -5954,7 +5942,7 @@ def _run_core_resolve_checks(
     if docker_exe and _docker_image_exists_by_name(image):
         _announce_long_check(
             f".core resolvability of {len(refs)} Target(s) in the Sandbox",
-            f"FuseSoC configure; timeout {_format_minutes(_CORE_RESOLVE_TIMEOUT_S)}",
+            f"FuseSoC configure; timeout {format_duration(_CORE_RESOLVE_TIMEOUT_S)}",
         )
         _run_core_resolve_in_docker(
             project,
@@ -6220,7 +6208,7 @@ def _run_deep_checks(
         for target in targets:
             _announce_long_check(
                 f"{flow_name} deep check [{target}]",
-                f"real EDA run; timeout {_format_minutes(timeout_s)}",
+                f"real EDA run; timeout {format_duration(timeout_s)}",
             )
             identifier = f"{flow_name}.smoke.{hashlib.sha256(target.encode()).hexdigest()[:16]}"
             tracker.require(identifier)
@@ -6658,7 +6646,7 @@ def _run_one_selftest(
                 f"{label} cannot clear prior report: {exc}", "remove the Doctor-owned sim report"
             )
             return False
-    _announce_long_check(label, f"real EDA run; timeout {_format_minutes(timeout_s)}")
+    _announce_long_check(label, f"real EDA run; timeout {format_duration(timeout_s)}")
     result = _execute_selftest(project, cmd, env, timeout_s, label, flow_name, _fail=_fail)
     if result is None:
         return False

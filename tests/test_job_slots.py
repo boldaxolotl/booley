@@ -1037,7 +1037,7 @@ class TestAcquire:
         described = store.describe_holders(CLASS_HEAVY)
         assert "pid 100" in described
         assert "(sim)" in described
-        assert "held 10m13s" in described
+        assert "held 10m 13s" in described
 
     def test_describe_holders_on_empty_class_does_not_raise(self, root, world):
         store = make_store(root, world)

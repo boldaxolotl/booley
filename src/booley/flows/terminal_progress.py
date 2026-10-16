@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from booley.runtime.booley_dir import runtime_dir
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
 
 _CURRENT: contextvars.ContextVar[TerminalProgress | None] = contextvars.ContextVar(
     "flow_terminal_progress", default=None
@@ -389,9 +389,9 @@ class TerminalProgress:
             if now - self.last_render < 0.25:
                 return
             self._clear()
-            age = "none" if self.last_output is None else f"{int(now - self.last_output)}s ago"
+            age = "none" if self.last_output is None else format_age(0, now=now - self.last_output)
             status = (
-                f"{self.flow} elapsed={int(now - self.started)}s command={int(now - self.command_started)}s "
+                f"{self.flow} elapsed={format_duration(now - self.started)} command={format_duration(now - self.command_started)} "
                 f"Target={self.target[:20]} {self.stage[:24]} last output={age}"
             )
             rows = [status, *self.tail]

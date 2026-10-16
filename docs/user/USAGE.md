@@ -661,6 +661,16 @@ or `a` for all Jobs. From a session detail, Job shortcuts show that session's
 Jobs; press `u` to include all sessions and standalone Jobs. `Esc` returns to
 the previous view, and `?` shows help.
 
+Dashboard and CLI clocks use your local timezone: `HH:MM:SS` today,
+`Oct 03 14:44` for another day this year, and `YYYY-MM-DD HH:MM` for another
+year. Durations adapt from seconds to minutes, hours, and days: `59s`,
+`1m 00s`, `1h 00m`, `1d 00h`. Positive subsecond values always keep one
+decimal (`0.0s`, `0.4s`, `1.0s`); `0.999` seconds rounds to `1.0s`, exactly
+one second is `1s`, and nonpositive durations are `0s`. Relative ages use
+`just now` below five seconds, then `5s ago`, `1m ago`, `1h ago`, or `1d ago`.
+Future ages show `just now`; invalid values show `unknown`. JSON, report
+documents, and redirected progress records retain their existing representation.
+
 Sessions have short, persistent Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
 Jobs use `SIM`, and other endpoints use `J-JOB<n>`. One Job counter covers every

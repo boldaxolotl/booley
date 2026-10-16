@@ -117,10 +117,10 @@ def test_human_display_caps_targets_at_three():
     lines = _build_display_lines(results, total_elapsed=10.0)
 
     assert lines == [
-        "10/10 targets passed, 10.0s",
-        "✓ config_0  1.0s",
-        "✓ config_1  1.0s",
-        "✓ config_2  1.0s",
+        "10/10 targets passed, 10s",
+        "✓ config_0  1s",
+        "✓ config_1  1s",
+        "✓ config_2  1s",
         "... and 7 more targets",
     ]
 
@@ -135,7 +135,7 @@ def test_human_display_does_not_repeat_single_passing_target_or_test():
         )
     ]
 
-    assert _build_display_lines(results, total_elapsed=10.0) == ["✓ PASS  10.0s"]
+    assert _build_display_lines(results, total_elapsed=10.0) == ["✓ PASS  10s"]
 
 
 def test_human_display_keeps_target_detail_for_multiple_passing_tests():
@@ -151,8 +151,8 @@ def test_human_display_keeps_target_detail_for_multiple_passing_tests():
     ]
 
     assert _build_display_lines(results, total_elapsed=2.0) == [
-        "1/1 targets passed, 2.0s",
-        "✓ sim_mul (2/2 tests)  0ms",
+        "1/1 targets passed, 2s",
+        "✓ sim_mul (2/2 tests)  0s",
     ]
 
 
@@ -168,7 +168,7 @@ def test_human_display_keeps_names_for_single_target_failure():
 
     lines = _build_display_lines(results, total_elapsed=1.0)
 
-    assert lines[1] == "✗ sim_mul  1.0s"
+    assert lines[1] == "✗ sim_mul  1s"
     assert any("edge" in line for line in lines)
 
 
@@ -2930,15 +2930,6 @@ class TestTraceArtifactReported:
 
 class TestSubSecondDurations:
     """F-39: 10-20ms cocotb tests all rendered as an identical `0.0s`."""
-
-    def test_format_duration_switches_to_milliseconds(self):
-        from booley.flows.sim.flow import _format_duration
-
-        assert _format_duration(0.012) == "12ms"
-        assert _format_duration(0.0) == "0ms"
-        assert _format_duration(0.999) == "999ms"
-        assert _format_duration(1.0) == "1.0s"
-        assert _format_duration(93.4) == "93.4s"
 
     def test_format_bytes_supports_gigabytes(self):
         from booley.flows.sim.flow import _format_bytes

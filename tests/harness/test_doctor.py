@@ -1322,7 +1322,7 @@ def test_core_resolve_announces_before_container_run(
 
     assert (
         "RUN   .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10 min)" in printed_before_run[0]
+        "(FuseSoC configure; timeout 10m 00s)" in printed_before_run[0]
     )
 
 

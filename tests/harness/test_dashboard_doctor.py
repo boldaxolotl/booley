@@ -227,8 +227,9 @@ def test_goal_evidence_states_checking_and_artifact_projection(tmp_path, monkeyp
         "not yet run",
     ]
     assert view.goals[0].artifacts == (str(artifact),)
-    text = _evidence_detail(view.goals[0])
-    assert "2026-10-08T10:00:00Z" in text and "Immutable derivation provenance" in text
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    text = _evidence_detail(view.goals[0], now=1791454200)
+    assert "Last check: 14:00:00" in text and "Immutable derivation provenance" in text
     assert "never display log content" not in text
     binding = GoalRunBinding(
         tmp_path,
