@@ -256,3 +256,14 @@ entry success, completion authority or Finish. Finish does not wait: a short
 session can freeze a pending report. Red-first advice stays unconditional. This
 amendment adds no from-state argument, transition Goal, enforcement rule or
 baseline work for any other Goal family.
+
+
+## Amendment: ended Goal Record retention (2026-10-16)
+
+Issue #1561 qualifies the Ending decision: abandonment immediately keeps the
+record, worktree, and Goal Branch. After entry, Finish, or abandonment, a
+one-shot background cleanup removes ended records only when Git confirms that
+both their Worktree Identity and Goal Branch are gone. Uncertain or busy records
+are retained, as are committed history summaries. With no active Goal Mode in the
+current worktree, CLI and MCP status show its most recent ended record and
+existing Session Summary and Review Package paths.

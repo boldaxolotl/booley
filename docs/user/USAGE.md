@@ -650,7 +650,9 @@ Booley deletes a finished, abandoned, or failed Goal Record, with its Session
 Summary and Review Package, once both its worktree and its Goal Branch are gone.
 A worktree is gone once Git no longer lists it: after `git worktree remove`, or
 after `git worktree prune` for a worktree directory you deleted by hand.
-Booley checks after every Goal entry, Finish, and abandonment. A record is kept
+Booley starts a background cleanup after every Goal entry, Finish, and abandonment;
+the command returns without waiting for Git checks or deletion. If the worker
+cannot start or is interrupted, the next lifecycle command retries cleanup. A record is kept
 whenever Git cannot confirm that the worktree or branch is gone, the record is
 unreadable, or another command is using it. Committed summaries under `goals/history/`
 are never deleted. Copy anything you want to keep before you remove both the

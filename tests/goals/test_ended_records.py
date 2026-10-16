@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
+import sys
+import time
 from argparse import Namespace
 from dataclasses import replace
 from pathlib import Path
@@ -44,6 +47,8 @@ from tests.goals.test_status import publish
 
 # Entry, Finish, and Abandon run real Git; keep the established Goal lifecycle budget.
 pytestmark = pytest.mark.timeout(120)
+
+LAUNCH_CLEANUP = ended_records._launch_cleanup
 
 GONE_BRANCH = "goal/gone-20261001T000000Z"
 
@@ -215,7 +220,7 @@ def test_entry_deletes_a_record_whose_worktree_and_branch_are_gone(goal_mode, mo
     assert worktree_lock_file(goal_mode.control, entered.worktree).is_file()
 
 
-def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout):
+def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout, monkeypatch, capsys):
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     git(layout.main, "config", "user.name", "Goal Test")
@@ -227,6 +232,12 @@ def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout):
     assert finish_goal(request, finish_environment(layout))["status"] == "finished"
     assert not exists(layout, stale.id)
     assert exists(layout, layout.record.id)
+    text = cli_status(layout.worktree, layout.main, monkeypatch, capsys)
+    paths = record_paths(layout.control, layout.record.id)
+    assert f"{layout.record.id} (finished)" in text
+    assert f"Session Summary: {paths.summary_file}" in text
+    assert f"Review Package: {paths.review_package_file}" in text
+    assert mcp_status(layout.worktree, layout.control) + "\n" == text
 
 
 def test_abandon_deletes_a_record_whose_worktree_and_branch_are_gone(goal_mode):
@@ -387,3 +398,85 @@ def test_has_branch_tells_present_absent_and_unknown(goal_mode, tmp_path):
     assert checkout.has_branch("goal/missing") is False
     with pytest.raises(CheckoutError, match="cannot tell"):
         GoalCheckout(tmp_path).has_branch("work")
+
+
+def test_abandonment_returns_while_cleanup_worker_is_blocked(goal_mode, monkeypatch, tmp_path):
+    """Even a worker that cannot finish must not hold the lifecycle response."""
+    monkeypatch.setattr(ended_records, "_launch_cleanup", LAUNCH_CLEANUP)
+    release = tmp_path / "release-cleanup"
+    started = tmp_path / "cleanup-started"
+    processes = []
+    popen = subprocess.Popen
+
+    def blocked_worker(argv, *args, **kwargs):
+        if "booley.goals.ended_records" not in argv:
+            return popen(argv, *args, **kwargs)
+        process = popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time\nfrom pathlib import Path\n"
+                "Path(sys.argv[2]).touch()\n"
+                "for _ in range(300):\n"
+                " if Path(sys.argv[1]).exists(): break\n"
+                " time.sleep(0.1)\n",
+                str(release),
+                str(started),
+            ],
+            **kwargs,
+        )
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", blocked_worker)
+    try:
+        result = abandon_goal(
+            GoalStore(goal_mode.control), goal_mode.worktree, finish_environment(goal_mode)
+        )
+        assert processes, "cleanup must run outside the lifecycle response"
+        for _ in range(100):
+            if started.exists():
+                break
+            time.sleep(0.05)
+        assert started.exists()
+        assert result["status"] == "abandoned"
+        assert all(process.poll() is None for process in processes)
+    finally:
+        release.touch()
+        for process in processes:
+            process.wait(timeout=10)
+
+
+def test_detached_cleanup_worker_removes_an_ended_record(goal_mode, monkeypatch):
+    stale = ended_copy(goal_mode, "worker-20200101T000000Z")
+    # Readiness uses dependencies without installing the checkout into its shared venv.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2] / "src"))
+    monkeypatch.chdir(goal_mode.worktree)
+    processes = []
+    popen = subprocess.Popen
+
+    def capture_worker(argv, *args, **kwargs):
+        process = popen(argv, *args, **kwargs)
+        if "booley.goals.ended_records" in argv:
+            processes.append(process)
+        return process
+
+    monkeypatch.setattr(ended_records, "_launch_cleanup", LAUNCH_CLEANUP)
+    monkeypatch.setattr(subprocess, "Popen", capture_worker)
+    ended_records.schedule_ended_cleanup(GoalStore(goal_mode.control), goal_mode.worktree)
+    assert len(processes) == 1
+    assert processes[0].wait(timeout=30) == 0
+    assert not exists(goal_mode, stale.id)
+
+
+def test_worker_launch_failure_does_not_fail_abandonment(goal_mode, monkeypatch, caplog):
+    def unavailable(*_args):
+        raise OSError("worker unavailable")
+
+    monkeypatch.setattr(ended_records, "_launch_cleanup", unavailable)
+    with caplog.at_level(logging.WARNING, logger=ended_records.__name__):
+        result = abandon_goal(
+            GoalStore(goal_mode.control), goal_mode.worktree, finish_environment(goal_mode)
+        )
+    assert result["status"] == "abandoned"
+    assert "worker unavailable" in caplog.text

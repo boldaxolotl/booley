@@ -3,8 +3,8 @@
 A Goal Record in a final state (``finished``, ``abandoned``, or ``failed``)
 stays readable through ``goal status`` in its worktree while that worktree has
 no active Goal Mode. Once its worktree and its Goal Branch are both gone it
-has no further use, so :func:`sweep_ended_records` deletes it after a Goal is
-entered, finished, or abandoned.
+has no further use, so a detached, one-shot worker deletes it after a Goal is
+entered, finished, or abandoned. Lifecycle responses never wait for its sweep.
 
 A worktree is judged by the record's Worktree Identity, never by the path it
 was last seen at (inside the Sandbox every checkout is mounted at one path):
@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -108,6 +110,35 @@ def render_last_ended(store: GoalStore, record: GoalRecord) -> str:
 # ---------------------------------------------------------------------------
 # Automatic deletion
 # ---------------------------------------------------------------------------
+
+
+def schedule_ended_cleanup(store: GoalStore, repo_dir: Path) -> None:
+    """Start a one-shot cleanup worker after lifecycle locks have been released.
+
+    Git queries and recursive deletion happen outside the lifecycle process.
+    Failure to launch keeps the records for a later lifecycle command.
+    """
+    try:
+        _launch_cleanup(store.booley_dir.absolute(), repo_dir.absolute())
+    except Exception as exc:  # noqa: BLE001 — cleanup cannot fail a completed lifecycle command
+        logger.warning("Ended Goal Record cleanup could not start: %s", exc)
+
+
+def _launch_cleanup(booley_dir: Path, repo_dir: Path) -> None:
+    options = (
+        {"creationflags": subprocess.DETACHED_PROCESS}
+        if sys.platform == "win32"
+        else {"start_new_session": True}
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "booley.goals.ended_records", str(booley_dir), str(repo_dir)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **options,
+    )
+    # Reap in long-lived MCP servers without making CLI shutdown wait for cleanup.
+    threading.Thread(target=process.wait, daemon=True).start()
 
 
 def sweep_ended_records(store: GoalStore, repo_dir: Path) -> tuple[str, ...]:
@@ -225,3 +256,7 @@ def _remove_leftovers(root: Path) -> None:
     for entry in root.iterdir():
         if entry.name.startswith(DELETING_PREFIX):
             shutil.rmtree(entry, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sweep_ended_records(GoalStore(Path(sys.argv[1])), Path(sys.argv[2]))
