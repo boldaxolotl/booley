@@ -8,7 +8,7 @@ with AI coding agents to follow it.
 1. [Read this first](#read-this-first)
 2. [Check your setup](#first-verify-your-setup)
 3. [Choose how to work](#choose-how-to-work)
-4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
+4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
 5. [Goal Mode](#goal-mode): [Goalsets](#goalsets-and-entry), [Test Runs](#goals-that-name-test-runs), [evidence](#working-with-evidence), [human decisions](#changes-and-human-decisions), [Finish](#finish-and-review)
 6. [Recovery and parallel work](#recovery-unattended-work-and-parallel-sessions), [without VS Code](#entering-the-sandbox-without-vs-code)
 
@@ -249,6 +249,17 @@ Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), s
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
 How the connection works is in
 [ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode).
+
+### Editing Project instructions
+
+Root `AGENTS.md` and `CLAUDE.md` normally link to the canonical Booley Directory
+guide. Editing either link edits that guide. In an embedded non-Stealth layout,
+stage the canonical file with `git add .booley/AGENTS.md`, substituting your
+configured Booley Directory if different. The root links remain ignored.
+For a separate Booley repository, including Stealth, stage and commit `AGENTS.md`
+inside that repository. An explicitly selected hybrid footprint instead uses a
+matching tracked root `AGENTS.md` copy; keep it identical to the canonical guide
+and stage changes to both copies.
 
 ### Viewing waveforms
 

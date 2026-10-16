@@ -22,7 +22,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -136,7 +136,7 @@ from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
-from booley.runtime.timefmt import format_human_datetime
+from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -376,11 +376,6 @@ class DoctorRunResult:
         return self.diagnostics.health.clean
 
 
-def _format_minutes(seconds: int) -> str:
-    """Render a timeout budget as whole minutes, rounded up."""
-    return f"{max(1, -(-seconds // 60))} min"
-
-
 def _announce_long_check(label: str, expectation: str) -> None:
     """Print a start line before a long deep check and flush.
 
@@ -445,6 +440,7 @@ class _Reporter:
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
     findings: list[DiagnosticFinding] | None = None
     agent_calls: list[_AgentCallRecord] | None = None
+    display_overrides: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -511,7 +507,7 @@ class _Reporter:
             )
         )
         if not self.concise:
-            ok(f"PASS  {msg}")
+            ok(f"PASS  {self.display_overrides.get(str(msg), str(msg))}")
         self.counts["pass"] += 1
 
     def note_(self, msg: str, fix: str = "") -> None:
@@ -543,7 +539,7 @@ class _Reporter:
         self.findings.append(
             DiagnosticFinding(Severity.WARN, str(msg), fix, msg.check_id, msg.subject)
         )
-        warn(f"WARN  {msg} {suffix}")
+        warn(f"WARN  {self.display_overrides.get(str(msg), str(msg))} {suffix}")
         if fix:
             info(f"  fix: {fix}")
         self.counts["warn"] += 1
@@ -552,7 +548,9 @@ class _Reporter:
         """Render an already-waived observation without making it active again."""
         assert self.findings is not None
         self.findings.append(finding)
-        note(f"WAIVED  {finding.message} {_warning_identity(finding)}")
+        note(
+            f"WAIVED  {self.display_overrides.get(finding.message, finding.message)} {_warning_identity(finding)}"
+        )
         info(f"  reason: {finding.fix}")
         self.counts["waived"] += 1
 
@@ -1815,7 +1813,7 @@ def _run_developer_probe(
     _announce_long_check(
         "provider-backed check: Specialist provider memory and authorization probe",
         "one light-tier provider turn; usually seconds, times out after "
-        f"{_format_minutes(developer_probe.PROBE_TIMEOUT_S)}",
+        f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
     )
     try:
         measurement = developer_probe.measure_developer_rss(project.project_root)
@@ -2449,7 +2447,12 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         plan=plan,
     )
     _check_subscription_creds_health(
-        provider, reporter.pass_, reporter.warn_, policy=auth_policy, plan=plan
+        provider,
+        reporter.pass_,
+        reporter.warn_,
+        policy=auth_policy,
+        plan=plan,
+        display_overrides=reporter.display_overrides,
     )
 
 
@@ -2784,6 +2787,27 @@ def _claude_creds_expiry(path: Path) -> float | None:
         return None
 
 
+def _subscription_expiry_message(
+    expiry: float,
+    now: float,
+    prefix: str,
+    suffix: str = "",
+    *,
+    display_overrides: dict[str, str] | None = None,
+) -> str:
+    """Keep a frozen diagnostic message and an independent console clock."""
+    legacy = (
+        format_human_datetime(datetime.fromtimestamp(expiry).astimezone())
+        if expiry > 0
+        else "epoch 0"
+    )
+    recorded = f"{prefix}{legacy}{suffix}"
+    if display_overrides is not None:
+        shown = format_clock(expiry, now=now) if expiry > 0 else "epoch 0"
+        display_overrides[recorded] = f"{prefix}{shown}{suffix}"
+    return recorded
+
+
 def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
@@ -2791,6 +2815,7 @@ def _check_subscription_creds_health(
     policy: str = "auto",
     *,
     plan: auth_token.CredentialPlan | None = None,
+    display_overrides: dict[str, str] | None = None,
 ) -> None:
     """A PRESENT subscription login can still be DEAD — check what's checkable.
 
@@ -2826,27 +2851,32 @@ def _check_subscription_creds_health(
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:
-        when = (
-            format_human_datetime(datetime.fromtimestamp(expiry).astimezone())
-            if expiry > 0
-            else "epoch 0"
-        )
         if rotation_free:
             _pass(
-                f"subscription login at {creds_path} is expired ({when}) — harmless: "
-                "agents run on the rotation-free credential"
+                _subscription_expiry_message(
+                    expiry,
+                    now,
+                    f"subscription login at {creds_path} is expired (",
+                    ") — harmless: agents run on the rotation-free credential",
+                    display_overrides=display_overrides,
+                )
             )
         else:
             _warn(
-                f"subscription login at {creds_path} is expired ({when}) and refresh "
-                "fails once the host has rotated the shared refresh token — "
-                "agents then crash at launch",
+                _subscription_expiry_message(
+                    expiry,
+                    now,
+                    f"subscription login at {creds_path} is expired (",
+                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    display_overrides=display_overrides,
+                ),
                 f"booley auth --app {app}  (or refresh the host login and recreate the container)",
             )
     elif expiry is not None:
         _pass(
-            f"subscription login valid until "
-            f"{format_human_datetime(datetime.fromtimestamp(expiry).astimezone())}"
+            _subscription_expiry_message(
+                expiry, now, "subscription login valid until ", display_overrides=display_overrides
+            )
         )
 
     if not runtime_context.inside_session_runtime():
@@ -3195,6 +3225,7 @@ def _run_project_checks(
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
     )
+    _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
@@ -3308,6 +3339,30 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     _pass("transient Booley state is gitignored")
 
 
+def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> None:
+    """Inspect durable inputs in their owning repositories, separately from outer history."""
+    from booley.commit_policy import stealth_enabled
+    from booley.runtime.project_trackability import (
+        FIX,
+        HISTORY_PROBE,
+        inspect_project_trackability,
+    )
+
+    if stealth_enabled(root, booley_dir=booley_dir):
+        return
+    inspection = inspect_project_trackability(root, booley_dir)
+    for group in inspection.ignored:
+        # The existing outer publication check owns this exact synthetic path.
+        if group.history and HISTORY_PROBE in group.paths:
+            continue
+        check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
+        _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
+    for error in inspection.errors:
+        _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
+            error, "repair repository access and rerun booley doctor"
+        )
+
+
 def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
     from booley.runtime.booley_dir import BOOLEY_DIR_NAME
     from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
@@ -3330,19 +3385,19 @@ def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _war
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+    from booley.runtime.project_trackability import query_ignores
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
     relative = (Path(BOOLEY_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
-    inspect_warning = _warning_sink(_warn, "goals.history-ignored")
+    inspect_warning = _warning_sink(_warn, "goals.history-inspection")
     try:
-        result = subprocess.run(
-            ["git", "check-ignore", "--no-index", "-v", "--", relative],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        matches = query_ignores(root, (relative,))
+        result = subprocess.CompletedProcess(
+            ["git", "check-ignore"],
+            0 if matches else 1,
+            "\n".join(f"{m.source}:{m.line}:{m.pattern}\t{m.path}" for m in matches),
+            "",
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         inspect_warning(
@@ -5954,7 +6009,7 @@ def _run_core_resolve_checks(
     if docker_exe and _docker_image_exists_by_name(image):
         _announce_long_check(
             f".core resolvability of {len(refs)} Target(s) in the Sandbox",
-            f"FuseSoC configure; timeout {_format_minutes(_CORE_RESOLVE_TIMEOUT_S)}",
+            f"FuseSoC configure; timeout {format_duration(_CORE_RESOLVE_TIMEOUT_S)}",
         )
         _run_core_resolve_in_docker(
             project,
@@ -6220,7 +6275,7 @@ def _run_deep_checks(
         for target in targets:
             _announce_long_check(
                 f"{flow_name} deep check [{target}]",
-                f"real EDA run; timeout {_format_minutes(timeout_s)}",
+                f"real EDA run; timeout {format_duration(timeout_s)}",
             )
             identifier = f"{flow_name}.smoke.{hashlib.sha256(target.encode()).hexdigest()[:16]}"
             tracker.require(identifier)
@@ -6658,7 +6713,7 @@ def _run_one_selftest(
                 f"{label} cannot clear prior report: {exc}", "remove the Doctor-owned sim report"
             )
             return False
-    _announce_long_check(label, f"real EDA run; timeout {_format_minutes(timeout_s)}")
+    _announce_long_check(label, f"real EDA run; timeout {format_duration(timeout_s)}")
     result = _execute_selftest(project, cmd, env, timeout_s, label, flow_name, _fail=_fail)
     if result is None:
         return False

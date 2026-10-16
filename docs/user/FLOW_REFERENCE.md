@@ -43,6 +43,14 @@ time, and age of the last observed output. It fits the terminal when resized.
 Elapsed time advances during silent work; it is neither a percentage nor proof
 that the EDA process is healthy. EDA tools may buffer their output.
 
+TTY status and independent completion messages use adaptive durations: `59s`,
+`1m 00s`, `1h 00m`, `1d 00h`. Every positive subsecond value uses one decimal
+(`0.0s`, `0.4s`, or rounded `1.0s`); nonpositive durations display `0s`.
+Last-output ages use `just now` below five seconds, then `5s ago`, `1m ago`,
+`1h ago`, or `1d ago`. Redirected newline records keep their existing elapsed
+seconds tokens and UTC prefixes. JSON, report document bytes, and printed
+report excerpts keep their existing representation.
+
 Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
 records without terminal escapes or carriage-return rewrites. For example:
 
@@ -389,8 +397,7 @@ Goal Mode translates Goals into evidence keys. Ordinary Interactive Mode runs
 report verdicts without a Goal Record. In an active Goal worktree, pass its
 absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 `booley_targets`, and `booley_report` so calls select that worktree.
-`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
-`coverage_evidence`, and `bwave` accept no `work_dir`. See
+`booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`. See
 [worktree routing](USAGE.md#working-with-evidence) for the full inventory and
 when `work_dir` is required.
 

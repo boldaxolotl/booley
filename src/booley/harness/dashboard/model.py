@@ -67,6 +67,14 @@ class GoalView:
 
 
 @dataclass(frozen=True)
+class HealthLine:
+    """Literal health text with optional Doctor semantic severity."""
+
+    text: str
+    severity: health_presentation.HealthSeverity | None
+
+
+@dataclass(frozen=True)
 class DashboardSnapshot:
     """Immutable presentation snapshot, detached from every acquired lock."""
 
@@ -74,7 +82,7 @@ class DashboardSnapshot:
     goals: tuple[GoalView, ...] = ()
     jobs: JobSnapshot = field(default_factory=lambda: JobSnapshot(()))
     resources: Resources = field(default_factory=Resources)
-    health: tuple[str, ...] = ()
+    health: tuple[HealthLine, ...] = ()
     diagnostics: tuple[str, ...] = ()
     observed_at: float = 0
     # Reported activity by session key; a session without an entry is unknown.
@@ -260,26 +268,20 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
     )
 
 
-def health_lines(root: Path, booley_dir: Path) -> tuple[str, ...]:
+def health_lines(root: Path, booley_dir: Path) -> tuple[HealthLine, ...]:
     """Non-consuming Doctor freshness and typed read-only upgrade-review projection."""
-    lines = []
-    snapshot = health.read_health(root)
-    if snapshot is not None and not snapshot.assessment.clean:
-        lines.append(
-            health_presentation.brief_message(snapshot)
-            + (f" · stale: {snapshot.due}" if snapshot.due else " · current")
-        )
-    elif snapshot is None:
-        lines.append("Doctor health unavailable: no readable automatic result")
-    elif snapshot.due:
-        lines.append("Doctor health stale: " + snapshot.due)
+    text, severity = health_presentation.count_line(health.read_health(root))
+    lines = [HealthLine(text, severity)]
     review = upgrade_review.read_status(booley_dir)
     if review.condition not in {
         upgrade_review.ReviewCondition.CURRENT,
         upgrade_review.ReviewCondition.UNAVAILABLE,
     }:
         lines.append(
-            f"Upgrade review {review.condition}: {review.pending_target or review.diagnostic}"
+            HealthLine(
+                f"Upgrade review {review.condition}: {review.pending_target or review.diagnostic}",
+                None,
+            )
         )
     return tuple(lines)
 

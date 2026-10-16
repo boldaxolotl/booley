@@ -9,18 +9,54 @@ so the rules and the check cannot drift apart.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from booley.goals.declared_inputs import DeclaredCapture
 from booley.goals.protected_inputs import PROTECTED_INPUT_NAMES
 
 WORK_DIR_GUIDANCE = (
     "Pass `work_dir` (the absolute worktree root) to Booley Flows, Specialists, "
-    "Goal tools, `booley_targets`, and `booley_report`. "
-    "`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`, "
-    "`coverage_evidence`, and `bwave` accept no `work_dir`."
+    "Goal tools{accepting}. {nonaccepting} accept no `work_dir`."
+)
+WORK_DIR_REQUIREMENT = (
+    "While any Goal Record occupies the Project, Flows, "
+    "Specialists, Goal tools, and `booley_report` refuse a call without "
+    "`work_dir` (`booley_targets` may omit it), and Project-defined endpoints "
+    "must declare `work_dir` to run."
 )
 
 
-def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
+def work_dir_guidance(
+    inventory: tuple[Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None = None,
+) -> str:
+    """Render routing prose from schemas supplied by the calling entry point."""
+    if inventory is None:
+        return (
+            "Pass `work_dir` (the absolute worktree root) to calls whose advertised "
+            "schema accepts it. For utilities, follow the advertised schema rather than "
+            "supplying an unsupported `work_dir`. " + WORK_DIR_REQUIREMENT
+        )
+    accepting, nonaccepting = inventory
+    utilities = [
+        f"`{tool['name']}`"
+        for tool in accepting
+        if not tool.get("module") and not tool.get("is_goal")
+    ]
+    suffix = ", " + ", and ".join(utilities) if utilities else ""
+    return (
+        WORK_DIR_GUIDANCE.format(
+            accepting=suffix,
+            nonaccepting=", ".join(f"`{tool['name']}`" for tool in nonaccepting),
+        )
+        + " "
+        + WORK_DIR_REQUIREMENT
+    )
+
+
+def goal_mode_rules(
+    declared: DeclaredCapture | None = None, *, routing_guidance: str | None = None
+) -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline."""
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
     if declared is not None:
@@ -30,10 +66,7 @@ def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
         protected += ". Declarations: " + ", ".join(f"`{rule}`" for rule in declared.declarations)
         protected += "; changing these declarations requires abandon and re-entry"
     bullets = (
-        WORK_DIR_GUIDANCE + " While any Goal Record occupies the Project, Flows, "
-        "Specialists, Goal tools, and `booley_report` refuse a call without "
-        "`work_dir` (`booley_targets` may omit it), and Project-defined endpoints "
-        "must declare `work_dir` to run.",
+        routing_guidance if routing_guidance is not None else work_dir_guidance(),
         "Only Booley Flows and Specialists produce evidence. Nothing you write or "
         "report meets a Goal.",
         f"Protected inputs: {protected}. Editing one blocks Finish until it is "

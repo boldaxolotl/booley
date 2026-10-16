@@ -42,6 +42,7 @@ from booley.goals.state_store import GoalStateError
 from booley.goals.status import GoalStatusView, status_views
 from booley.goals.store import GoalRecordCorruptError, GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
+from booley.mcp.catalog import work_dir_guidance
 from booley.mcp.goal_changes import proposal_schema, propose_change
 from booley.mcp.goal_completion import complete_goal, finish_schema
 
@@ -168,9 +169,11 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
                 for view in views:
-                    text += "\n\n" + goal_mode_rules(view.record.declared_protected_inputs)
+                    text += "\n\n" + goal_mode_rules(
+                        view.record.declared_protected_inputs, routing_guidance=work_dir_guidance()
+                    )
                 if not views:
-                    text += "\n\n" + goal_mode_rules()
+                    text += "\n\n" + goal_mode_rules(routing_guidance=work_dir_guidance())
             return _text(
                 text,
                 is_error=False,
@@ -311,6 +314,7 @@ def _entry_environment(booley_dir: Path, context: McpRequestContext | None) -> E
     return EntryEnvironment(
         booley_dir=booley_dir,
         recipe_families=_recipe_families(),
+        routing_guidance=work_dir_guidance(),
         other_sessions=lambda _identity: keys,
         schedule_baselines=lambda record: schedule_sim_baselines(booley_dir, record),
     )

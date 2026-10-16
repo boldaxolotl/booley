@@ -34,7 +34,7 @@ PINNED_RUNNERS = {
     "pytest-xdist": "3.8.0",
     "pytest-timeout": "2.4.0",
     "pytest-cov": "7.1.0",
-    "ruff": "0.16.10",
+    "ruff": "0.17.0",
 }
 # ``pip --version`` takes well under a second warm, but a cold cache or an
 # antivirus scan of a Windows launcher can take far longer. A false "broken"
