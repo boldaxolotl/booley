@@ -75,8 +75,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   surviving scratch has independent completion proof. Plain records retain the
   existing seven-day policy and remain collectable after a Sandbox restart.
   Cleanup retries busy or failed metadata publication before that age cutoff;
-  uncertain legacy groups remain retained. Portable hosts retain foreign Linux
-  metadata without invoking Linux ownership APIs.
+  groups deferred by contention or failed publication remain retained if their
+  namespace disappears before retry, including legacy groups. Portable hosts
+  retain foreign Linux metadata without invoking Linux ownership APIs.
   Unsupported or uncertain native ownership and old unmarked
   leftovers remain for verified operator cleanup. Sharing auth removes credential
   replicas; concurrent native credential writes remain unserialized and can

@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -239,3 +240,22 @@ def test_opportunistic_gc_io_failure_does_not_prevent_native_command(tmp_path):
         setup="def fail(*args): raise OSError('synthetic GC I/O failure')\nsupervisor.gc_terminal_executions = fail",
     )
     assert read_json(paths.record)["exit_code"] == 0
+
+
+@pytest.mark.parametrize("condition", ["non-owner", "live-member", "busy-root"])
+def test_owner_retirement_refuses_unproven_or_busy_proof(completed_execution, condition):
+    _, paths, root, group_path = completed_execution
+    group = ShutdownGroup(group_path)
+    if condition != "non-owner":
+        with group.locked() as data:
+            data["owner"] = tw.process_identity(os.getpid())
+            if condition == "live-member":
+                member = next(iter(data["members"].values()))
+                member["identity"] = data["owner"]
+                member["ancestors"] = [data["owner"]]
+    before = (root / tw._MARKER).read_bytes()
+    lock = tw._exclusion(root.parent) if condition == "busy-root" else nullcontext()
+    with lock:
+        assert group.remove_terminal(owner=True) is False
+    assert paths.record.exists() and group_path.exists()
+    assert (root / tw._MARKER).read_bytes() == before
