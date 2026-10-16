@@ -177,7 +177,8 @@ def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypa
         [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"],
         capture_output=True,
         text=True,
-        timeout=10,
+        # Allow cold Node startup on shared runners while keeping the shim test bounded.
+        timeout=30,
         check=False,
     )
     assert result.returncode == 17
