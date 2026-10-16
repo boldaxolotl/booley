@@ -1832,6 +1832,13 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     return ""
 
 
+def _print_planned_scaffold_advisory() -> None:
+    info("After applying the scaffold, the greenfield route would be:")
+    info('  * Open this Project in VS Code and choose "Reopen in Container"')
+    info("  * In the container run `/booley-setup new`, then `booley doctor --deep`")
+    info("No scaffold files were written by this check.")
+
+
 def _step_advisories(ctx: InitContext) -> None:
     ctx.step_banner("post-setup advisories")
     # A failed required step outranks every other send-off: routing the user to
@@ -1843,6 +1850,10 @@ def _step_advisories(ctx: InitContext) -> None:
         else:
             _print_incomplete_advisory(failed)
         ctx.record("advisories", "ok", "incomplete")
+        return
+    if ctx.check_only and any(r.name == "scaffold" and r.status == "warn" for r in ctx.results):
+        _print_planned_scaffold_advisory()
+        ctx.record("advisories", "ok", "planned scaffold")
         return
     try:
         read_project_origin(booley_dir_for_init(ctx.project_root) / "booley.toml")

@@ -1132,6 +1132,25 @@ def test_scaffold_origin_survives_plain_rerun(repo, monkeypatch, capsys):
         assert "# booley-init-origin: scaffold" in config.read_text()
 
 
+def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    args = _scaffold_args()
+    args.check_only = True
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(args, repo) == 1
+
+    output = capsys.readouterr().out
+    assert "After applying the scaffold" in output, "planned scaffold needs prospective advice"
+    assert "Reopen in Container" in output
+    assert "/booley-setup new" in output
+    assert "Scaffolded starter project" not in output
+    assert "plan phase, here on the host" not in output
+    assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
+    assert _filesystem_snapshot(repo) == before
+    assert not (repo / ".booley/booley.toml").exists()
+
+
 def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, capsys):
     args = _init_args()
     args.check_only = True
