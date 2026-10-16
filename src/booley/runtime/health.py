@@ -18,6 +18,7 @@ from typing import Any
 from booley.audit import health as policy
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
+from booley.core.boundary import as_dict
 from booley.runtime import doctor_stamp
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import contains, resolve_booley_dir
@@ -137,7 +138,8 @@ def _parse_time(value: object) -> datetime | None:
 def _input_change_reason(recorded: object, current: dict[str, Any]) -> str:
     """Name only known inputs from a compatible persisted fingerprint."""
     generic = "Doctor inputs changed"
-    if not isinstance(recorded, dict) or recorded.keys() != current.keys():
+    recorded = as_dict(recorded)
+    if recorded is None or recorded.keys() != current.keys():
         return generic
     if current.keys() != _INPUT_LABELS.keys() or any(
         value is not None and not isinstance(value, str) for value in recorded.values()

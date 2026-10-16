@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from argparse import Namespace
 from datetime import UTC, datetime
@@ -371,60 +372,95 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
     assert events == ["observe", "up"]
 
 
-@pytest.fixture
-def mounted_health_project(tmp_path, monkeypatch):
-    from booley.audit.diagnostic_results import DiagnosticFinding, Severity
-    from booley.harness import auto_doctor, doctor
-    from booley.runtime import session_runtime
-
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    reset_cache()
+def _health_project_views(tmp_path: Path, *, force_copy: bool) -> tuple[Path, Path, Path]:
     host = tmp_path / "host-project"
     directory = host / ".booley"
     directory.mkdir(parents=True)
     (directory / "booley.toml").write_text("[project]\nname = 'unit'\n")
     (host / "design.core").write_text("authored core")
     sandbox = tmp_path / "work"
-    sandbox.symlink_to(host, target_is_directory=True)
-    now = datetime(2026, 10, 16, 12, tzinfo=UTC)
+    try:
+        if force_copy:
+            raise PermissionError("exercise hosts without symlink privileges")
+        sandbox.symlink_to(host, target_is_directory=True)
+    except OSError:
+        shutil.copytree(host, sandbox)
+    return host, sandbox, directory
+
+
+def _healthy_session_probe(calls):
+    from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+    from booley.harness import doctor
+
+    calls.append("probe")
+    print("healthy probe")
+    return doctor.DoctorRunResult(
+        counts={"pass": 1, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
+        findings=(DiagnosticFinding(Severity.PASS, "healthy"),),
+        exit_code=0,
+    )
+
+
+def _fix_session_health_clock(monkeypatch):
+    import booley
 
     class FixedClock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return now
+            return datetime(2026, 10, 16, 12, tzinfo=UTC)
 
+    monkeypatch.setattr(booley, "__version__", "1.2.3")
     monkeypatch.setattr(health, "datetime", FixedClock)
     monkeypatch.setattr(health, "utc_now_rfc3339", lambda: "2026-10-16T12:00:00Z")
-    calls = []
 
-    def run_doctor(*_args, **_kwargs):
-        calls.append("probe")
-        print("healthy probe")
-        return doctor.DoctorRunResult(
-            counts={"pass": 1, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
-            findings=(DiagnosticFinding(Severity.PASS, "healthy"),),
-            exit_code=0,
-        )
 
-    starts = []
+@pytest.fixture
+def mounted_health_project(tmp_path, monkeypatch, request):
+    from booley.harness import auto_doctor, doctor
+    from booley.runtime import session_runtime
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    host, sandbox, directory = _health_project_views(
+        tmp_path, force_copy=getattr(request, "param", False)
+    )
+    _fix_session_health_clock(monkeypatch)
+    calls, starts = [], []
+
+    def run(trigger):
+        if not sandbox.is_symlink():
+            shutil.copytree(
+                directory,
+                sandbox / ".booley",
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("doctor"),
+            )
+        reset_cache()
+        result = auto_doctor.run_if_due(sandbox, trigger=trigger)
+        if result is not None and not sandbox.is_symlink():
+            for path_fn in (health.report_path, health.transcript_path):
+                target = path_fn(directory)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path_fn(sandbox / ".booley"), target)
+        reset_cache()
+        return result
 
     def ensure(*_args, **_kwargs):
         started = not starts
         starts.append(started)
         if started:
-            reset_cache()
-            assert auto_doctor.run_if_due(sandbox, trigger="session-start") is not None
-        reset_cache()
+            assert run("session-start") is not None
         return session_runtime.EnsureResult("session", False, started)
 
-    monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
+    monkeypatch.setattr(
+        doctor, "run_doctor_result", lambda *_a, **_kw: _healthy_session_probe(calls)
+    )
     monkeypatch.setattr(
         doctor, "observe_deep_status", lambda *_a, **_kw: MagicMock(render=lambda: "deep")
     )
-    monkeypatch.setattr(tlr, "_report_upgrade_before_session", lambda _root: None)
     monkeypatch.setattr(session_runtime, "ensure", ensure)
     try:
-        yield host, sandbox, directory, calls, starts
+        yield host, sandbox, directory, calls, starts, run
     finally:
         reset_cache()
 
@@ -432,12 +468,11 @@ def mounted_health_project(tmp_path, monkeypatch):
 def test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(
     mounted_health_project, capsys
 ):
-    from booley.harness import auto_doctor
-
-    host, sandbox, directory, calls, starts = mounted_health_project
+    host, sandbox, directory, calls, starts, run = mounted_health_project
     args = tlr._build_parser().parse_args(["session", "up"])
     assert tlr._session_up(args, host) == 0
     capsys.readouterr()
+    upgrade_before = (directory / "runtime" / "upgrade_review.json").read_bytes()
     paths = (health.report_path(directory), health.transcript_path(directory))
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
     assert tlr._session_up(args, host) == 0
@@ -447,16 +482,23 @@ def test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(
     assert calls == ["probe"]
     assert starts == [True, False]
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
-    assert auto_doctor.run_if_due(sandbox, trigger="adapter-current") is None
+    assert (directory / "runtime" / "upgrade_review.json").read_bytes() == upgrade_before
+    assert run("adapter-current") is None
     assert calls == ["probe"]
-    (directory / "booley.toml").write_text("[project]\nname = 'edited'\n")
+    for view in (host, sandbox):
+        (view / ".booley" / "booley.toml").write_text("[project]\nname = 'edited'\n")
     assert "booley.toml" in health.due_reason(host)
     assert "booley.toml" in health.due_reason(sandbox)
     assert tlr._session_up(args, host) == 0
     assert "booley.toml" in capsys.readouterr().err
-    assert auto_doctor.run_if_due(sandbox, trigger="config-change") is not None
+    assert run("config-change") is not None
     assert calls == ["probe", "probe"]
     assert health.due_reason(host) is None
+
+
+@pytest.mark.parametrize("mounted_health_project", [True], indirect=True)
+def test_session_up_with_copied_mount_view(mounted_health_project, capsys):
+    test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(mounted_health_project, capsys)
 
 
 def test_due_session_start_does_not_report_persisted_doctor_findings(

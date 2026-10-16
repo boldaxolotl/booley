@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -29,6 +30,14 @@ def _project(root: Path) -> Path:
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text("[project]\nname = 'unit'\n", encoding="utf-8")
     return booley_dir
+
+
+def _mounted_view(root: Path, view: Path) -> Path:
+    try:
+        view.symlink_to(root, target_is_directory=True)
+    except OSError:
+        shutil.copytree(root, view)
+    return view
 
 
 def _report(root: Path, *, clean: bool, checked_at: datetime) -> dict:
@@ -135,7 +144,7 @@ def test_fingerprint_ignores_project_mount_basename(tmp_path: Path):
     (directory / "cores").mkdir()
     (directory / "cores" / "design.core").write_text("Booley core")
     sandbox = tmp_path / "work"
-    sandbox.symlink_to(host, target_is_directory=True)
+    _mounted_view(host, sandbox)
     host_fingerprint = health.compute_fingerprint(resolve_booley_dir(host), host)
     reset_cache()
     sandbox_fingerprint = health.compute_fingerprint(resolve_booley_dir(sandbox), sandbox)
@@ -209,9 +218,15 @@ def test_booley_core_and_directory_aliases_are_stable(tmp_path):
     generated.parent.mkdir()
     generated.write_text("runtime state")
     sandbox = tmp_path / "work"
-    sandbox.symlink_to(root, target_is_directory=True)
+    try:
+        sandbox.symlink_to(root, target_is_directory=True)
+    except OSError:
+        sandbox = root / ".." / root.name
     alias = root / "booley-alias"
-    alias.symlink_to(directory, target_is_directory=True)
+    try:
+        alias.symlink_to(directory, target_is_directory=True)
+    except OSError:
+        alias = directory / ".." / directory.name
     before = health.compute_fingerprint(directory, root)
     assert health.compute_fingerprint(directory, sandbox) == before
     assert health.compute_fingerprint(alias, root) == before
