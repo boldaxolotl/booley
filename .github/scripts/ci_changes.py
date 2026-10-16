@@ -181,10 +181,19 @@ def _changed_paths(raw: bytes) -> list[str]:
     return paths
 
 
-def _path_categories(path: str) -> set[str]:
-    categories: set[str] = set()
+def _documentation_categories(path: str) -> set[str]:
+    if path.startswith("website/"):
+        # The project site shares pinned facts with the README (install
+        # commands, demo revision, Goal notation); tests/test_site_contract.py
+        # guards them, so site edits must run the Python tests too.
+        return {"docs", "python_tests"}
     if path.startswith("docs/") or path.endswith(".md"):
-        categories.add("docs")
+        return {"docs"}
+    return set()
+
+
+def _path_categories(path: str) -> set[str]:
+    categories = _documentation_categories(path)
     if path in _PACKAGING_FILES:
         categories.add("packaging")
     if path == "VERSION" or path.startswith("release-assets/"):

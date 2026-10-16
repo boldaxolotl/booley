@@ -356,8 +356,22 @@ body {
   margin: 2.2rem 0 0.4rem;
 }
 
-.manpage > :is(p, ul, dl, div, pre) {
+.md-typeset .manpage > :is(p, ul, dl, div, pre) {
   margin-left: 7ch;
+}
+
+/* Subsections sit halfway in, like man(1)'s .SS headings. */
+.manpage h3 {
+  font-size: 1.3rem;
+  margin: 1.6rem 0 0.3rem 3.5ch;
+}
+
+.md-typeset .manpage > ul {
+  padding-left: 0;
+}
+
+.md-typeset .manpage > ul > li {
+  margin-left: 2ch;
 }
 
 .manpage dl.man-dl {
@@ -429,8 +443,12 @@ body {
 }
 
 @media screen and (max-width: 44.9375em) {
-  .manpage > :is(p, ul, dl, div, pre) {
+  .md-typeset .manpage > :is(p, ul, dl, div, pre) {
     margin-left: 2ch;
+  }
+
+  .manpage h3 {
+    margin-left: 1ch;
   }
 
   .manpage dl.man-dl {

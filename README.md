@@ -9,27 +9,19 @@
 
 Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more. You design; it does the grunt work.
 
+**Website:** [boldaxolotl.github.io/booley](https://boldaxolotl.github.io/booley/) for the full feature tour, videos, and blog.
+
 ![Booley in VS Code with RTL, a Developer Agent session, Goal progress, and waveform inspection](docs/user/assets/booley-screenshot.png)
 
-## Integrated Development Environment
+## What it does
 
-RTL development is fragmented across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley brings that workflow together in one reproducible VS Code workspace.
+- **Typed EDA Flows:** `sim`, `lint`, `synth`, and `fpga` each run an EDA job end to end and return pass/fail plus metrics such as area, timing, or cycle counts. The interface stays the same across EDA tools and projects.
+- **Reproducible team environment:** one Docker environment supplies the same pinned EDA stack and agent tooling to everyone on the project.
+- **Sandboxed Developer Agent:** the agent and every command it runs stay inside a container with restricted mounts and network access, so it can work unattended.
+- **Goal Mode:** you set acceptance criteria up front, and Booley checks them in deterministic code against recorded results, not against the agent's claim of success.
+- **Waveform queries:** `bwave` lets the agent answer questions from real simulation traces instead of guessing from RTL.
 
-- **A typed interface for each Booley Flow:** a Flow is one command (`sim`, `lint`, `synth`, or `fpga`) that runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts, instead of a raw log to grep. Each Flow's interface stays the same across EDA tools and across projects: `sim` stays `sim` whether it runs Verilator today or Xcelium<sup>*</sup> tomorrow, and on every project you work on. Flows are built on [FuseSoC](https://github.com/olofk/fusesoc), so there's no per-repo EDA glue to learn or maintain.
-- **Reproducible team environment:** configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to every team member. Nobody has to rebuild the toolchain independently or debug "works on my machine" differences ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker)).
-- **One Window:** RTL, the Developer Agent, terminals, EDA runs, results, and waveform viewing live in a single VS Code window. You can move from editing to simulation to waveform debugging to synthesis without switching between separate applications.
-
-<sub>* Xcelium support is a work in progress.</sub>
-
-## Built for agentic workflows
-
-The mental model behind Booley is simple: treat the Developer Agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access—it could, for example, force-push to your Git repository and rewrite its history. Booley gives it a constrained workspace, explicit specifications, automated checks, and human review.
-
-- **Sandboxed for autonomous execution:** the Developer Agent and every command it launches run inside a Docker container with restricted mounts and network access. You can delegate long-running tasks to Developer Agents without approving every bash tool call and without worrying about your files and git history ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#docker-sandboxing), [security model](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model)).
-- **Goal Mode — guardrails for long autonomous work:** you set mandatory Goals at entry. **Booley checks whether each Goal is met in deterministic code**, using recorded results from Booley Flows and Specialists rather than the LLM's claim of success. Area and cycle-count Goals (`SYNTH:synth_fifo (area increase ≤ 10%)`, `CYCLE_COUNT:sim_fifo (≤ 1,000 cycles, test smoke)`) keep the Developer Agent within your PPA budget, while coverage and mutation-testing Goals (`COVERAGE:sim_fifo (line ≥ 90%, tests all)`, `MUTATION:sim_fifo (≥ 10/10 mutations detected, scope rtl/fifo.sv)`) help it write stronger testbenches. Saved Goals and evidence keep long sessions on track, including across context compaction; completion requires fresh evidence for every Goal. At review time, one briefing shows achieved Goals and their evidence, approved Goal changes, open review findings, and Target and constraint edits, so you can see what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode)).
-- **Waveform-aware debugging:** `bwave` lets the Developer Agent query real traces instead of guessing from RTL. Ask "How many `i_ready`/`o_valid` handshakes occurred between 1,000 and 2,000 ns?" or "When did `data_o` equal `0xDEADBEEF`?" The Developer Agent answers from actual simulation data instead of spending minutes reasoning from code (and getting it wrong) ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#waveform-based-debug)).
-
-See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) for the full list of capabilities.
+The [website](https://boldaxolotl.github.io/booley/#features) explains each feature in full; [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) is the complete reference.
 
 ## Quick Start
 
@@ -41,12 +33,7 @@ Three ways in, ordered by how much you want to invest:
 
 ### Level 1: Watch
 
-Two videos show an engineer driving Booley on a demo project end to end, so viewers can see the workflow before touching anything:
-
-1. **[Design Optimization](https://youtu.be/zHuvU4QJbvE)** (12:43)
-2. **[Finding and Fixing Bugs](https://youtu.be/hsYHHZcx82w)** (9:40)
-
-I recorded both videos, then replaced my narration with text-to-speech to stay anonymous for now.
+Two videos on the [Videos page](https://boldaxolotl.github.io/booley/videos/) show an engineer driving Booley on a demo project end to end, so you can see the workflow before touching anything.
 
 ### Level 2: Try the demo yourself
 
@@ -59,6 +46,7 @@ Follow [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETU
 ## Installation
 
 Booley supports Windows and Linux (Ubuntu 26.04 tested); macOS is not
+supported. Designs must be SystemVerilog or Verilog: VHDL and UVM are not
 supported. You need:
 
 - Python 3.11+
@@ -109,22 +97,6 @@ For exact versions, provisioning, trace support, and platform constraints, see
 Support for additional commercial EDA tools is coming soon; see the
 [roadmap](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#commercial-eda-tools).
 
-## Limitations
-
-- **The IDE shell is stock VS Code today.** Booley brings its Developer Agent chat, reproducible environment, EDA Flows, and waveform tooling together inside VS Code; it does not yet ship custom editor chrome or a standalone IDE. Native VS Code UI and, longer term, a VS Code fork are planned ([roadmap](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#native-ide-surface-in-vs-code)).
-- **Booley will not design hardware for you.** You design the architecture and write the specs; Booley handles the grunt work. Force multiplier, not replacement.
-- **You need prior digital design experience.** Even the most advanced LLM is useless without electronic engineering fundamentals; Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.
-- **Source languages are SystemVerilog and Verilog only.** VHDL is not supported.
-- **UVM is not supported.**
-- **Setup can take effort.** I've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every Goal and every session builds on it, and development speeds up significantly.
-- **Work in progress.** Expect occasional bugs and rough edges in the UI. I'm actively on it, and things keep getting better.
-
-## How Booley is built
-
-Booley was designed and is maintained by a hardware engineer, not a career software engineer. Its first-party code was written by Claude and Codex, but this is not vibe-coding: I define the architecture and specifications, weigh design tradeoffs, review implementation plans and code, direct revisions, and make the final engineering decisions. Every change also goes through separate agent and human reviews, including QA passes aimed specifically at finding bugs.
-
-Development follows Booley's [coding principles](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md), with isolated branches, pull-request review, type checking, linting, automated tests, coverage requirements, and CI. The project is still young and hasn't yet had extensive review or long-term maintenance from experienced software engineers; those contributions are especially welcome.
-
 ## Documentation
 
 - [Features](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md)
@@ -133,6 +105,8 @@ Development follows Booley's [coding principles](https://github.com/boldaxolotl/
 - [Usage](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md)
 - [Flow reference](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FLOW_REFERENCE.md)
 - [Supported EDA tools](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md)
+- [Limitations](https://boldaxolotl.github.io/booley/#limitations)
+- [How Booley is built](https://boldaxolotl.github.io/booley/#how-it-is-built)
 
 ## Contributing
 

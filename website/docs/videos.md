@@ -6,7 +6,9 @@ hide:
 
 # Videos
 
-An engineer drives Booley on a demo project, start to finish.
+An engineer drives Booley on a demo project, start to finish. I recorded both
+videos, then replaced my narration with text-to-speech to stay anonymous for
+now.
 
 <!-- Each block is a plain YouTube link. javascripts/video.js turns it into a
      play button that loads the player only when clicked, so the page makes
