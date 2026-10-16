@@ -57,7 +57,7 @@ def test_shared_nonversioned_control_project_uses_explicit_view_without_main_git
         EntryRequest(
             layout.worktree, "shared", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(layout.control),
+        EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(layout)
     head = git(layout.main, "rev-parse", "HEAD")
@@ -336,7 +336,7 @@ def enter_shared_role_aliases(layout, tmp_path, monkeypatch):
         EntryRequest(
             layout.worktree, "coalesced", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(control),
+        EntryEnvironment(control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(layout)
     return control
@@ -506,7 +506,7 @@ def test_entry_through_alternate_spelling_finishes_from_original(layout, tmp_pat
             "aliased-entry",
             parse_goal_args([{"family": "LINT", "target": "top"}]),
         ),
-        EntryEnvironment(current.control),
+        EntryEnvironment(current.control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(current)
     layout.record = current.record

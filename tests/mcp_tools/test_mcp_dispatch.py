@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -10,6 +11,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from booley.mcp import (
+    catalog,
+    endpoint_process,
+    job_lifecycle,
+    job_results,
+    report_encoding,
+)
 from booley.runtime.session_paths import session_jobs_dir
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
@@ -33,10 +41,6 @@ try:
         _JobManager,
         _latest_report,
         _params_to_argv,
-        _poll_mcp_tool_def,
-        _poll_mcp_tool_visible,
-        _report_mcp_tool_def,
-        _report_mcp_tool_visible,
         _validate_work_dir,
     )
 except ImportError:
@@ -327,20 +331,20 @@ class TestOutputCapEnvKnobs:
     def test_stream_ring_buffer_derives_from_stdout_cap(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "100")
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "25")
-        assert mcp_server._stdout_cap_bytes() == 400  # 4x resolved formatter cap
-        assert mcp_server._stderr_cap_bytes() == 100
+        assert endpoint_process._stdout_cap_bytes() == 400  # 4x resolved formatter cap
+        assert endpoint_process._stderr_cap_bytes() == 100
 
     def test_defaults_without_env(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_MCP_MAX_STDOUT_BYTES", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_MAX_STDERR_BYTES", raising=False)
-        assert mcp_server._max_stdout_bytes() == 12_000
-        assert mcp_server._max_stderr_bytes() == 4_000
+        assert report_encoding._max_stdout_bytes() == 12_000
+        assert report_encoding._max_stderr_bytes() == 4_000
 
     def test_invalid_and_nonpositive_values_fall_back(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "not-a-number")
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "0")
-        assert mcp_server._max_stdout_bytes() == 12_000
-        assert mcp_server._max_stderr_bytes() == 4_000
+        assert report_encoding._max_stdout_bytes() == 12_000
+        assert report_encoding._max_stderr_bytes() == 4_000
 
 
 def _seed_report(tmp_path: Path, endpoint: str, report: dict) -> Path:
@@ -448,7 +452,7 @@ class TestReportFetch:
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", timed_out)
         write_end = MagicMock()
-        monkeypatch.setattr(mcp_server, "_write_synthetic_endpoint_end", write_end)
+        monkeypatch.setattr(endpoint_process, "_write_synthetic_endpoint_end", write_end)
 
         result = asyncio.run(
             mcp_server._run_inline_endpoint(
@@ -473,7 +477,7 @@ class TestReportFetch:
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", cancelled)
         write_end = MagicMock()
-        monkeypatch.setattr(mcp_server, "_write_synthetic_endpoint_end", write_end)
+        monkeypatch.setattr(endpoint_process, "_write_synthetic_endpoint_end", write_end)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
@@ -544,14 +548,14 @@ class TestReportFetch:
     def test_report_mcp_tool_visible_interactive(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        assert _report_mcp_tool_visible() is True
-        assert _report_mcp_tool_def() is not None
+        assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ)) is True
+        assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ))
 
     def test_report_mcp_tool_def_hidden_when_not_visible(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
-        assert _report_mcp_tool_visible() is False
-        assert _report_mcp_tool_def() is None
+        assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ)) is False
+        assert not catalog.report_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _oversized_warning_summary(total_warnings: int = 40) -> dict[str, object]:
@@ -727,7 +731,7 @@ class TestStructuredContent:
 
         encoded = json.dumps(payload).encode("utf-8")
         kept = payload["implementation"]["results"]
-        assert len(encoded) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        assert len(encoded) <= report_encoding._MAX_STRUCTURED_REPORT_BYTES
         assert "target_000" in kept
         assert payload["implementation"]["omitted_targets"][-1] == "target_099"
         assert kept["target_000"]["metrics"] == {"area_kge": 0.0}
@@ -760,7 +764,10 @@ class TestStructuredContent:
 
         payload = mcp_server._structured_from_report(big)
 
-        assert len(json.dumps(payload).encode("utf-8")) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        assert (
+            len(json.dumps(payload).encode("utf-8"))
+            <= report_encoding._MAX_STRUCTURED_REPORT_BYTES
+        )
         result = payload["implementation"]["results"]["asic"]
         assert result["metrics"] == {"area_kge": 12.5, "wns_ns": 0.2}
         assert result["comparison"]["baseline"]["metrics"] == {"area_kge": 10.0}
@@ -774,7 +781,10 @@ class TestStructuredContent:
 
         payload = mcp_server._structured_from_report(big)
 
-        assert len(json.dumps(payload).encode("utf-8")) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        assert (
+            len(json.dumps(payload).encode("utf-8"))
+            <= report_encoding._MAX_STRUCTURED_REPORT_BYTES
+        )
         omitted = payload["omitted_artifact_entries"]
         assert omitted["count"] > 0
         assert len(omitted["sample"]) <= 10
@@ -788,7 +798,7 @@ class TestStructuredContent:
                 "lite": {"artifacts": {"log": "a/run.log"}},
             }
         }
-        assert mcp_server._report_artifacts(report) == {"lite": {"log": "a/run.log"}}
+        assert report_encoding._report_artifacts(report) == {"lite": {"log": "a/run.log"}}
 
     def test_direct_implementation_artifacts_are_recovered(self):
         report = {
@@ -798,7 +808,7 @@ class TestStructuredContent:
             }
         }
 
-        assert mcp_server._report_artifacts(report) == {"report": "reports/synth.json"}
+        assert report_encoding._report_artifacts(report) == {"report": "reports/synth.json"}
 
     def test_compaction_removes_unbounded_target_diagnostics(self):
         implementation = {
@@ -819,7 +829,7 @@ class TestStructuredContent:
             },
         }
 
-        compact = mcp_server._compact_implementation(implementation)
+        compact = report_encoding._compact_implementation(implementation)
 
         assert "diagnostic_excerpt" not in compact["status"]
         assert "snapshot" not in compact["recipe"]
@@ -862,7 +872,7 @@ class TestStructuredContent:
             "omitted_fields": ["metrics.per_clock"],
         }
 
-        minimum = mcp_server._minimum_target_implementation(value)
+        minimum = report_encoding._minimum_target_implementation(value)
 
         bounded_key = "k" * 200
         assert minimum["identity"][bounded_key] == "v" * 1_000
@@ -885,7 +895,7 @@ class TestStructuredContent:
         }
         payload = {"reports": [], "truncated": True}
 
-        mcp_server._fit_implementation_payload(payload, implementation)
+        report_encoding._fit_implementation_payload(payload, implementation)
 
         compact = payload["implementation"]
         assert compact["metrics"] == {"area_kge": 12.5}
@@ -894,7 +904,7 @@ class TestStructuredContent:
             "comparison.baseline.metrics.per_clock",
         ]
         assert len(json.dumps(payload).encode("utf-8")) <= (
-            mcp_server._MAX_STRUCTURED_REPORT_BYTES
+            report_encoding._MAX_STRUCTURED_REPORT_BYTES
         )
 
     def test_warning_reduction_keeps_counts_conditions_and_log_pointer(self):
@@ -925,7 +935,7 @@ class TestStructuredContent:
         }
         payload = {"reports": [], "truncated": True}
 
-        mcp_server._fit_implementation_payload(payload, implementation)
+        report_encoding._fit_implementation_payload(payload, implementation)
 
         result = payload["implementation"]
         assert result["conditions"]["comb_loops"] == 16
@@ -936,7 +946,7 @@ class TestStructuredContent:
         assert baseline["conditions"]["warning_summary"]["total_warnings"] == 2
         assert result["artifacts"]["log"].endswith("run.log")
         assert len(json.dumps(payload).encode("utf-8")) <= (
-            mcp_server._MAX_STRUCTURED_REPORT_BYTES
+            report_encoding._MAX_STRUCTURED_REPORT_BYTES
         )
 
     def test_final_budget_guard_has_a_constant_size_last_resort(self):
@@ -949,7 +959,7 @@ class TestStructuredContent:
             "unexpected": "c" * (70 * 1_024),
         }
 
-        mcp_server._enforce_structured_budget(payload)
+        report_encoding._enforce_structured_budget(payload)
 
         assert payload == {"reports": [], "truncated": True, "passed": False}
 
@@ -961,9 +971,9 @@ class TestStructuredContent:
     def test_report_artifacts_survives_a_malformed_report(self):
         """Runs on an already-oversized payload — an exception here would cost
         the agent the text card too."""
-        assert mcp_server._report_artifacts({"detail": "not-a-dict"}) == {}
-        assert mcp_server._report_artifacts({"artifacts": ["not", "a", "dict"]}) == {}
-        assert mcp_server._report_artifacts({}) == {}
+        assert report_encoding._report_artifacts({"detail": "not-a-dict"}) == {}
+        assert report_encoding._report_artifacts({"artifacts": ["not", "a", "dict"]}) == {}
+        assert report_encoding._report_artifacts({}) == {}
 
     def test_unserializable_report_degrades_to_text_only(self):
         content = [mcp_server.TextContent(type="text", text="CARD")]
@@ -1443,7 +1453,7 @@ class TestAsyncJobDispatch:
     def test_poll_endpoint_schema_advertises_wait_seconds(self, monkeypatch):
         # An agent discovers long-poll through the schema; keep it advertised.
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        endpoint_def = _poll_mcp_tool_def()
+        endpoint_def = catalog._poll_mcp_tool_def()
         assert endpoint_def is not None
         description = endpoint_def["description"]
         assert "Claude and Codex:" in description
@@ -1456,7 +1466,7 @@ class TestAsyncJobDispatch:
         assert props["wait_seconds"]["type"] == "integer"
         assert props["wait_seconds"]["minimum"] == 0
         assert props["wait_seconds"]["maximum"] == 270
-        default_wait_seconds = mcp_server._DEFAULT_JOB_POLL_WAIT_SECONDS
+        default_wait_seconds = catalog._DEFAULT_JOB_POLL_WAIT_SECONDS
         assert f"{default_wait_seconds:g}s" in props["wait_seconds"]["description"]
         assert "wait_seconds" not in endpoint_def["schema"]["required"]
 
@@ -1666,8 +1676,8 @@ class TestAsyncJobDispatch:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
-        assert _poll_mcp_tool_visible() is True
-        assert _poll_mcp_tool_def() is not None
+        assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)) is True
+        assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 class TestAttachSurvivesRestart:
@@ -1801,7 +1811,7 @@ class TestCancel:
         # five-second production cleanup grace in every case.  Keep the force-
         # kill branch covered without adding a deterministic 15 seconds to the
         # unit suite.
-        monkeypatch.setattr(mcp_server, "_CANCEL_GRACE_SECONDS", 0.01)
+        monkeypatch.setattr(endpoint_process, "_CANCEL_GRACE_SECONDS", 0.01)
 
     @staticmethod
     def _cancel(arguments):
@@ -2108,7 +2118,7 @@ class TestCancel:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
-        endpoint_def = mcp_server._cancel_mcp_tool_def()
+        endpoint_def = catalog._cancel_mcp_tool_def()
         assert endpoint_def is not None
         assert endpoint_def["name"] == "booley_cancel"
         assert endpoint_def["schema"]["required"] == ["run_id"]
@@ -2204,7 +2214,7 @@ class TestAsyncJobToolMembership:
         # The booley_poll description names the endpoints it redeems; keep it and the
         # routing set from drifting apart. Read the constant directly so this
         # doesn't hinge on the endpoint's ambient visibility.
-        desc = mcp_server._POLL_MCP_TOOL_DESCRIPTION
+        desc = catalog._POLL_MCP_TOOL_DESCRIPTION
         for endpoint in mcp_server._ASYNC_JOB_MCP_TOOLS:
             assert endpoint in desc
 
@@ -2344,7 +2354,7 @@ class TestQueueCreditWatchdog:
         # soon as it goes active: must be True (exited), never a timeout.
         import asyncio
 
-        monkeypatch.setattr(mcp_server, "_WATCHDOG_TICK_SECONDS", 0.01)
+        monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", 0.01)
         proc = self._NeverExits()
         state = {"calls": 0}
         first_active = []
@@ -2367,7 +2377,7 @@ class TestQueueCreditWatchdog:
     def test_active_time_still_times_out(self, monkeypatch):
         import asyncio
 
-        monkeypatch.setattr(mcp_server, "_WATCHDOG_TICK_SECONDS", 0.01)
+        monkeypatch.setattr(endpoint_process, "_WATCHDOG_TICK_SECONDS", 0.01)
         proc = self._NeverExits()
         exited = asyncio.run(mcp_server._wait_with_queue_credit(proc, 0.03, lambda: False, None))
         assert exited is False
@@ -2376,8 +2386,8 @@ class TestQueueCreditWatchdog:
 class TestAttachStripsTranscriptDir:
     def test_strip_removes_flag_and_value_only(self):
         argv = ["python", "-m", "x", "--transcript-dir", "/t/1", "--slug", "s"]
-        assert mcp_server._strip_transcript_dir(argv) == ["python", "-m", "x", "--slug", "s"]
-        assert mcp_server._strip_transcript_dir(["a", "b"]) == ["a", "b"]
+        assert job_results._strip_transcript_dir(argv) == ["python", "-m", "x", "--slug", "s"]
+        assert job_results._strip_transcript_dir(["a", "b"]) == ["a", "b"]
 
     def test_specialist_resubmit_attaches_despite_fresh_transcript_dir(
         self, _report_env, monkeypatch
@@ -2607,7 +2617,7 @@ class TestDiskLongPoll:
         import asyncio
         import os
 
-        monkeypatch.setattr(mcp_server, "_DISK_POLL_TICK_SECONDS", 0.01)
+        monkeypatch.setattr(job_lifecycle, "_DISK_POLL_TICK_SECONDS", 0.01)
         rec = jobrec.JobRecord(
             run_id="simulate-d-1",
             endpoint="sim",
@@ -2773,7 +2783,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
     }
     command = mcp_server._endpoint_command("project_probe", {}, definition, {}, _call_ctx())
     command[0] = sys.executable
-    environment = mcp_server._endpoint_subprocess_env(_call_ctx())
+    environment = endpoint_process._endpoint_subprocess_env(_call_ctx())
     source_root = Path(mcp_server.__file__).resolve().parents[2]
     environment["PYTHONPATH"] = str(source_root)
     code, _stdout, stderr, timed_out = asyncio.run(
@@ -2797,7 +2807,7 @@ def test_endpoint_environment_without_project_uses_runtime_fallback(
     monkeypatch.chdir(tmp_path)
     reset_cache()
 
-    environment = mcp_server._endpoint_subprocess_env(_call_ctx())
+    environment = endpoint_process._endpoint_subprocess_env(_call_ctx())
 
     assert environment["BOOLEY_RUNTIME_DIR"]
     assert Path(environment["PYTHONPYCACHEPREFIX"]).parts[-2:] == (

@@ -130,7 +130,7 @@ def test_recovery_caller_retry_survives_prior_terminal_response_gap_and_reentry(
             "replacement",
             parse_goal_args([{"family": "LINT", "target": "top"}]),
         ),
-        EntryEnvironment(complete.control),
+        EntryEnvironment(complete.control, routing_guidance="Explicit test routing guidance."),
     ).record
     occupant = GoalStore(complete.control).load(complete.record.id).to_json()
     result = finish_goal(recovery, environment(complete))

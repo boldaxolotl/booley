@@ -269,6 +269,8 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
 
 def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult:
     """Run the entry transaction (module docstring) and return the active record."""
+    if env.routing_guidance is None:
+        raise GoalEntryError("Goal entry requires routing guidance")
     work_dir = _require_linked_worktree_root(request.work_dir)
     booley_dir = env.booley_dir.absolute()
     _refuse_worktree_copy(booley_dir, work_dir)
