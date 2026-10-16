@@ -123,7 +123,9 @@ def _run_apply(args: argparse.Namespace, root: Path) -> int:
     """Apply the caller-approved digest, with no raw delete surface."""
     plan = _build_plan(args, root)
     if plan.digest != args.digest:
-        raise cleanup.CleanupBlockedError("the supplied preview digest is stale")
+        raise cleanup.CleanupBlockedError(
+            "the supplied preview digest is stale; request a fresh preview"
+        )
     result = cleanup.apply_cleanup(plan)
     _print(result.as_dict() if args.json else cleanup.format_summary(plan, result), args.json)
     return 0 if not result.unresolved else 1

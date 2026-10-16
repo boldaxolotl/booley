@@ -531,10 +531,16 @@ def _legacy_inventory(root: Path) -> tuple[CleanupItem, ...]:
     return tuple(items)
 
 
-def _manifest_digest(payload: dict[str, Any], items: Iterable[CleanupItem]) -> str:
+def _manifest_digest(
+    payload: dict[str, Any], items: Iterable[CleanupItem], observations: dict[str, Any]
+) -> str:
     """Hash the immutable candidate set accepted by ``apply``."""
     stable_manifest = {key: value for key, value in payload.items() if key != "journal"}
-    body = {"manifest": stable_manifest, "items": [item.as_dict() for item in items]}
+    body = {
+        "manifest": stable_manifest,
+        "items": [item.as_dict() for item in items],
+        "observations": observations,
+    }
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -573,6 +579,225 @@ def _item_for_entry(
     return CleanupItem(entry.path, category, recorded_bytes, reason, entry.identity)
 
 
+def _recovery_path(root: Path, entry: ManifestEntry, journal: dict[str, Any]) -> Path:
+    """Inspect only a journal-owned sibling, retaining no-follow boundaries."""
+    path = _entry_path(root, entry)
+    state = journal.get(entry.path, {})
+    if not state.get("quarantine"):
+        return path
+    quarantine = Path(state["quarantine"])
+    if quarantine.parent != path.parent or not quarantine.name.startswith(".booley-cleanup-"):
+        raise CleanupBlockedError("invalid quarantine boundary")
+    _absolute(root, quarantine.relative_to(root).as_posix())
+    return quarantine if quarantine.exists() or quarantine.is_symlink() else path
+
+
+def _inspection_reason(path: Path, identity: FileIdentity) -> str | None:
+    """Share presently observable deletion refusals without mutating a path."""
+    if not path.exists() and not path.is_symlink():
+        return None
+    if identity.kind not in {"file", "directory"} or not identity.matches(path):
+        return "identity changed or unsupported file type"
+    if path.parent.stat().st_dev != path.lstat().st_dev:
+        return "candidate is not on the same filesystem as its parent"
+    if os.name != "nt":
+        fd = _open_parent_nofollow(path.parent)
+        os.close(fd)
+    if not os.access(path.parent, os.W_OK | os.X_OK):
+        return "candidate parent is not writable or searchable"
+    return None
+
+
+def _attachment_blockers(root: Path, entries: Iterable[ManifestEntry]) -> dict[str, str]:
+    """Read Findings without a transaction; never snapshot evidence in preview."""
+    entries = tuple(entries)
+    selected = {
+        _absolute(root, source)
+        for entry in entries
+        for source in (*entry.dependencies, entry.path)
+    }
+    try:
+        log = materialize.read_log(root / SETUP_ROOT)
+        if not log.corrupt_lines:
+            return {}
+        referenced = materialize.referenced_sources(root / SETUP_ROOT, selected)
+    except OSError:
+        return {entry.path: "cannot inspect Findings Log" for entry in entries}
+    return _dependency_blockers(root, entries, referenced, "corrupt Findings Log")
+
+
+def _dependency_blockers(
+    root: Path, entries: Iterable[ManifestEntry], sources: set[Path], reason: str
+) -> dict[str, str]:
+    """Attribute a failed dependency to its candidate, never adopt that dependency."""
+    blocked = {}
+    for entry in entries:
+        dependencies = {_absolute(root, source) for source in (*entry.dependencies, entry.path)}
+        failed = dependencies & sources
+        if failed:
+            names = ", ".join(sorted(_safe_relative(root, path) for path in failed))
+            blocked[entry.path] = f"{reason}: {names}"
+    return blocked
+
+
+def _directory_observation(
+    path: Path,
+    known: dict[str, ManifestEntry],
+    journal: dict[str, Any],
+    root: Path,
+    *,
+    control_directory: bool,
+) -> list[dict[str, Any]]:
+    """Observe immediate unknown children; normalize matching owned absences/retries."""
+    hidden = set()
+    for name, state in journal.items():
+        entry = known.get(name)
+        if entry and state.get("quarantine"):
+            quarantine = Path(state["quarantine"])
+            if quarantine.parent == path and entry.identity.matches(quarantine):
+                hidden.add(quarantine.name)
+    children = []
+    for child in sorted(path.iterdir()):
+        if child.name in hidden or (control_directory and child.name == "manifest.json"):
+            continue
+        relative = child.relative_to(root).as_posix()
+        entry = known.get(relative)
+        if entry and entry.identity.matches(child):
+            continue
+        children.append({"name": child.name, "identity": asdict(FileIdentity.from_path(child))})
+    return children
+
+
+def _assess_directory(
+    root: Path,
+    path: Path,
+    entry: ManifestEntry,
+    assessed: dict[str, CleanupItem],
+    known: dict[str, ManifestEntry],
+    journal: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Predict residual contents using only the exact approved child candidates."""
+    scratch = entry.producer == "cleanup-scratch"
+    observation = _directory_observation(path, known, journal, root, control_directory=scratch)
+    remaining = any(
+        not (scratch and child.name == "manifest.json")
+        and not _child_will_disappear(root, child, assessed, known, journal)
+        for child in path.iterdir()
+    )
+    reason = None
+    if remaining:
+        reason = (
+            "scratch root still contains retained or unmanifested data"
+            if scratch
+            else "directory is not empty after bounded children were processed"
+        )
+    return observation, reason
+
+
+def _assess_item(
+    root: Path,
+    item: CleanupItem,
+    entry: ManifestEntry,
+    payload: dict[str, Any],
+    assessed: dict[str, CleanupItem],
+    known: dict[str, ManifestEntry],
+) -> tuple[CleanupItem, dict[str, Any]]:
+    """Assess safety bottom-up and retain canonical observations for stale detection."""
+    observation: dict[str, Any] = {"identity": asdict(entry.identity)}
+    if entry.identity.kind == "directory":
+        observation["children"] = []
+    try:
+        path = _recovery_path(root, entry, payload["journal"])
+        state = payload["journal"].get(entry.path, {})
+        if state.get("status") == "done":
+            return item, observation
+        exists = path.exists() or path.is_symlink()
+        if exists:
+            observation["identity"] = asdict(FileIdentity.from_path(path))
+        reason = _inspection_reason(path, entry.identity)
+        if reason and path != root / entry.path:
+            reason = "quarantine identity changed"
+        if exists and path.is_dir() and not path.is_symlink():
+            observation["children"], residual_reason = _assess_directory(
+                root, path, entry, assessed, known, payload["journal"]
+            )
+            reason = reason or residual_reason
+        if (
+            reason and item.category in {"remove", "evict-cache"}
+        ) or reason == "quarantine identity changed":
+            item = replace(item, category="unresolved", reason=reason)
+    except (CleanupError, OSError) as exc:
+        reason = str(exc) if isinstance(exc, CleanupError) else "cannot inspect candidate boundary"
+        observation["refusal"] = reason
+        item = replace(item, category="unresolved", reason=reason)
+    return item, observation
+
+
+def _child_will_disappear(
+    root: Path,
+    child: Path,
+    assessed: dict[str, CleanupItem],
+    known: dict[str, ManifestEntry],
+    journal: dict[str, Any],
+) -> bool:
+    """Allow only assessed removable children or verified journal quarantines."""
+    relative = child.relative_to(root).as_posix()
+    item = assessed.get(relative)
+    if item and item.category in {"remove", "evict-cache"}:
+        return True
+    for name, state in journal.items():
+        entry = known.get(name)
+        item = assessed.get(name)
+        if (
+            entry
+            and item
+            and item.category in {"remove", "evict-cache"}
+            and state.get("quarantine") == str(child)
+            and entry.identity.matches(child)
+        ):
+            return True
+    return False
+
+
+def _assessed_items(
+    root: Path,
+    manifest_path: Path,
+    payload: dict[str, Any],
+    retention_mode: str,
+    cache_disposition: str,
+) -> tuple[tuple[CleanupItem, ...], dict[str, Any]]:
+    """Build one immutable assessment of the exact manifest candidate set."""
+    entries = _manifest_entries(payload)
+    known = {entry.path: entry for entry in entries}
+    scratch = manifest_path.parent
+    scratch_name = (SETUP_ROOT / "tmp" / "setup" / str(payload["run_id"])).as_posix()
+    scratch_entry = ManifestEntry(
+        scratch_name, "cleanup-scratch", "scratch", "remove", FileIdentity.from_path(scratch)
+    )
+    items = {
+        entry.path: _item_for_entry(root, entry, retention_mode, cache_disposition)
+        for entry in entries
+    }
+    blockers = _attachment_blockers(
+        root,
+        [entry for entry in entries if items[entry.path].category in {"remove", "evict-cache"}],
+    )
+    for name, reason in blockers.items():
+        items[name] = replace(items[name], category="unresolved", reason=reason)
+    items[scratch_name] = CleanupItem(
+        scratch_name, "remove", 0, "current run scratch root", scratch_entry.identity
+    )
+    assessed: dict[str, CleanupItem] = {}
+    observations = {}
+    for entry in sorted(
+        [*entries, scratch_entry], key=lambda entry: entry.path.count("/"), reverse=True
+    ):
+        item, observation = _assess_item(root, items[entry.path], entry, payload, assessed, known)
+        assessed[entry.path] = item
+        observations[entry.path] = observation
+    return tuple(assessed[name] for name in items), observations
+
+
 def preview_cleanup(
     project_root: Path | None = None,
     *,
@@ -596,22 +821,10 @@ def preview_cleanup(
             str(root), None, None, True, retention_mode, cache_disposition, items, digest
         )
     payload = _load_manifest(manifest_path, root)
-    entries = [ManifestEntry.from_dict(raw) for raw in payload["entries"]]
-    items = [_item_for_entry(root, entry, retention_mode, cache_disposition) for entry in entries]
-    scratch = manifest_path.parent
-    if scratch.exists():
-        identity = FileIdentity.from_path(scratch)
-        items.append(
-            CleanupItem(
-                (SETUP_ROOT / "tmp" / "setup" / str(payload["run_id"])).as_posix(),
-                "remove",
-                0,
-                "current run scratch root",
-                identity,
-            )
-        )
-    items = tuple(items)
-    digest = _manifest_digest(payload, items)
+    items, observations = _assessed_items(
+        root, manifest_path, payload, retention_mode, cache_disposition
+    )
+    digest = _manifest_digest(payload, items, observations)
     return CleanupPlan(
         str(root),
         str(payload["run_id"]),
@@ -631,7 +844,7 @@ def _load_plan_manifest(plan: CleanupPlan) -> tuple[Path, dict[str, Any]]:
             "legacy inventory has no ownership evidence; nothing may be deleted"
         )
     root = Path(plan.project_root)
-    path = Path(plan.manifest_path)
+    path = _find_manifest(root, plan.run_id) or Path(plan.manifest_path)
     payload = _load_manifest(path, root)
     current = preview_cleanup(
         root,
@@ -707,7 +920,7 @@ def _delete_scratch_quarantine(path: Path) -> None:
     _delete_quarantine(path)
 
 
-def _apply_entry(  # noqa: PLR0911, PLR0912 -- each fail-closed boundary is explicit
+def _apply_entry(  # noqa: PLR0911 -- each fail-closed boundary is explicit
     root: Path,
     entry: ManifestEntry,
     journal: dict[str, Any],
@@ -731,12 +944,11 @@ def _apply_entry(  # noqa: PLR0911, PLR0912 -- each fail-closed boundary is expl
     active_reason = _active_use_reason(entry)
     if active_reason:
         return "unresolved", 0, active_reason
-    if not entry.identity.matches(path) or entry.identity.kind in {"symlink", "special"}:
-        return "unresolved", 0, "identity changed or unsupported file type"
+    reason = _inspection_reason(path, entry.identity)
+    if reason:
+        return "unresolved", 0, reason
     if entry.identity.kind == "directory" and any(path.iterdir()):
         return "unresolved", 0, "directory is not empty after bounded children were processed"
-    if path.parent.stat().st_dev != path.stat().st_dev:
-        return "unresolved", 0, "candidate is not on the same filesystem as its parent"
     quarantine = quarantine or _quarantine_path(path)
     journal[entry.path] = {"status": "quarantining", "quarantine": str(quarantine)}
     checkpoint()
@@ -782,31 +994,28 @@ def _materialize_for_candidates(
     payload: dict[str, Any],
     entries: dict[str, ManifestEntry],
     candidates: Iterable[CleanupItem],
-) -> list[str]:
+) -> dict[str, str]:
     """Materialize Feedback evidence and isolate corrupt-log blockers."""
     dependency_entries = [entries[item.path] for item in candidates if item.path in entries]
-    explicit = {
-        _absolute(root, dependency)
+    selected = {
+        _absolute(root, source)
         for entry in dependency_entries
-        for dependency in entry.dependencies
+        for source in (*entry.dependencies, entry.path)
     }
-    selected = explicit | {
-        _absolute(root, item.path) for item in candidates if item.path in entries
+    explicit = {
+        _absolute(root, source) for entry in dependency_entries for source in entry.dependencies
     }
+    referenced = selected
     environment = resolve_feedback_environment(root / SETUP_ROOT)
     try:
-        referenced_before = materialize.referenced_sources(root / SETUP_ROOT, selected)
+        referenced = materialize.referenced_sources(root / SETUP_ROOT, selected)
         changed = _materialize_dependencies(root, dependency_entries, environment)
-        candidate_paths = {
-            _absolute(root, candidate.path)
-            for candidate in candidates
-            if candidate.path in entries
-        }
-        unresolved = [
-            _safe_relative(root, path)
-            for path in (explicit | referenced_before) & candidate_paths
-            if path not in changed
-        ]
+        blocked = _dependency_blockers(
+            root,
+            dependency_entries,
+            (explicit | referenced) - changed,
+            "attachment was not materialized",
+        )
     except (
         CleanupError,
         OSError,
@@ -814,14 +1023,10 @@ def _materialize_for_candidates(
         materialize.CorruptFindingsLogError,
         materialize.MaterializationError,
     ) as exc:
-        referenced = materialize.referenced_sources(
-            root / SETUP_ROOT,
-            selected,
-        )
-        unresolved = [_safe_relative(root, path) for path in referenced]
+        blocked = _dependency_blockers(root, dependency_entries, explicit | referenced, str(exc))
         payload["journal"]["attachments"] = {"status": "unresolved", "reason": str(exc)}
     _atomic_write(manifest_path, payload)
-    return unresolved
+    return blocked
 
 
 def _apply_scratch_root(  # noqa: PLR0911 -- each recovery boundary is explicit
@@ -844,6 +1049,9 @@ def _apply_scratch_root(  # noqa: PLR0911 -- each recovery boundary is explicit
         return "absent", 0, None
     if not path.is_dir() or not item.identity or not item.identity.matches(path):
         return "unresolved", 0, "scratch root identity changed"
+    reason = _inspection_reason(path, item.identity)
+    if reason:
+        return "unresolved", 0, reason
     contents = tuple(path.iterdir())
     if len(contents) != 1 or contents[0].name != "manifest.json":
         return "unresolved", 0, "scratch root still contains retained or unmanifested data"
@@ -894,7 +1102,7 @@ def _apply_candidates(
     payload: dict[str, Any],
     entries: dict[str, ManifestEntry],
     candidates: Iterable[CleanupItem],
-    blocked: set[str],
+    blocked: dict[str, str],
     cache_evictor: Callable[[str], bool] | None,
 ) -> CleanupResult:
     """Apply candidates deepest-first and persist the recovery journal."""
@@ -907,7 +1115,7 @@ def _apply_candidates(
     removed: list[str] = []
     absent: list[str] = []
     evicted: list[str] = []
-    unresolved: list[str] = list(blocked)
+    unresolved: list[str] = [f"{path}: {reason}" for path, reason in blocked.items()]
     bytes_removed = 0
     ordered = sorted(candidates, key=lambda item: item.path.count("/"), reverse=True)
     for item in ordered:
@@ -949,13 +1157,16 @@ def apply_cleanup(
 ) -> CleanupResult:
     """Apply one unchanged preview, or fail closed when ownership is unclear."""
     if plan.inventory_only:
-        return CleanupResult(plan.digest, unresolved=tuple(item.path for item in plan.items))
+        return CleanupResult(
+            plan.digest, unresolved=tuple(f"{item.path}: {item.reason}" for item in plan.items)
+        )
     root = Path(plan.project_root)
     manifest_path, payload = _load_plan_manifest(plan)
     entries = _entry_map(payload)
     payload.setdefault("journal", {})
     candidates = [item for item in plan.items if item.category in {"remove", "evict-cache"}]
-    blocked = set(_materialize_for_candidates(root, manifest_path, payload, entries, candidates))
+    blocked = {item.path: item.reason for item in plan.items if item.category == "unresolved"}
+    blocked.update(_materialize_for_candidates(root, manifest_path, payload, entries, candidates))
     result = _apply_candidates(
         root,
         manifest_path,
@@ -985,6 +1196,14 @@ def format_summary(plan: CleanupPlan, result: CleanupResult | None = None) -> st
     for category in ("preserve", "remove", "evict-cache", "unresolved"):
         group = groups[category]
         lines.append(f"{category}: {group['count']} path(s), {group['bytes']} byte(s)")
+    unresolved = (
+        result.unresolved
+        if result
+        else tuple(
+            f"{item.path}: {item.reason}" for item in plan.items if item.category == "unresolved"
+        )
+    )
+    lines.extend(f"  {row}" for row in unresolved)
     if result is not None:
         lines.append(
             f"removed: {result.bytes_removed} byte(s) across {len(result.removed)} path(s)"

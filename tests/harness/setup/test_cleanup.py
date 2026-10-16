@@ -124,9 +124,8 @@ def test_changed_identity_becomes_unresolved(tmp_path: Path) -> None:
     candidate.unlink()
     candidate.write_text("replacement\n", encoding="utf-8")
 
-    result = apply_cleanup(plan)
-
-    assert any("capture.log" in item for item in result.unresolved)
+    with pytest.raises(CleanupBlockedError, match="preview"):
+        apply_cleanup(plan)
     assert candidate.exists()
 
 
@@ -730,3 +729,252 @@ def test_duplicate_finding_ids_materialize_every_cleanup_attachment(tmp_path):
     assert len(set(attachments)) == 2
     assert [entry.id for entry in reread] == ["F-1", "F-1"]
     assert [item.read_text() for item in attachments] == ["evidence 0", "evidence 1"]
+
+
+def _owned(root, run, path, **kwargs):
+    path.write_text("evidence\n", encoding="utf-8")
+    return record_artifact(root, run, path, producer="doctor", artifact_class="capture", **kwargs)
+
+
+def test_preview_apply_agree_for_unmanifested_scratch_child(tmp_path):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "residual")
+    child = scratch / "unknown"
+    child.write_text("retain")
+    plan = preview_cleanup(root, run_id="residual")
+    item = plan.items[-1]
+    assert item.category == "unresolved", (
+        "scratch with unmanifested data must be unresolved in preview"
+    )
+    assert "retained or unmanifested" in item.reason
+    result = apply_cleanup(plan)
+    assert result.unresolved == (f"{item.path}: {item.reason}",)
+    assert not result.removed
+    assert child.read_text() == "retain"
+
+
+def test_preview_detects_changed_recorded_identity(tmp_path):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "changed")
+    path = scratch / "capture"
+    entry = _owned(root, "changed", path)
+    path.write_text("replacement with different size")
+    plan = preview_cleanup(root, run_id="changed")
+    item = next(i for i in plan.items if i.path == entry.path)
+    assert item.category == "unresolved", "changed recorded identity must be unresolved in preview"
+    assert "identity" in item.reason
+    result = apply_cleanup(plan)
+    assert set(result.unresolved) == {
+        f"{i.path}: {i.reason}" for i in plan.items if i.category == "unresolved"
+    }
+    assert path.exists()
+
+
+def test_apply_retains_preview_unresolved_paths_and_reasons(tmp_path):
+    root = _project(tmp_path)
+    prepare_run(root, "active-outside")
+    entry = _owned(root, "active-outside", root / ".booley" / "active.log", active=True)
+    plan = preview_cleanup(root, run_id="active-outside")
+    result = apply_cleanup(plan)
+    assert f"{entry.path}: active-use claim" in result.unresolved, (
+        "apply must retain every preview unresolved path and reason"
+    )
+    assert plan.manifest_path is not None
+    assert not Path(plan.manifest_path).exists()
+
+
+def test_materialization_failure_reports_path_and_reason(tmp_path):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "corrupt-preview")
+    source = scratch / "attached"
+    entry = _owned(root, "corrupt-preview", source)
+    safe = scratch / "unrelated"
+    _owned(root, "corrupt-preview", safe)
+    append(Finding(title="attached", attachments=[str(source)]), root / ".booley")
+    with (root / ".booley" / "findings.jsonl").open("a") as stream:
+        stream.write("not json\n")
+    plan = preview_cleanup(root, run_id="corrupt-preview")
+    item = next(i for i in plan.items if i.path == entry.path)
+    assert item.category == "unresolved", (
+        "predictable attachment blocker must be unresolved in preview"
+    )
+    assert "corrupt" in item.reason
+    result = apply_cleanup(plan)
+    assert set(result.unresolved) == {
+        f"{i.path}: {i.reason}" for i in plan.items if i.category == "unresolved"
+    }
+    assert source.exists()
+    assert not safe.exists()
+
+
+@pytest.mark.parametrize("before_preview", [False, True])
+def test_missing_candidate_keeps_digest_and_already_absent(tmp_path, before_preview):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "missing")
+    source = scratch / "capture"
+    entry = _owned(root, "missing", source)
+    original = preview_cleanup(root, run_id="missing")
+    if before_preview:
+        source.unlink()
+    plan = preview_cleanup(root, run_id="missing")
+    if not before_preview:
+        source.unlink()
+    assert preview_cleanup(root, run_id="missing").digest == original.digest == plan.digest
+    result = apply_cleanup(plan)
+    assert result.already_absent == (entry.path,)
+    assert not result.unresolved
+    assert result.bytes_removed == 0
+
+
+def test_mismatched_then_missing_requires_fresh_preview(tmp_path):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "missing-changed")
+    source = scratch / "capture"
+    entry = _owned(root, "missing-changed", source)
+    source.write_text("mismatch")
+    plan = preview_cleanup(root, run_id="missing-changed")
+    source.unlink()
+    with pytest.raises(CleanupBlockedError, match="preview"):
+        apply_cleanup(plan)
+    result = apply_cleanup(preview_cleanup(root, run_id="missing-changed"))
+    assert result.already_absent == (entry.path,)
+    assert not result.unresolved
+
+
+def _interrupt_quarantine(root, scratch, monkeypatch):
+    for name in ("a-done", "z-pending"):
+        _owned(root, "retry", scratch / name)
+    plan = preview_cleanup(root, run_id="retry")
+    original = cleanup_module._delete_quarantine
+
+    def interrupt(path):
+        if path.name.endswith("z-pending"):
+            raise KeyboardInterrupt("checkpointed quarantine")
+        original(path)
+
+    monkeypatch.setattr(cleanup_module, "_delete_quarantine", interrupt)
+    with pytest.raises(KeyboardInterrupt, match="checkpointed"):
+        apply_cleanup(plan)
+    monkeypatch.setattr(cleanup_module, "_delete_quarantine", original)
+    payload = json.loads((scratch / "manifest.json").read_text())
+    pending = scratch / "z-pending"
+    quarantine = Path(payload["journal"][pending.relative_to(root).as_posix()]["quarantine"])
+    assert not pending.exists()
+    assert quarantine.exists()
+    assert not (scratch / "a-done").exists()
+    return plan, quarantine
+
+
+def test_apply_resumes_checkpointed_quarantine_with_original_digest(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "retry")
+    plan, quarantine = _interrupt_quarantine(root, scratch, monkeypatch)
+    assert preview_cleanup(root, run_id="retry").digest == plan.digest
+    result = apply_cleanup(plan)
+    assert not result.unresolved
+    assert not quarantine.exists()
+    assert not scratch.exists()
+
+
+def test_mismatched_quarantine_rejects_saved_plan_and_remains_unresolved(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "retry")
+    plan, quarantine = _interrupt_quarantine(root, scratch, monkeypatch)
+    quarantine.write_text("mismatched quarantine replacement")
+    before = {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    with pytest.raises(CleanupBlockedError, match="preview"):
+        apply_cleanup(plan)
+    assert {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+    fresh = preview_cleanup(root, run_id="retry")
+    assert any(
+        i.path.endswith("z-pending") and "quarantine identity changed" in i.reason
+        for i in fresh.items
+    )
+    result = apply_cleanup(fresh)
+    assert any("z-pending: quarantine identity changed" in row for row in result.unresolved)
+    assert quarantine.exists()
+
+
+def test_preview_is_read_only_with_safety_observations(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "readonly")
+    source = scratch / "source"
+    _owned(root, "readonly", source)
+    append(Finding(title="attachment", attachments=[str(source)]), root / ".booley")
+    cache = scratch / "cache"
+    cache.write_text("cache")
+    record_artifact(root, "readonly", cache, producer="flow", artifact_class="flow-cache")
+    before = {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("preview must not mutate or acquire owner leases")
+
+    from booley.flows import edam
+
+    monkeypatch.setattr(edam, "try_work_root_lease", forbidden)
+    monkeypatch.setattr(cleanup_module.materialize, "materialize_attachments", forbidden)
+    monkeypatch.setattr(cleanup_module, "_atomic_write", forbidden)
+    plans = [
+        preview_cleanup(root, run_id="readonly", cache_disposition="evict-setup-touched")
+        for _ in range(2)
+    ]
+    assert plans[0] == plans[1]
+    assert {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
+def test_materialization_exception_keeps_candidate_dependency_reason(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "dependency")
+    source = root / ".booley" / "external"
+    source.write_text("dependency evidence")
+    candidate = scratch / "candidate"
+    entry = _owned(root, "dependency", candidate, dependencies=[source])
+    append(Finding(title="attachment", attachments=[str(source)]), root / ".booley")
+    plan = preview_cleanup(root, run_id="dependency")
+
+    def fail(*args, **kwargs):
+        raise PermissionError("snapshot denied")
+
+    monkeypatch.setattr(cleanup_module, "_materialize_dependencies", fail)
+    result = apply_cleanup(plan)
+    assert any(
+        row.startswith(entry.path + ":") and "snapshot denied" in row and ".booley/external" in row
+        for row in result.unresolved
+    )
+    assert not any(row.startswith(".booley/external:") for row in result.unresolved)
+    assert candidate.exists() and source.exists()
+
+
+def test_observable_permission_refusal_matches_preview_and_apply(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "permission")
+    source = scratch / "capture"
+    entry = _owned(root, "permission", source)
+    original = cleanup_module.os.access
+    monkeypatch.setattr(
+        cleanup_module.os,
+        "access",
+        lambda path, mode: False if path == scratch else original(path, mode),
+    )
+    plan = preview_cleanup(root, run_id="permission")
+    item = next(i for i in plan.items if i.path == entry.path)
+    assert item.category == "unresolved"
+    assert "not writable or searchable" in item.reason
+    result = apply_cleanup(plan)
+    assert f"{entry.path}: {item.reason}" in result.unresolved
+    assert source.exists()
+
+
+def test_bounded_manifest_named_child_is_not_a_control_file(tmp_path):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "nested-control")
+    tree = scratch / "tree"
+    tree.mkdir()
+    record_artifact(root, "nested-control", tree, producer="doctor", artifact_class="capture")
+    unknown = tree / "manifest.json"
+    unknown.write_text("unmanifested data")
+    plan = preview_cleanup(root, run_id="nested-control")
+    assert all(i.category == "unresolved" for i in plan.items)
+    result = apply_cleanup(plan)
+    assert len(result.unresolved) == 2
+    assert unknown.read_text() == "unmanifested data"

@@ -103,10 +103,17 @@ At mutation time the helper rechecks that every candidate is still beneath the
 same `.booley`, has the recorded no-follow file type, device, and inode,
 has no live Job/process claim, and can move to a uniquely named sibling
 quarantine on its own filesystem. It deletes only after rechecking the
-quarantined identity. Missing candidates are recorded as already absent;
-changed or replaced candidates become unresolved. An interrupted operation is
-safe to retry because the manifest journal reconciles pending candidates and
-quarantine state.
+quarantined identity. Previously matching missing candidates are recorded as
+already absent. Identity or directory-content changes detected before mutation
+reject the entire saved plan; request a fresh preview. Later mutation failures
+can leave partial cleanup with unresolved paths and reasons. The manifest
+journal supports retry of matching quarantines; a mismatched quarantine requires
+a fresh preview.
+
+Apply exits 0 with no unresolved paths, 1 for every unresolved result (including
+preview refusals and intentionally retained parents), and 2 for invalid or stale
+requests. A successful preview exits 0. Repeated identity changes, including
+active-file growth, can require repeated fresh previews.
 
 Append a concise disposition to the ledger: bytes removed, cache bytes evicted,
 retained classes, raw evidence intentionally retained, rebuild consequences,
