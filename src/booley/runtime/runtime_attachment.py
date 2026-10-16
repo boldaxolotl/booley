@@ -51,9 +51,18 @@ class ExecutionResult:
 class SupervisedExecutionDriver:
     """Drive one preallocated execution ID through bounded terminal proof."""
 
-    def __init__(self, project_data: Path, *, project_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        project_data: Path,
+        *,
+        project_root: Path | None = None,
+        cwd: str | None = None,
+        container_id: str | None = None,
+    ) -> None:
         self._project_data = project_data
         self._project_root = project_root
+        self._cwd = cwd
+        self._container_id = container_id
 
     def run(self, execution_id: ExecutionId, transport_argv: list[str]) -> ExecutionResult:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
@@ -63,7 +72,19 @@ class SupervisedExecutionDriver:
             process = subprocess.Popen(transport_argv)
             try:
                 result = _drive_execution(process, paths, pending)
-                _report_protocol_failure(result, self._project_root)
+                if self._cwd is not None and result.terminal_cause in {
+                    "protocol_unavailable",
+                    "protocol_mismatch",
+                }:
+                    from booley.runtime.session_runtime import _check_command_cwd
+
+                    _check_command_cwd(self._project_root, self._container_id, self._cwd)
+                    logger.error(
+                        "Sandbox startup failed with selected directory %r; directory and protocol startup could not be distinguished",
+                        self._cwd,
+                    )
+                else:
+                    _report_protocol_failure(result, self._project_root)
                 return result
             finally:
                 _stop_transport(process)
@@ -100,6 +121,7 @@ def _capture_host_signals(pending: _PendingSignals):
 def _supervisor_command(execution_id: str, command: list[str], *, tty: bool) -> list[str]:
     supervisor = [
         "python3",
+        "-P",
         "-m",
         "booley.runtime.execution_supervisor",
         "run",
@@ -262,12 +284,22 @@ def run_command(
     *,
     tty: bool,
     env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
 ) -> ExecutionResult:
     """Run one explicit command and own it through complete scoped cleanup."""
-    from booley.runtime.session_runtime import exec_argv
+    from booley.runtime.session_runtime import _check_command_cwd, exec_argv
+
+    if cwd is not None:
+        _check_command_cwd(project_root, container_name, cwd)
 
     execution_id = ExecutionId(uuid.uuid4().hex)
-    project_data = resolve_checkout_booley_dir(project_root)
+    from booley.core.booley_dir import resolve_authoritative_booley_dir
+
+    project_data = (
+        resolve_authoritative_booley_dir(project_root)
+        if cwd is not None
+        else resolve_checkout_booley_dir(project_root)
+    )
     gc_terminal_executions(project_data)
     supervisor = _supervisor_command(execution_id, command, tty=tty)
     docker_argv = exec_argv(
@@ -275,7 +307,8 @@ def run_command(
         supervisor,
         tty=tty,
         env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
+        **({"cwd": cwd} if cwd is not None else {}),
     )
-    return SupervisedExecutionDriver(project_data, project_root=project_root).run(
-        execution_id, docker_argv
-    )
+    return SupervisedExecutionDriver(
+        project_data, project_root=project_root, cwd=cwd, container_id=container_name
+    ).run(execution_id, docker_argv)

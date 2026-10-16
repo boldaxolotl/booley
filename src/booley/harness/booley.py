@@ -1279,7 +1279,12 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     raw = list(getattr(args, "exec_cmd", []) or [])
     if raw and raw[0] == "--":
         raw = raw[1:]
-    return sr.enter(project_root, raw or None, tty=sys.stdin.isatty() and sys.stdout.isatty())
+    kwargs = {}
+    if getattr(args, "_session_cwd", None) is not None:
+        kwargs["cwd"] = args._session_cwd
+    return sr.enter(
+        project_root, raw or None, tty=sys.stdin.isatty() and sys.stdout.isatty(), **kwargs
+    )
 
 
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
@@ -1298,7 +1303,7 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
                 "Cancel any in-progress VS Code create before clearing its claim.", file=sys.stderr
             )
     else:
-        print("no Sandbox container for this folder")
+        print("no Sandbox container for this Project")
     return 0
 
 
@@ -1909,6 +1914,43 @@ def _selected_project_root(
     return _command_project_root(command)
 
 
+def _host_session_selection(
+    command: str, args: argparse.Namespace, selected: Path | None
+) -> Path | None:
+    from booley.runtime.project_discovery import (
+        ProjectRootDiscoveryError,
+        discover_session_context,
+        linked_auth_error,
+    )
+
+    if (
+        command == "auth"
+        and not getattr(args, "status", False)
+        and (message := linked_auth_error(selected))
+    ):
+        raise ProjectRequiredError(message)
+    if command != "session":
+        return selected
+    explicit = (
+        hasattr(args, "_cli_selection")
+        or bool(getattr(args, "project_root", None))
+        or bool(os.environ.get("RTL_PROJECT_ROOT"))
+    )
+    context = discover_session_context(selected, invocation_cwd=None if explicit else Path.cwd())
+    sub = getattr(args, "session_command", None) or "up"
+    if context.checkout != context.project_root:
+        if sub == "prepare":
+            raise ProjectRootDiscoveryError(
+                "Cannot prepare a linked worktree folder; run from the Project Root."
+            )
+        if sub == "enter" and context.cwd is None:
+            raise ProjectRootDiscoveryError(
+                "Linked worktree is outside the issued Sandbox mounts; run from the Project Root."
+            )
+        args._session_cwd = context.cwd
+    return context.project_root
+
+
 def _dispatch_main() -> int:
     """Parse CLI, handle early exits, and dispatch the selected command."""
     args = _parse_cli()
@@ -1924,6 +1966,9 @@ def _dispatch_main() -> int:
         source_rejection = _reject_source_project_command(command, project_root)
         if source_rejection is not None:
             return source_rejection
+
+    if command in {"session", "auth"} and not runtime_context.inside_session_runtime():
+        project_root = _host_session_selection(command, args, project_root)
 
     if binding is ProjectBinding.REQUIRED:
         _require_command_project(command, project_root)
