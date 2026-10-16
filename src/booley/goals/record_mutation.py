@@ -6,7 +6,7 @@ replacement inodes. Revision advancement does not transfer that ownership.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,7 +25,7 @@ def _unlinked(path: Path) -> None:
 @contextmanager
 def bound_record_mutation(
     binding: GoalRunBinding, destination: Path, *, active: bool = False
-) -> Iterator[GoalRecordPaths]:
+) -> Generator[GoalRecordPaths]:
     """Hold the original existing record while mutating its confined destination.
 
     Admission and advisory publication require ACTIVE; late bookkeeping may
