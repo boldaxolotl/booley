@@ -666,6 +666,29 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
     assert not list(layout.control.glob(".baseline-wt-*"))
 
 
+def test_baseline_request_publication_tolerates_a_windows_reader(tmp_path, monkeypatch):
+    path = tmp_path / "request.json"
+    write_document(path, {"schema": "booley.sim-baseline/v1", "status": "pending"})
+    replace_path = Path.replace
+    blocked = False
+
+    def replace_after_reader_closes(source, destination):
+        nonlocal blocked
+        if destination == path and not blocked:
+            blocked = True
+            error = PermissionError("request reader has the destination open")
+            error.winerror = 5
+            raise error
+        return replace_path(source, destination)
+
+    monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
+    complete = {"schema": "booley.sim-baseline/v1", "status": "complete"}
+    write_document(path, complete)
+
+    assert read_document(path) == complete
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def test_unversioned_protected_program_is_captured_with_executable_state(layout):
     hook = layout.worktree / ".booley/hooks/build.py"
     hook.parent.mkdir()
