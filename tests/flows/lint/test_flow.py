@@ -1790,7 +1790,9 @@ class TestConfigDiscovery:
         flow.context._args = flow.request_type(target="")
         assert flow._get_targets() == ()
 
-    def test_target_is_required_by_parser(self, state_file: Path, monkeypatch):
+    def test_omitted_target_rejects_empty_catalog_after_parsing(
+        self, state_file: Path, monkeypatch
+    ):
         flow = LintFlow()
         assert flow.parse_args([]).target == ""
         monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
