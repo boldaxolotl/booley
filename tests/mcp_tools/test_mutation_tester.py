@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
@@ -108,7 +109,7 @@ def _make_endpoint(
     target: str = "lite",
     scope: str = "rtl/mod_a.sv,rtl/mod_b.sv",
     tb_top: str = "design_top_tb",
-    count: int = 10,
+    count: int | str | None = 10,
     min_detected: int | None = None,
     steer: str | None = None,
     regen_lock: bool = False,
@@ -134,9 +135,9 @@ def _make_endpoint(
         target,
         "--scope",
         scope,
-        "--count",
-        str(count),
     ]
+    if count is not None:
+        argv.extend(["--count", str(count)])
     if min_detected is not None:
         argv.extend(["--min-detected", str(min_detected)])
     if steer:
@@ -511,6 +512,162 @@ def test_dry_run_does_not_touch_agents_simulators_or_locks(
     assert result.detail["mode"] == "dry_run"
     load_lock.assert_not_called()
     run_cold.assert_not_called()
+
+
+def _run_count_preview(endpoint, monkeypatch, *, params=None):
+    """Use real count resolution while isolating Target discovery and execution."""
+    campaign = SimpleNamespace(
+        scope_arg=endpoint.args.scope,
+        params_for=lambda _name: params or {},
+        execution_units=lambda: (),
+    )
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.resolve_target_campaign", lambda *a, **kw: campaign
+    )
+    with (
+        patch.object(endpoint, "_registered_tests", return_value={}),
+        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
+        patch.object(endpoint, "_validate_target_runner"),
+        patch.object(endpoint, "cocotb_target"),
+        patch.object(endpoint, "_target_test_suite"),
+        patch.object(endpoint, "emit_progress") as progress,
+        patch.object(endpoint, "_load_reusable_lock") as load_lock,
+        patch.object(endpoint, "_run_cold") as run_cold,
+    ):
+        before = set(endpoint.args.work_dir.rglob("*"))
+        result = endpoint._run()
+        assert set(endpoint.args.work_dir.rglob("*")) == before
+    load_lock.assert_not_called()
+    run_cold.assert_not_called()
+    return result, progress
+
+
+def _assert_preview_lines(result, count):
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.detail["mode"] == "dry_run"
+    assert result.detail["count"] == count
+    assert result.report_text == "\n".join(result.display_lines)
+    assert len(result.display_lines) > 1
+    assert all("\n" not in line for line in result.display_lines)
+    assert result.display_lines[-1].startswith("mutation_tester dry-run:")
+    assert result.display_lines[-1].endswith(f"count={count}; min_detected={count}")
+
+
+@pytest.mark.parametrize(
+    "sizes,timeout_ms,formula_count,budget_cap,count",
+    [
+        ((4, 1), 1800000, 3, 12, 3),
+        ((40, 41), 1800500, 9, 12, 9),
+        ((100, 125), 1800000, 15, 12, 12),
+        ((400, 500), 4500000, 25, 30, 25),
+        ((0, 0), 1800000, 3, 12, 3),
+    ],
+    ids=["small", "rounded", "time-cap", "upper-clamp", "empty"],
+)
+def test_auto_dry_run_explains_source_size_count(
+    tmp_path, monkeypatch, sizes, timeout_ms, formula_count, budget_cap, count
+):
+    paths = ["rtl/mod_a.sv", "rtl/mod_b.sv"]
+    contents = [b"// source\n" * n for n in sizes]
+    if sizes == (4, 1):
+        contents[1] = b"// source"
+    for path, content in zip(paths, contents, strict=True):
+        source = tmp_path / path
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(content)
+    endpoint = _make_endpoint(
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        extra_args=["--dry-run", "--timeout-ms", str(timeout_ms)],
+    )
+    result, progress = _run_count_preview(endpoint, monkeypatch)
+
+    assert "source-size breakdown:" in result.report_text, (
+        "dry-run is missing the per-file source-size breakdown"
+    )
+    progress.assert_not_called()
+    _assert_preview_lines(result, count)
+    text = result.report_text
+    for path, lines, content in zip(paths, sizes, contents, strict=True):
+        assert f"{path}: {lines} source lines; {len(content)} bytes" in text
+    assert text.index(paths[0]) < text.index(paths[1]) < text.index("total:")
+    total = sum(sizes)
+    assert f"total: {total} source lines; {sum(map(len, contents))} bytes" in text
+    assert "source lines are the count input; bytes are context" in text
+    assert "count source: auto-derived" in text
+    assert "max(3, min(25, round(sqrt(total_source_lines or 1))))" in text
+    assert f"round(sqrt({total} or 1)) = {round((total or 1) ** 0.5)}" in text
+    assert f"source clamp [3, 25] => {formula_count}" in text
+    assert f"configured timeout: {(timeout_ms + 999) // 1000} seconds" in text
+    assert "max(3, timeout_seconds // 150)" in text
+    assert f"budget cap = {budget_cap}" in text
+    assert f"min({formula_count}, {budget_cap}) = {count}" in text
+    assert text.index("source-size breakdown:") < text.index("source clamp")
+    assert text.index("budget cap") < text.index("mutation_tester dry-run:")
+
+
+@pytest.mark.parametrize(
+    "arg_count,params,count",
+    [(7, {}, 7), (None, {"total": 7}, 7), (None, {}, 10)],
+    ids=["cli", "criterion", "default"],
+)
+def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch, arg_count, params, count):
+    for path, lines in [("rtl/mod_a.sv", 100), ("rtl/mod_b.sv", 125)]:
+        source = tmp_path / path
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n" * lines)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, count=arg_count, extra_args=["--dry-run"])
+    result, progress = _run_count_preview(endpoint, monkeypatch, params=params)
+
+    assert "count source: fixed" in result.report_text, (
+        "dry-run does not identify a given fixed count"
+    )
+    progress.assert_not_called()
+    _assert_preview_lines(result, count)
+    assert f"count={count} (not auto-derived)" in result.report_text
+    assert "count source: auto-derived" not in result.report_text
+    assert "source-size breakdown:" not in result.report_text
+    assert "budget cap" not in result.report_text
+    assert "--count" not in result.report_text
+    assert "CLI" not in result.report_text
+
+
+def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch, capsys):
+    paths = [f"rtl/module_{i:02d}_{'x' * 130}.sv" for i in range(20)]
+    for path in paths:
+        source = tmp_path / path
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n" * 4)
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, count="auto", scope=",".join(paths), extra_args=["--dry-run"]
+    )
+    result, progress = _run_count_preview(endpoint, monkeypatch)
+
+    assert "source-size breakdown:" in result.report_text, (
+        "dry-run is missing the per-file source-size breakdown"
+    )
+    progress.assert_not_called()
+    _assert_preview_lines(result, 9)
+    assert len(result.report_text.encode()) > 2048
+    assert len(result.display_lines) > 16
+    for path in paths:
+        assert f"{path}: 4 source lines; 40 bytes" in result.report_text
+        assert result.report_text.index(path) < result.report_text.index(
+            "mutation_tester dry-run:"
+        )
+    assert "total: 80 source lines; 800 bytes" in result.report_text
+    assert "min(9, 12) = 9" in result.report_text
+    event = _display_safe_event(
+        _endpoint_end_event("mutation_tester", "lite", result, 0.0, dry_run=True)
+    )
+    assert event["display_lines_truncated"] > 0
+    assert event["summary"] == result.display_lines[-1], (
+        "bounded display event loses the proposed count summary"
+    )
+    endpoint._console_publication_requested = True
+    endpoint._publish_console_report(result)
+    assert capsys.readouterr().out == result.report_text + "\n"
 
 
 # ---------------------------------------------------------------------------

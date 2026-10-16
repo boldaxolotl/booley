@@ -256,6 +256,27 @@ def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> No
 
     assert breakdown["method"] == "language_neutral_source_size"
     assert breakdown["source_lines"] == 16
+    assert set(breakdown) == {
+        "method",
+        "readable_files",
+        "source_lines",
+        "source_bytes",
+        "formula_count",
+        "MIN",
+        "MAX",
+    }
+    (source.parent / "unterminated.vhd").write_bytes(b"not HDL")
+    (source.parent / "empty.sv").write_bytes(b"")
+    paths = ["rtl/dut.sv", "rtl/unterminated.vhd", "rtl/empty.sv"]
+    preview = compute_source_size_budget(paths, tmp_path, include_files=True)
+    assert preview["files"] == [
+        {"path": "rtl/dut.sv", "source_lines": 16, "source_bytes": 304},
+        {"path": "rtl/unterminated.vhd", "source_lines": 1, "source_bytes": 7},
+        {"path": "rtl/empty.sv", "source_lines": 0, "source_bytes": 0},
+    ]
+    for key in ["source_lines", "source_bytes"]:
+        assert preview[key] == sum(file[key] for file in preview["files"])
+    assert preview["readable_files"] == len(preview["files"])
     assert "always_blocks" not in breakdown
 
 
