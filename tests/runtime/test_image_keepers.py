@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from booley.runtime import image_keepers, image_lifecycle
 
 
@@ -36,7 +38,9 @@ def test_forget_retries_only_forgotten_project_proof(tmp_path: Path, monkeypatch
     cleanup.assert_called_once_with(project, docker=image_lifecycle._docker_adapter())
 
 
-def test_purge_failure_is_retryable_and_preserves_inventory(tmp_path, monkeypatch):
+def test_purge_failure_is_retryable_and_preserves_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import pytest
     from tests.test_project_inventory_cli import _resource_project
 
@@ -61,7 +65,9 @@ def test_purge_failure_is_retryable_and_preserves_inventory(tmp_path, monkeypatc
     assert not project_resources.has_cleanup_identity(str(root))
 
 
-def test_retained_cleanup_identity_survives_partial_failure(tmp_path, monkeypatch):
+def test_retained_cleanup_identity_survives_partial_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import pytest
     from tests.test_project_inventory_cli import _resource_project
 
@@ -81,8 +87,8 @@ def test_retained_cleanup_identity_survives_partial_failure(tmp_path, monkeypatc
 
 
 def test_keeper_only_historical_image_is_reported_without_new_deletion_authority(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tests.test_project_inventory_cli import _resource_project
 
     from booley.runtime import project_resources
@@ -116,7 +122,9 @@ def test_keeper_only_historical_image_is_reported_without_new_deletion_authority
     assert not project_resources.has_cleanup_identity(str(root))
 
 
-def test_unproven_keeper_last_tag_survives_forget_and_purge(tmp_path, monkeypatch):
+def test_unproven_keeper_last_tag_survives_forget_and_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tests.test_project_inventory_cli import _resource_project
 
     from booley.runtime.session_issuance import keeper_image
@@ -136,7 +144,9 @@ def test_unproven_keeper_last_tag_survives_forget_and_purge(tmp_path, monkeypatc
     assert release.status == "retained-unproven" and docker.image_id(keeper) == historical
 
 
-def test_prune_unproven_keeper_last_tag_preserves_bytes(tmp_path, monkeypatch):
+def test_prune_unproven_keeper_last_tag_preserves_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tests.harness.test_image_lifecycle import resource_environment
 
     from booley.runtime import interactive_docker
@@ -154,3 +164,88 @@ def test_prune_unproven_keeper_last_tag_preserves_bytes(tmp_path, monkeypatch):
     image_keepers.prune_keepers(confirm=preview.digest)
     assert historical in docker.image_ids(), "keeper prune removed unproven last-tag bytes"
     assert not preview.candidates[0].eligible and preview.candidates[0].reason == "unproven"
+
+
+def test_observed_foreign_keeper_survives_forget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    from booley.projects import inventory
+    from booley.runtime import project_resources
+    from booley.runtime.session_issuance import keeper_image
+
+    origin, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    observer = tmp_path / "observer"
+    (observer / ".booley").mkdir(parents=True)
+    inventory.remember_project(observer)
+    keeper = keeper_image(observer)
+    docker.tag(image, keeper)
+    project_resources.purge(str(origin), docker=docker)
+    assert [row.reference for row in docker.image_references()] == [keeper]
+    _, result = image_keepers.forget_project(observer)
+    assert image in docker.image_ids(), "forget deleted observed-only foreign keeper bytes"
+    assert result.status == "retained-unproven"
+    _, retry = image_keepers.forget_project(observer, purge=True)
+    assert image in docker.image_ids() and retry.status == "retained-unproven"
+
+
+def test_observed_foreign_keeper_survives_prune(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    from booley.runtime import interactive_docker, project_resources
+    from booley.runtime.session_issuance import keeper_image
+
+    origin, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    observer = tmp_path / "observer"
+    keeper = keeper_image(observer)
+    docker.tag(image, keeper)
+    project_resources.retain_cleanup_identity(str(observer))
+    project_resources.observe_keeper(str(observer), docker)
+    project_resources.purge(str(origin), docker=docker)
+    monkeypatch.setattr(interactive_docker, "issued_image_tags_strict", lambda: (keeper,))
+    preview = image_keepers.prune_keepers()
+    image_keepers.prune_keepers(confirm=preview.digest)
+    assert image in docker.image_ids(), "prune deleted observed-only foreign keeper bytes"
+    assert preview.candidates[0].reason == "unproven"
+
+
+def test_prior_tag_snapshot_does_not_authorize_observed_keeper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    from booley.projects import inventory
+    from booley.runtime import project_resources
+    from booley.runtime.session_issuance import keeper_image
+
+    origin, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    observer = tmp_path / "observer"
+    (observer / ".booley").mkdir(parents=True)
+    inventory.remember_project(observer)
+    keeper = keeper_image(observer)
+    alias = project_resources._project_image_name(str(observer))
+    docker.tag(image, keeper)
+    docker.tag(image, alias)
+    project_resources.purge(str(origin), docker=docker)
+    replacement = "sha256:" + "f" * 64
+    docker.images[replacement] = (replacement, {})
+    project_resources.record_adoption(
+        SimpleNamespace(
+            plan=SimpleNamespace(project_root=observer),
+            candidates=(SimpleNamespace(reference=alias, image_id=replacement),),
+            prior_tags=(SimpleNamespace(reference=alias, image_id=image),),
+        ),
+        retirement=True,
+    )
+    docker.tag(replacement, alias)
+    _, result = image_keepers.forget_project(observer)
+    assert image in docker.image_ids(), "prior tag snapshot authorized foreign keeper bytes"
+    assert result.status == "retained-unproven"

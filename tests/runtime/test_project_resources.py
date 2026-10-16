@@ -1,5 +1,6 @@
 """Exact resource proof and all-consumer protection at the Docker boundary."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,9 @@ def _claim(root, docker, image):
     return alias
 
 
-def test_audit_inventory_covers_project_resources_and_excludes_shared(tmp_path, monkeypatch):
+def test_audit_inventory_covers_project_resources_and_excludes_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     identity = str(root)
     own = next(iter(resources.volume_names(identity)))
@@ -47,7 +50,9 @@ def test_audit_inventory_covers_project_resources_and_excludes_shared(tmp_path, 
 
 
 @pytest.mark.parametrize("consumer", ["container", "foreign-alias", "registry", "child"])
-def test_purge_revalidates_usage_and_retains_foreign_aliases(tmp_path, monkeypatch, consumer):
+def test_purge_revalidates_usage_and_retains_foreign_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer: str
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
@@ -69,7 +74,9 @@ def test_purge_revalidates_usage_and_retains_foreign_aliases(tmp_path, monkeypat
     assert (own in docker.volumes) == (consumer == "container")
 
 
-def test_inherited_origin_without_acquisition_proof_is_retained(tmp_path, monkeypatch):
+def test_inherited_origin_without_acquisition_proof_is_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     parent = next(iter(docker.image_ids()))
     derivative = "sha256:" + "d" * 64
@@ -79,7 +86,9 @@ def test_inherited_origin_without_acquisition_proof_is_retained(tmp_path, monkey
     assert "unproven" in resources.snapshot(str(root), docker=docker).images[0].reason
 
 
-def test_two_projects_release_only_their_acquired_aliases(tmp_path, monkeypatch):
+def test_two_projects_release_only_their_acquired_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
@@ -94,8 +103,8 @@ def test_two_projects_release_only_their_acquired_aliases(tmp_path, monkeypatch)
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("child", [False, True])
 def test_last_project_claimant_collects_shared_origin_after_both_purges(
-    tmp_path, monkeypatch, reverse, child
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool, child: bool
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
@@ -117,7 +126,9 @@ def test_last_project_claimant_collects_shared_origin_after_both_purges(
     assert not any(image in raw["origins"] for raw in resources._records())
 
 
-def test_stored_identity_survives_ancestor_symlink_retarget(tmp_path, monkeypatch):
+def test_stored_identity_survives_ancestor_symlink_retarget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ancestor = tmp_path / "owner"
     root, docker = resource_environment(tmp_path, monkeypatch, root=ancestor / "project")
     identity = str(root)
@@ -139,7 +150,9 @@ def test_stored_identity_survives_ancestor_symlink_retarget(tmp_path, monkeypatc
     assert not docker.image_ids()
 
 
-def test_report_failure_precedes_purge_mutation(tmp_path, monkeypatch):
+def test_report_failure_precedes_purge_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     before = dict(docker.images)
 
@@ -152,7 +165,9 @@ def test_report_failure_precedes_purge_mutation(tmp_path, monkeypatch):
     assert docker.images == before
 
 
-def test_report_includes_historical_project_label(tmp_path, monkeypatch):
+def test_report_includes_historical_project_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.containers["historical"] = {
         "Image": next(iter(docker.image_ids())),
@@ -164,7 +179,9 @@ def test_report_includes_historical_project_label(tmp_path, monkeypatch):
     ]
 
 
-def test_proof_compacts_only_after_artifact_disappears(tmp_path, monkeypatch):
+def test_proof_compacts_only_after_artifact_disappears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     image = next(iter(docker.image_ids()))
     docker.tag(image, "user:keep")
@@ -177,7 +194,9 @@ def test_proof_compacts_only_after_artifact_disappears(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("corruption", ["schema", "dangling-symlink"])
-def test_invalid_retained_identity_fails_closed(tmp_path, monkeypatch, corruption):
+def test_invalid_retained_identity_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     resources.retain_cleanup_identity(str(root))
     store = resources._store()
@@ -196,7 +215,9 @@ def test_invalid_retained_identity_fails_closed(tmp_path, monkeypatch, corruptio
     assert before == docker.images
 
 
-def test_keeper_observation_never_becomes_an_acquisition_or_alias_claim(tmp_path, monkeypatch):
+def test_keeper_observation_never_becomes_an_acquisition_or_alias_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.runtime.session_issuance import keeper_image_for_identity
 
     root, docker = resource_environment(tmp_path, monkeypatch)
@@ -226,7 +247,9 @@ def test_keeper_observation_never_becomes_an_acquisition_or_alias_claim(tmp_path
     assert ("remove_tag", image) not in docker.mutations
 
 
-def test_corrupt_claim_cannot_widen_alias_authority(tmp_path, monkeypatch):
+def test_corrupt_claim_cannot_widen_alias_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import json
 
     root, docker = resource_environment(tmp_path, monkeypatch)
@@ -264,7 +287,9 @@ def _strict_chain(tmp_path, monkeypatch, *, owned_child):
     return root, docker, parent, child
 
 
-def test_last_tag_purge_preserves_registry_identity_and_bytes(tmp_path, monkeypatch):
+def test_last_tag_purge_preserves_registry_identity_and_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
@@ -275,7 +300,9 @@ def test_last_tag_purge_preserves_registry_identity_and_bytes(tmp_path, monkeypa
     assert docker.repo_digests(image) == (digest,)
 
 
-def test_last_tag_purge_cleans_owned_chain_leaves_before_parents(tmp_path, monkeypatch):
+def test_last_tag_purge_cleans_owned_chain_leaves_before_parents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker, parent, child = _strict_chain(tmp_path, monkeypatch, owned_child=True)
     failure = None
     try:
@@ -286,7 +313,9 @@ def test_last_tag_purge_cleans_owned_chain_leaves_before_parents(tmp_path, monke
     assert parent not in docker.image_ids() and child not in docker.image_ids()
 
 
-def test_last_tag_purge_retains_foreign_child_without_failing(tmp_path, monkeypatch):
+def test_last_tag_purge_retains_foreign_child_without_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker, parent, child = _strict_chain(tmp_path, monkeypatch, owned_child=False)
     failure = None
     try:
@@ -298,7 +327,9 @@ def test_last_tag_purge_retains_foreign_child_without_failing(tmp_path, monkeypa
     assert docker.image_id(resources._project_image_name(str(root))) == parent
 
 
-def test_last_tag_missing_other_project_alias_keeps_durable_claim(tmp_path, monkeypatch):
+def test_last_tag_missing_other_project_alias_keeps_durable_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
@@ -315,8 +346,8 @@ def test_last_tag_missing_other_project_alias_keeps_durable_claim(tmp_path, monk
 
 @pytest.mark.parametrize("multiple_tags", [False, True])
 def test_last_tag_unproven_aliases_remain_without_created_id_authority(
-    tmp_path, monkeypatch, multiple_tags
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multiple_tags: bool
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     docker.engine_last_tag_deletion = True
     labels = dict(next(iter(docker.images.values()))[1])
@@ -331,7 +362,7 @@ def test_last_tag_unproven_aliases_remain_without_created_id_authority(
     assert ("remove_tag", alias) not in docker.mutations
 
 
-def test_exact_image_removal_is_bounded_and_nonforce(monkeypatch):
+def test_exact_image_removal_is_bounded_and_nonforce(monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 
     observed = {}
@@ -346,3 +377,68 @@ def test_exact_image_removal_is_bounded_and_nonforce(monkeypatch):
         lifecycle._DockerCli().remove_tag(image)
     assert observed["timeout"] == 30
     assert observed["command"] == ["docker", "image", "rm", "--no-prune", image]
+
+
+def test_absent_alias_claim_does_not_block_purge_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    docker.images.clear()
+    layers = docker.image_layers
+
+    def strict_layers(identity: str) -> tuple[str, ...]:
+        if identity not in docker.image_ids():
+            raise resources.ResourceError("image no longer exists")
+        return layers(identity)
+
+    monkeypatch.setattr(docker, "image_layers", strict_layers)
+    try:
+        resources.purge(str(root), docker=docker)
+    except RuntimeError as exc:
+        pytest.fail(f"absent claim made purge fail: {exc}")
+    assert image not in docker.image_ids()
+    assert not resources._load(str(root))["aliases"]
+
+
+def test_verbose_docker_sizes_match_untruncated_container_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from booley.core.project_identity import project_label_id
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    container = "c" * 64
+    volume = next(iter(resources.volume_names(str(root))))
+    docker.containers[container] = {
+        "Image": image,
+        "Mounts": [],
+        "Config": {"Labels": {"booley.project-id": project_label_id(str(root))}},
+    }
+    docker.volumes[volume] = {"Name": volume}
+    original = resources._docker
+
+    def output(args: list[str]) -> str:
+        if args[:2] == ["system", "df"]:
+            # Docker CLI formatter/disk_usage.go verboseWrite plus ContainerContext.ID:
+            # JSON template contexts use full IDs; ordinary quiet ls truncates them.
+            return json.dumps(
+                {
+                    "Images": [{"ID": image, "Size": "12.35kB"}],
+                    "Containers": [{"ID": container, "Size": "17B"}],
+                    "Volumes": [{"Name": volume, "Size": "128B"}],
+                }
+            )
+        if args[:2] == ["container", "ls"]:
+            return container if "--no-trunc" in args else container[:12]
+        if args[:2] == ["container", "inspect"]:
+            return json.dumps([docker.containers[container]])
+        return original(args)
+
+    monkeypatch.setattr(resources, "_docker", output)
+    report = resources.snapshot(str(root), docker=docker)
+    assert report.containers[0].size == "17B", "verbose size lost by truncated container identity"
+    assert report.volumes[0].size == "128B"
+    assert report.images[0].size == 12345

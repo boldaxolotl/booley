@@ -4022,7 +4022,7 @@ class Docker:
     def repo_digests(self, image): return ()
     def container_image_ids(self): return frozenset()
     def image_layers(self, image): return (image,)
-    def remove_tag(self, image): print("deleted", image)
+    def remove_tag(self, image: str) -> None: print("deleted", image)
 assert session_refresh.pending_refresh_projects() == ()
 assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
 """
@@ -4216,20 +4216,20 @@ def test_docker_inventory_requires_complete_exact_id_evidence(monkeypatch, respo
 class ResourceDocker(FakeDocker):
     """Keep dangling immutable artifacts when aliases move, as Docker does."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__({})
-        self.volumes = {}
-        self.containers = {}
-        self.networks = {}
-        self.fail_remove = None
-        self.engine_last_tag_deletion = True
+        self.volumes: dict[str, dict] = {}
+        self.containers: dict[str, dict] = {}
+        self.networks: dict[str, dict] = {}
+        self.fail_remove: str | None = None
+        self.engine_last_tag_deletion: bool = True
 
-    def tag(self, source, target):
+    def tag(self, source: str, target: str) -> None:
         if old := self.images.get(target):
             self.images[old[0]] = old
         super().tag(source, target)
 
-    def remove_tag(self, image):
+    def remove_tag(self, image: str) -> None:
         if image == self.fail_remove:
             raise lifecycle.ImageLifecycleError("removal denied")
         self.mutations.append(("remove_tag", image))
@@ -4267,22 +4267,13 @@ class ResourceDocker(FakeDocker):
         self.registry_identities.pop(identity, None)
 
 
-def resource_environment(tmp_path, monkeypatch, root=None):
-    """Build through real preparation, adoption and adapter provenance labels."""
-    from booley.runtime import interactive_docker
-
-    root = root or tmp_path / "project"
-    (root / ".booley").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "config").mkdir(mode=0o700, exist_ok=True)
-    (tmp_path / "config").chmod(0o700)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    docker = ResourceDocker()
+def _resource_plan(tmp_path: Path, root: Path) -> lifecycle.LifecyclePlan:
     node = replace(
         _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_SUBSTRATE),
         reference=lifecycle.project_image.project_image_name(root),
     )
     snapshot = lifecycle.InputSnapshot(((node.reference, "inputs", "recipe", None),))
-    observed = lifecycle.LifecyclePlan(
+    return lifecycle.LifecyclePlan(
         (node,),
         (
             lifecycle.PlanStep(
@@ -4296,6 +4287,21 @@ def resource_environment(tmp_path, monkeypatch, root=None):
         snapshot,
         root,
     )
+
+
+def resource_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root: Path | None = None
+) -> tuple[Path, ResourceDocker]:
+    """Build through real preparation, adoption and adapter provenance labels."""
+    from booley.runtime import interactive_docker
+
+    root = root or tmp_path / "project"
+    (root / ".booley").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config").mkdir(mode=0o700, exist_ok=True)
+    (tmp_path / "config").chmod(0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    docker = ResourceDocker()
+    observed = _resource_plan(tmp_path, root)
     monkeypatch.setattr(lifecycle, "plan", lambda *_a, **_k: observed)
     monkeypatch.setattr(harness_lifecycle, "plan", lambda *_a, **_k: observed)
     monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
@@ -4381,7 +4387,9 @@ def _wire_resource_cli(monkeypatch, docker):
     monkeypatch.setattr(subprocess, "run", run)
 
 
-def test_forced_project_reconcile_retires_superseded_unused_images(tmp_path, monkeypatch):
+def test_forced_project_reconcile_retires_superseded_unused_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     old = docker.image_id(lifecycle.project_image.project_image_name(root))
     result = harness_lifecycle.reconcile_planned(
@@ -4392,8 +4400,8 @@ def test_forced_project_reconcile_retires_superseded_unused_images(tmp_path, mon
 
 
 def test_diagnostic_keeper_reissue_leaves_superseded_image_until_explicit_retry(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Locate the missing retry independently of already-correct unpinned GC."""
     from booley.runtime import interactive_docker, session_issuance
 
@@ -4418,7 +4426,9 @@ def test_diagnostic_keeper_reissue_leaves_superseded_image_until_explicit_retry(
     assert old not in docker.image_ids()
 
 
-def test_first_force_init_retains_unproven_historical_images(tmp_path, monkeypatch):
+def test_first_force_init_retains_unproven_historical_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.runtime import project_resources
 
     root, docker = resource_environment(tmp_path, monkeypatch)
@@ -4440,8 +4450,8 @@ def test_first_force_init_retains_unproven_historical_images(tmp_path, monkeypat
 
 @pytest.mark.parametrize("consumer", ["container", "foreign-alias", "keeper", "child"])
 def test_forced_project_cleanup_preserves_consumers_and_rollback_images(
-    tmp_path, monkeypatch, consumer
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer: str
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     old = next(iter(docker.image_ids()))
     if consumer == "container":
@@ -4461,7 +4471,9 @@ def test_forced_project_cleanup_preserves_consumers_and_rollback_images(
     assert ("remove_tag", old) not in docker.mutations
 
 
-def test_retirement_snapshot_is_persisted_before_managed_tag_moves(tmp_path, monkeypatch):
+def test_retirement_snapshot_is_persisted_before_managed_tag_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.runtime import project_resources
 
     root, docker = resource_environment(tmp_path, monkeypatch)
@@ -4485,7 +4497,9 @@ def test_retirement_snapshot_is_persisted_before_managed_tag_moves(tmp_path, mon
     assert len(observed) == 1
 
 
-def test_post_adoption_retirement_failure_keeps_successful_image_result(tmp_path, monkeypatch):
+def test_post_adoption_retirement_failure_keeps_successful_image_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root, docker = resource_environment(tmp_path, monkeypatch)
     cleanup = lifecycle.cleanup_owned_images
     calls = []
@@ -4503,3 +4517,83 @@ def test_post_adoption_retirement_failure_keeps_successful_image_result(tmp_path
     assert result.status is lifecycle.Status.CHANGED
     assert docker.image_id(result.selected_reference) == result.selected_id
     assert any(row.code == "cleanup-deferred" for row in result.diagnostics)
+
+
+def test_failed_adoption_keeps_previous_alias_purgeable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import project_resources
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    reference = lifecycle.project_image.project_image_name(root)
+    old = docker.image_id(reference)
+    tag = docker.tag
+    failed = []
+
+    def fail_once(source: str, target: str) -> None:
+        if target == reference and not failed:
+            failed.append(True)
+            raise lifecycle.ImageLifecycleError("adoption failed")
+        tag(source, target)
+
+    monkeypatch.setattr(docker, "tag", fail_once)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="adoption failed"):
+        harness_lifecycle.reconcile_planned(
+            lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH
+        )
+    assert docker.image_id(reference) == old
+    project_resources.purge(str(root), docker=docker)
+    assert docker.image_id(reference) is None, "failed adoption lost prior alias cleanup authority"
+
+
+def test_adopted_image_survives_unrelated_cleanup_record_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import project_resources
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    reference = lifecycle.project_image.project_image_name(root)
+    tag, records = docker.tag, project_resources._records
+    adopted = []
+
+    def track_adoption(source: str, target: str) -> None:
+        tag(source, target)
+        if target == reference:
+            adopted.append(source)
+
+    def unreadable():
+        if adopted:
+            raise project_resources.ResourceError("unrelated resource record unreadable")
+        return records()
+
+    monkeypatch.setattr(docker, "tag", track_adoption)
+    monkeypatch.setattr(project_resources, "_records", unreadable)
+    try:
+        result = harness_lifecycle.reconcile_planned(
+            lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH
+        )
+    except RuntimeError as exc:
+        pytest.fail(f"successful adoption reported cleanup failure: {exc}")
+    assert result.status is lifecycle.Status.CHANGED
+    assert docker.image_id(reference) == result.selected_id
+    assert any(row.code == "cleanup-deferred" for row in result.diagnostics)
+
+
+def test_adoption_record_failure_discards_prepared_candidate_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import project_resources
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+
+    def unavailable(*_args, **_kwargs):
+        raise project_resources.ResourceError("adoption record unavailable")
+
+    monkeypatch.setattr(project_resources, "record_adoption", unavailable)
+    with pytest.raises(project_resources.ResourceError, match="adoption record unavailable"):
+        harness_lifecycle.reconcile_planned(
+            lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH
+        )
+    assert not any(
+        row.reference.startswith("booley-lifecycle-") for row in docker.image_references()
+    ), "record failure leaked prepared candidate tags"

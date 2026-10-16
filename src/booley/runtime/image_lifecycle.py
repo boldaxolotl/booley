@@ -516,17 +516,14 @@ def _read_owned_record(
 def _owned_image_blocker(image: str, docker: DockerPort, identity: str | None = None) -> str:
     if any(row.image_id == image for row in docker.image_references()):
         return "tag/keeper"
-    if docker.repo_digests(image):
-        return "registry digest"
-    if image in docker.container_image_ids():
-        return "container"
-    layers = docker.image_layers(image)
-    for other in docker.image_ids() - {image}:
-        other_layers = docker.image_layers(other)
-        if layers and other_layers[: len(layers)] == layers:
-            return "child"
-    from booley.runtime.project_resources import has_other_claim, proven_origin
+    from booley.runtime.project_resources import (
+        dependency_blocker,
+        has_other_claim,
+        proven_origin,
+    )
 
+    if reason := dependency_blocker(image, docker):
+        return reason
     if has_other_claim(image, identity):
         return "other Project claimant"
     return "" if proven_origin(image, docker) else "unproven historical origin/acquisition"
@@ -1774,6 +1771,16 @@ def abort(
     cleanup_owned_images(prepared.plan.project_root, docker=resolved_docker)
 
 
+def _discard_adopted_candidates(
+    prepared: PreparedConvergence, docker: DockerPort
+) -> tuple[Diagnostic, ...]:
+    try:
+        abort(prepared, docker=docker)
+        return ()
+    except (RuntimeError, OSError) as exc:
+        return (Diagnostic("cleanup-deferred", str(exc)),)
+
+
 def commit(
     prepared: PreparedConvergence,
     *,
@@ -1786,9 +1793,9 @@ def commit(
     except ImageLifecycleError:
         abort(prepared, docker=resolved_docker)
         raise
-    from booley.runtime.project_resources import record_adoption
+    from booley.runtime.project_resources import record_adoption, restore_adoption
 
-    record_adoption(prepared)
+    checkpoint = record_adoption(prepared)
     changed: list[str] = []
     try:
         for step, image in zip(prepared.plan.steps, prepared.candidates, strict=True):
@@ -1800,6 +1807,7 @@ def commit(
             changed.append(image.reference)
     except BaseException as exc:
         failures = _restore_tag_snapshots(prepared.prior_tags, resolved_docker)
+        restore_adoption(checkpoint)
         if failures:
             raise ImageLifecycleError(
                 "candidate adoption failed and prior tags could not be restored: "
@@ -1807,7 +1815,7 @@ def commit(
             ) from exc
         raise
     final = prepared.candidates[-1]
-    abort(prepared, docker=resolved_docker)
+    diagnostics = _discard_adopted_candidates(prepared, resolved_docker)
     result = LifecycleResult(
         prepared.plan.selected_reference,
         final.image_id,
@@ -1818,6 +1826,7 @@ def commit(
         requires_runtime_recreation=bool(changed),
         wheel_source_fingerprint=prepared.plan.nodes[-1].wheel_source_fingerprint,
         wheel_sha256=final.wheel_sha256,
+        diagnostics=diagnostics,
     )
     return _cleanup_layout_result(
         prepared.plan.project_root, result, Intent.ENSURE, resolved_docker

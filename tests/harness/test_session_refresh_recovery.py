@@ -978,8 +978,8 @@ def test_read_only_commands_report_pending_recovery(tmp_path: Path) -> None:
 
 
 def test_refresh_recovery_keeps_prior_images_after_adoption_without_prior_container(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from dataclasses import replace
 
     from booley.harness import image_lifecycle as images

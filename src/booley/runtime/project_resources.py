@@ -74,6 +74,7 @@ def _empty(identity: str) -> dict[str, Any]:
         "aliases": {},
         "origins": {},
         "retirements": {},
+        "init_retirements": {},
         "observations": {},
     }
 
@@ -83,6 +84,8 @@ def _read(name: str) -> dict[str, Any]:
     try:
         raw = require_dict(store.read_json(name), field="Project resources")
         identity = require_str(raw, "project_root")
+        # Older private records have no init-only retirement claims.
+        raw.setdefault("init_retirements", {})
         if (
             set(raw) != set(_empty(identity))
             or type(raw["version"]) is not int
@@ -94,7 +97,7 @@ def _read(name: str) -> dict[str, Any]:
             or type(raw["cleanup"]) is not bool
         ):
             raise ResourceError("invalid Project cleanup identity")
-        for key in ("aliases", "origins", "retirements", "observations"):
+        for key in ("aliases", "origins", "retirements", "init_retirements", "observations"):
             rows = require_dict(raw[key], field=key)
             if any(not isinstance(k, str) or not isinstance(v, str) for k, v in rows.items()):
                 raise ResourceError("invalid Project resource claim")
@@ -119,10 +122,11 @@ def _validate_claim_names(raw: dict[str, Any], identity: str) -> None:
 
     if any(not owned(alias) for alias in raw["aliases"]):
         raise ResourceError("alias claim is outside the exact Project namespace")
-    for alias, image in raw["retirements"].items():
-        reference, separator, recorded = alias.rpartition("@")
-        if not separator or recorded != image or not owned(reference):
-            raise ResourceError("invalid Project retirement claim")
+    for key in ("retirements", "init_retirements"):
+        for alias, image in raw[key].items():
+            reference, separator, recorded = alias.rpartition("@")
+            if not separator or recorded != image or not owned(reference):
+                raise ResourceError("invalid Project retirement claim")
     if any(alias != keeper_image_for_identity(identity) for alias in raw["observations"]):
         raise ResourceError("invalid Project keeper observation")
 
@@ -142,7 +146,8 @@ def _save(raw: dict[str, Any]) -> None:
     store.ensure_directory()
     name = _name(raw["project_root"])
     if not raw["cleanup"] and not any(
-        raw[key] for key in ("aliases", "origins", "retirements", "observations")
+        raw[key]
+        for key in ("aliases", "origins", "retirements", "init_retirements", "observations")
     ):
         (store.root / name).unlink(missing_ok=True)
         return
@@ -166,11 +171,16 @@ def record_acquisition(identity: str, images: tuple[str, ...], docker: DockerPor
     _save(raw)
 
 
-def record_adoption(prepared: PreparedConvergence, *, retirement: bool = False) -> None:
+def record_adoption(
+    prepared: PreparedConvergence, *, retirement: bool = False
+) -> dict[str, Any] | None:
     """Persist exact alias/old-ID claims before any managed tag can move."""
     if prepared.plan.project_root is None:
-        return
+        return None
     raw = _load(str(prepared.plan.project_root))
+    checkpoint = {
+        key: dict(value) if isinstance(value, dict) else value for key, value in raw.items()
+    }
     prefix = _project_image_name(raw["project_root"])
     for candidate in prepared.candidates:
         if not (candidate.reference == prefix or candidate.reference.startswith(prefix + "-")):
@@ -184,9 +194,20 @@ def record_adoption(prepared: PreparedConvergence, *, retirement: bool = False) 
             if prior.image_id is not None and (
                 prior.reference == prefix or prior.reference.startswith(prefix + "-")
             ):
-                # A snapshot alone never creates acquisition proof.
-                raw["retirements"][prior.reference + "@" + prior.image_id] = prior.image_id
+                # A prior tag snapshot cannot create a local adoption claim.
+                if checkpoint["aliases"].get(prior.reference) != prior.image_id:
+                    continue
+                key = prior.reference + "@" + prior.image_id
+                raw["retirements"][key] = prior.image_id
+                raw["init_retirements"][key] = prior.image_id
     _save(raw)
+    return checkpoint
+
+
+def restore_adoption(checkpoint: dict[str, Any] | None) -> None:
+    """Restore the exact pre-adoption claims after managed tags roll back."""
+    if checkpoint is not None:
+        _save(checkpoint)
 
 
 def proven_origin(image: str, docker: DockerPort) -> bool:
@@ -249,7 +270,7 @@ def _inventory(kind: str) -> dict[str, dict[str, Any]]:
 
 def _containers() -> dict[str, dict[str, Any]]:
     result = {}
-    for name in _docker(["container", "ls", "--all", "--quiet"]).splitlines():
+    for name in _docker(["container", "ls", "--all", "--quiet", "--no-trunc"]).splitlines():
         row = _inspect("container", name)
         image = row.get("Image")
         if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
@@ -335,6 +356,7 @@ def _candidate_ids(identity: str, docker: DockerPort) -> set[str]:
         set(raw["observations"].values())
         | set(raw["aliases"].values())
         | set(raw["retirements"].values())
+        | set(raw["init_retirements"].values())
         | set(raw["origins"])
     )
     from booley.runtime import image_lifecycle
@@ -365,6 +387,11 @@ def alias_blocker(image: str, docker: DockerPort) -> str:
     """Protect bytes before tag removal, which may itself delete the image."""
     if not proven_origin(image, docker):
         return "unproven historical origin/acquisition"
+    return dependency_blocker(image, docker)
+
+
+def dependency_blocker(image: str, docker: DockerPort) -> str:
+    """Inspect byte dependencies shared by alias release and acquired-ID cleanup."""
     if image in docker.container_image_ids():
         return "container"
     if docker.repo_digests(image):
@@ -378,8 +405,27 @@ def alias_blocker(image: str, docker: DockerPort) -> str:
     return ""
 
 
+def _local_alias_claim(identity: str | None, alias: str, image: str) -> bool:
+    from booley.runtime.session_issuance import keeper_image_for_identity
+
+    records = [_load(identity)] if identity is not None else _records()
+    for raw in records:
+        if raw["aliases"].get(alias) == image:
+            return True
+        if alias != keeper_image_for_identity(raw["project_root"]):
+            continue
+        claimed = (
+            set(raw["origins"]) | set(raw["aliases"].values()) | set(raw["retirements"].values())
+        )
+        if image in claimed:
+            return True
+    return False
+
+
 def alias_release_reason(identity: str | None, alias: str, image: str, docker: DockerPort) -> str:
     """A proven alias must not remove the final pin of another Project's claim."""
+    if not _local_alias_claim(identity, alias, image):
+        return "unproven local alias/acquisition"
     if reason := alias_blocker(image, docker):
         return reason
     other_alias = any(
@@ -447,8 +493,11 @@ def has_other_claim(image: str, identity: str | None) -> bool:
 
 def _release_aliases(identity: str, docker: DockerPort, removed: list[str]) -> None:
     raw = _load(identity)
+    existing = docker.image_ids()
     aliases = sorted(
-        raw["aliases"].items(), key=lambda row: len(docker.image_layers(row[1])), reverse=True
+        raw["aliases"].items(),
+        key=lambda row: len(docker.image_layers(row[1])) if row[1] in existing else 0,
+        reverse=True,
     )
     for alias, image in aliases:
         actual = docker.image_id(alias)
@@ -467,12 +516,19 @@ def _release_aliases(identity: str, docker: DockerPort, removed: list[str]) -> N
         _collect_images(identity, docker, removed)
 
 
-def _collect_images(identity: str, docker: DockerPort, removed: list[str]) -> None:
+def _collect_images(
+    identity: str, docker: DockerPort, removed: list[str], *, only: set[str] | None = None
+) -> None:
     raw = _load(identity)
     authorized = (
-        set(raw["aliases"].values()) | set(raw["retirements"].values()) | set(raw["origins"])
+        set(raw["aliases"].values())
+        | set(raw["retirements"].values())
+        | set(raw["init_retirements"].values())
+        | set(raw["origins"])
     )
     candidates = _candidate_ids(identity, docker) & authorized
+    if only is not None:
+        candidates &= only
     # Finite captured set, repeated only to release children before parents.
     for _ in range(len(candidates)):
         progress = False
@@ -483,6 +539,18 @@ def _collect_images(identity: str, docker: DockerPort, removed: list[str]) -> No
                 progress = True
         if not progress:
             break
+
+
+def retire_init_images(identity: str, *, docker: DockerPort) -> tuple[str, ...]:
+    """Collect only recorded init retirements; retain current/foreign references."""
+    candidates = set(_load(identity)["init_retirements"].values())
+    removed: list[str] = []
+    _collect_images(identity, docker, removed, only=candidates)
+    compact(docker)
+    return tuple(
+        f"{image}: retained ({_image_reason(image, docker, identity)})"
+        for image in sorted(candidates & docker.image_ids())
+    )
 
 
 def _purge_volumes(report: ResourceReport, removed: list[str]) -> None:
@@ -528,9 +596,8 @@ def compact(docker: DockerPort) -> None:
         raw["origins"] = {
             image: origin for image, origin in raw["origins"].items() if image in existing
         }
-        raw["retirements"] = {
-            alias: image for alias, image in raw["retirements"].items() if image in existing
-        }
+        for key in ("retirements", "init_retirements"):
+            raw[key] = {alias: image for alias, image in raw[key].items() if image in existing}
         raw["aliases"] = {
             alias: image for alias, image in raw["aliases"].items() if image in existing
         }

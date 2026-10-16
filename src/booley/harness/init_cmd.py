@@ -2269,7 +2269,7 @@ def _finish_image_retirement(ctx: InitContext, image_id: str | None) -> None:
     ):
         return
     from booley.runtime import image_lifecycle as runtime_images
-    from booley.runtime import session_issuance
+    from booley.runtime import project_resources, session_issuance
 
     try:
         spec_path = session_issuance.devcontainer_path(ctx.project_root)
@@ -2282,6 +2282,9 @@ def _finish_image_retirement(ctx: InitContext, image_id: str | None) -> None:
         if idk.image_id_strict(issuance.keeper_image) != image_id:
             return
         retained = runtime_images.cleanup_owned_images(ctx.project_root)
+        retained += project_resources.retire_init_images(
+            str(ctx.project_root), docker=runtime_images._docker_adapter()
+        )
         for detail in retained:
             warn("obsolete Sandbox Image cleanup: " + detail)
     except (RuntimeError, OSError, ValueError) as exc:

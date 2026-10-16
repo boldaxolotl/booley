@@ -841,16 +841,21 @@ def reconcile_planned(
     prepared = prepare(observed, verbose=verbose)
     from booley.runtime import project_resources
 
-    if intent is Intent.REFRESH:
-        project_resources.record_adoption(prepared, retirement=True)
+    checkpoint = None
     try:
+        if intent is Intent.REFRESH:
+            checkpoint = project_resources.record_adoption(prepared, retirement=True)
         result = commit(prepared)
     except BaseException:
+        project_resources.restore_adoption(checkpoint)
         abort(prepared)
         raise
     if intent is Intent.REFRESH:
         try:
             retained = runtime_lifecycle.cleanup_owned_images(scope.project_root)
+            retained += project_resources.retire_init_images(
+                str(scope.project_root), docker=_docker_adapter()
+            )
             result = replace(
                 result,
                 cleanup=replace(
