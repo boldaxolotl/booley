@@ -26,6 +26,7 @@ from tests.execution_test_support import (
 )
 
 from booley.runtime.execution_records import (
+    PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
     execution_paths,
@@ -84,6 +85,82 @@ def _start_supervisor_with_test_heartbeat(
         env=runtime_env(booley_dir),
         text=True,
     )
+
+
+def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None):
+    data = tmp_path / ".booley"
+    data.mkdir()
+    paths = execution_paths(_EXECUTION_ID, booley_dir=data)
+    write_attachment_heartbeat(paths, generation=1)
+    env = runtime_env(data)
+    if path is not None:
+        env["PATH"] = path
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "booley.runtime.execution_supervisor",
+            "run",
+            "--execution-id",
+            _EXECUTION_ID,
+            "--",
+            *command,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return result, read_json(paths.record)
+
+
+@pytest.mark.parametrize(
+    ("kind", "exit_code", "diagnostic"),
+    [
+        pytest.param("name", 127, "command not found", id="missing-name"),
+        pytest.param("path", 127, "command not found", id="missing-path"),
+        pytest.param("permission", 126, "permission denied", id="permission-denied"),
+    ],
+)
+def test_spawn_failure_is_terminal(tmp_path: Path, kind, exit_code, diagnostic) -> None:
+    executable = "booley-test-missing-command-1572"
+    if kind != "name":
+        executable = str(tmp_path / "command")
+    if kind == "permission":
+        Path(executable).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        Path(executable).chmod(0o644)
+
+    result, payload = _run_command(tmp_path, [executable, "private-argument"], path=str(tmp_path))
+
+    assert result.returncode == exit_code
+    assert result.stderr == f"{diagnostic}: {executable}\n"
+    assert result.stdout == ""
+    assert payload["schema_version"] == PROTOCOL_VERSION
+    assert payload["state"] == "terminal"
+    assert payload["exit_code"] == exit_code
+    assert payload["tree_terminal"] is True
+    assert payload["leader"] is None
+    assert payload["supervisor"]
+    assert payload["terminal_cause"] == "spawn_error"
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, 7, 255, 143])
+def test_command_exit_status_is_preserved(tmp_path: Path, exit_code: int) -> None:
+    script = (
+        "import os,signal; os.kill(os.getpid(), signal.SIGTERM)"
+        if exit_code == 143
+        else f"raise SystemExit({exit_code})"
+    )
+
+    result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
+
+    assert result.returncode == exit_code
+    assert result.stderr == ""
+    assert result.stdout == ""
+    assert payload["exit_code"] == exit_code
+    assert payload["state"] == "terminal"
+    assert payload["tree_terminal"] is True
 
 
 def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:

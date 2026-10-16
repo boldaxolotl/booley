@@ -624,6 +624,25 @@ class TestCli:
 
 
 class TestClaudeMintLocation:
+    @pytest.mark.parametrize("exit_code", [126, 127])
+    def test_project_mint_spawn_failure_does_not_prompt(self, tmp_path, monkeypatch, exit_code):
+        prompt = Mock()
+        errors: list[str] = []
+        runtime = Mock(return_value=exit_code)
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _: True)
+        monkeypatch.setattr(session_runtime, "run_project_command", runtime)
+        monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+
+        token = auth_cmd._mint_claude_token(
+            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+        )
+
+        assert token is None
+        prompt.assert_not_called()
+        assert errors == [f"`claude setup-token` failed (exit {exit_code})"]
+        assert runtime.call_args.args == (tmp_path, ["claude", "setup-token"])
+
     def test_missing_project_state_is_not_initialized(self, tmp_path, monkeypatch):
         from booley.runtime import booley_dir
 
