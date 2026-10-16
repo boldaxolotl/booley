@@ -1015,3 +1015,35 @@ def test_parser_declares_version_so_help_lists_it():
 
     assert "--version" in bwave._build_parser().format_help()
     assert "bwave --version" in bwave._TOP_HELP_TEXT
+
+
+@pytest.mark.parametrize("seconds,expected", [(0.4, "just now"), (5, "5s ago"), (86400, "1d ago")])
+def test_register_human_trace_age_without_native_reader(
+    tmp_path, monkeypatch, capsys, seconds, expected
+):
+    import argparse
+    from functools import partial
+    from types import SimpleNamespace
+
+    from booley.bwave import sessions
+    from booley.runtime.timefmt import format_age
+
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"fixture")
+    os.utime(trace, (100000 - seconds, 100000 - seconds))
+    monkeypatch.setattr(
+        sessions, "inspect_store", lambda *_a, **_k: SimpleNamespace(structurally_usable=True)
+    )
+    monkeypatch.setattr(sessions, "_trace_identity", lambda _: "top")
+    monkeypatch.setattr(sessions, "_register_trace", lambda _trace, alias: alias)
+    monkeypatch.setattr(sessions, "format_age", partial(format_age, now=100000))
+    sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
+    assert f"(written {expected})" in capsys.readouterr().err
+
+    def remove_trace(path, alias):
+        path.unlink()
+        return alias
+
+    monkeypatch.setattr(sessions, "_register_trace", remove_trace)
+    sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
+    assert "written" not in capsys.readouterr().err

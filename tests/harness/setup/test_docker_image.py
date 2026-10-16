@@ -1183,3 +1183,25 @@ def test_init_sources_carry_no_hardcoded_step_numbers() -> None:
                 if int(m.group(1)) > 4 or m.group(2):
                     offenders.append(f"{name}:{lineno}: {line.strip()}")
     assert not offenders, "hardcoded init step numbers drift (F-12):\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_build_timeout_uses_human_duration_and_preserves_record(
+    monkeypatch, tmp_path, capsys, raises
+):
+    import subprocess
+
+    def build(*_a, **_k):
+        if raises:
+            raise subprocess.TimeoutExpired("docker build", 3661)
+        return DockerBuildResult(None, timed_out=True)
+
+    monkeypatch.setenv("BOOLEY_IMAGE_BUILD_TIMEOUT", "3661")
+    monkeypatch.setattr(init_docker_image, "run_docker_build", build)
+    ctx = InitContext(project_root=tmp_path)
+    spec = init_docker_image._DockerBuildSpec(
+        dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
+    )
+    assert init_docker_image._docker_build_image(ctx, spec) is None
+    assert "timed out after 1h 01m" in capsys.readouterr().out
+    assert ctx.results[-1].detail == "build timed out"
