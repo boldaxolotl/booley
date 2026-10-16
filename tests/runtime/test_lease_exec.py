@@ -78,7 +78,7 @@ def test_killed_owner_preserves_detached_child_until_guardian_completes(
     )
     guardian = None
     try:
-        _wait(lambda: report.exists() and ready.exists())
+        _wait(lambda: report.exists() and ready.exists(), seconds=15)
         directory, guardian = json.loads(report.read_text())
         worker.kill()
         worker.wait(timeout=10)
@@ -100,17 +100,28 @@ def test_killed_owner_preserves_detached_child_until_guardian_completes(
             reap_guardian(guardian)
 
 
-def test_synchronous_runner_timeout_reaps_detached_children(scratch_namespace):
+def test_synchronous_runner_timeout_reaps_detached_children(scratch_namespace, monkeypatch):
     ready = scratch_namespace / "ready"
     native = scratch_namespace / "native-timeout.py"
     native.write_text(
         "import os, pathlib, sys, time\n"
         "if os.fork() == 0:\n"
         "    os.setsid()\n"
-        "    pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "    ready = pathlib.Path(sys.argv[1])\n"
+        "    pending = ready.with_suffix('.tmp')\n"
+        "    pending.write_text(str(os.getpid()))\n"
+        "    pending.replace(ready)\n"
         "    time.sleep(10)\n"
         "else: time.sleep(10)\n"
     )
+    communicate = subprocess.Popen.communicate
+
+    def communicate_after_native_ready(process, *args, **kwargs):
+        _wait(ready.exists, seconds=10)
+        return communicate(process, *args, **kwargs)
+
+    # Exercise timeout after a detached child exists, independently of guardian startup.
+    monkeypatch.setattr(subprocess.Popen, "communicate", communicate_after_native_ready)
     with tw.temporary_workspace() as directory:
         with pytest.raises(subprocess.TimeoutExpired):
             tw.run_guarded(
@@ -290,7 +301,10 @@ _SYNC_OWNER_WORKER = (
     "with tw.temporary_workspace() as root:\n"
     "    launch = tw.prepare_launch([sys.executable, native, ready, release])\n"
     "    child = subprocess.Popen(launch.command, **launch.kwargs)\n"
-    "    pathlib.Path(report).write_text(json.dumps([root, child.pid]))\n"
+    "    report = pathlib.Path(report)\n"
+    "    pending = report.with_suffix('.tmp')\n"
+    "    pending.write_text(json.dumps([root, child.pid]))\n"
+    "    pending.replace(report)\n"
     "    signal.pause()\n"
 )
 
@@ -305,7 +319,9 @@ def _detached_native_source(sys, ready, release):
         f"ready, release = pathlib.Path({str(ready)!r}), pathlib.Path({str(release)!r})\n"
         "if os.fork() == 0:\n"
         "    os.setsid()\n"
-        "    ready.write_text(str(guardian))\n"
+        "    pending = ready.with_suffix('.tmp')\n"
+        "    pending.write_text(str(guardian))\n"
+        "    pending.replace(ready)\n"
         "    deadline = time.monotonic() + 10\n"
         "    while not release.exists() and time.monotonic() < deadline: time.sleep(.01)\n"
         "    os._exit(0)\n"
@@ -329,7 +345,10 @@ _SDK_OWNER_WORKER = (
     "            while not pathlib.Path(ready).exists() and asyncio.get_running_loop().time() < end: await asyncio.sleep(.01)\n"
     "            guardian = int(pathlib.Path(ready).read_text())\n"
     "            relay = int(pathlib.Path(f'/proc/{guardian}/stat').read_text().rsplit(')',1)[1].split()[1])\n"
-    "            pathlib.Path(report).write_text(json.dumps([root, relay]))\n"
+    "            report = pathlib.Path(report)\n"
+    "            pending = report.with_suffix('.tmp')\n"
+    "            pending.write_text(json.dumps([root, relay]))\n"
+    "            pending.replace(report)\n"
     "            await asyncio.Event().wait()\n"
     "asyncio.run(main())\n"
 )
