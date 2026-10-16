@@ -41,6 +41,8 @@ from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
 
+_REAL_RECONCILE = init_cmd.image_lifecycle.reconcile_planned
+
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
 
@@ -1064,3 +1066,64 @@ def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     assert ignore.read_text() == repaired
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
+
+
+def test_force_init_retires_old_keeper_image_after_successful_reissue(repo, tmp_path, monkeypatch):
+    """Full force-init must collect the previous image after its keeper moves."""
+    from booley.harness import image_lifecycle as images
+    from booley.runtime import image_lifecycle as lifecycle
+    from booley.runtime import interactive_docker
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    # The repo fixture isolates host tools; restore the real reconciliation entrypoint.
+    monkeypatch.setattr(images, "reconcile_planned", _REAL_RECONCILE)
+    root, docker = resource_environment(tmp_path, monkeypatch, root=repo)
+    monkeypatch.setattr(
+        runtime_spec, "_resolve_image_id", lambda image: docker.image_id(image) or ""
+    )
+    monkeypatch.setattr(interactive_docker, "image_id", docker.image_id)
+    monkeypatch.setattr(interactive_docker, "tag_image", docker.tag)
+    # Build and issue through init before the forced replacement, keeping the old ID pinned.
+    assert _run_full_init(root) == 0
+    reference = lifecycle.project_image.project_image_name(root)
+    old = docker.image_id(reference)
+    keeper = runtime_spec.keeper_image(root)
+    assert docker.image_id(keeper) == old
+    args = _init_args()
+    args.force = True
+    assert init_cmd.run_init(args, root) == 0
+    new = docker.image_id(reference)
+    assert new != old
+    assert docker.image_id(keeper) == new
+    spec = runtime_spec.devcontainer_path(root).read_text(encoding="utf-8")
+    assert new in spec
+    assert old not in docker.image_ids(), "full force-init retained superseded keeper image bytes"
+
+
+def test_failed_reissue_preserves_prior_keeper_and_retirement_proof(repo, tmp_path, monkeypatch):
+    from booley.harness import image_lifecycle as images
+    from booley.runtime import image_lifecycle as lifecycle
+    from booley.runtime import interactive_docker, project_resources
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    monkeypatch.setattr(images, "reconcile_planned", _REAL_RECONCILE)
+    root, docker = resource_environment(tmp_path, monkeypatch, root=repo)
+    monkeypatch.setattr(
+        runtime_spec, "_resolve_image_id", lambda image: docker.image_id(image) or ""
+    )
+    monkeypatch.setattr(interactive_docker, "image_id", docker.image_id)
+    monkeypatch.setattr(interactive_docker, "tag_image", docker.tag)
+    assert _run_full_init(root) == 0
+    old = docker.image_id(runtime_spec.keeper_image(root))
+
+    def fail_issue(*_a, **_k):
+        raise runtime_spec.RuntimeSpecError("issuance failed before keeper move")
+
+    monkeypatch.setattr(runtime_spec, "issue_prepared", fail_issue)
+    args = _init_args()
+    args.force = True
+    assert init_cmd.run_init(args, root) == 2
+    assert docker.image_id(runtime_spec.keeper_image(root)) == old
+    assert old in docker.image_ids()
+    assert old in project_resources._load(str(root))["retirements"].values()
+    assert docker.image_id(lifecycle.project_image.project_image_name(root)) != old

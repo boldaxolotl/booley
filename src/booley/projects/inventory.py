@@ -89,6 +89,19 @@ def forget_project(
     return Path(identity)
 
 
+def with_retained_cleanup_identity(identity: str, cleanup: Callable[[Path], None]) -> Path:
+    """Coordinate a runtime-validated retained identity with fresh live Grants."""
+    if not Path(identity).is_absolute():
+        raise ProjectInventoryError("retained cleanup requires an exact absolute Project Root")
+    with _locked_roots():
+        if any(grant.project_root == identity for grant in _authority_grants()):
+            raise ProjectInventoryError(
+                f"cannot forget {identity}: revoke its live Project Grant first"
+            )
+        cleanup(Path(identity))
+    return Path(identity)
+
+
 def project_inventory() -> tuple[ProjectInventoryEntry, ...]:
     """Return every remembered Project path in deterministic path order."""
     remembered = _load_roots()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -15,7 +16,9 @@ from booley.projects import image_keepers, inventory
 class KeeperOperations(Protocol):
     """Host-coordinated keeper operations supplied by the command composition layer."""
 
-    def forget_project(self, project: Path) -> tuple[Path, image_keepers.KeeperRelease]: ...
+    def forget_project(
+        self, project: Path, *, purge: bool = False
+    ) -> tuple[Path, image_keepers.KeeperRelease]: ...
 
     def prune_keepers(self, confirm: str | None = None) -> image_keepers.PruneResult: ...
 
@@ -42,6 +45,11 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     forget = actions.add_parser("forget", help="Forget one root with no live Project Grants")
     forget.add_argument("project", type=Path)
     forget.add_argument(
+        "--purge",
+        action="store_true",
+        help="Remove unused proven Project images and app state volumes",
+    )
+    forget.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -66,7 +74,11 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
             )
         if action == "forget":
             assert keeper_operations is not None
-            forgotten, keeper = keeper_operations.forget_project(args.project)
+            forgotten, keeper = (
+                keeper_operations.forget_project(args.project, purge=True)
+                if getattr(args, "purge", False)
+                else keeper_operations.forget_project(args.project)
+            )
             return _render_forgotten(forgotten, keeper, json_output=getattr(args, "json", False))
         if action == "prune-keepers":
             assert keeper_operations is not None
@@ -100,17 +112,31 @@ def _render_discovered(discovered: tuple[Path, ...], *, json_output: bool) -> in
 def _render_forgotten(
     forgotten: Path, keeper: image_keepers.KeeperRelease, *, json_output: bool
 ) -> int:
+    keeper_facts = asdict(keeper)
+    resources = keeper_facts.pop("resources", None)
     if json_output:
-        print(
-            json.dumps(
-                {"schema": 1, "forgotten": str(forgotten), "keeper": asdict(keeper)}, indent=2
-            )
-        )
+        document = {"schema": 1, "forgotten": str(forgotten), "keeper": keeper_facts}
+        if resources is not None:
+            document["resources"] = resources
+        print(json.dumps(document, indent=2))
     else:
         print(f"Forgot remembered Project path: {forgotten}")
         image = f" ({keeper.image_id})" if keeper.image_id is not None else ""
         print(f"Keeper {keeper.status}: {keeper.tag}{image}")
+        if resources is not None:
+            _print_resources(resources, forgotten)
     return 0
+
+
+def _print_resources(resources: dict, root: Path) -> None:
+    for kind in ("images", "volumes", "containers", "networks"):
+        for row in resources[kind]:
+            size = row["size"] if row["size"] is not None else "unknown"
+            print(f"Retained {kind}: {row['name']} — apparent size {size}; {row['reason']}")
+    for name in resources["removed"]:
+        print(f"Removed: {name}")
+    if any(resources[kind] for kind in ("images", "volumes", "containers", "networks")):
+        print(f"Purge unused resources: booley projects forget --purge {shlex.quote(str(root))}")
 
 
 def _render_prune(result: image_keepers.PruneResult, *, json_output: bool) -> int:

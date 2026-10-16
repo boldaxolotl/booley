@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from booley.projects import inventory
@@ -46,19 +46,40 @@ def _require_recovered_host() -> None:
         )
 
 
-def forget_project(project: Path) -> tuple[Path, KeeperRelease]:
-    """Validate Grants, release only this root's unused tag, then persist forgetting."""
+def forget_project(project: Path, *, purge: bool = False) -> tuple[Path, KeeperRelease]:
+    """Inspect and clean under both lifecycle and live-Grant authority guards."""
+    from booley.runtime import image_lifecycle, project_resources
+
     outcomes: list[KeeperRelease] = []
+
+    def cleanup(root: Path) -> None:
+        identity = str(root)
+        adapter = image_lifecycle._docker_adapter()
+        project_resources.snapshot(identity, docker=adapter)
+        project_resources.retain_cleanup_identity(identity)
+        release = _release_root(root)
+        for retained in image_lifecycle.cleanup_owned_images(root, docker=adapter):
+            logger.warning("refresh image cleanup: %s", retained)
+        removed = project_resources.purge(identity, docker=adapter) if purge else []
+        report = project_resources.snapshot(identity, docker=adapter)
+        report.removed = removed
+        project_resources.finish_cleanup_identity(identity, report)
+        outcomes.append(replace(release, resources=project_resources.report_dict(report)))
+
     try:
         with host_lifecycle_lock("projects forget"):
             _require_recovered_host()
-            forgotten = inventory.forget_project(
-                project, before_forget=lambda root: outcomes.append(_release_root(root))
-            )
-            from booley.runtime.image_lifecycle import cleanup_owned_images
-
-            for retained in cleanup_owned_images(forgotten):
-                logger.warning("refresh image cleanup: %s", retained)
+            if purge and project_resources.has_cleanup_identity(str(project)):
+                forgotten = inventory.with_retained_cleanup_identity(str(project), cleanup)
+                # An interrupted first forget may still have an inventory entry.
+                remembered = any(
+                    entry.remembered and entry.project_root == str(project)
+                    for entry in inventory.project_inventory()
+                )
+                if remembered:
+                    inventory.forget_project(project)
+            else:
+                forgotten = inventory.forget_project(project, before_forget=cleanup)
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
     return forgotten, outcomes[0]

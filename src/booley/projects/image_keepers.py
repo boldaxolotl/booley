@@ -13,6 +13,7 @@ class KeeperRelease:
     status: Literal["released", "absent", "retained-in-use"]
     tag: str
     image_id: str | None = None
+    resources: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -257,7 +258,17 @@ class _IncrementalBuildAdapter:
             raise ImageLifecycleError(f"candidate build produced no image {candidate_reference!r}")
         if node.manual_parent is not None:
             self._verify_manual_ancestry(candidate_reference, parent_id)
+        self._verify_build_origin(node, candidate_reference)
         return candidate_reference
+
+    def _verify_build_origin(self, node: ImageNode, candidate: str) -> None:
+        from booley.core.project_identity import project_label_id
+        from booley.runtime.project_resources import LABEL_ORIGIN
+
+        if node.role is not ImageRole.RUNTIME_BASE and self.docker.label(
+            candidate, LABEL_ORIGIN
+        ) != project_label_id(str(self.project_root)):
+            raise ImageLifecycleError("new Project image origin could not be verified")
 
     @staticmethod
     def _verify_manual_ancestry(candidate: str, parent_id: str | None) -> None:
@@ -482,6 +493,11 @@ class _IncrementalBuildAdapter:
             (runtime_lifecycle.LABEL_BUILD_ORIGIN, "local"),
             (runtime_lifecycle.LABEL_VERSION, node.payload.version),
         ]
+        from booley.core.project_identity import project_label_id
+        from booley.runtime.project_resources import LABEL_ORIGIN
+
+        if node.role is not ImageRole.RUNTIME_BASE:
+            labels.append((LABEL_ORIGIN, project_label_id(str(self.project_root))))
         if node.role is ImageRole.PROJECT_DATA_LAYOUT:
             labels.append((project_image.LABEL_LAYOUT_REFERENCE, node.reference))
         if node.wheel_source_fingerprint is not None:
@@ -823,8 +839,30 @@ def reconcile_planned(
     ):
         return runtime_lifecycle.planned_result(observed, _docker_adapter())
     prepared = prepare(observed, verbose=verbose)
+    from booley.runtime import project_resources
+
+    if intent is Intent.REFRESH:
+        project_resources.record_adoption(prepared, retirement=True)
     try:
-        return commit(prepared)
+        result = commit(prepared)
     except BaseException:
         abort(prepared)
         raise
+    if intent is Intent.REFRESH:
+        try:
+            retained = runtime_lifecycle.cleanup_owned_images(scope.project_root)
+            result = replace(
+                result,
+                cleanup=replace(
+                    result.cleanup, retained_required=result.cleanup.retained_required + retained
+                ),
+            )
+        except (RuntimeError, OSError) as exc:
+            result = replace(
+                result,
+                diagnostics=(
+                    *result.diagnostics,
+                    runtime_lifecycle.Diagnostic("cleanup-deferred", str(exc)),
+                ),
+            )
+    return result

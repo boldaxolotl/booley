@@ -714,14 +714,49 @@ After every Grant for that root is gone, remove the obsolete inventory entry
 with `booley projects forget /exact/deleted/project`.
 
 
-## Retained issued Sandbox Images
+## Retained Project Docker resources
 
 `booley session down` and Grant revocation retain issued-image keeper tags.
-`booley projects forget <project>` first checks that no live Grants remain,
-then releases only that root's keeper when no container uses its immutable image.
-An in-use keeper remains, but forgetting succeeds; Docker inspection or removal
-failure preserves the inventory entry for retry. A present forgotten Project
-whose keeper was released needs `booley init` before session reuse.
+`booley projects forget <project>` checks live Grants, releases an unused keeper,
+and reports remaining Project Docker images, app state volumes, containers and
+networks with their apparent sizes and retention reasons. Plain forget retains
+Project image tags and state volumes. An in-use keeper remains while forgetting
+succeeds. A present forgotten Project whose keeper was released needs
+`booley init` before session reuse.
+
+To reclaim eligible resources, copy the exact absolute Project Root from the
+report:
+
+```bash
+booley projects forget --purge /absolute/path/to/project
+```
+
+The same command works after ordinary forget or Project deletion. Booley retains
+a private cleanup identity for that exact root while resources remain and
+rechecks live Grants before every cleanup; a basename or different path does not
+authorize cleanup. Revoke live Grants first. Purge removes only unused,
+receipt-proven Project image aliases/bytes and unused Claude/Codex state volumes
+for every auth policy. State volumes can contain copied login credentials and
+session history. Purging a volume leaves host credentials intact.
+
+Images and volumes used by any running, stopped or foreign container remain.
+Containers and networks themselves, other Projects' aliases, external/registry
+images, shared infrastructure, global build cache and host filesystem data are
+outside purge. Close VS Code and explicitly remove its Sandbox container before
+reclaiming its resources. External Docker changes can race the inspection;
+removals are exact and non-force. Historical images without matching exact
+created-ID and origin proof remain, including images with inherited labels.
+Sizes are Docker's apparent sizes; `unknown` and network `N/A` are explicit, and
+sizes do not add up to guaranteed freed disk space.
+
+Inspection/removal failure returns an error, preserves inventory/cleanup identity,
+and reports completed removals and remaining resources where inspection succeeds.
+Retry the same purge command; already absent resources are safe. Protected
+leftovers keep their cleanup identity even when forgetting itself succeeds.
+`booley init --force` also retires unused proven images from its superseded
+current chain and recorded init retirements after successful reissuance. It
+retains unproven historical images and all state volumes. Superseded session-refresh artifacts with proof remain eligible for explicit
+purge.
 
 To reclaim keepers from Projects forgotten before this behavior was available:
 

@@ -830,17 +830,20 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
 def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
     """Present every cleanup outcome without hiding the image reconciliation result."""
     if result.cleanup.pending:
-        warn("obsolete Sandbox Image tags can be removed: " + ", ".join(result.cleanup.pending))
-        ctx.record("docker_image", "warn", "obsolete Sandbox Image tags remain")
+        warn(
+            "obsolete Sandbox Images/references can be removed: "
+            + ", ".join(result.cleanup.pending)
+        )
+        ctx.record("docker_image", "warn", "obsolete Sandbox Images/references remain")
     if result.cleanup.removed:
-        ok("removed obsolete Sandbox Image tags: " + ", ".join(result.cleanup.removed))
-        ctx.record("docker_image", "ok", "removed obsolete Sandbox Image tags")
+        ok("removed obsolete Sandbox Images/references: " + ", ".join(result.cleanup.removed))
+        ctx.record("docker_image", "ok", "removed obsolete Sandbox Images/references")
     if result.cleanup.retained_required:
         warn(
-            "retained obsolete Sandbox Image tags required by containers: "
+            "retained obsolete Sandbox Images/references required by containers: "
             + ", ".join(result.cleanup.retained_required)
         )
-        ctx.record("docker_image", "warn", "obsolete Sandbox Image tags are in use")
+        ctx.record("docker_image", "warn", "obsolete Sandbox Images/references are in use")
 
 
 def _step_image_lifecycle(
@@ -2249,10 +2252,40 @@ def _run_project_init_steps(
         runtime_image_id=runtime_image_id,
         init_will_create_booley_dir=True,
     )
+    _finish_image_retirement(ctx, runtime_image_id)
     _step_project_inventory(ctx)
     _step_advisories(ctx)
 
     return _print_summary(ctx)
+
+
+def _finish_image_retirement(ctx: InitContext, image_id: str | None) -> None:
+    """Retry after successful issuance has verified and moved the old keeper."""
+    if (
+        not ctx.force
+        or image_id is None
+        or ctx.check_only
+        or any(row.status == "err" for row in ctx.results)
+    ):
+        return
+    from booley.runtime import image_lifecycle as runtime_images
+    from booley.runtime import session_issuance
+
+    try:
+        spec_path = session_issuance.devcontainer_path(ctx.project_root)
+        spec = require_dict(
+            json.loads(spec_path.read_text(encoding="utf-8")), field="issued Sandbox spec"
+        )
+        issuance = session_issuance.validate(ctx.project_root, spec, spec_path)
+        if issuance.image_id != image_id:
+            return
+        if idk.image_id_strict(issuance.keeper_image) != image_id:
+            return
+        retained = runtime_images.cleanup_owned_images(ctx.project_root)
+        for detail in retained:
+            warn("obsolete Sandbox Image cleanup: " + detail)
+    except (RuntimeError, OSError, ValueError) as exc:
+        warn(f"obsolete Sandbox Image cleanup deferred: {exc}")
 
 
 def _reconcile_init_bootstrap(
