@@ -508,6 +508,37 @@ def test_observed_shutdown_deadline_survives_later_group_lock_timeout(tmp_path, 
         assert group.advance() == deadline
 
 
+@pytest.mark.parametrize("failure", ["delivery", "publication"])
+def test_first_stop_observation_keeps_deadline_and_signal_on_fault(tmp_path, monkeypatch, failure):
+    import signal
+
+    from booley.core import lease_shutdown
+
+    group = ShutdownGroup.create(tmp_path)
+    group.stop(signal.SIGINT)
+    deadline = time.monotonic() + 2
+    with group.locked() as data:
+        next(iter(data["stops"].values()))["deadline"] = deadline
+    identity = tw.process_identity(os.getpid())
+    monkeypatch.setattr(lease_shutdown, "_identity", lambda pid: {**identity, "pid": pid})
+    monkeypatch.setattr(lease_shutdown, "descendants", lambda _: {999999})
+    signals = []
+
+    def deliver(_identity, signum, **_kwargs):
+        signals.append(signum)
+        if failure == "delivery" and len(signals) == 1:
+            raise PermissionError("synthetic first delivery failure")
+
+    def fail_publication(*_args):
+        raise OSError("synthetic first stop publication failure")
+
+    monkeypatch.setattr(lease_shutdown, "signal_identity", deliver)
+    if failure == "publication":
+        monkeypatch.setattr(tw, "_publish_json", fail_publication)
+    assert group.advance() == deadline
+    assert signals == [signal.SIGINT, signal.SIGINT]
+
+
 def _start_exit_after_native(state, execution_id, registry, ready, release, receipt):
     endpoint = (
         "import os,sys,time\nfrom pathlib import Path\n"

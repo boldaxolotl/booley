@@ -341,6 +341,8 @@ class ShutdownGroup:
             if not stops:
                 return None
             stop = min(stops, key=lambda value: value["deadline"])
+            # Preserve trusted intent even if delivery or publication below fails.
+            self._local_deadline = stop["deadline"]
             self._local_signal = stop["signal"]
             guards = {
                 value["identity"]["pid"]: value["identity"] for value in data["members"].values()
@@ -494,10 +496,7 @@ class ShutdownGroup:
             try:
                 if signum is not None:
                     self.stop(signum)
-                deadline = self.tick()
-                if deadline is not None:
-                    self._local_deadline = deadline
-                return deadline
+                return self.tick()
             except LockTimeoutError as error:
                 if signum is None and self._local_deadline is None:
                     return None
