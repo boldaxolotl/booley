@@ -10,9 +10,12 @@ from typing import Literal
 class KeeperRelease:
     """The outcome of releasing one exact remembered root's keeper."""
 
-    status: Literal["released", "absent", "retained-in-use"]
+    status: Literal[
+        "released", "absent", "retained-in-use", "retained-unproven", "retained-protected"
+    ]
     tag: str
     image_id: str | None = None
+    resources: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +25,7 @@ class Candidate:
     tag: str
     image_id: str
     eligible: bool
-    reason: Literal["inventoried", "in-use", "inventory-absent"]
+    reason: Literal["inventoried", "in-use", "unproven", "protected", "inventory-absent"]
 
 
 @dataclass(slots=True)

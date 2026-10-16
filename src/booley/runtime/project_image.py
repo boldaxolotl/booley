@@ -695,8 +695,10 @@ def verify_layout_parent_identity(
 
 def _verify_layout_labels(original: dict, actual: dict) -> None:
     from booley.runtime import image_provenance as provenance
+    from booley.runtime.project_resources import LABEL_ORIGIN
 
     mutable_labels = {
+        LABEL_ORIGIN,
         provenance.LABEL_SCHEMA,
         provenance.LABEL_ARTIFACT_ROLE,
         provenance.LABEL_EFFECTIVE_INPUTS,

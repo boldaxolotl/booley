@@ -259,3 +259,19 @@ def test_before_forget_receives_stored_identity_and_failure_keeps_root(
         project_inventory.forget_project(project, before_forget=fail)
     assert observed == [str(project)]
     assert project_inventory.project_inventory()[0].remembered
+
+
+def test_retained_cleanup_guard_blocks_grant_only_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    root = str(tmp_path / "gone")
+    monkeypatch.setattr(
+        project_inventory, "_authority_grants", lambda: (SimpleNamespace(project_root=root),)
+    )
+    called = []
+    with pytest.raises(project_inventory.ProjectInventoryError, match="live Project Grant"):
+        project_inventory.with_retained_cleanup_identity(root, called.append)
+    assert called == []

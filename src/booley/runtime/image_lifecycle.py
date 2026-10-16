@@ -447,7 +447,7 @@ def _owned_store() -> PrivateStore:
 
 
 def _owned_prefix(project: Path) -> str:
-    return hashlib.sha256(str(project.resolve()).encode()).hexdigest() + "-"
+    return hashlib.sha256(str(project).encode()).hexdigest() + "-"
 
 
 def record_owned_images(
@@ -475,7 +475,7 @@ def record_owned_images(
         json.dumps(
             {
                 "version": 1,
-                "project_root": str(project.resolve()),
+                "project_root": str(project),
                 "transaction": transaction,
                 "references": {**previous_refs, **references},
                 "owned_ids": list(dict.fromkeys([*previous_ids, *owned_ids])),
@@ -498,11 +498,7 @@ def _read_owned_record(
             raise ImageLifecycleError("invalid refresh image record fields/version")
         project = Path(require_str(raw, "project_root"))
         transaction = require_str(raw, "transaction")
-        if (
-            not project.is_absolute()
-            or str(project.resolve()) != str(project)
-            or name != _owned_prefix(project) + transaction + ".json"
-        ):
+        if not project.is_absolute() or name != _owned_prefix(project) + transaction + ".json":
             raise ImageLifecycleError("invalid refresh image record identity")
         refs = require_dict(raw["references"], field="owned image references")
         ids = raw["owned_ids"]
@@ -517,19 +513,20 @@ def _read_owned_record(
         raise ImageLifecycleError(f"cannot read refresh image ownership: {exc}") from exc
 
 
-def _owned_image_blocker(image: str, docker: DockerPort) -> str:
+def _owned_image_blocker(image: str, docker: DockerPort, identity: str | None = None) -> str:
     if any(row.image_id == image for row in docker.image_references()):
         return "tag/keeper"
-    if docker.repo_digests(image):
-        return "registry digest"
-    if image in docker.container_image_ids():
-        return "container"
-    layers = docker.image_layers(image)
-    for other in docker.image_ids() - {image}:
-        other_layers = docker.image_layers(other)
-        if layers and other_layers[: len(layers)] == layers:
-            return "child"
-    return ""
+    from booley.runtime.project_resources import (
+        dependency_blocker,
+        has_other_claim,
+        proven_origin,
+    )
+
+    if reason := dependency_blocker(image, docker):
+        return reason
+    if has_other_claim(image, identity):
+        return "other Project claimant"
+    return "" if proven_origin(image, docker) else "unproven historical origin/acquisition"
 
 
 def cleanup_owned_images(
@@ -539,6 +536,10 @@ def cleanup_owned_images(
     store = _owned_store()
     if not store.validate_existing_directory():
         return ()
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    if shared_recovery_blocks_command(read_only=True):
+        return ("retained images required by interrupted Session refresh",)
     adapter = docker or _docker_adapter()
     retained = []
     for path in sorted(store.root.glob("*.json")):
@@ -549,7 +550,7 @@ def cleanup_owned_images(
         for image in reversed(owned):
             if image not in adapter.image_ids():
                 continue
-            reason = _owned_image_blocker(image, adapter)
+            reason = _owned_image_blocker(image, adapter, str(root))
             if reason:
                 remaining.append(image)
                 retained.append(f"{image}: retained ({reason})")
@@ -577,6 +578,9 @@ def cleanup_owned_images(
             )
         else:
             path.unlink()
+    from booley.runtime.project_resources import compact
+
+    compact(adapter)
     return tuple(retained)
 
 
@@ -619,6 +623,9 @@ class _OwnedBuild:
             self.references.update(refs)
             owned = tuple(image for image in refs.values() if image not in before)
             record_owned_images(self.project, self.transaction, refs, owned)
+            from booley.runtime.project_resources import record_acquisition
+
+            record_acquisition(str(self.project), owned, self.docker)
 
 
 def _build_adapter(
@@ -1764,6 +1771,16 @@ def abort(
     cleanup_owned_images(prepared.plan.project_root, docker=resolved_docker)
 
 
+def _discard_adopted_candidates(
+    prepared: PreparedConvergence, docker: DockerPort
+) -> tuple[Diagnostic, ...]:
+    try:
+        abort(prepared, docker=docker)
+        return ()
+    except (RuntimeError, OSError) as exc:
+        return (Diagnostic("cleanup-deferred", str(exc)),)
+
+
 def commit(
     prepared: PreparedConvergence,
     *,
@@ -1776,6 +1793,9 @@ def commit(
     except ImageLifecycleError:
         abort(prepared, docker=resolved_docker)
         raise
+    from booley.runtime.project_resources import record_adoption, restore_adoption
+
+    checkpoint = record_adoption(prepared)
     changed: list[str] = []
     try:
         for step, image in zip(prepared.plan.steps, prepared.candidates, strict=True):
@@ -1787,6 +1807,7 @@ def commit(
             changed.append(image.reference)
     except BaseException as exc:
         failures = _restore_tag_snapshots(prepared.prior_tags, resolved_docker)
+        restore_adoption(checkpoint)
         if failures:
             raise ImageLifecycleError(
                 "candidate adoption failed and prior tags could not be restored: "
@@ -1794,7 +1815,7 @@ def commit(
             ) from exc
         raise
     final = prepared.candidates[-1]
-    abort(prepared, docker=resolved_docker)
+    diagnostics = _discard_adopted_candidates(prepared, resolved_docker)
     result = LifecycleResult(
         prepared.plan.selected_reference,
         final.image_id,
@@ -1805,6 +1826,7 @@ def commit(
         requires_runtime_recreation=bool(changed),
         wheel_source_fingerprint=prepared.plan.nodes[-1].wheel_source_fingerprint,
         wheel_sha256=final.wheel_sha256,
+        diagnostics=diagnostics,
     )
     return _cleanup_layout_result(
         prepared.plan.project_root, result, Intent.ENSURE, resolved_docker
@@ -2558,6 +2580,7 @@ class _DockerCli:
                 ["docker", "image", "rm", "--no-prune", image],
                 capture_output=True,
                 text=True,
+                timeout=30,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:

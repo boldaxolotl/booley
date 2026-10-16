@@ -230,13 +230,44 @@ follow directory symlinks. Discovery stops descending at each initialized
 Project to avoid scanning its RTL, vendor, and build trees, so nested Projects
 are not imported by that scan. To import a nested Project, run
 `booley projects discover <nested path>` on it directly.
-`booley projects forget <project>` removes an
-obsolete remembered root only after its live Grants have been revoked.
-Forget then releases that root's issued-image keeper tag when no container uses
-its immutable image; an in-use keeper is retained while the root is forgotten.
-Docker inspection or removal failure preserves the inventory entry for retry.
-If a present root's keeper was released, run `booley init` before using it again.
-For keepers left by earlier forgotten Projects, preview with
+
+### Project resource retention and purge
+
+`booley projects forget <project>` removes an obsolete remembered root only after
+its live Grants have been revoked. It releases that root's issued-image keeper
+only when exact created-ID/origin proof and Docker dependencies permit removal.
+A keeper otherwise remains while the root is forgotten: `retained-unproven`
+means acquisition proof is missing, `retained-protected` means registry, child
+or other Project claims protect it, and `retained-in-use` means a container
+uses the image. Plain forget retains app state volumes and Project image tags, and
+reports remaining Docker resources with their apparent sizes and retention
+reasons. Unknown sizes are shown explicitly; reported sizes cannot be summed
+into a promise of freed disk space. `--json` preserves the schema 1 `forgotten`
+and `keeper` fields and adds a `resources` report.
+
+Use `booley projects forget --purge <exact absolute Project Root>` to remove
+unused receipt-proven Project image aliases/bytes and unused Claude and Codex
+state volumes, including every auth-policy variant. These volumes may contain
+copied login credentials and session history; deleting them does not delete host
+credentials. Purge retains containers, their image/mount dependencies, other
+Projects' aliases, registry identities, shared infrastructure and global build
+cache. Historical images without exact acquisition and origin proof remain.
+
+The printed purge command still works after ordinary forget, including after the
+Project Root has been deleted: Booley retains a private exact-root cleanup
+identity while resources remain, and rechecks live Grants on every retry. Use
+the original absolute spelling; a different path or basename is not equivalent.
+Inspection or removal failure preserves the inventory entry and retry identity,
+reports partial progress, and returns an error. A retry safely handles resources
+already removed. Close VS Code and remove its Sandbox container before reclaiming
+resources it retains; external Docker changes can still race these checks.
+
+`booley init --force` retires unused, proven images superseded by that init and
+retries cleanup after successful spec/keeper reissuance. It retains unproven
+historical images and does not delete state volumes. Earlier session-refresh
+artifacts with proof can be reclaimed through explicit `--purge`.
+If a present forgotten Project's keeper was released, run `booley init` before
+using it again. For keepers left by earlier forgotten Projects, preview with
 `booley projects prune-keepers`, then apply that exact preview with
 `booley projects prune-keepers --confirm <digest>`.
 

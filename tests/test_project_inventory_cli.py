@@ -15,6 +15,7 @@ import pytest
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
+from booley.runtime.image_lifecycle import ImageReference
 from booley.runtime.session_issuance import keeper_image
 
 
@@ -40,7 +41,9 @@ def test_projects_json_has_a_versioned_nested_contract(
     args = _parser().parse_args(["projects", "--json"])
 
     assert _run(args) == 0
-    assert json.loads(capsys.readouterr().out) == {
+    document = json.loads(capsys.readouterr().out)
+    document.pop("resources", None)
+    assert document == {
         "schema": 1,
         "projects": [
             {
@@ -82,7 +85,15 @@ def test_projects_forget_reports_the_exact_root(
     args = _parser().parse_args(["projects", "forget", str(project), "--json"])
 
     assert _run(args) == 0
-    assert json.loads(capsys.readouterr().out) == {
+    document = json.loads(capsys.readouterr().out)
+    assert document.pop("resources") == {
+        "images": [],
+        "volumes": [],
+        "containers": [],
+        "networks": [],
+        "removed": [],
+    }
+    assert document == {
         "schema": 1,
         "forgotten": str(project.resolve()),
         "keeper": {
@@ -196,19 +207,35 @@ class FakeDocker:
         self.containers: dict[str, str] = {}
         self.calls: list[list[str]] = []
         self.fail_remove: str | None = None
+        self.labels: dict[str, dict[str, str]] = {}
 
     def __call__(self, args: Any, **kwargs: Any) -> Any:
         import subprocess
 
         self.calls.append(args)
-        if args[:2] == ["image", "ls"]:
-            return subprocess.CompletedProcess(args, 0, "\n".join(self.tags), "")
-        if args[:2] == ["container", "ls"]:
-            return subprocess.CompletedProcess(args, 0, "\n".join(self.containers), "")
+        if args[1] == "ls":
+            values = {
+                "volume": (),
+                "network": (),
+                "image": self.tags,
+                "container": self.containers,
+            }
+            return subprocess.CompletedProcess(args, 0, "\n".join(values[args[0]]), "")
+        if args[:2] == ["system", "df"]:
+            return subprocess.CompletedProcess(
+                args, 0, '{"Images":[],"Containers":[],"Volumes":[]}', ""
+            )
         if args[:2] == ["container", "inspect"]:
-            return subprocess.CompletedProcess(args, 0, self.containers[args[2]], "")
+            value = self.containers[args[2]]
+            if len(args) == 3:
+                value = json.dumps([{"Id": args[2], "Image": value, "Mounts": []}])
+            return subprocess.CompletedProcess(args, 0, value, "")
         if args[:2] == ["image", "inspect"]:
             value = self.tags.get(args[2])
+            if value is None and args[2] in self.tags.values():
+                value = args[2]
+            if value and len(args) == 3:
+                value = json.dumps([{"Id": value, "Config": {"Labels": {}}}])
             return subprocess.CompletedProcess(
                 args, 0 if value else 1, value or "", "" if value else "No such image"
             )
@@ -220,13 +247,56 @@ class FakeDocker:
             return subprocess.CompletedProcess(args, 0, "", "")
         raise AssertionError(args)
 
+    def image_id(self, reference: str) -> str | None:
+        return self.tags.get(reference)
+
+    def image_ids(self) -> frozenset[str]:
+        return frozenset(self.tags.values())
+
+    def image_references(self) -> tuple[ImageReference, ...]:
+        return tuple(
+            ImageReference(tag, image)
+            for tag, image in self.tags.items()
+            if not tag.startswith("sha256:")
+        )
+
+    def label(self, image: str, name: str) -> str | None:
+        return self.labels.get(image, {}).get(name)
+
+    def container_image_ids(self) -> frozenset[str]:
+        return frozenset(self.containers.values())
+
+    def image_layers(self, image: str) -> tuple[str, ...]:
+        return (image,)
+
+    def repo_digests(self, image: str) -> tuple[str, ...]:
+        return ()
+
+
+def _prove_keepers(docker, *projects):
+    """Model images actually acquired by the fixture, separately from tag names."""
+    from booley.core.project_identity import project_label_id
+    from booley.runtime import project_resources
+    from booley.runtime.session_issuance import keeper_image_for_identity
+
+    for root in projects:
+        image = docker.tags[keeper_image_for_identity(str(root))]
+        if image not in docker.labels:
+            docker.labels[image] = {project_resources.LABEL_ORIGIN: project_label_id(str(root))}
+            project_resources.record_acquisition(str(root), (image,), docker)
+
 
 @pytest.fixture
 def keeper_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
     from booley.runtime import interactive_docker
 
+    (tmp_path / "config").mkdir(mode=0o700, exist_ok=True)
+    (tmp_path / "config").chmod(0o700)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     docker = FakeDocker()
+    from booley.runtime import image_lifecycle
+
+    monkeypatch.setattr(image_lifecycle, "_docker_adapter", lambda: docker)
     monkeypatch.setattr(interactive_docker, "_run_docker", docker)
     return docker
 
@@ -248,6 +318,7 @@ def test_public_forget_releases_only_own_unused_keeper(
             "unrelated:latest": "sha256:" + "a" * 64,
         }
     )
+    _prove_keepers(keeper_host, project)
     assert _run(_parser().parse_args(["projects", "forget", str(project), "--json"])) == 0
     assert own not in keeper_host.tags
     assert other in keeper_host.tags and "unrelated:latest" in keeper_host.tags
@@ -267,6 +338,7 @@ def test_public_prune_preview_then_digest_confirmation(
     project_inventory.remember_project(project)
     own, orphan = keeper_image(project), keeper_image(tmp_path / "legacy")
     keeper_host.tags.update({own: "sha256:" + "a" * 64, orphan: "sha256:" + "b" * 64})
+    _prove_keepers(keeper_host, tmp_path / "legacy")
     assert _run(_parser().parse_args(flags)) == 0
     preview = json.loads(capsys.readouterr().out)
     assert preview["released"] == [] and orphan in keeper_host.tags
@@ -313,6 +385,7 @@ def test_forget_removal_failure_preserves_inventory(
     project = _remember(tmp_path)
     tag = keeper_image(project)
     keeper_host.tags[tag] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, project)
     keeper_host.fail_remove = tag
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 2
     assert "removal denied" in capsys.readouterr().err
@@ -326,6 +399,7 @@ def test_prune_stale_confirmation_and_shared_container_protection(
 
     orphan = keeper_image(tmp_path / "orphan")
     keeper_host.tags[orphan] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, tmp_path / "orphan")
     status, preview = _prune(capsys)
     assert status == 0
     keeper_host.containers["c" * 64] = keeper_host.tags[orphan]
@@ -340,6 +414,7 @@ def test_prune_inventory_remember_invalidates_confirmation(
 
     project = tmp_path / "project"
     keeper_host.tags[keeper_image(project)] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, project)
     _, preview = _prune(capsys)
     _remember(tmp_path)
     status, result = _prune(capsys, preview["digest"])
@@ -352,6 +427,7 @@ def test_prune_digest_ignores_unrelated_observations(
     from booley.runtime.session_issuance import keeper_image
 
     keeper_host.tags[keeper_image(tmp_path / "orphan")] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, tmp_path / "orphan")
     _, first = _prune(capsys)
     keeper_host.tags["unrelated:latest"] = "sha256:" + "b" * 64
     keeper_host.containers["c" * 64] = "sha256:" + "b" * 64
@@ -365,7 +441,10 @@ def test_prune_partial_failure_accounts_for_prior_releases(
     from booley.runtime.session_issuance import keeper_image
 
     tags = sorted([keeper_image(tmp_path / "one"), keeper_image(tmp_path / "two")])
-    keeper_host.tags.update(dict.fromkeys(tags, "sha256:" + "a" * 64))
+    # Each fixture Project actually acquired its own image; this test isolates
+    # partial removal accounting rather than granting ownership by observation.
+    keeper_host.tags.update({tag: f"sha256:{index:064x}" for index, tag in enumerate(tags, 1)})
+    _prove_keepers(keeper_host, tmp_path / "one", tmp_path / "two")
     keeper_host.fail_remove = tags[1]
     _, preview = _prune(capsys)
     status, result = _prune(capsys, preview["digest"])
@@ -377,7 +456,7 @@ def test_prune_partial_failure_accounts_for_prior_releases(
 
 
 @pytest.mark.parametrize("stamp", ["runtime-issuance.json", "session-spec.json"])
-def test_prune_inventory_absence_authorizes_historical_stamps(
+def test_prune_retains_unproven_historical_stamps(
     tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str], stamp: str
 ) -> None:
     from booley.runtime.session_issuance import keeper_image
@@ -388,8 +467,8 @@ def test_prune_inventory_absence_authorizes_historical_stamps(
     tag = keeper_image(project)
     keeper_host.tags[tag] = "sha256:" + "a" * 64
     _, preview = _prune(capsys)
-    assert preview["candidates"][0]["reason"] == "inventory-absent"
-    assert _prune(capsys, preview["digest"])[0] == 0 and tag not in keeper_host.tags
+    assert preview["candidates"][0]["reason"] == "unproven"
+    assert _prune(capsys, preview["digest"])[0] == 0 and tag in keeper_host.tags
 
 
 def test_forget_grant_guard_performs_no_docker_work(
@@ -419,6 +498,7 @@ def test_forget_uses_exact_stored_identity(
     project = _remember(tmp_path)
     own = keeper_image(project)
     keeper_host.tags[own] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, project)
     if change == "uninitialized":
         shutil.rmtree(project / ".booley")
     else:
@@ -507,6 +587,7 @@ def test_apply_rechecks_before_deletion(
 
     tag = keeper_image(tmp_path / "orphan")
     keeper_host.tags[tag] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, tmp_path / "orphan")
     _, preview = _prune(capsys)
     original = keeper_host.__call__
     count = 0
@@ -533,7 +614,10 @@ def test_apply_rechecks_before_deletion(
 
     monkeypatch.setattr(interactive_docker, "_run_docker", mutate)
     status, result = _prune(capsys, preview["digest"])
-    assert status == 0 and result["released"] == [] and result["retained"] == [tag]
+    # The shared alias safety probe can observe the new container during the
+    # rebuilt preview itself; that stronger snapshot invalidates confirmation.
+    assert status == (2 if mutation == "container" else 0)
+    assert result["released"] == [] and result["retained"] == [tag]
     assert tag in keeper_host.tags
 
 
@@ -578,6 +662,7 @@ def test_forget_release_requires_reissuance_before_admission(
         lambda source, target: keeper_host.tags.update({target: source}),
     )
     stamp = issuance.issue(project, spec, path)
+    _prove_keepers(keeper_host, project)
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
     capsys.readouterr()
     assert issuance.stamp_path(project).exists()
@@ -827,6 +912,7 @@ def test_real_public_forget_uses_keeper_service(
     project = _remember(tmp_path)
     own, other = keeper_image(project), keeper_image(tmp_path / "other")
     keeper_host.tags.update({own: "sha256:" + "a" * 64, other: "sha256:" + "b" * 64})
+    _prove_keepers(keeper_host, project)
     _public_success(
         public_projects_host, ["projects", "forget", str(project), "--json"], keeper_host, capsys
     )
@@ -848,6 +934,7 @@ def test_real_public_prune_uses_keeper_service(
     project = _remember(tmp_path)
     own, orphan = keeper_image(project), keeper_image(tmp_path / "orphan")
     keeper_host.tags.update({own: "sha256:" + "a" * 64, orphan: "sha256:" + "b" * 64})
+    _prove_keepers(keeper_host, tmp_path / "orphan")
     _public_success(public_projects_host, flags, keeper_host, capsys)
     preview = json.loads(capsys.readouterr().out)
     assert preview["released"] == [] and orphan in keeper_host.tags
@@ -864,12 +951,14 @@ def test_real_module_operations_support_keywords_and_preview_default(
     project = _remember(tmp_path)
     own = keeper_image(project)
     keeper_host.tags[own] = "sha256:" + "a" * 64
+    _prove_keepers(keeper_host, project)
     preview = runtime_image_keepers.prune_keepers()
     assert preview.released == [] and not preview.candidates[0].eligible
     root, release = runtime_image_keepers.forget_project(project=project)
     assert root == project and release.status == "released" and own not in keeper_host.tags
     orphan = keeper_image(tmp_path / "orphan")
     keeper_host.tags[orphan] = "sha256:" + "b" * 64
+    _prove_keepers(keeper_host, tmp_path / "orphan")
     preview = runtime_image_keepers.prune_keepers()
     assert preview.released == [] and orphan in keeper_host.tags
     result = runtime_image_keepers.prune_keepers(confirm=preview.digest)
@@ -892,3 +981,123 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     )
     assert json.loads(capsys.readouterr().out)["discovered"] == [str(project)]
     assert keeper_host.calls == []
+
+
+def _resource_project(tmp_path, monkeypatch):
+    from booley.core.project_identity import project_name_id
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    project_inventory.remember_project(root)
+    for app in ("claude", "codex"):
+        for suffix in ("", "-subscription", "-api_key"):
+            name = f"booley-{app}-state-{project_name_id(str(root))}{suffix}"
+            docker.volumes[name] = {"Name": name}
+    return root, docker
+
+
+def _resource_forget(root, *, purge=False, json_output=False):
+    return _run(
+        argparse.Namespace(projects_action="forget", project=root, purge=purge, json=json_output)
+    )
+
+
+def test_forget_reports_leftovers_sizes_and_purge_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import shlex
+
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    image = next(iter(docker.image_ids()))
+    assert _resource_forget(root) == 0
+    output = capsys.readouterr().out
+    assert image in output and "12345" in output, "leftover image identity and size absent"
+    assert next(iter(docker.volumes)) in output
+    assert f"booley projects forget --purge {shlex.quote(str(root))}" in output
+    assert len(docker.volumes) == 6
+
+
+def test_forget_json_adds_resource_report_without_removing_keeper_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _docker = _resource_project(tmp_path, monkeypatch)
+    assert _resource_forget(root, json_output=True) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert "resources" in document, "resource report absent from JSON"
+    assert document["schema"] == 1 and document["forgotten"] == str(root)
+    assert document["keeper"]["status"] == "absent"
+    assert len(document["resources"]["volumes"]) == 6
+
+
+def test_forget_purge_removes_only_unused_owned_images_and_app_volumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    owned = set(docker.image_ids())
+    docker.images["foreign:latest"] = ("sha256:" + "f" * 64, {})
+    docker.volumes["foreign-state"] = {"Name": "foreign-state"}
+    assert _resource_forget(root, purge=True) == 0
+    assert not owned & docker.image_ids(), "purge retained unused owned image bytes"
+    assert set(docker.volumes) == {"foreign-state"}
+    assert "foreign:latest" in docker.images
+
+
+def test_purge_after_forget_uses_retained_exact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    assert _resource_forget(root) == 0
+    assert _resource_forget(root, purge=True) == 0, "retained exact-root purge rejected"
+    assert not docker.image_ids() and not docker.volumes
+
+
+def test_purge_deleted_project_uses_retained_exact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import shutil
+
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    assert _resource_forget(root) == 0
+    shutil.rmtree(root)
+    assert _resource_forget(root, purge=True) == 0, "deleted exact-root purge rejected"
+    assert not docker.image_ids() and not docker.volumes
+
+
+def test_retained_purge_rechecks_live_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from types import SimpleNamespace
+
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    assert _resource_forget(root) == 0
+    before = dict(docker.images)
+    monkeypatch.setattr(
+        project_inventory, "_authority_grants", lambda: (SimpleNamespace(project_root=str(root)),)
+    )
+    assert _resource_forget(root, purge=True) == 2
+    assert "revoke" in capsys.readouterr().err
+    assert before == docker.images and len(docker.volumes) == 6
+
+
+def test_retained_purge_rejects_unknown_and_nonexact_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    assert _resource_forget(root) == 0
+    before = dict(docker.images)
+    for unknown in (tmp_path / "unknown", Path(root.name)):
+        assert _resource_forget(unknown, purge=True) == 2
+    assert before == docker.images and len(docker.volumes) == 6
+
+
+def test_plain_forget_does_not_accept_retained_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, docker = _resource_project(tmp_path, monkeypatch)
+    assert _resource_forget(root) == 0
+    assert _resource_forget(root) == 2
+    assert docker.image_ids() and len(docker.volumes) == 6
+
+
+def test_purge_flag_is_available_on_public_parser() -> None:
+    assert _parser().parse_args(["projects", "forget", "/project", "--purge"]).purge

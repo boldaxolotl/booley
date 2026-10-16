@@ -975,3 +975,52 @@ def test_read_only_commands_report_pending_recovery(tmp_path: Path) -> None:
     ):
         assert init_cmd.run_init(args, tmp_path) == 2
     run_init.assert_not_called()
+
+
+def test_refresh_recovery_keeps_prior_images_after_adoption_without_prior_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from booley.harness import image_lifecycle as images
+    from booley.runtime import image_lifecycle as lifecycle
+    from tests.harness.test_image_lifecycle import resource_environment
+
+    recovered_guard = session_refresh.shared_recovery_blocks_command
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    reference = lifecycle.project_image.project_image_name(root)
+    old = docker.image_id(reference)
+    prepared = images.prepare(lifecycle.plan(lifecycle.ProjectImageScope(root)))
+    state = tuple(
+        session_refresh.RefreshPreparedImage(
+            candidate.reference,
+            candidate.candidate_reference,
+            candidate.image_id,
+            next(
+                (
+                    row.image_id
+                    for row in prepared.prior_tags
+                    if row.reference == candidate.reference
+                ),
+                None,
+            ),
+        )
+        for candidate in prepared.candidates
+    )
+    _write_restore_journal(tmp_path / "config", root)
+    journal = session_refresh._load_journal(root)
+    assert journal is not None
+    journal = replace(journal, prior_runtime=None, prepared_images=state)
+    session_refresh._write_journal(journal)
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", recovered_guard)
+    result = images.commit(prepared)
+    assert result.selected_id != old
+    assert old in docker.image_ids()
+    # A later refresh step fails after adoption; use the actual replay owner.
+    with pytest.raises(RuntimeError, match="after adoption"):
+        try:
+            raise RuntimeError("refresh failed after adoption")
+        finally:
+            session_refresh._recover_prepared_image_tags(state, restore=True)
+    assert docker.image_id(reference) == old
+    assert all(row.prior_id is None or row.prior_id in docker.image_ids() for row in state)
