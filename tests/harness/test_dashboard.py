@@ -458,14 +458,14 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     assert activity_label(Activity(WORKING, "2026-10-08T10:09:15Z"), now) == "working · 45s"
     assert (
         activity_label(Activity(WAITING_TOOL, STAMP, "mcp__booley__Sim"), now)
-        == "waiting for tool call (mcp__booley__Sim) · 10m"
+        == "waiting for tool call (mcp__booley__Sim) · 10m 00s"
     )
-    assert activity_label(Activity(WAITING_TOOL, STAMP), now) == "waiting for tool call · 10m"
+    assert activity_label(Activity(WAITING_TOOL, STAMP), now) == "waiting for tool call · 10m 00s"
     assert (
         activity_label(Activity(WAITING_USER, "2026-10-08T07:05:00Z"), now)
-        == "waiting for user input · 3h 5m"
+        == "waiting for user input · 3h 05m"
     )
-    assert activity_label(Activity(WORKING, "not a time"), now) == "working · —"
+    assert activity_label(Activity(WORKING, "not a time"), now) == "working · unknown"
 
     app = DashboardApp(snapshot)
     app.snapshot = replace(
@@ -477,11 +477,11 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     )
     app._assign_shortcuts()
     rows = [str(row) for row in app._overview()[2]]
-    assert "waiting for tool call (mcp__booley__Sim) · 10m" in rows[0]
-    assert "waiting for user input · 10m" in rows[1]
+    assert "waiting for tool call (mcp__booley__Sim) · 10m 00s" in rows[0]
+    assert "waiting for user input · 10m 00s" in rows[1]
     assert "activity unknown" in rows[2]
     app.navigation = Navigation("session", "codex:00")
-    assert "\nWaiting for tool call (mcp__booley__Sim) · 10m" in app._session()[0]
+    assert "\nWaiting for tool call (mcp__booley__Sim) · 10m 00s" in app._session()[0]
     app.navigation = Navigation("session", "codex:02")
     assert "\nActivity unknown" in app._session()[0]
 
@@ -723,7 +723,7 @@ def test_overview_summarizes_session_and_standalone_running_jobs():
     )
     app = DashboardApp(lambda: current)
     app.snapshot = replace(current, jobs=JobSnapshot((*current.jobs.jobs, standalone)))
-    elapsed = f"{1791454200 - 1791453600}s"
+    elapsed = "10m 00s"
     orientation, _, rows = app._overview()
     assert f"Standalone running Jobs: J-LINT? · lint lint_top {elapsed}" in orientation
     assert f"sim Target — {elapsed}" in str(rows[0])
@@ -755,6 +755,113 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
     app.navigation = Navigation("jobs", None, "all")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
+
+
+@pytest.mark.asyncio
+async def test_time_display_pilot_snapshots(monkeypatch):
+    from booley.harness.dashboard.app import job_detail
+    from booley.runtime.session_activity import WORKING, Activity
+
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    current = snapshot(1)
+    completed = replace(
+        current.jobs.jobs[0],
+        state="completed",
+        record=replace(current.jobs.jobs[0].record, ended_at="2026-10-08T10:01:01Z"),
+    )
+    detail = job_detail(completed, now=current.observed_at)
+    assert "Start: 14:00:00 · End: 14:01:01" in detail, "dashboard time migration missing"
+    assert "Elapsed: 1m 01s" in detail
+    _check_time_edge_fields(current, completed)
+    current = replace(
+        current, jobs=JobSnapshot((completed,)), activity={"codex:00": Activity(WORKING, STAMP)}
+    )
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("session", "codex:00")
+    app._assign_shortcuts()
+    orientation, _ = app._session()
+    assert "Started 10m ago" in orientation
+    assert "· 10m ago" in orientation
+    assert "working · 10m 00s" in orientation.lower()
+    assert "14:00:00" in str(app._session_activity(None))
+    for size in ((140, 40), (80, 25)):
+        await _capture_time_pilot(monkeypatch, current, completed, orientation, size)
+
+
+def _check_time_edge_fields(current, completed):
+    from booley.harness.dashboard.app import _evidence_detail, job_detail
+
+    invalid = replace(
+        completed, record=replace(completed.record, started_at="bad", ended_at="bad")
+    )
+    assert "Start: unknown · End: unknown" in job_detail(invalid, now=current.observed_at)
+    future = replace(current.sessions[0], last_call_at="2026-10-09T10:00:00Z")
+    future_app = DashboardApp(lambda: current)
+    future_app.snapshot = replace(current, sessions=(future,))
+    future_app.navigation = Navigation("session", "codex:00")
+    assert "· just now" in future_app._session()[0]
+    evidence = model.GoalDetail(
+        "clock",
+        "passing",
+        CriterionPresentation("Lint top", "", "", "", ""),
+        {"recorded_at": STAMP},
+    )
+    assert "Last check: 14:00:00" in _evidence_detail(evidence, now=current.observed_at)
+
+
+async def _capture_time_pilot(monkeypatch, current, completed, orientation, size):
+    import os
+
+    app = DashboardApp(lambda: current)
+    original_interval = app.set_interval
+
+    def paused_interval(*args, **kwargs):
+        timer = original_interval(*args, **kwargs)
+        timer.pause()
+        return timer
+
+    monkeypatch.setattr(app, "set_interval", paused_interval)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        app.navigation = Navigation("session", "codex:00")
+        app.render_snapshot()
+        await pilot.pause()
+        output = os.environ.get("BOOLEY_TIMEFMT_PILOT_DIR")
+        if output:
+            root = Path(output)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / f"session-{size[0]}x{size[1]}.svg").write_text(app.export_screenshot())
+        app.navigation = Navigation("job", "codex:00", selected=json.dumps(completed.key))
+        app.render_snapshot()
+        await pilot.pause()
+        shown = str(app.query_one("#detail", Static).render())
+        assert "Start: 14:00:00 · End: 14:01:01" in shown
+        if output:
+            (root / f"dashboard-{size[0]}x{size[1]}.svg").write_text(app.export_screenshot())
+            (root / f"dashboard-{size[0]}x{size[1]}.txt").write_text(orientation + "\n" + shown)
+
+
+def test_absent_time_fields_keep_unavailable_markers():
+    from booley.harness.dashboard.app import _evidence_detail, _job_row, _job_summary, job_detail
+
+    current = snapshot(1)
+    missing = replace(current.jobs.jobs[0], state="completed", report=None)
+    assert "completed · unavailable" in _job_row(missing, current.observed_at, "S1"), (
+        "absent time marker changed"
+    )
+    assert "unavailable" in _job_summary(missing, current.observed_at), (
+        "absent time marker changed"
+    )
+    assert "Elapsed: unavailable" in job_detail(missing, now=current.observed_at)
+    evidence = model.GoalDetail(
+        "clock", "passing", CriterionPresentation("Lint top", "", "", "", ""), {}
+    )
+    assert "Last check: unavailable" in _evidence_detail(evidence, now=current.observed_at), (
+        "absent time marker changed"
+    )
+    invalid = replace(evidence, evidence={"recorded_at": "bad"})
+    assert "Last check: unknown" in _evidence_detail(invalid, now=current.observed_at)
 
 
 def _header_health(monkeypatch, tmp_path, fail=2, warn=1, due=None, missing=False, upgrade=False):

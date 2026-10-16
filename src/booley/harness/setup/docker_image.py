@@ -58,7 +58,7 @@ from booley.runtime.image_provenance import (
     resolve_recipe_fingerprint,
 )
 from booley.runtime.paths import docker_data_dir
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 
 DOCKER_IMAGE = "booley-sandbox"
 GHCR_IMAGE = "ghcr.io/boldaxolotl/booley-sandbox"
@@ -1135,7 +1135,7 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
         _render_build_diagnostics(result)
         if result.timed_out:
             err(
-                f"docker build timed out after {build_timeout // 60} minutes "
+                f"docker build timed out after {format_duration(build_timeout)} "
                 "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
             )
             ctx.record(spec.record_key, "err", "build timed out")
@@ -1145,7 +1145,7 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
         raise
     except subprocess.TimeoutExpired:
         err(
-            f"docker build timed out after {build_timeout // 60} minutes "
+            f"docker build timed out after {format_duration(build_timeout)} "
             "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
         )
         ctx.record(spec.record_key, "err", "build timed out")

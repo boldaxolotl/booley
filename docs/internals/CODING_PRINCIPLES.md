@@ -114,11 +114,32 @@ Machine timestamps are second-resolution UTC RFC 3339 with a `Z` suffix:
 and fractional seconds, but new persisted values use the canonical form.
 
 Human-visible dates use uppercase English three-letter months regardless of
-process locale: `10 AUG 2026`. Combined timestamps use the user's local time
-as `HH:MM[:SS] · DD MMM YYYY`. Use `booley.runtime.timefmt`; do not hand-roll another
-format string. Persisted diagnostic log prefixes and their mirrored Console
+process locale: `10 AUG 2026`. Use `booley.runtime.timefmt`; do not hand-roll
+another format string. Persisted diagnostic log prefixes and their mirrored Console
 prefixes instead use canonical UTC RFC 3339 `Z` timestamps so events can be
 correlated across files.
+
+### Time and duration display
+
+Dashboard and CLI presentation uses `format_clock`, `format_duration`, and
+`format_age` from `booley.runtime.timefmt`. Absolute clocks use the user's local
+timezone: same day `HH:MM:SS`, another day in the same year `Oct 03 14:44`,
+another year `YYYY-MM-DD HH:MM`. Compare local calendar dates; clock months
+are fixed English title case, while date-only months stay uppercase.
+
+Choose duration buckets from the original input. Nonpositive values display
+`0s`; every positive subsecond value uses one decimal, including `0.0s`,
+`0.4s`, and rounded `1.0s` (`0.999` seconds). Exactly one second displays `1s`.
+Floor whole seconds thereafter: `59s`, `1m 00s`, `59m 59s`, `1h 00m`,
+`23h 59m`, `1d 00h`. Relative ages are `just now` below five seconds, then
+`5s ago`, `1m ago`, `1h ago`, `1d ago` with the leading unit floored.
+Future ages clamp to `just now`; invalid or naive instants and invalid
+durations display `unknown`. Keep meaningful absent-field markers.
+
+This policy owns Dashboard/CLI presentation. Existing document/report text,
+JSON, MCP diagnostic representations, redirected progress records (including
+elapsed tokens), and UTC diagnostic prefixes retain their representations.
+Printed report excerpts remain exact copies of the stored report.
 
 ## Verification
 

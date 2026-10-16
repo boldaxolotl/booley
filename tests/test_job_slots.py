@@ -1037,7 +1037,7 @@ class TestAcquire:
         described = store.describe_holders(CLASS_HEAVY)
         assert "pid 100" in described
         assert "(sim)" in described
-        assert "held 10m13s" in described
+        assert "held 10m 13s" in described
 
     def test_describe_holders_on_empty_class_does_not_raise(self, root, world):
         store = make_store(root, world)
@@ -1363,3 +1363,16 @@ def test_persisted_legacy_role_reloads_behind_interactive(root, world):
         (interactive.pid, ROLE_INTERACTIVE),
         (legacy.pid, "ticket"),
     ]
+
+
+def test_holder_fractional_duration_uses_original_interval(root, world):
+    spawn(world, 100, ["booley", "flow", "sim"])
+    store = make_store(root, world)
+    token = store.submit(CLASS_HEAVY, pid=100, argv=["booley", "flow", "sim"])
+    assert store.refresh(token).state == HOLDING
+    started = world.clock
+    for elapsed, expected in ((0.0001, "0.0s"), (0.4, "0.4s"), (0.999, "1.0s"), (1, "1s")):
+        world.clock = started + elapsed
+        assert f"held {expected}" in store.describe_holders(CLASS_HEAVY), (
+            "holder fractional display missing"
+        )

@@ -921,3 +921,26 @@ def test_vivado_stage_identification_accepts_native_path_separators(
     sink.observe(source, b"fresh Vivado output\n")
     sink.end_command()
     assert sink.stage == "candidate: " + stage
+
+
+def test_tty_adaptive_intervals_use_monotonic_differences(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERM", "xterm")
+    screen = Screen(tty=True)
+    now = [1000000.0]
+    progress = observer(
+        tmp_path,
+        stream=screen,
+        clock=lambda: now[0],
+        dimensions=lambda: os.terminal_size((180, 40)),
+    )
+    progress.last_output = now[0]
+    now[0] += 3661
+    progress.tick()
+    assert "elapsed=1h 01m command=1h 01m" in screen.getvalue()
+    assert "last output=1h ago" in screen.getvalue()
+    screen.seek(0)
+    screen.truncate()
+    progress.last_output = now[0] - 0.4
+    now[0] += 0.3
+    progress.tick()
+    assert "last output=just now" in screen.getvalue()

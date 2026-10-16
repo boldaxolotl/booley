@@ -57,6 +57,7 @@ from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
+from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -66,7 +67,7 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
 )
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
@@ -2353,6 +2354,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                         tgt,
                         metrics,
                         baseline_results.get(tgt),
+                        human=True,
                     )
                 )
         return current_results
@@ -2710,6 +2712,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         tgt: str,
         cur: SynthMetrics,
         base: SynthMetrics | None,
+        *,
+        human: bool = False,
     ) -> str:
         """Format one target's area/timing/elapsed line."""
         area_str = self._fmt_area(cur.area_kge)
@@ -2718,23 +2722,30 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             if cur.synth_mode is SynthMode.LOGICAL
             else self._fmt_timing(_worst_critical_path_ps(cur))
         )
-        elapsed_str = f"{cur.elapsed_s:.1f}s"
+        elapsed_str = format_duration(cur.elapsed_s) if human else f"{cur.elapsed_s:.1f}s"
         if base:
             area_delta = self._compute_delta_pct(cur.area_kge, base.area_kge)
             timing_delta = self._compute_delta_pct(
                 _worst_critical_path_ps(cur),
                 _worst_critical_path_ps(base),
             )
-            return (
+            line = (
                 f"[synth] {tgt:<10}"
                 f"{area_str} {self._fmt_delta(area_delta):>20}   "
                 f"{timing_str} {self._fmt_delta(timing_delta):>20}   "
                 f" {elapsed_str}{self._format_status_suffix(cur)}"
             )
+        else:
+            line = (
+                f"[synth] {tgt:<10}"
+                f"{area_str}   {timing_str}    {elapsed_str}"
+                f"{self._format_status_suffix(cur)}"
+            )
+
         return (
-            f"[synth] {tgt:<10}"
-            f"{area_str}   {timing_str}    {elapsed_str}"
-            f"{self._format_status_suffix(cur)}"
+            ProgressText(line, record_text=self._format_config_line(tgt, cur, base))
+            if human
+            else line
         )
 
     @staticmethod

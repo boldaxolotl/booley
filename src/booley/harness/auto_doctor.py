@@ -19,6 +19,7 @@ from typing import Any
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.runtime import health
 from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.timefmt import format_duration
 
 _RUN_LOCK_NAME = "auto.lock"
 Progress = Callable[[str], None]
@@ -76,7 +77,7 @@ def _execute(
         deep_status=deep_status,
     )
     (progress or _ignore_progress)(
-        f"completed in {duration_s:.1f}s; transcript: {health.transcript_path(booley_dir)}"
+        f"completed in {format_duration(duration_s)}; transcript: {health.transcript_path(booley_dir)}"
     )
     return report
 
