@@ -676,6 +676,8 @@ async def _codex_run_in_home(
     on_event: Any,
     auth_mode: str = "auto",
 ) -> tuple[str, str, int]:
+    from booley.core.workspace_async import filesystem_call
+
     proc, session_root, launch = await _codex_spawn(cmd, params, auth_mode)
     stdout_buf = bytearray()
     stderr_buf = bytearray()
@@ -706,12 +708,8 @@ async def _codex_run_in_home(
             timeout_seconds=params.timeout_seconds,
             launch=launch,
         )
-        from booley.core.workspace_async import filesystem_call
-
         native_result = await filesystem_call(launch_result, launch)
     finally:
-        from booley.core.workspace_async import filesystem_call
-
         await filesystem_call(launch_finished, launch)
 
     return (
@@ -801,7 +799,7 @@ async def _run_codex_work(
         cleanup = asyncio.create_task(_terminate_process(proc))
         try:
             await joined(cleanup)
-        except (OSError, TimeoutError, asyncio.CancelledError):
+        except (OSError, TimeoutError):
             logger.warning("Codex cleanup was interrupted or remains uncertain; retaining scratch")
         if isinstance(error, _CleanupDeadlineError):
             logger.warning("Native Codex result preserved; descendant cleanup remains uncertain")

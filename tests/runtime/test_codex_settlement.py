@@ -77,3 +77,29 @@ async def test_cleanup_deadline_preserves_receipt_without_suppressing_operation_
     monkeypatch.setattr(cb, "_native_work_deadline", operation_timeout)
     with pytest.raises(cb.AgentTimeoutError):
         await cb._run_codex_work(asyncio.sleep(0), object(), timeout_seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_cleanup_after_native_completion_propagates(monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def expired(work, *_):
+        work.close()
+        raise cb._CleanupDeadlineError
+
+    async def cleanup(_):
+        entered.set()
+        await asyncio.wait_for(release.wait(), 5)
+
+    monkeypatch.setattr(cb, "_native_work_deadline", expired)
+    monkeypatch.setattr(cb, "_terminate_process", cleanup)
+    task = asyncio.create_task(cb._run_codex_work(asyncio.sleep(0), object(), timeout_seconds=1))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
