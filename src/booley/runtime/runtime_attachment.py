@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 
-from booley.core.boundary import BoundaryError, as_str, require_int
+from booley.core.boundary import BoundaryError, as_str, require_finite_number, require_int
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -161,10 +161,7 @@ def _force_recovery_if_due(
     recovery_started: float | None,
     now: float,
 ) -> None:
-    payload = read_json(paths.record) or {}
-    budget = payload.get("cleanup_budget_seconds", 0)
-    if type(budget) not in (int, float) or not 0 <= budget <= 20:
-        budget = 0
+    budget = _cleanup_budget(paths)
     if recovery_started is None or now - recovery_started < max(_RECOVERY_FORCE_SECONDS, budget):
         return
     request_cancellation(
@@ -176,11 +173,18 @@ def _force_recovery_if_due(
 
 
 def _recovery_limit(paths: ExecutionPaths) -> float:
+    return max(_RECOVERY_LIMIT_SECONDS, _cleanup_budget(paths) + 5)
+
+
+def _cleanup_budget(paths: ExecutionPaths) -> float:
     payload = read_json(paths.record) or {}
-    budget = payload.get("cleanup_budget_seconds", 0)
-    if type(budget) not in (int, float) or not 0 <= budget <= 20:
-        budget = 0
-    return max(_RECOVERY_LIMIT_SECONDS, budget + 5)
+    try:
+        budget = require_finite_number(
+            payload.get("cleanup_budget_seconds", 0), field="cleanup budget"
+        )
+    except BoundaryError:
+        return 0
+    return budget if 0 <= budget <= 20 else 0
 
 
 def _drive_execution(

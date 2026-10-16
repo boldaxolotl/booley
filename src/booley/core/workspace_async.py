@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any, TypeVar
 
 from booley.core.temporary_workspace import _ACTIVE, temporary_workspace
@@ -30,6 +30,18 @@ async def joined(task: asyncio.Task[T]) -> T:
 async def filesystem_call(function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run blocking filesystem work with copied context and joined lifetime."""
     return await joined(asyncio.create_task(asyncio.to_thread(function, *args, **kwargs)))
+
+
+async def acquire_task(
+    task: asyncio.Task[T], rollback: Callable[[T], Coroutine[Any, Any, None]]
+) -> T:
+    """Roll back a completed acquisition before propagating caller cancellation."""
+    try:
+        return await joined(task)
+    except asyncio.CancelledError:
+        if not task.cancelled() and task.exception() is None:
+            await joined(asyncio.create_task(rollback(task.result())))
+        raise
 
 
 @contextlib.asynccontextmanager

@@ -23,6 +23,7 @@ from booley.core.temporary_workspace import (
     launch_finished,
     prepare_launch,
     registry_root,
+    settle_launch,
     temporary_workspace,
     validate_native_command,
 )
@@ -599,7 +600,7 @@ async def _codex_spawn(
     """Spawn Codex with piped I/O, private configuration, and shared credentials."""
     home = _PRIVATE_HOME.get()
     assert home is not None
-    from booley.core.workspace_async import filesystem_call
+    from booley.core.workspace_async import acquire_task, filesystem_call
 
     env = await filesystem_call(_prepare_private_home, params, home, auth_mode)
     if params.text_only:
@@ -621,11 +622,21 @@ async def _codex_spawn(
     plan = credential_plan("codex", auth_mode)
     plan.require_credential()
     env = plan.child_environment(env)
-    launch = await filesystem_call(prepare_launch, cmd, params.workspace_guard_fds)
+    launch = await acquire_task(
+        asyncio.create_task(asyncio.to_thread(prepare_launch, cmd, params.workspace_guard_fds)),
+        settle_launch,
+    )
+    proc = await _spawn_prepared_codex(launch, cmd, params, env)
+    return proc, Path(env["CODEX_HOME"]) / "sessions", launch
+
+
+async def _spawn_prepared_codex(launch, cmd, params, env):
+    from booley.core.workspace_async import acquire_task, filesystem_call
+
     try:
         if launch.roots:
             validate_native_command(cmd, {"cwd": params.cwd, "env": env})
-        proc = await asyncio.create_subprocess_exec(
+        spawn = asyncio.create_subprocess_exec(
             *launch.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -635,10 +646,10 @@ async def _codex_spawn(
             env=env,
             **launch.kwargs,
         )
-    except OSError:
+        return await acquire_task(asyncio.create_task(spawn), _terminate_process)
+    except (OSError, asyncio.CancelledError):
         await filesystem_call(launch_failed, launch)
         raise
-    return proc, Path(env["CODEX_HOME"]) / "sessions", launch
 
 
 async def _codex_run_subprocess(

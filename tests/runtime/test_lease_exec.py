@@ -263,16 +263,22 @@ async def test_actual_sdk_probe_variants_and_cancellation_cleanup(
     assert not Path(directory).exists()
 
 
-def test_native_sdk_resolution_adapter_uses_pinned_transport_rules(monkeypatch):
+def test_native_sdk_resolution_prefers_explicit_bundled_then_path(tmp_path, monkeypatch):
+    import claude_agent_sdk
     from claude_agent_sdk import ClaudeAgentOptions
-    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
     from booley.runtime._claude_backend import _native_sdk_cli
 
+    monkeypatch.setattr(claude_agent_sdk, "__file__", str(tmp_path / "__init__.py"))
+    monkeypatch.setattr("shutil.which", lambda _: "/sdk/path-cli")
     options = ClaudeAgentOptions(cli_path="/explicit/synthetic-cli")
     assert _native_sdk_cli(options) == "/explicit/synthetic-cli"
-    monkeypatch.setattr(SubprocessCLITransport, "_find_cli", lambda _: "/sdk/discovered-cli")
-    assert _native_sdk_cli(ClaudeAgentOptions()) == "/sdk/discovered-cli"
+    bundled = tmp_path / "_bundled/claude"
+    bundled.parent.mkdir()
+    bundled.touch()
+    assert _native_sdk_cli(ClaudeAgentOptions()) == str(bundled)
+    bundled.unlink()
+    assert _native_sdk_cli(ClaudeAgentOptions()) == "/sdk/path-cli"
 
 
 _SYNC_OWNER_WORKER = (

@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 from collections import deque
@@ -439,11 +440,32 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
 
 
 def _native_sdk_cli(options: ClaudeAgentOptions) -> str:
-    """Keep pinned SDK bundled/PATH/native-platform discovery behind one adapter."""
-    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+    """Resolve the Linux guarded CLI without importing SDK transport internals."""
+    import claude_agent_sdk
+    from claude_agent_sdk import CLINotFoundError
 
-    transport = SubprocessCLITransport(prompt="", options=options)
-    return transport._cli_path or transport._find_cli()
+    if options.cli_path:
+        return str(options.cli_path)
+    bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+    if bundled.is_file():
+        return str(bundled)
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidates = (
+        Path.home() / ".npm-global/bin/claude",
+        Path("/usr/local/bin/claude"),
+        Path.home() / ".local/bin/claude",
+        Path.home() / "node_modules/.bin/claude",
+        Path.home() / ".yarn/bin/claude",
+        Path.home() / ".claude/local/claude",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    raise CLINotFoundError(
+        "Claude Code not found; install Claude Code or set ClaudeAgentOptions.cli_path"
+    )
 
 
 @contextlib.asynccontextmanager
@@ -455,12 +477,17 @@ async def _guarded_sdk_options(options: ClaudeAgentOptions, guard_fds: tuple[int
         mark_external_workspace_use()
         yield options
         return
-    from booley.core.workspace_async import async_workspace, filesystem_call
+    from booley.core.workspace_async import acquire_task, async_workspace, filesystem_call
 
     native = await filesystem_call(_native_sdk_cli, options)
     async with async_workspace(prefix="claude-launcher-") as raw:
-        main, version, guarded = await filesystem_call(
-            _prepare_guarded_sdk_options, options, native, guard_fds, Path(raw)
+        main, version, guarded = await acquire_task(
+            asyncio.create_task(
+                asyncio.to_thread(
+                    _prepare_guarded_sdk_options, options, native, guard_fds, Path(raw)
+                )
+            ),
+            _rollback_sdk_options,
         )
         try:
             yield guarded
@@ -472,14 +499,24 @@ async def _guarded_sdk_options(options: ClaudeAgentOptions, guard_fds: tuple[int
 
 
 def _prepare_guarded_sdk_options(options, native: str, guard_fds: tuple[int, ...], root: Path):
-    main = prepare_launch([native], guard_fds)
-    version = prepare_launch([native], guard_fds)
-    shim = root / "claude-supervised"
-    shim.write_text(_sdk_shim_source(native, main, version), encoding="utf-8")
-    shim.chmod(0o700)
-    guarded = copy.copy(options)
-    guarded.cli_path = str(shim)
-    return main, version, guarded
+    from booley.core.temporary_workspace import launch_failed
+
+    with contextlib.ExitStack() as rollback:
+        main = prepare_launch([native], guard_fds)
+        rollback.callback(launch_failed, main)
+        version = prepare_launch([native], guard_fds)
+        rollback.callback(launch_failed, version)
+        shim = root / "claude-supervised"
+        shim.write_text(_sdk_shim_source(native, main, version), encoding="utf-8")
+        shim.chmod(0o700)
+        guarded = copy.copy(options)
+        guarded.cli_path = str(shim)
+        rollback.pop_all()
+        return main, version, guarded
+
+
+async def _rollback_sdk_options(prepared) -> None:
+    await _settle_sdk_launches(prepared[0], prepared[1])
 
 
 async def _settle_sdk_launches(main: LeaseLaunch, version: LeaseLaunch) -> None:
