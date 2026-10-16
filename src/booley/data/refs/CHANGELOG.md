@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Physical synthesis reports configured and effective native fanout limits as
+  scalars, without source attribution. Target `max_fanout` accepts positive
+  integers up to 2147483647; design-wide SDC rules override it while scoped
+  and library constraints retain native precedence.
+
 - SIM Goal baseline observations now run with initialization's directory-only
   scratch ignore rule. An unignored baseline scratch directory identifies the
   expected `/.baseline-wt-*/` rule and the selected `.gitignore` policy file.

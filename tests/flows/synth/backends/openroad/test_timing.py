@@ -258,24 +258,19 @@ def test_default_fanout_rule_precedes_authored_sdc(tmp_path):
     text = TestWriteScript()._write(tmp_path)
     assert "set_max_fanout 1e20" in text
     assert text.index("set_max_fanout 1e20") < text.index("read_sdc")
-
-
-def test_native_fanout_evidence_is_captured_before_repair(tmp_path):
-    text = TestWriteScript()._write(tmp_path)
-    assert "report_check_types -max_fanout" in text
-    assert text.index("report_check_types -max_fanout") < text.index("\nrepair_design\n")
-    assert "sta::set_port_fanout_limit" in text
-    assert "sta::set_cell_fanout_limit" in text
-    assert "write_sdc" not in text
+    configured = TestWriteScript()._write(tmp_path, max_fanout=50)
+    assert "set_max_fanout 1e20" not in configured
+    assert configured.index("set_max_fanout 50 [current_design]") < configured.index("read_sdc")
 
 
 def test_exact_fanout_capture_follows_parasitics_and_precedes_repair(tmp_path):
-    text = TestWriteScript()._write(tmp_path)
-    boundary = text.index("\nbooley_fanout::checkpoint\n")
-    assert boundary > text.index("estimate_parasitics -placement")
-    assert boundary < text.index('puts "BOOLEY_STAGE: repair_design"')
-    assert "sta::max_fanout_min_slack_limit" in text
-    assert "-max_count 1 >" in text
+    text = TestWriteScript()._write(tmp_path, max_fanout=50)
+    boundary = text.index("set _fanout_limit [sta::max_fanout_min_slack_limit]")
+    assert (
+        text.index("estimate_parasitics -placement") < boundary < text.index("\nrepair_design\n")
+    )
+    assert text.index("set_max_fanout 50 [current_design]") < text.index("read_sdc")
+    assert "OPENROAD_FANOUT_LIMIT: $_fanout_limit" in text
 
 
 def test_max_fanout_is_target_owned_across_profile_overrides():
@@ -302,47 +297,18 @@ def test_target_fanout_native_range_and_strict_type():
     from booley.flows.synth.ppa_config import validate_max_fanout
 
     field = "advanced_settings_openroad.max_fanout"
-    for invalid in (True, False, 50.0, "50", 0, -1, float("inf"), 10**39, 10**400):
+    for invalid in (True, 50.0, "50", 0, -1, 2**31):
         with pytest.raises(BoundaryError, match=field):
             validate_max_fanout(invalid, field=field)
-    assert validate_max_fanout(10**21, field=field) == 10**21
     assert validate_max_fanout(16777217, field=field) == 16777217
 
 
-def test_native_policy_metadata_rejects_missing_or_invalid_authority():
-    import json
+def test_target_fanout_fixed_upper_bound():
+    from booley.flows.synth.ppa_config import validate_max_fanout
 
-    import pytest
-
-    from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-    valid = {
-        "configured_max_fanout": None,
-        "suppression_reason": None,
-        "design_rule": {"scope": "current_design", "max_fanout": None, "source": "booley_default"},
-        "status": "no_applicable_driver",
-        "worst_check": None,
-    }
-    assert parse_policy(json.dumps(valid)) == valid
-    for invalid in (
-        {**valid, "configured_max_fanout": True},
-        {**valid, "worst_check": {"source": "library", "max_fanout": 25.5}},
-        {
-            **valid,
-            "design_rule": {"scope": "current_design", "source": "library", "max_fanout": 25.5},
-        },
-        {
-            **valid,
-            "design_rule": {
-                "scope": "current_design",
-                "source": "booley_default",
-                "max_fanout": 1e20,
-            },
-        },
-        {
-            **valid,
-            "design_rule": {"scope": "current_design", "source": "sdc", "max_fanout": 10**400},
-        },
-    ):
-        with pytest.raises(ValueError):
-            parse_policy(json.dumps(invalid))
+    assert validate_max_fanout(2**31 - 1, field="max_fanout") == 2**31 - 1
+    try:
+        validate_max_fanout(2**31, field="max_fanout")
+    except ValueError:
+        return
+    raise AssertionError("user max_fanout above fixed bound was accepted")

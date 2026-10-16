@@ -790,7 +790,9 @@ booley flow synth --target synth_soc --baseline main   # compare with another re
 **Constraints.** Physical synthesis (the Target's `synth_mode`) needs a
 `file_type: SDC` fileset in the Target that creates at least one clock; Booley
 adds no timing constraints of its own; its one generated design rule is the
-fanout limit ([`max_fanout`](CONFIG.md#asic-synthesis-flowssynth)). Logical
+fanout limit ([`max_fanout`](CONFIG.md#asic-synthesis-flowssynth)). Physical
+reports show the configured value and the native minimum-slack limit observed
+immediately before repair, without source attribution. Logical
 synthesis skips STA and needs no
 SDC. Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
 

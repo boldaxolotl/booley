@@ -387,13 +387,26 @@ def test_backend_fanout_survives_transport_into_native_tcl(tmp_path):
         _resolve_ppa_settings,
         _resolve_syn_timing,
     )
-    from booley.flows.synth.backends.openroad.fanout import policy_tcl
 
     args = _build_parser().parse_args(["configure", "-t", "top", "--max-fanout", "16777217"])
     _, _, openroad = _resolve_ppa_settings(args)
     timing = _resolve_syn_timing(args, openroad, project_root=tmp_path)
     assert timing.max_fanout == 16777217
-    assert "set ::booley_fanout::configured {16777217}" in policy_tcl(tmp_path, timing.max_fanout)
+    from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
+
+    script = write_openroad_script(
+        "top",
+        tmp_path / "cells.lib",
+        tmp_path / "netlist.v",
+        (tmp_path / "target.sdc",),
+        OpenRoadPdk(tmp_path / "tech.lef", tmp_path / "cells.lef", tmp_path / "rc.tcl"),
+        tmp_path / "reports",
+        tmp_path,
+        timing,
+        target="synth_top",
+        source_sdc_paths=(tmp_path / "target.sdc",),
+    ).read_text()
+    assert "set_max_fanout 16777217 [current_design]" in script
 
 
 def test_declared_string_parser_preserves_whitespace_and_rejects_unbound_metadata():

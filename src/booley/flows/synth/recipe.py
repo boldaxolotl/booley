@@ -199,7 +199,7 @@ def synthesis_recipe_snapshot(
         "technology": {
             "liberty": liberty.as_posix(),
             "physical_pdk": "nangate45" if synth_mode == SynthMode.PHYSICAL else None,
-            **({"physical_fanout_policy": "native-point-v1"} if synth_mode.runs_openroad else {}),
+            **({"physical_fanout_policy": "native-limit-v2"} if synth_mode.runs_openroad else {}),
         },
     }
 

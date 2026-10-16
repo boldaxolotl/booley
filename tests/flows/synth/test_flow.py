@@ -4853,8 +4853,6 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
                 "openroad_dut.v": "module dut; endmodule\n",
                 "reports/timing/overall.rpt": "timing report\n",
                 "reports/timing/overall.csv.rpt": "",
-                "reports/fanout/policy.json": '{"configured_max_fanout":null,"suppression_reason":null,"design_rule":{"scope":"current_design","max_fanout":null,"source":"booley_default"},"status":"no_applicable_driver","worst_check":null}',
-                "reports/fanout/worst.rpt": "",
             },
         },
     )
@@ -5439,165 +5437,6 @@ def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, t
     assert roots and all(not path.exists() for path in roots)
 
 
-def test_fanout_qor_keeps_exact_native_point_and_separate_design_rule():
-    import json
-
-    policy = {
-        "configured_max_fanout": 50,
-        "suppression_reason": "authored_sdc_fanout",
-        "design_rule": {"scope": "current_design", "max_fanout": 26, "source": "sdc"},
-        "status": "observed",
-        "worst_check": {
-            "selection": "minimum_slack",
-            "analysis_mode": "default",
-            "pin": "driver/ZN",
-            "max_fanout": 25.5,
-            "source": "library",
-            "native_check_artifact": "worst.rpt",
-        },
-    }
-    output = "max fanout 26\nOPENROAD_FANOUT_POLICY: " + json.dumps(policy)
-    metrics = _parse_synth_output(output, 1.0, synth_mode="physical")
-    assert metrics.qor_detail()["fanout_policy"] == policy
-    assert metrics.fanout_policy["worst_check"]["max_fanout"] == 25.5
-    logical = _parse_synth_output(output, 1.0, synth_mode="logical")
-    assert "fanout_policy" not in logical.qor_detail()
-
-
-def test_old_fanout_log_is_unknown_instead_of_default_proof():
-    metrics = _parse_synth_output("legacy physical timing output", 1.0, synth_mode="physical")
-    assert metrics.fanout_policy is None
-    assert "fanout_policy" not in metrics.qor_detail()
-
-
-def _fanout_publication_case(tmp_path):
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(
-        [
-            "--target",
-            "synth_top",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-        ]
-    )
-    source = tmp_path / "build" / "reports" / "fanout"
-    source.mkdir(parents=True)
-    policy = {
-        "configured_max_fanout": 50,
-        "suppression_reason": None,
-        "design_rule": {"scope": "current_design", "max_fanout": 50, "source": "setting"},
-        "status": "observed",
-        "worst_check": {
-            "selection": "minimum_slack",
-            "analysis_mode": "default",
-            "pin": "driver/ZN",
-            "max_fanout": 50,
-            "source": "setting",
-            "native_check_artifact": "worst.rpt",
-        },
-    }
-    (source / "policy.json").write_text(json.dumps(policy))
-    (source / "worst.rpt").write_text("native selected check\n")
-    return flow, source.parent.parent, policy
-
-
-def test_fanout_baseline_and_candidate_publish_distinct_durable_bundles(tmp_path):
-    flow, build, policy = _fanout_publication_case(tmp_path)
-    flow._execution_role = "baseline"
-    flow._project_root = tmp_path
-    flow.args.work_dir = tmp_path / "ephemeral-baseline"
-    baseline = SynthMetrics(fanout_policy=json.loads(json.dumps(policy)))
-    flow._preserve_fanout("synth_top", build, baseline)
-    flow._execution_role = "candidate"
-    flow._project_root = None
-    flow.args.work_dir = tmp_path
-    candidate = SynthMetrics(fanout_policy=json.loads(json.dumps(policy)))
-    flow._preserve_fanout("synth_top", build, candidate)
-    directories = [
-        tmp_path / m.fanout_policy["worst_check"]["native_check_artifact"]
-        for m in (baseline, candidate)
-    ]
-    assert directories[0] != directories[1]
-    for directory in directories:
-        assert (directory / "worst.rpt").read_text() == "native selected check\n"
-        assert json.loads((directory / "policy.json").read_text()) == policy
-
-
-def test_fanout_disabled_reporting_keeps_metadata_without_persisted_pointer(tmp_path):
-    flow, build, policy = _fanout_publication_case(tmp_path)
-    flow.args.report_dir = None
-    metrics = SynthMetrics(fanout_policy=policy)
-    flow._preserve_fanout("synth_top", build, metrics)
-    assert metrics.fanout_policy["worst_check"]["max_fanout"] == 50
-    assert "native_check_artifact" not in metrics.fanout_policy["worst_check"]
-
-
-@pytest.mark.parametrize("failure", [OSError("disk full"), ValueError("unsafe destination")])
-def test_fanout_copy_failure_reports_unavailable_bundle_without_crashing(
-    tmp_path, caplog, failure
-):
-    flow, build, policy = _fanout_publication_case(tmp_path)
-    metrics = SynthMetrics(fanout_policy=policy)
-    with patch.object(artifacts, "publish_file", side_effect=failure):
-        flow._preserve_fanout("synth_top", build, metrics)
-    assert "could not publish numbered synth fanout evidence" in caplog.text
-    assert "native_check_artifact" not in metrics.fanout_policy["worst_check"]
-    assert not list((tmp_path / "reports").rglob("worst.rpt"))
-
-
-def test_malformed_fanout_stdout_keeps_boundary_failure_diagnostics():
-    metrics = _parse_synth_output("OPENROAD_FANOUT_POLICY: {malformed}\n", 1, SynthMode.PHYSICAL)
-    assert metrics.fanout_policy is None
-    assert "malformed native fanout policy" in metrics.infra_error
-
-
-def test_fanout_publish_failure_preserves_existing_immutable_bundle(tmp_path, caplog):
-    flow, build, policy = _fanout_publication_case(tmp_path)
-    original = SynthMetrics(fanout_policy=json.loads(json.dumps(policy)))
-    flow._preserve_fanout("synth_top", build, original)
-    directory = tmp_path / original.fanout_policy["worst_check"]["native_check_artifact"]
-    later = SynthMetrics(fanout_policy=json.loads(json.dumps(policy)))
-    flow._preserve_fanout("synth_top", build, later)
-    assert (directory / "worst.rpt").read_text() == "native selected check\n"
-    assert json.loads((directory / "policy.json").read_text()) == policy
-    assert "native_check_artifact" not in later.fanout_policy["worst_check"]
-    assert "could not publish numbered synth fanout evidence" in caplog.text
-
-
-def test_malformed_fanout_boundary_result_reports_infrastructure_failure(tmp_path):
-    flow, build, _ = _fanout_publication_case(tmp_path)
-    output = "OPENROAD_FANOUT_POLICY: {malformed}\nDesign area 100 um^2\nSTA_WORST_SLACK_NS: 1.0"
-    outcome = SimpleNamespace(
-        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-        forced_failure=None,
-        yosys_complete=True,
-    )
-    plan = SimpleNamespace(
-        spec=SimpleNamespace(timing=SimpleNamespace(mode=SynthMode.PHYSICAL)), build_dir=build
-    )
-    with patch.object(flow, "_read_boundary_output", return_value=(outcome, output)):
-        metrics, retained = flow._interpret_boundary_run(
-            "synth_top", plan, SubprocessResult(returncode=0, stdout=output, stderr=""), 1
-        )
-    assert metrics.returncode == 2
-    assert metrics.termination == "infrastructure_error"
-    assert not metrics.ppa_complete
-    assert metrics.fanout_policy is None
-    assert "malformed native fanout policy" in retained
-
-
-def test_fanout_reservation_failure_keeps_metadata_and_reports_diagnostic(tmp_path, caplog):
-    flow, build, policy = _fanout_publication_case(tmp_path)
-    metrics = SynthMetrics(fanout_policy=policy)
-    with patch.object(flow, "reserve_invocation_dir", side_effect=OSError("read-only reports")):
-        flow._preserve_fanout("synth_top", build, metrics)
-    assert metrics.fanout_policy["worst_check"]["max_fanout"] == 50
-    assert "native_check_artifact" not in metrics.fanout_policy["worst_check"]
-    assert "could not publish numbered synth fanout evidence" in caplog.text
-
-
 @pytest.mark.parametrize(
     "final", ["Found and reported 0 problems.\n", "Checking module dut...\n", None, "stale"]
 )
@@ -5611,8 +5450,6 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, final):
         "openroad_dut.v": "module dut; endmodule\n",
         "reports/timing/overall.rpt": "timing report\n",
         "reports/timing/overall.csv.rpt": "",
-        "reports/fanout/policy.json": '{"configured_max_fanout":null,"suppression_reason":null,"design_rule":{"scope":"current_design","max_fanout":null,"source":"booley_default"},"status":"no_applicable_driver","worst_check":null}',
-        "reports/fanout/worst.rpt": "",
     }
     if final is not None:
         artifacts["check_dut.txt"] = (
@@ -5690,3 +5527,26 @@ def test_earlier_loop_report_survives_representative_saturation(
     if not huge:
         assert "\\feedback" in result.report_text
     assert result.detail["implementation"]["results"]["lite"]["status"]["grade"] == "warn"
+
+
+def test_fanout_scalar_qor_and_report():
+    from booley.flows.synth.flow import _baseline_report_detail, _report_qor_detail
+
+    for token, expected in (("25.5", 25.5), ("none", None)):
+        output = f"OPENROAD_MAX_FANOUT: 50\nOPENROAD_FANOUT_LIMIT: {token}\n"
+        metrics = _parse_synth_output(output, 1.0, synth_mode="physical")
+        detail = metrics.qor_detail()
+        assert "max_fanout_limit" in detail, "physical QoR lacks scalar fanout limit"
+        assert detail["max_fanout_limit"] == expected
+        assert detail["configured_max_fanout"] == 50
+        for report in (_report_qor_detail(metrics), _baseline_report_detail(metrics, "HEAD")):
+            assert report["configured_max_fanout"] == 50
+            assert report["max_fanout_limit"] == expected
+        assert "fanout_policy" not in detail
+        assert "max_fanout_limit" not in _parse_synth_output(output, 1.0).qor_detail()
+
+
+@pytest.mark.parametrize("token", ["none", "NaN", "inf", "-1", "garbled", "25 junk", ""])
+def test_fanout_unknown_or_malformed_scalar_stays_unknown(token):
+    metrics = _parse_synth_output(f"OPENROAD_FANOUT_LIMIT: {token}\n", 1, "physical")
+    assert metrics.max_fanout_limit is None
