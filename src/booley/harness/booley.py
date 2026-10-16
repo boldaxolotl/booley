@@ -1967,7 +1967,7 @@ def _dispatch_main() -> int:
         if source_rejection is not None:
             return source_rejection
 
-    if not runtime_context.inside_session_runtime():
+    if command in {"session", "auth"} and not runtime_context.inside_session_runtime():
         project_root = _host_session_selection(command, args, project_root)
 
     if binding is ProjectBinding.REQUIRED:
