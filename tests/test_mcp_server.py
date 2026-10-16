@@ -2406,16 +2406,43 @@ async def test_bound_non_flow_inline_execution_publishes_writer_lease(layout, mo
 
     context = bound_context(layout)
     jobs = JobLifecycle()
+    run_process = jobs._run_process
 
     async def execute(cmd, **kwargs):
         records = job_records.strict_records(context.jobs_root)
         assert len(records) == 1 and records[0].binding == context.binding.to_json()
-        return 0, "ok", "", False
+        result = await run_process(cmd, **kwargs)
+        if sys.platform == "linux":
+            from tests.mcp_tools.test_job_lifecycle import wait_until
+
+            await wait_until(
+                lambda: (
+                    job_records.observe_job_producer(
+                        job_records.read_record(context.binding.invocation_id, context.jobs_root),
+                        context.jobs_root,
+                    ).state
+                    == "stopped"
+                )
+            )
+        return result
 
     monkeypatch.setattr(jobs, "_run_process", execute)
     assert (
         await _run_inline_endpoint(
-            "custom", ["unused"], 30, jobs, context=context, publish_activity=False
+            "custom",
+            [sys.executable, "-c", "print('ok')"],
+            30,
+            jobs,
+            context=context,
+            publish_activity=False,
         )
     )[0] == 0
-    assert not job_records.strict_records(context.jobs_root)
+    retained = job_records.strict_records(context.jobs_root)
+    if sys.platform == "linux":
+        assert not retained
+    else:
+        assert (
+            retained
+            and job_records.observe_job_producer(retained[0], context.jobs_root).state
+            == "unavailable"
+        )

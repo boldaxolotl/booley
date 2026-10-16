@@ -206,3 +206,24 @@ def test_usage_documents_retained_record_commands():
         "recorded outcomes",
     ):
         assert term in usage
+
+
+def test_prune_second_job_read_error_is_cli_refusal(repo, monkeypatch, capsys):
+    from booley.goals import prune
+    from booley.runtime.job_records import JobRecordError
+
+    record = terminal(repo)
+    remove_checkout(repo)
+    before = snapshot(record_paths(repo["project"], record.id).root)
+
+    def changed_read(*args, **kwargs):
+        raise JobRecordError("second strict Job read changed")
+
+    monkeypatch.setattr(prune, "strict_records", changed_read)
+    try:
+        code = run(repo, monkeypatch, "prune", record.id, "--confirm")
+    except RuntimeError:
+        code = None
+    assert code == 2, "second Job read escaped prune CLI refusal"
+    assert "second strict Job read changed" in capsys.readouterr().err
+    assert snapshot(record_paths(repo["project"], record.id).root) == before

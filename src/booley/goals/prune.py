@@ -25,19 +25,13 @@ from booley.goals.store import (
     shared_prune_lock,
 )
 from booley.runtime.atomic_files import atomic_write_once, fsync_directory
-from booley.runtime.job_records import JobRecordError, strict_records
-from booley.runtime.job_wait import active_jobs
-from booley.runtime.pid import (
-    DEAD,
-    REUSED,
-    RUNNING,
-    UNKNOWN,
-    ProcessIdentity,
-    capture_process_identity,
-    is_pid_alive,
-    observe_process,
+from booley.runtime.job_records import (
+    JobRecordError,
+    observe_job_producer,
+    observe_stored_producers,
+    strict_records,
 )
-from booley.runtime.process_group import ProcessGroup, is_process_group_alive
+from booley.runtime.job_wait import active_jobs
 
 _EVIDENCE_LOSS = "Permanent evidence loss: logs, transcripts, retained outcomes, operation authority and retry evidence will be deleted. History and shared locks are preserved."
 _INCOMPLETE = "missing sealed result; incomplete operation authority and retry evidence will be permanently lost."
@@ -139,71 +133,26 @@ def _eligibility(
             raise GoalStoreError("active record-owned Jobs prevent cleanup")
     except JobRecordError as exc:
         raise GoalStoreError(f"unreadable record-owned Jobs: {exc}") from exc
-    _require_stopped_writers(paths.jobs_dir)
+    try:
+        _require_stopped_writers(paths.jobs_dir)
+    except JobRecordError as exc:
+        raise GoalStoreError(f"unreadable record-owned Jobs: {exc}") from exc
     return record, size, _authority(store, record, lock)
 
 
 def _require_stopped_writers(jobs_root: Path) -> None:
     """A display deadline never proves that a producer stopped writing."""
-    for job in strict_records(jobs_root):
-        if job.pid is None:
-            continue  # fresh PID-less admissions were checked by active_jobs
-        identity = ProcessIdentity.from_payload(job.process_identity)
-        if job.process_identity is not None:
-            local = capture_process_identity(os.getpid())
-            if (
-                identity is None
-                or identity.pid != job.pid
-                or (
-                    identity.identity_kind == "linux-procfs-start"
-                    and (local is None or identity.identity_scope != local.identity_scope)
-                )
-            ):
-                raise GoalStoreError("record-owned writer identity unavailable")
-            state = observe_process(identity).state
-            if state in {RUNNING, UNKNOWN}:
-                raise GoalStoreError("live or unavailable record-owned writer prevents cleanup")
-        elif is_pid_alive(job.pid):
-            # Legacy argv mismatches can prove reuse; unreadable argv cannot.
-            from booley.runtime.job_records import _proc_cmdline
-
-            current = _proc_cmdline(job.pid)
-            if not job.argv or current is None or current == job.argv:
-                raise GoalStoreError(
-                    "live or unavailable legacy record-owned writer prevents cleanup"
-                )
-            state = REUSED
-        else:
-            state = DEAD
-        if state != REUSED and _owned_group_may_write(job.pid):
-            raise GoalStoreError("live or unavailable record-owned writer group prevents cleanup")
-
-
-def _owned_group_may_write(pid: int) -> bool:
-    if not is_process_group_alive(ProcessGroup(pid)):
-        return False
-    # killpg includes zombies. Procfs can prove a group contains only nonwriters;
-    # every unreadable member or unsupported host remains unavailable/refused.
-    import sys
-
-    if not sys.platform.startswith("linux"):
-        return True
-    try:
-        entries = list(Path("/proc").iterdir())
-        if len(entries) > 200_000:
-            return True
-        for entry in entries:
-            if not entry.name.isdigit():
-                continue
-            try:
-                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-            except FileNotFoundError:
-                continue
-            if int(fields[2]) == pid and fields[0] != "Z":
-                return True
-        return False
-    except (OSError, ValueError, IndexError):
-        return True
+    for job in strict_records(jobs_root, validate_storage=True):
+        observed = observe_job_producer(job, jobs_root)
+        if observed.state != "stopped":
+            raise GoalStoreError(
+                f"live or unavailable record-owned writer group prevents cleanup: {observed.reason}"
+            )
+    for observed in observe_stored_producers(jobs_root):
+        if observed.state != "stopped":
+            raise GoalStoreError(
+                f"live or unavailable record-owned writer inventory prevents cleanup: {observed.reason}"
+            )
 
 
 def _metadata_unlinked(root: Path) -> None:
@@ -257,12 +206,8 @@ def _read_intent(store: GoalStore, record_id: str) -> dict[str, Any]:
         or len(saved["record_digest"]) != 64
     ):
         raise GoalStoreError("malformed pruning record capture")
-    identity = saved["root_identity"]
-    if (
-        not isinstance(identity, list)
-        or len(identity) != 2
-        or not all(type(value) is int and value >= 0 for value in identity)
-    ):
+    identity = require_list(saved["root_identity"], field="pruning root identity")
+    if len(identity) != 2 or not all(type(value) is int and value >= 0 for value in identity):
         raise GoalStoreError("malformed pruning root identity")
     unlinked(original, store.booley_dir)
     unlinked(quarantine, store.booley_dir)

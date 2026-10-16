@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -198,25 +200,32 @@ async def _spawn_endpoint(
     spawn_context: Callable[[], AbstractContextManager[object]] | None,
 ) -> tuple[asyncio.subprocess.Process, ProcessGroup]:
     """Bounded creation/publication transaction, with cleanup after releasing ownership."""
+    if spawn_context is not None and sys.platform.startswith("linux"):
+        with spawn_context() as ticket:
+            capable = isinstance(ticket, dict) and bool(
+                ticket.get("boot_id") and ticket.get("owner")
+            )
+        if capable:
+            return await _spawn_bound_endpoint(cmd, env, on_spawn, spawn_context)
     proc = None
     group = None
     creation = None
     try:
+        # A bound fallback has unavailable ownership; it never holds a lock at await.
         with spawn_context() if spawn_context else nullcontext():
-            creation = asyncio.create_task(
-                asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                    **_async_process_group_kwargs(),
-                )
+            pass
+        creation = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                **_async_process_group_kwargs(),
             )
-            proc = await asyncio.wait_for(
-                asyncio.shield(creation),
-                timeout=5 if spawn_context else None,
-            )
-            group = capture_process_group(proc)
+        )
+        proc = await asyncio.shield(creation)
+        group = capture_process_group(proc)
+        with spawn_context() if spawn_context else nullcontext():
             if on_spawn is not None:
                 if spawn_context:
                     on_spawn(proc.pid)
@@ -224,12 +233,156 @@ async def _spawn_endpoint(
                     with contextlib.suppress(Exception):
                         on_spawn(proc.pid)
     except BaseException:
-        # Release ownership before completing a cancelled spawn or reaping.
-        # Fresh admission remains prune-visible throughout bounded cleanup.
         await _reap_failed_spawn(creation, proc, group)
         raise
-    assert group is not None
     return proc, group
+
+
+_SUPERVISOR_REAPS: set[asyncio.Task[int]] = set()
+
+
+class _EndpointView(asyncio.subprocess.Process):
+    """Keep endpoint status/PID separate from the private lineage witness."""
+
+    def __init__(
+        self, supervisor: asyncio.subprocess.Process, endpoint: int, control: socket.socket
+    ) -> None:
+        self.pid = endpoint
+        self.stdin = None
+        self.stdout, self.stderr = supervisor.stdout, supervisor.stderr
+        self._supervisor = supervisor
+        self._exit = asyncio.create_task(self._read_exit(control))
+        reap = asyncio.create_task(supervisor.wait())
+        _SUPERVISOR_REAPS.add(reap)
+        reap.add_done_callback(_SUPERVISOR_REAPS.discard)
+
+    async def _read_exit(self, control: socket.socket) -> int:
+        try:
+            raw = await asyncio.get_running_loop().sock_recv(control, 65536)
+            value = json.loads(raw)
+            code = value["exit_code"]
+            if type(code) is not int:
+                raise ValueError("invalid endpoint completion")
+            return code
+        except (OSError, ValueError, KeyError, TypeError):
+            return 125
+        finally:
+            control.close()
+
+    @property
+    def returncode(self) -> int | None:
+        return self._exit.result() if self._exit.done() and not self._exit.cancelled() else None
+
+    async def wait(self) -> int:
+        return await asyncio.shield(self._exit)
+
+    def send_signal(self, signal: int) -> None:
+        self._supervisor.send_signal(signal)
+
+    def terminate(self) -> None:
+        self._supervisor.terminate()
+
+    def kill(self) -> None:
+        self._supervisor.kill()
+
+
+async def _spawn_bound_endpoint(
+    cmd: list[str],
+    env: dict[str, str] | None,
+    on_spawn: Callable[[int], None] | None,
+    spawn_context: Callable[[], AbstractContextManager[object]],
+) -> tuple[asyncio.subprocess.Process, ProcessGroup]:
+    with spawn_context() as admitted:
+        if not isinstance(admitted, dict):
+            raise ValueError("bound producer ticket unavailable")
+        pending = dict(admitted)
+    parent, child = socket.socketpair(type=socket.SOCK_SEQPACKET)
+    parent.setblocking(False)
+    creation = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            sys.executable,
+            "-B",
+            "-m",
+            "booley.runtime.producer_supervisor",
+            str(child.fileno()),
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            pass_fds=(child.fileno(),),
+            **_async_process_group_kwargs(),
+        )
+    )
+    proc = None
+    group = None
+    try:
+        proc = await asyncio.wait_for(asyncio.shield(creation), timeout=5)
+        child.close()
+        group = capture_process_group(proc)
+        await asyncio.get_running_loop().sock_sendall(parent, json.dumps(pending).encode())
+        raw = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(parent, 65536), 5)
+        ticket = _validate_bound_readiness(json.loads(raw), pending, proc.pid)
+        _release_bound_gate(spawn_context, pending, ticket, parent, on_spawn)
+        return _EndpointView(proc, ticket["endpoint"]["pid"], parent), group
+    except BaseException:
+        parent.close()
+        if proc is not None:
+            # Let closed-gate EOF reap the parked child before forcing the group.
+            with contextlib.suppress(TimeoutError, OSError):
+                await asyncio.wait_for(proc.wait(), timeout=0.5)
+        await _reap_failed_spawn(creation, proc, group)
+        raise
+    finally:
+        child.close()
+
+
+def _release_bound_gate(
+    spawn_context: Callable[[], AbstractContextManager[object]],
+    pending: dict[str, Any],
+    ticket: dict[str, Any],
+    parent: socket.socket,
+    on_spawn: Callable[[int], None] | None,
+) -> None:
+    """Durably publish the actual endpoint PID before its bounded nonblocking release."""
+    from booley.runtime.producer_ownership import publish_handoff
+
+    with spawn_context() as durable:
+        if not isinstance(durable, dict) or durable != pending:
+            raise ValueError("producer ticket changed during creation")
+        publish_handoff(ticket)
+        durable.update(ticket)
+        if on_spawn is not None:
+            on_spawn(ticket["endpoint"]["pid"])
+        parent.send(json.dumps({"release": ticket}).encode())
+
+
+def _validate_bound_readiness(
+    message: object, pending: dict[str, Any], supervisor: int
+) -> dict[str, Any]:
+    from booley.runtime.pid import ProcessIdentity, capture_process_identity
+    from booley.runtime.producer_ownership import ownership_directory
+
+    if not isinstance(message, dict) or not isinstance(message.get("ready"), dict):
+        raise ValueError("producer readiness unavailable")
+    ticket = message["ready"]
+    identity = capture_process_identity(supervisor)
+    endpoint = ProcessIdentity.from_payload(ticket.get("endpoint"))
+    if (
+        any(
+            ticket.get(key) != value
+            for key, value in pending.items()
+            if key not in {"supervisor", "endpoint", "group", "capable"}
+        )
+        or identity is None
+        or ticket.get("supervisor") != identity.to_payload()
+        or endpoint is None
+        or capture_process_identity(endpoint.pid) != endpoint
+        or endpoint.identity_scope != identity.identity_scope
+        or ticket.get("group") != supervisor
+    ):
+        raise ValueError("producer readiness identity differs from admission")
+    ownership_directory(ticket)
+    return ticket
 
 
 async def _reap_failed_spawn(
@@ -242,11 +395,22 @@ async def _reap_failed_spawn(
             proc = await asyncio.wait_for(asyncio.shield(creation), timeout=5)
             group = capture_process_group(proc)
         except (OSError, ValueError, RuntimeError, TimeoutError, asyncio.CancelledError):
-            creation.cancel()
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await asyncio.wait_for(creation, timeout=5)
+            # Creation can still return a process after the caller's deadline.
+            # Keep ownership and reap that result without ever opening its gate.
+            cleanup = asyncio.create_task(_reap_late_creation(creation))
+            _SUPERVISOR_REAPS.add(cleanup)
+            cleanup.add_done_callback(_SUPERVISOR_REAPS.discard)
     if proc is not None and group is not None:
         await asyncio.shield(_kill_async_process_tree(proc, group))
+
+
+async def _reap_late_creation(creation: asyncio.Task[asyncio.subprocess.Process]) -> int:
+    try:
+        proc = await asyncio.shield(creation)
+        await _kill_async_process_tree(proc, capture_process_group(proc))
+        return proc.returncode if proc.returncode is not None else 125
+    except (OSError, ValueError, RuntimeError, asyncio.CancelledError):
+        return 125
 
 
 async def _supervise_output(

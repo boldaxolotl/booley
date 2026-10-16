@@ -414,3 +414,25 @@ def test_write_failure_reports_false_and_removes_temporary(tmp_path, monkeypatch
     monkeypatch.setattr(Path, "replace", fail)
     assert job_records.write_record(rec, tmp_path) is False
     assert list(tmp_path.iterdir()) == []
+
+
+def test_strict_storage_enumeration_error_is_unavailable(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    root = tmp_path / "jobs"
+    root.mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "is_junction", lambda path: path == root, raising=False)
+        with pytest.raises(jobrec.JobRecordError, match="junction"):
+            jobrec.strict_records(root, validate_storage=True)
+    original = Path.iterdir
+
+    def unreadable(path):
+        if path == root:
+            raise PermissionError("Jobs inventory cannot be enumerated")
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", unreadable)
+    with pytest.raises(jobrec.JobRecordError, match="enumeration unavailable"):
+        jobrec.strict_records(root, validate_storage=True)
+    assert jobrec.list_records(root) == []  # Generic historical best-effort reader.

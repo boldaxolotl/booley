@@ -168,6 +168,8 @@ def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeyp
     bound = replace(context, binding=binding)
     rec = job_records.JobRecord("goal-run", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
     JobLifecycle._stamp_context(rec, bound)
+    assert HandleStore(project, jobs=True).load().entries == {}
+    JobLifecycle._register_handle(rec, bound)
     assert HandleStore(project, jobs=True).load().entries == {"goal-run": "J-SIM1"}
 
 
@@ -729,16 +731,17 @@ async def test_bound_job_admission_and_prune_are_serialized(layout, monkeypatch)
     store = GoalStore(layout.control)
     with pytest.raises(GoalStoreError, match="active record-owned Jobs"):
         prune_record(store, layout.main, context.binding.record_id, confirm=True)
-    # Delayed scheduling past grace still cannot spawn after cleanup wins.
+    # Pending ownership remains a fence beyond the old PID-less grace.
     path = record_paths(layout.control, context.binding.record_id).jobs_dir / f"{run_id}.json"
     data = json.loads(path.read_text())
     data["started_at"] = "2000-01-01T00:00:00Z"
     path.write_text(json.dumps(data))
-    prune_record(store, layout.main, context.binding.record_id, confirm=True)
+    with pytest.raises(GoalStoreError, match="writer"):
+        prune_record(store, layout.main, context.binding.record_id, confirm=True)
     try:
         await asyncio.sleep(0)
         await asyncio.gather(*jobs._tasks.values(), return_exceptions=True)
-        assert not record_paths(layout.control, context.binding.record_id).root.exists()
+        assert record_paths(layout.control, context.binding.record_id).root.exists()
         assert jobs._results.get(run_id, (None,))[0] != 0
         assert not started.exists()
     finally:
@@ -915,3 +918,294 @@ async def test_bound_synchronous_job_retains_lease_for_live_descendant(layout):
         with contextlib.suppress(ProcessLookupError):
             os.killpg(leader, signal.SIGKILL)
         await wait_until(lambda: not is_pid_alive(descendant))
+
+
+@pytest.mark.asyncio
+async def test_spawn_does_not_block_peer_goal_writer(layout, monkeypatch):
+    from booley.goals import record_mutation
+    from booley.goals.store import GoalStore
+    from booley.mcp import endpoint_process
+    from booley.mcp.job_lifecycle import JobLifecycle
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    peer = jobs._new_record("peer-owned-job", "lint", [sys.executable, "-c", "pass"], 30)
+    jobs._stamp_context(peer, context)
+    jobs._admit_record(peer, context)
+    monkeypatch.setattr(
+        record_mutation, "GoalStore", lambda root: GoalStore(root, lock_timeout_s=0.15)
+    )
+    creating = asyncio.Event()
+    original = endpoint_process.asyncio.create_subprocess_exec
+
+    async def delayed_creation(*args, **kwargs):
+        creating.set()
+        await asyncio.sleep(0.01)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(endpoint_process.asyncio, "create_subprocess_exec", delayed_creation)
+
+    async def peer_write():
+        await creating.wait()
+        jobs._stamp_pid(peer, os.getpid())
+        jobs._stamp_run_started(peer)
+        jobs._record_terminal(peer, 0, timed_out=False)
+        return jobs._persist(peer)
+
+    outcome, written = await asyncio.wait_for(
+        asyncio.gather(
+            jobs.run_synchronous("lint", [sys.executable, "-c", "pass"], 30, context=context),
+            peer_write(),
+        ),
+        timeout=10,
+    )
+    assert outcome[0] == 0, outcome
+    assert written, "spawn lock blocked and dropped peer Goal writer"
+    assert job_records.read_record(peer.run_id, context.jobs_root).status == "done"
+    assert all(rec.status == "done" for rec in job_records.list_records(context.jobs_root))
+
+
+@pytest.mark.asyncio
+async def test_refused_bound_admission_publishes_no_new_ownership(layout):
+    from booley.goals.store import GoalStoreError
+    from booley.mcp.job_lifecycle import _KNOWN_JOB_ROOTS
+    from tests.goals.test_record_mutation import bound_context, fence
+
+    context = bound_context(layout)
+    for stage in ("intent", "removed"):
+        fence(context, stage)
+        for method in ("submit", "run_synchronous"):
+            jobs = JobLifecycle()
+            handles = HandleStore(layout.control, jobs=True)
+            before_handles = handles.load()
+            before_roots, before_known = dict(jobs._job_roots), dict(_KNOWN_JOB_ROOTS)
+            with pytest.raises(GoalStoreError):
+                result = getattr(jobs, method)("lint", command("pass"), 30, context=context)
+                if method == "run_synchronous":
+                    await result
+            assert (handles.load(), jobs._job_roots, _KNOWN_JOB_ROOTS) == (
+                before_handles,
+                before_roots,
+                before_known,
+            ), "refused Goal Job admission left ownership residue"
+            assert not jobs._tasks and not jobs._results
+
+
+def independent_descendant_command(context, ready, release):
+    child = (
+        "import os,time\nfrom pathlib import Path\n"
+        "if os.fork(): os._exit(0)\nos.setsid()\n"
+        f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        f"p=Path({str(context.runtime_dir / 'late/report.json')!r})\n"
+        "p.parent.mkdir(parents=True,exist_ok=True)\np.write_text('finished')\n"
+    )
+    return command(
+        "import os,subprocess,sys,time\nfrom pathlib import Path\n"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True,env={{}},"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "deadline=time.monotonic()+10\n"
+        f"while not Path({str(ready)!r}).exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        f"assert Path({str(ready)!r}).exists()\nprint(os.getpid())\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bound_supervisor_retains_independent_session_descendant(layout):
+    if sys.platform != "linux":
+        pytest.skip("Linux gated child-subreaper producer ownership")
+    from booley.goals.prune import prune_record
+    from booley.goals.store import GoalStore, GoalStoreError
+    from booley.runtime.job_records import observe_job_producer
+    from tests.goals.conftest import git
+    from tests.goals.test_record_mutation import bound_context, fence, tree_bytes
+
+    context = bound_context(layout)
+    ready, release = layout.main / "escaped-ready", layout.main / "escaped-release"
+    jobs = JobLifecycle()
+    descendant = None
+    try:
+        result = await jobs.run_synchronous(
+            "lint", independent_descendant_command(context, ready, release), 30, context=context
+        )
+        assert result[0] == 0, result
+        descendant = int(ready.read_text())
+        rec = job_records.read_record(context.binding.invocation_id, context.jobs_root)
+        assert rec is not None and rec.pid == int(result[1].strip())
+        assert rec.argv[0] == sys.executable and rec.status == "done"
+        assert rec.producer_ownership["supervisor"]["pid"] != rec.pid
+        assert observe_job_producer(rec, context.jobs_root).state == "live"
+        assert is_pid_alive(descendant)
+        paths = fence(context, "terminal")
+        git(layout.main, "worktree", "remove", "--force", str(layout.worktree))
+        git(layout.main, "branch", "-D", context.binding.goal_branch)
+        before = tree_bytes(paths.root)
+        with pytest.raises(GoalStoreError, match="writer"):
+            prune_record(
+                GoalStore(layout.control), layout.main, context.binding.record_id, confirm=True
+            )
+        assert tree_bytes(paths.root) == before
+        release.touch()
+        await wait_until(lambda: observe_job_producer(rec, context.jobs_root).state == "stopped")
+        assert (context.runtime_dir / "late/report.json").read_text() == "finished"
+        assert prune_record(
+            GoalStore(layout.control), layout.main, context.binding.record_id, confirm=True
+        )["removed"]
+        assert not paths.root.exists()
+    finally:
+        release.touch()
+        if descendant is not None:
+            await wait_until(lambda: not is_pid_alive(descendant))
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_bound_spawn_ticket_fences_delayed_creation_and_gate(layout, monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("Linux gated child-subreaper producer ownership")
+    from booley.goals.store import GoalStore, GoalStoreError
+    from booley.runtime.job_records import observe_job_producer
+    from tests.goals.test_record_mutation import bound_context, fence
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    creating, release = asyncio.Event(), asyncio.Event()
+    original = asyncio.create_subprocess_exec
+    executed = layout.main / "endpoint-executed"
+
+    async def delayed(*args, **kwargs):
+        creating.set()
+        await asyncio.wait_for(release.wait(), 10)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed)
+    task = asyncio.create_task(
+        jobs.run_synchronous(
+            "lint",
+            command(f"from pathlib import Path; Path({str(executed)!r}).touch()"),
+            30,
+            context=context,
+        )
+    )
+    try:
+        await asyncio.wait_for(creating.wait(), 5)
+        rec = job_records.read_record(context.binding.invocation_id, context.jobs_root)
+        assert rec.pid is None and observe_job_producer(rec, context.jobs_root).state == "live"
+        with GoalStore(layout.control, lock_timeout_s=0.1).record_lock(context.binding.record_id):
+            pass
+        fence(context, "terminal")
+        release.set()
+        with pytest.raises(GoalStoreError):
+            await asyncio.wait_for(task, 10)
+        assert not executed.exists()
+        assert job_records.read_record(rec.run_id, context.jobs_root) is not None
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_bound_spawn_crash_and_cancel_preserve_unknown_ownership(layout):
+    if sys.platform != "linux":
+        pytest.skip("Linux gated child-subreaper producer ownership")
+    import signal
+
+    from booley.runtime.job_records import observe_job_producer
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    run_id = jobs.submit("lint", gated_command(context), 30, context=context)
+    try:
+        await wait_until((context.work_dir / "ready").exists)
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert rec.pid and rec.producer_ownership["supervisor"]["pid"] != rec.pid
+        os.kill(rec.producer_ownership["supervisor"]["pid"], signal.SIGKILL)
+        await jobs._cancel_process(rec.producer_ownership["group"])
+        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), 10)
+        assert observe_job_producer(rec, context.jobs_root).state == "unavailable"
+        assert job_records.read_record(run_id, context.jobs_root) is not None
+        assert not is_pid_alive(rec.pid)
+    finally:
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_bound_adopted_cancellation_uses_validated_supervisor_group(layout, monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("Linux gated child-subreaper producer ownership")
+    from booley.runtime.job_records import observe_job_producer
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    original, adopter = JobLifecycle(), JobLifecycle()
+    rec = original._new_record(context.binding.invocation_id, "lint", gated_command(context), 30)
+    original._stamp_context(rec, context)
+    original._admit_record(rec, context)
+    execution = asyncio.create_task(original._execute_record(rec, context))
+    groups = []
+    terminate = adopter._cancel_process
+
+    async def cancel_group(group):
+        groups.append(group)
+        await terminate(group)
+
+    monkeypatch.setattr(adopter, "_cancel_process", cancel_group)
+    try:
+        await wait_until((context.work_dir / "ready").exists)
+        assert rec.pid != rec.producer_ownership["group"]
+        await adopter._cancel_adopted_job(rec)
+        await asyncio.wait_for(execution, 10)
+        assert groups == [rec.producer_ownership["group"]]
+        assert not is_pid_alive(rec.pid)
+        assert observe_job_producer(rec, context.jobs_root).state == "unavailable"
+        groups.clear()
+        rec.producer_ownership["supervisor"]["start_token"] += 1
+        await adopter._cancel_adopted_job(rec)
+        assert groups == []
+    finally:
+        if not execution.done():
+            execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_bound_admission_preserves_original_ownership(layout):
+    from booley.goals.store import GoalStoreError
+    from booley.mcp.job_lifecycle import _KNOWN_JOB_ROOTS
+    from tests.goals.test_record_mutation import bound_context, tree_bytes
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    run_id = jobs.submit("lint", gated_command(context), 30, context=context)
+    try:
+        await wait_until((context.work_dir / "ready").exists)
+        handles = HandleStore(layout.control, jobs=True).load()
+        before = tree_bytes(context.jobs_root)
+        maps = dict(jobs._job_roots), dict(_KNOWN_JOB_ROOTS)
+        with pytest.raises(GoalStoreError, match="duplicate"):
+            jobs.submit("lint", command("pass"), 30, context=context)
+        assert tree_bytes(context.jobs_root) == before
+        assert HandleStore(layout.control, jobs=True).load() == handles
+        assert (jobs._job_roots, _KNOWN_JOB_ROOTS) == maps
+        assert list(jobs._tasks) == [run_id]
+    finally:
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_bound_exec_failure_preserves_endpoint_launch_result(layout):
+    if sys.platform != "linux":
+        pytest.skip("Linux bound gated endpoint exec")
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    result = await JobLifecycle().run_synchronous(
+        "lint", ["__missing_booley_bound_binary__"], 30, context=context
+    )
+    assert result[0] == 2 and result[3] is False
+    assert "Subprocess launch failed" in result[2]
+    assert "__missing_booley_bound_binary__" in result[2]

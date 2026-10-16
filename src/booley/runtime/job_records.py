@@ -43,6 +43,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.runtime.display_identity import DisplayScope
+from booley.runtime.producer_ownership import ProducerObservation
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ class JobRecord:
     binding: dict[str, Any] | None = None
     process_identity: dict[str, Any] | None = None
     ended_at: str | None = None
+    producer_ownership: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -140,6 +142,8 @@ def _validate_envelope(data: dict[str, Any]) -> None:
             require_str(data, key)
     if data.get("binding") is not None:
         require_dict(data["binding"], field="Job binding")
+    if data.get("producer_ownership") is not None:
+        require_dict(data["producer_ownership"], field="Job producer ownership")
 
 
 def terminal_status(exit_code: int, timed_out: bool) -> str:
@@ -276,13 +280,22 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
             raise BoundaryError("Job run_started_at precedes started_at")
 
 
-def strict_records(root: Path | None) -> list[JobRecord]:
+def strict_records(root: Path | None, *, validate_storage: bool = False) -> list[JobRecord]:
     """Read every record or fail closed when any durable entry is malformed."""
+    if validate_storage and root is not None:
+        from booley.runtime.producer_ownership import root_identity
+
+        try:
+            root_identity(root)
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as exc:
+            raise JobRecordError(f"Jobs storage unavailable: {exc}") from exc
     if root is None or not root.is_dir():
         return []
     records: list[JobRecord] = []
     malformed: list[str] = []
-    for path in root.glob("*.json"):
+    for path in _strict_record_paths(root, validate_storage=validate_storage):
         record = read_record(path.stem, root)
         try:
             if record is None:
@@ -296,6 +309,16 @@ def strict_records(root: Path | None) -> list[JobRecord]:
         detail = "; ".join(sorted(malformed))
         raise JobRecordError(f"malformed Job records require repair or removal: {detail}")
     return records
+
+
+def _strict_record_paths(root: Path, *, validate_storage: bool) -> list[Path]:
+    if not validate_storage:
+        return list(root.glob("*.json"))
+    try:
+        # glob suppresses scan errors; an inaccessible inventory is not empty.
+        return [path for path in root.iterdir() if path.name.lower().endswith(".json")]
+    except OSError as exc:
+        raise JobRecordError(f"Jobs storage enumeration unavailable: {exc}") from exc
 
 
 def _proc_cmdline(pid: int) -> list[str] | None:
@@ -384,3 +407,17 @@ def is_active(
     started = parse_stamp(rec.started_at)
     current = time.time() if now is None else now
     return rec.pid is None and started is not None and current - started < SPAWN_GRACE_SECONDS
+
+
+def observe_job_producer(rec: JobRecord, jobs_root: Path) -> ProducerObservation:
+    """Return owner-neutral lineage evidence for one retained Job."""
+    from booley.runtime.producer_ownership import observe_producer
+
+    return observe_producer(rec.producer_ownership, jobs_root.parent, rec.run_id)
+
+
+def observe_stored_producers(jobs_root: Path) -> list[ProducerObservation]:
+    """Retain private admission authority independently of Job metadata retention."""
+    from booley.runtime.producer_ownership import observe_producer_inventory
+
+    return observe_producer_inventory(jobs_root.parent)

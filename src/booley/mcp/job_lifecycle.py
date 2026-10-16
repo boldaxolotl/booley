@@ -38,7 +38,6 @@ from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 from booley.runtime.handles import register_job
 from booley.runtime.pid import is_pid_alive
-from booley.runtime.process_group import ProcessGroup, is_process_group_alive
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -133,9 +132,26 @@ class JobLifecycle:
     def _admit_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
         if context.binding is not None and context.jobs_root != self._write_root(rec):
             raise GoalStoreError("Job root differs from admitted Goal binding")
+        with self._mutation(rec, active=True, root=context.jobs_root) as destination:
+            try:
+                if rec.binding is not None:
+                    if destination is None or (destination / f"{rec.run_id}.json").exists():
+                        raise GoalStoreError("duplicate admitted Goal Job invocation")
+                    from booley.runtime.producer_ownership import new_ticket
+
+                    rec.producer_ownership = new_ticket(
+                        rec.run_id, destination.parent, timeout_s=rec.timeout_s
+                    )
+                self._persist(rec, active=True, root=destination)
+            except (OSError, ValueError, GoalStoreError) as exc:
+                if rec.producer_ownership is not None:
+                    from booley.runtime.producer_ownership import discard_pending
+
+                    discard_pending(rec.producer_ownership)
+                raise GoalStoreError(f"cannot persist admitted Goal Job: {exc}") from exc
         self._job_roots[rec.run_id] = context.jobs_root
         _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
-        self._persist(rec, active=True)
+        self._register_handle(rec, context)
 
     @contextmanager
     def _mutation(
@@ -229,12 +245,12 @@ class JobLifecycle:
             logger.info("Goal Job %s late display close refused: %s", rec.run_id, exc)
 
     @contextmanager
-    def _spawn_context(self, rec: jobrec.JobRecord) -> Iterator[None]:
-        """Refresh the lease and retain ownership through bounded PID publication."""
+    def _spawn_context(self, rec: jobrec.JobRecord) -> Iterator[dict[str, Any] | None]:
+        """Bounded admission/handoff guard; callers release it before every await."""
         with self._mutation(rec, active=True):
             rec.started_at = utc_now_rfc3339()
             self._persist(rec, active=True)
-            yield
+            yield rec.producer_ownership
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
         """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
@@ -275,6 +291,9 @@ class JobLifecycle:
         )
         rec.session_key = context.session_key
         rec.binding = None if context.binding is None else context.binding.to_json()
+
+    @staticmethod
+    def _register_handle(rec: jobrec.JobRecord, context: CallContext) -> None:
         from booley.runtime.booley_dir import resolve_booley_dir
 
         try:
@@ -335,8 +354,8 @@ class JobLifecycle:
                 # terminal lease so prune can still observe the owned group.
                 retained = (
                     rec.binding is not None
-                    and rec.pid is not None
-                    and is_process_group_alive(ProcessGroup(rec.pid))
+                    and destination is not None
+                    and jobrec.observe_job_producer(rec, destination).state != "stopped"
                 )
                 if not retained:
                     jobrec.delete_record(rec.run_id, root=destination)
@@ -496,6 +515,19 @@ class JobLifecycle:
 
     async def _cancel_adopted_job(self, rec: jobrec.JobRecord) -> None:
         if self._adopt_report_outcome(rec):
+            return
+        if rec.producer_ownership is not None:
+            from booley.runtime.producer_ownership import live_producer_group
+
+            root = self._write_root(rec)
+            group = (
+                None
+                if root is None
+                else live_producer_group(rec.producer_ownership, root.parent, rec.run_id)
+            )
+            if group is not None:
+                await self._cancel_process(group.id)
+            self._record_user_cancellation(rec)
             return
         if rec.pid is not None and not self._is_alive(rec.pid):
             self._record_terminal(rec, 2, timed_out=False)

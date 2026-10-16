@@ -3,6 +3,7 @@
 import json
 import shutil
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +29,10 @@ def bound_context(layout):
         paths.state_file,
         paths.logs_dir,
         paths.runtime_dir,
-        {"BOOLEY_RUNTIME_DIR": str(paths.runtime_dir)},
+        {
+            "BOOLEY_RUNTIME_DIR": str(paths.runtime_dir),
+            "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+        },
         binding,
     )
 

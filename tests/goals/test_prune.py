@@ -1,11 +1,20 @@
 """Cleanup leaves project history and shared worktree locks intact."""
 # ruff: noqa: F811 — pytest fixture imports intentionally share parameter names.
 
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import time
+
 import pytest
 
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore
+from booley.runtime.pid import capture_process_identity
 from tests.goals.conftest import layout  # noqa: F401 — shared fixture
+from tests.goals.test_finish import complete  # noqa: F401 — real sealed lifecycle fixture
 from tests.goals.test_inventory import remove_checkout, terminal
 from tests.goals.test_store import repo  # noqa: F401 — shared fixture
 
@@ -310,8 +319,10 @@ def test_prune_refuses_live_jobs_but_not_stale_running_label(repo):
     job_records.write_record(
         replace(job, process_identity=reused.to_payload(), started_at="2020-01-01T00:00:00Z"), jobs
     )
-    prune_record(store, repo["main"], record.id, confirm=True)
-    assert not jobs.parent.parent.exists()
+    # A reused leader cannot prove absence of its previous descendants.
+    with pytest.raises(GoalStoreError, match="writer"):
+        prune_record(store, repo["main"], record.id, confirm=True)
+    assert jobs.parent.parent.exists()
 
 
 def test_prune_refuses_expired_job_with_live_writer_identity(repo):
@@ -361,12 +372,10 @@ def test_prune_refuses_expired_job_with_live_writer_identity(repo):
     finally:
         child.terminate()
         child.wait(timeout=5)
-    if sys.platform == "win32":
-        with pytest.raises(GoalStoreError, match="writer group"):
-            prune_record(store, repo["main"], record.id, confirm=True)
-    else:
+    # Legacy leader death has no durable all-descendants-reaped witness.
+    with pytest.raises(GoalStoreError, match="writer group"):
         prune_record(store, repo["main"], record.id, confirm=True)
-        assert not paths.root.exists()
+    assert paths.root.exists()
 
 
 def test_prune_refuses_owned_descendant_after_leader_exit(repo, tmp_path):
@@ -425,3 +434,280 @@ def test_prune_refuses_owned_descendant_after_leader_exit(repo, tmp_path):
         with contextlib.suppress(ProcessLookupError):
             os.killpg(child.pid, signal.SIGKILL)
         child.wait(timeout=5)
+
+
+def test_prune_refuses_surviving_separate_session_writer(repo, tmp_path):
+    from booley.goals.prune import prune_record
+    from booley.goals.store import GoalStore, GoalStoreError
+    from booley.runtime import job_records
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux native process identity and independent sessions")
+    record = terminal(repo)
+    remove_checkout(repo)
+    store = GoalStore(repo["project"])
+    paths = record_paths(store.booley_dir, record.id)
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    destination = paths.runtime_dir / "late-writer" / "report.json"
+    descendant_script = (
+        "import os,time; from pathlib import Path\n"
+        f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        f"p=Path({str(destination)!r}); p.parent.mkdir(parents=True,exist_ok=True); p.write_text('late')\n"
+    )
+    script = (
+        "import subprocess,sys,time; from pathlib import Path\n"
+        f"subprocess.Popen([sys.executable,'-c',{descendant_script!r}],start_new_session=True)\n"
+        f"while not Path({str(ready)!r}).exists(): time.sleep(0.01)\n"
+        "time.sleep(0.1)\n"
+    )
+    env = dict(
+        os.environ, BOOLEY_RUN_ID="escaped-writer", BOOLEY_RUNTIME_DIR=str(paths.runtime_dir)
+    )
+    leader = subprocess.Popen([sys.executable, "-c", script], env=env, start_new_session=True)
+    descendant = None
+    try:
+        identity = capture_process_identity(leader.pid)
+        assert identity is not None
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        descendant = int(ready.read_text())
+        leader.wait(timeout=5)
+        job_records.write_record(
+            job_records.JobRecord(
+                "escaped-writer",
+                "sim",
+                "2000-01-01T00:00:00Z",
+                1,
+                pid=leader.pid,
+                process_identity=identity.to_payload(),
+            ),
+            paths.jobs_dir,
+        )
+        refused = False
+        try:
+            prune_record(store, repo["main"], record.id, confirm=True)
+        except GoalStoreError:
+            refused = True
+        assert refused, "prune accepted escaped-session writer"
+    finally:
+        if descendant:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(descendant, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(leader.pid, signal.SIGKILL)
+        leader.wait(timeout=5)
+
+
+def test_prune_refuses_non_directory_jobs_storage(repo):
+    from booley.goals.paths import record_paths
+    from booley.goals.prune import prune_record
+    from booley.goals.store import GoalStore, GoalStoreError
+    from tests.goals.test_inventory import remove_checkout, terminal
+
+    record = terminal(repo)
+    remove_checkout(repo)
+    store = GoalStore(repo["project"])
+    paths = record_paths(store.booley_dir, record.id)
+    paths.jobs_dir.parent.mkdir(parents=True)
+    paths.jobs_dir.write_text("corrupt Jobs storage")
+    refused = False
+    try:
+        prune_record(store, repo["main"], record.id, confirm=True)
+    except GoalStoreError:
+        refused = True
+    assert refused, "prune treated corrupt Jobs root as empty inventory"
+
+
+@pytest.mark.asyncio
+async def test_prune_accepts_completed_supervised_bound_job(layout):
+    if sys.platform != "linux":
+        pytest.skip("Linux complete-lineage stopped proof")
+    import asyncio
+
+    from booley.goals.prune import prune_record
+    from booley.mcp.job_lifecycle import JobLifecycle
+    from booley.runtime.job_records import observe_job_producer, read_record
+    from tests.goals.conftest import git
+    from tests.goals.test_record_mutation import bound_context, fence
+    from tests.mcp_tools.test_job_lifecycle import command, wait_until
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    run_id = jobs.submit("lint", command("print('completed')"), 30, context=context)
+    await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), 10)
+    rec = read_record(run_id, context.jobs_root)
+    assert rec.status == "done" and rec.argv == command("print('completed')")
+    await wait_until(lambda: observe_job_producer(rec, context.jobs_root).state == "stopped")
+    paths = fence(context, "terminal")
+    git(layout.main, "worktree", "remove", "--force", str(layout.worktree))
+    git(layout.main, "branch", "-D", context.binding.goal_branch)
+    assert prune_record(
+        GoalStore(layout.control), layout.main, context.binding.record_id, confirm=True
+    )["removed"]
+    assert not paths.root.exists()
+
+
+def _real_sealed_orphans(complete):
+    from booley.goals.abandon import abandon_goal
+    from booley.goals.entry import EntryRequest, enter_goal_mode
+    from booley.goals.finish import finish_goal
+    from booley.goals.model import parse_goal_args
+    from tests.goals.conftest import entry_environment, git
+    from tests.goals.test_finish import environment, request
+
+    finished = complete.record
+    result = finish_goal(request(complete), environment(complete))
+    assert result["status"] == "finished"
+    finished = GoalStore(complete.control).load(finished.id)
+    abandoned = enter_goal_mode(
+        EntryRequest(
+            complete.worktree, "abandoned", parse_goal_args([{"family": "LINT", "target": "top"}])
+        ),
+        entry_environment(complete),
+    ).record
+    complete.record = abandoned
+    closed = abandon_goal(
+        GoalStore(complete.control),
+        complete.worktree,
+        environment(complete),
+        instruction_quote="Stop and retain this work",
+    )
+    assert closed["status"] == "abandoned"
+    abandoned = GoalStore(complete.control).load(abandoned.id)
+    git(complete.main, "worktree", "remove", "--force", str(complete.worktree))
+    for record in (finished, abandoned):
+        git(complete.main, "branch", "-D", record.branch)
+    return (finished, result), (abandoned, closed)
+
+
+def test_prune_accepts_real_sealed_finish_and_abandonment(complete):
+    from booley.goals.prune import prune_record
+
+    for record, _result in _real_sealed_orphans(complete):
+        store = GoalStore(complete.control)
+        assert prune_record(store, complete.main, record.id)["authority_mode"] == "sealed-result"
+        assert prune_record(store, complete.main, record.id, confirm=True)["removed"]
+
+
+def _refuses_unchanged(complete, record, *, match=None):
+    from booley.goals.paths import pruning_intent
+    from booley.goals.prune import prune_record
+    from booley.goals.store import GoalStoreError
+    from tests.goals.test_inventory import snapshot
+
+    root = record_paths(complete.control, record.id).root
+    before = snapshot(root)
+    with pytest.raises(GoalStoreError, match=match):
+        prune_record(GoalStore(complete.control), complete.main, record.id, confirm=True)
+    assert snapshot(root) == before
+    assert not pruning_intent(complete.control, record.id).exists()
+
+
+def _invalid_record_authority(complete, record):
+    import json
+
+    path = record_paths(complete.control, record.id).record_file
+    original = path.read_bytes()
+    operation_field = "finish_operation" if record.finish_operation else "abandon_operation"
+    changes = [{operation_field: None}, {operation_field: "00000000-0000-4000-8000-000000000000"}]
+    if record.finish_operation:
+        changes.append(
+            {
+                "state": "abandoned",
+                "finish_operation": None,
+                "abandon_operation": record.finish_operation,
+            }
+        )
+    else:
+        changes.append({"end_instruction_quote": "A different human instruction"})
+    try:
+        for change in changes:
+            path.write_text(json.dumps({**json.loads(original), **change}))
+            _refuses_unchanged(complete, record)
+    finally:
+        path.write_bytes(original)
+
+
+def _invalid_operation_files(complete, record, result):
+    operation = (
+        record_paths(complete.control, record.id).root / "operations" / result["operation_id"]
+    )
+    for name in ("request.json", "result.json", "result.authority.json"):
+        path = operation / name
+        original = path.read_bytes()
+        try:
+            path.write_bytes(b"{}")
+            _refuses_unchanged(complete, record)
+        finally:
+            path.write_bytes(original)
+    if not record.finish_operation:
+        return
+    saved = {
+        name: (operation / name).read_bytes() for name in ("result.json", "result.authority.json")
+    }
+    try:
+        for name in saved:
+            (operation / name).unlink()
+        for name in (
+            "attempt.json",
+            "attempt.authority.json",
+            "review-package.json",
+            "SUMMARY.md",
+        ):
+            path = operation / name
+            original = path.read_bytes()
+            try:
+                path.write_bytes(b"{}")
+                _refuses_unchanged(complete, record)
+            finally:
+                path.write_bytes(original)
+    finally:
+        for name, content in saved.items():
+            (operation / name).write_bytes(content)
+
+
+def test_prune_refuses_invalid_terminal_authority_matrix(complete, monkeypatch):
+    from booley.goals import prune
+    from booley.goals.lifecycle import LifecycleOperation
+
+    orphans = _real_sealed_orphans(complete)
+    for record, result in orphans:
+        _invalid_record_authority(complete, record)
+        _invalid_operation_files(complete, record, result)
+        # Lifecycle decoding is separately exercised by the real corrupt-file
+        # cases; this seam pins Goal policy for normalized valid result statuses.
+        for status in (
+            "revalidation_required",
+            "abandoned" if record.finish_operation else "finished",
+        ):
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    LifecycleOperation, "saved_result", lambda _, status=status: {"status": status}
+                )
+                _refuses_unchanged(complete, record, match="does not match terminal state")
+    with monkeypatch.context() as patch:
+        patch.setattr(prune, "presence", lambda *_: ("unavailable", "missing"))
+        _refuses_unchanged(complete, orphans[0][0], match="presence")
+
+
+def test_prune_refuses_pending_ticket_without_job_json(repo):
+    from booley.goals.prune import prune_record
+    from booley.goals.store import GoalStoreError
+    from booley.runtime.producer_ownership import new_ticket
+    from tests.goals.test_inventory import snapshot
+
+    if sys.platform != "linux":
+        pytest.skip("Linux captured producer admission identity")
+    record = terminal(repo)
+    remove_checkout(repo)
+    paths = record_paths(repo["project"], record.id)
+    paths.runtime_dir.mkdir()
+    new_ticket("pending-without-job", paths.runtime_dir)
+    assert not paths.jobs_dir.exists()
+    before = snapshot(paths.root)
+    with pytest.raises(GoalStoreError, match="writer inventory"):
+        prune_record(GoalStore(repo["project"]), repo["main"], record.id, confirm=True)
+    assert snapshot(paths.root) == before
