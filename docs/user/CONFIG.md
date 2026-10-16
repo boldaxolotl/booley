@@ -809,13 +809,14 @@ backend setting after the profile is selected. An explicit per-call profile
 starts from that clean built-in profile (it does not inherit Target-level
 advanced-setting overrides); per-call expert flags can then refine it.
 
-`advanced_settings_openroad.max_fanout` is the exception: it is a design rule,
-not a PPA setting, so a per-call profile keeps it. It is an optional positive
-integer that limits fanout during physical repair. An SDC that sets its own
-fanout limit replaces the setting, and tighter library limits always apply.
-With no limit from any of the three, Booley repairs no fanout. The report's
-[`fanout_policy`](../internals/FLOW_REPORTS.md#synth) names the limit that
-applied and where it came from.
+`advanced_settings_openroad.max_fanout` is a Target-owned design rule that
+survives per-call PPA-profile overrides. It accepts positive integers up to
+2147483647 and is physical-only. Before authored SDC, Booley sets this value
+on the design, or `1e20` when absent. An authored design-wide SDC rule replaces
+it; scoped and library limits remain effective through OpenSTA's native lookup.
+Physical reports show `configured_max_fanout` and the effective minimum-slack
+`max_fanout_limit`, without source attribution (see
+[report fields](../internals/FLOW_REPORTS.md#synth)).
 
 `balanced` is the default. Select a profile explicitly for stable PPA.
 `compact` uses default liberty mapping and 40%/0.65 controls. Every profile uses

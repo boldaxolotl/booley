@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley.core.boundary import BoundaryError, require_bool
+from booley.core.boundary import BoundaryError, as_float, as_int, require_bool
 from booley.core.build_paths import work_root_for
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
@@ -299,7 +299,8 @@ class SynthMetrics:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
-    fanout_policy: dict[str, Any] | None = None
+    configured_max_fanout: int | None = None
+    max_fanout_limit: float | None = None
 
     def __post_init__(self) -> None:
         """Normalize string-compatible construction at the metrics interface."""
@@ -321,8 +322,9 @@ class SynthMetrics:
             "reg2reg_slack_ns": self.reg2reg_slack_ns,
             "reg2reg_fmax_mhz": self.reg2reg_fmax_mhz,
         }
-        if self.fanout_policy is not None and self.synth_mode == SynthMode.PHYSICAL:
-            detail["fanout_policy"] = self.fanout_policy
+        if self.synth_mode == SynthMode.PHYSICAL:
+            detail["configured_max_fanout"] = self.configured_max_fanout
+            detail["max_fanout_limit"] = self.max_fanout_limit
         if self.estimated_fmax_mhz is not None:
             detail["estimated_fmax_mhz"] = self.estimated_fmax_mhz
         return detail
@@ -588,17 +590,11 @@ def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
     return latches, comb_loops, multi_driven
 
 
-def _parse_fanout_policy(output: str) -> tuple[dict[str, Any] | None, str]:
-    """Keep malformed external metadata within the boundary failure report."""
-    from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-    policies = re.findall(r"^OPENROAD_FANOUT_POLICY: (.+)$", output, re.MULTILINE)
-    if not policies:
-        return None, ""
-    try:
-        return parse_policy(policies[-1]), ""
-    except (ValueError, TypeError):
-        return None, "malformed native fanout policy"
+def _parse_fanout_scalar(output: str, marker: str) -> float | None:
+    """Read a finite positive native marker; absent/no-check stays unknown."""
+    matches = re.findall(rf"^{marker}: (\S+)$", output, re.MULTILINE)
+    value = as_float(matches[-1], 0) if matches else 0
+    return value if value > 0 else None
 
 
 def _parse_synth_output(
@@ -625,13 +621,9 @@ def _parse_synth_output(
     process_count = _parse_process_count(output)
     latches, comb_loops, multi_driven = _detect_critical_conditions(output)
     peak_matches = re.findall(r"Peak RSS:\s*([\d.]+)\s*MB", output, re.IGNORECASE)
-    fanout_policy = None
-    infra_error = ""
-    if mode.runs_openroad:
-        fanout_policy, infra_error = _parse_fanout_policy(output)
     return SynthMetrics(
-        fanout_policy=fanout_policy,
-        infra_error=infra_error,
+        configured_max_fanout=as_int(_parse_fanout_scalar(output, "OPENROAD_MAX_FANOUT")),
+        max_fanout_limit=_parse_fanout_scalar(output, "OPENROAD_FANOUT_LIMIT"),
         area_um2=area_um2,
         area_source=area_source,
         area_kge=area_kge,
@@ -752,7 +744,8 @@ def _first_valid_display(
 
 
 _BASELINE_DETAIL_FIELDS = (
-    "fanout_policy",
+    "configured_max_fanout",
+    "max_fanout_limit",
     "area_um2",
     "area_source",
     "area_kge",
@@ -762,7 +755,8 @@ _BASELINE_DETAIL_FIELDS = (
     "estimated_fmax_mhz",
 )
 _REPORT_QOR_FIELDS = (
-    "fanout_policy",
+    "configured_max_fanout",
+    "max_fanout_limit",
     "area_kge",
     "area_um2",
     "area_source",
@@ -776,7 +770,8 @@ _REPORT_QOR_FIELDS = (
     "reg2reg_fmax_mhz",
 )
 _REPORT_BASELINE_FIELDS = (
-    "fanout_policy",
+    "configured_max_fanout",
+    "max_fanout_limit",
     "area_kge",
     "area_um2",
     "area_source",
@@ -1628,44 +1623,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             output += "\nBOOLEY_INPUT_ERROR: " + metrics.infra_error
         self._apply_boundary_completion(metrics, outcome, proc_result, output)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
-        if metrics.fanout_policy is not None and metrics.ppa_complete:
-            self._preserve_fanout(target, plan.build_dir, metrics)
 
         return metrics, output
-
-    def _preserve_fanout(self, target: str, build_dir: Path, metrics: SynthMetrics) -> None:
-        """Publish only complete invocation-owned native point evidence."""
-        assert metrics.fanout_policy is not None
-        worst = metrics.fanout_policy.get("worst_check")
-        if worst is not None:
-            worst.pop("native_check_artifact", None)
-        destination = None
-        created = False
-        try:
-            invocation = self.reserve_invocation_dir()
-            if invocation is None:
-                return
-            root = Path(getattr(self, "_project_root", None) or self.args.work_dir)
-            role = getattr(self, "_execution_role", "candidate")
-            components = ("artifacts", f"synth_{synth_target_report_slug(target)}", "fanout", role)
-            destination = invocation.joinpath(*components)
-            created = not destination.exists()
-            for name in ("worst.rpt", "policy.json"):
-                artifacts.publish_file(
-                    invocation,
-                    (*components, name),
-                    build_dir / "reports" / "fanout" / name,
-                    work_dir=root,
-                )
-        except (OSError, ValueError):
-            if created and destination is not None:
-                shutil.rmtree(destination, ignore_errors=True)
-            logger.warning(
-                "could not publish numbered synth fanout evidence for %s", target, exc_info=True
-            )
-            return
-        if worst is not None:
-            worst["native_check_artifact"] = posix_relpath(destination, root)
 
     def _artifact_dirs(self, target: str, synth_mode: SynthMode | None) -> dict[str, str]:
         """The directories holding *target*'s synth artifacts, by role.

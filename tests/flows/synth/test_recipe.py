@@ -29,3 +29,25 @@ def test_parameter_transport_revision_only_invalidates_string_recipes(tmp_path, 
         current
     ) != synthesis_recipe_snapshot_fingerprint(previous)
     assert changed is (datatype in ("str", "file"))
+
+
+def test_physical_fanout_recipe_invalidates_policy_results(tmp_path):
+    for mode in ("physical", "logical"):
+        resolved = SimpleNamespace(
+            flow_options={"synth_mode": mode},
+            sdc_files=(),
+            build_root=tmp_path,
+            vlnv="proof:lib:top:1",
+            toplevel="top",
+            parameters={},
+        )
+        current = synthesis_recipe_snapshot(resolved, default_recipe_args(), target="synth")
+        previous = {**current, "technology": {**current["technology"]}}
+        if mode == "physical":
+            previous["technology"]["physical_fanout_policy"] = "native-point-v1"
+        changed = synthesis_recipe_snapshot_fingerprint(
+            current
+        ) != synthesis_recipe_snapshot_fingerprint(previous)
+        assert changed is (mode == "physical"), (
+            "physical fanout recipe did not invalidate old policy results"
+        )

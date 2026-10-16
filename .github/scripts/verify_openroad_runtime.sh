@@ -184,7 +184,6 @@ for label, repair_timing in (("repair-off", False), ("repair-on", True)):
         ),
         target="synth_dut",
         source_sdc_paths=(work / "dut.sdc",),
-        fanout_report_dir=run_dir / "reports" / "fanout",
     )
     (work / f"run_openroad-{label}.tcl").write_text(
         (run_dir / "run_openroad.tcl").read_text(encoding="utf-8"),

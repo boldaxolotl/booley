@@ -617,13 +617,14 @@ error. The Fmax readout recovers the effective period from the authored SDC or
 the clock OpenROAD reports after evaluating dynamic Tcl.
 
 Fanout is the one rule Booley generates, because OpenROAD otherwise repairs to
-an implicit fanout of 50. Before reading the SDC, the script sets the Target's
-`max_fanout`, or an effectively unlimited value when there is none. A fanout
-limit in the SDC then replaces it, and tighter library limits still apply.
-Just before `repair_design` the script records the minimum-slack driver and
-its limit as `fanout_policy` (see [FLOW_REPORTS](FLOW_REPORTS.md#synth)). An
-SDC that switches analysis mode or reloads the design stops the run there with
-an input error, because the recorded limit could no longer be trusted.
+an implicit fanout of 50. Immediately after linking and before reading SDC,
+the script sets the Target's `max_fanout`, or `1e20` when absent, on the design.
+Authored design-wide rules replace it; scoped and library constraints use
+OpenSTA's native precedence. After parasitic estimation and immediately before
+`repair_design`, `sta::max_fanout_min_slack_limit` supplies the
+`OPENROAD_FANOUT_LIMIT` log marker. The native no-check sentinel becomes `none`.
+Reports carry the configured and effective scalars, without policy artifacts
+or command tracing (see [FLOW_REPORTS](FLOW_REPORTS.md#synth)).
 
 **Constrain the clock near the design's realistic target.** Too aggressive a
 clock, say a 4 ns (250 MHz) constraint on a design whose real speed is tens of
@@ -768,7 +769,8 @@ The Criteria detail includes:
 - `estimated_fmax_mhz` in logical mode; `per_clock` (per-clock
   `critical_path_ps` / `fmax_mhz` / `wns_ns` /
   `whs_ns`), aggregate `wns_ns` / `whs_ns`, `reg2reg_fmax_mhz`, `reg2reg_slack_ns`
-- `fanout_policy` in physical mode (informational; it has no Criterion threshold)
+- `configured_max_fanout` and `max_fanout_limit` in physical mode
+  (informational; they have no Criterion threshold)
 - `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`,
   `multi_driven`, `process_count`
 - `baseline_metrics`, when `--baseline` is used

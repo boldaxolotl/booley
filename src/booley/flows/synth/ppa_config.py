@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import math
-import struct
 from collections.abc import Mapping
 from typing import Any
 
@@ -275,19 +273,11 @@ def _append_cli_bool(cmd: list[str], args: SynthRequest | argparse.Namespace, na
 
 
 def validate_max_fanout(value: object, *, field: str) -> int:
-    """Validate a Target integer against the native OpenSTA float range."""
+    """Validate the bounded positive integer Target setting."""
     validated = as_positive_int(value, 0)
-    if validated == 0:
-        raise BoundaryError(f"{field} must be a strictly positive integer")
-    value = validated
-    try:
-        native = struct.unpack("f", struct.pack("f", float(value)))[0]
-    except (OverflowError, struct.error):
-        raise BoundaryError(f"{field} exceeds the native-supported float32 range") from None
-    native_inf = struct.unpack("f", struct.pack("f", 1e30))[0]
-    if not math.isfinite(native) or not 0 < native < native_inf:
-        raise BoundaryError(f"{field} must fit positive finite float32 below OpenSTA INF")
-    return value
+    if not 0 < validated <= 2**31 - 1:
+        raise BoundaryError(f"{field} must be a positive integer <= 2147483647")
+    return validated
 
 
 def _append_target_fanout(cmd: list[str], cfg: Mapping[str, Any], field_prefix: str) -> None:

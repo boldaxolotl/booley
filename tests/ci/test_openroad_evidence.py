@@ -192,45 +192,116 @@ def fanout_helper():
     return helper
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX native process group benchmark")
-def test_stalled_native_benchmark_is_bounded_and_retains_partial_log(
-    tmp_path, monkeypatch, fanout_helper
-):
-    engine = tmp_path / "openroad"
-    engine.write_text("#!/bin/sh\necho partial-native-diagnostic\nsleep 30\n")
-    engine.chmod(0o755)
-    script = tmp_path / "run.tcl"
-    script.touch()
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    timer = tmp_path / "test-timer"
-    timer.write_text('#!/bin/sh\nshift 4\nexec "$@"\n')
-    timer.chmod(0o755)
-    monkeypatch.setattr(fanout_helper, "BENCHMARK_TIMER", str(timer))
-    monkeypatch.setattr(fanout_helper, "BENCHMARK_TIMEOUT_S", 0.1)
-    with pytest.raises(subprocess.TimeoutExpired):
-        fanout_helper.benchmark_native(script)
-    assert "partial-native-diagnostic" in (tmp_path / "native.log").read_text()
-
-
-def test_native_physical_arm_checks_exact_value_not_only_source(tmp_path, fanout_helper):
-    policy_dir = tmp_path / "reports/fanout"
-    policy_dir.mkdir(parents=True)
-    (policy_dir / "policy.json").write_text(
-        '{"worst_check":{"source":"setting","pin":"driver/ZN","max_fanout":51}}'
-    )
-    stages = ("floorplan", "global_placement", "repair_design", "detailed_placement", "sta_report")
-    (tmp_path / "native.log").write_text("\n".join(f"BOOLEY_STAGE: {stage}" for stage in stages))
-    with pytest.raises(RuntimeError, match="native exact limit"):
-        fanout_helper.check_physical_arm(tmp_path, {}, "setting", "driver/ZN", 2, 50)
-
-
-def test_shared_ci_default_repair_bound_rejects_regression(tmp_path, monkeypatch, fanout_helper):
+def test_slim_fanout_runtime_uses_scalar_native_limit(tmp_path, monkeypatch, fanout_helper):
+    import sys
     from types import SimpleNamespace
 
-    arguments = SimpleNamespace(
-        work_dir=tmp_path, pdk_root=tmp_path, standalone=False, repair_timeout_s=15
+    pdk = tmp_path / "pdk"
+    for name in (
+        "cell/lib/NangateOpenCellLibrary_typical_ccs.lib",
+        "nangate45/Nangate45_tech.lef",
+        "nangate45/Nangate45_stdcell.lef",
+        "nangate45/Nangate45.rc",
+    ):
+        path = pdk / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("library (fixture) {\n}")
+    monkeypatch.setattr(
+        sys, "argv", ["verify", "--pdk-root", str(pdk), "--work-dir", str(tmp_path / "work")]
     )
-    monkeypatch.setattr(fanout_helper, "native_arguments", lambda: (arguments, "openroad"))
-    monkeypatch.setattr(fanout_helper, "run_case", lambda *args, **kwargs: {"repair_s": 30})
-    with pytest.raises(RuntimeError, match="repair exceeded"):
+    monkeypatch.setattr(fanout_helper.shutil, "which", lambda _: "openroad")
+
+    def native(command, **kwargs):
+        path = Path(kwargs["cwd"])
+        limits = {
+            "default": 1e20,
+            "setting50": 50,
+            "design100": 100,
+            "scoped25": 25,
+            "scoped100": 50,
+            "library25": 25,
+        }
+        text = "\n".join(
+            f"BOOLEY_STAGE: {stage}"
+            for stage in (
+                "floorplan",
+                "global_placement",
+                "repair_design",
+                "detailed_placement",
+                "sta_report",
+            )
+        )
+        text += f"\nOPENROAD_FANOUT_LIMIT: {limits.get(path.name, 50)}\nREPAIR_ELAPSED_MS: 10\nTOTAL_ELAPSED_MS: 20\nPOST_REPAIR_FANOUT_VIOLATIONS: 0\n"
+        kwargs["stdout"].write(text)
+        (path / "openroad_dut.v").write_text("BUF_X1 inserted (.A(a), .Z(b));")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fanout_helper.subprocess, "run", native)
+    failure = None
+    try:
         fanout_helper.main()
+    except (RuntimeError, FileNotFoundError) as error:
+        failure = str(error)
+    assert failure is None, f"scalar native runtime rejected: {failure}"
+    assert (tmp_path / "work/default/native.log").is_file()
+
+
+@pytest.mark.parametrize(
+    "failure,match",
+    [
+        ("slow", "repair exceeded"),
+        ("stage", "missing native physical stage"),
+        ("rsz", "native fanout arm failed"),
+        ("buffers", "inserted no structural buffers"),
+        ("status", "native fanout arm failed"),
+    ],
+)
+def test_native_fanout_checker_requires_complete_evidence(
+    tmp_path, monkeypatch, fanout_helper, failure, match
+):
+    from types import SimpleNamespace
+
+    script = tmp_path / "run.tcl"
+    script.touch()
+
+    def native(*args, **kwargs):
+        stages = (
+            "floorplan",
+            "global_placement",
+            "repair_design",
+            "detailed_placement",
+            "sta_report",
+        )
+        text = "\n".join(
+            f"BOOLEY_STAGE: {stage}"
+            for stage in stages
+            if failure != "stage" or stage != "sta_report"
+        )
+        text += f"\nREPAIR_ELAPSED_MS: {15001 if failure == 'slow' else 10}\nOPENROAD_FANOUT_LIMIT: 50\n"
+        if failure == "rsz":
+            text += "RSZ-0035\n"
+        kwargs["stdout"].write(text)
+        (tmp_path / "openroad_dut.v").write_text(
+            "" if failure == "buffers" else "BUF_X1 inserted (.A(a), .Z(b));"
+        )
+        return SimpleNamespace(returncode=1 if failure == "status" else 0)
+
+    monkeypatch.setattr(fanout_helper.subprocess, "run", native)
+    with pytest.raises(RuntimeError, match=match):
+        fanout_helper.run_case(script, "openroad", 50, failure != "rsz")
+    assert (tmp_path / "native.log").read_text()
+
+
+def test_native_fanout_timeout_keeps_partial_log(tmp_path, monkeypatch, fanout_helper):
+    script = tmp_path / "run.tcl"
+    script.touch()
+
+    def stalled(command, **kwargs):
+        assert kwargs["timeout"] == 120
+        kwargs["stdout"].write("partial native diagnostic\n")
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(fanout_helper.subprocess, "run", stalled)
+    with pytest.raises(subprocess.TimeoutExpired):
+        fanout_helper.run_case(script, "openroad", 1e20, False)
+    assert (tmp_path / "native.log").read_text() == "partial native diagnostic\n"
