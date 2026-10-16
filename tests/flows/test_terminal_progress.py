@@ -49,6 +49,136 @@ def observer(root, *, flow="sim", stream=None, **kwargs):
     return TerminalProgress(flow, "sim_demo", root, stream=stream or Screen(), **kwargs)
 
 
+def progress_logs(text):
+    return [
+        (match[1], match[2], Path(match[3]))
+        for match in re.finditer(r"Target=(\S+) stage=(.*?) elapsed=\d+s log=(\S+)", text)
+    ]
+
+
+@pytest.mark.parametrize(
+    "flow_type",
+    [LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow],
+    ids=["lint", "sim", "synth", "fpga"],
+)
+def test_builtin_run_log_registration_preserves_target(tmp_path, flow_type):
+    flow = flow_type()
+    sink = observer(tmp_path, flow=flow.name)
+    sink.stage_changed("candidate: configure", target="owner")
+    sink.stage_changed("baseline: checking", target="other")
+    with sink.installed():
+        flow._open_run_log("owner", tmp_path / "owner")
+    records = progress_logs(sink.stream.getvalue())
+    assert [(owner, path) for owner, _, path in records] == [
+        ("owner", tmp_path / "owner" / "run.log")
+    ], "run log owner mismatch"
+    assert records[0][1] == "candidate: configure"
+    assert (sink.target, sink.stage) == ("other", "baseline: checking")
+
+
+def test_progress_footer_preserves_each_log_owner(tmp_path):
+    sink = observer(tmp_path)
+    paths = {target: tmp_path / target / "run.log" for target in ("a", "b")}
+    for target, path in paths.items():
+        path.parent.mkdir()
+        path.touch()
+        sink.stage_changed("candidate: synthesis", target=target)
+        sink.log_path_known(path)
+    sink.stage_changed("baseline: configure", target="a")
+    sink.stage_changed("baseline: checking", target="b")
+    sink.stream.seek(0)
+    sink.stream.truncate()
+    sink.footer()
+    records = progress_logs(sink.stream.getvalue())
+    assert [(target, path) for target, _, path in records] == list(paths.items()), (
+        "footer log owner mismatch"
+    )
+    assert [stage for _, stage, _ in records] == ["candidate: synthesis"] * 2
+    assert (sink.target, sink.stage) == ("b", "baseline: checking")
+
+
+def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
+    from booley.core.build_paths import work_root_for
+    from booley.flows.base import SubprocessResult
+    from booley.fusesoc import fusesoc_registry
+
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    source = tmp_path / "top.sv"
+    source.write_text("module top; endmodule\n")
+    targets = ("lint_a", "lint_b")
+    (tmp_path / "demo.core").write_text(
+        "CAPI=2:\nname: ::demo:0\nfilesets:\n  rtl:\n"
+        "    files: [top.sv]\n    file_type: systemVerilogSource\ntargets:\n"
+        + "".join(
+            f"  {target}:\n    flow: lint\n    default_tool: verilator\n"
+            "    flow_options: {tool: verilator}\n    filesets: [rtl]\n    toplevel: top\n"
+            for target in targets
+        )
+    )
+
+    def resolve(target, *, build_root):
+        return fusesoc_registry.ResolvedTarget(
+            name=target.selector,
+            vlnv=target.vlnv,
+            toplevel="top",
+            eda_tool="verilator",
+            configured_eda_tool="verilator",
+            parameters={},
+            build_root=build_root,
+            edam_path=build_root / "demo.eda.yml",
+            files=(fusesoc_registry.ResolvedFile(str(source), "systemVerilogSource"),),
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+    flow = LintFlow()
+    monkeypatch.setattr(flow, "_execute_boundary", lambda _: SubprocessResult(0))
+    result = execute_cli(flow, ["--work-dir", str(tmp_path), "--target", "lint_a,lint_b"])
+    assert result.exit_code == 0, result.outcome.report_text
+    records = progress_logs(capsys.readouterr().err)
+    expected = {work_root_for(tmp_path, "lint", target) / "run.log": target for target in targets}
+    assert records
+    assert all(owner == expected[path] for owner, _, path in records), (
+        "progress log target mismatch"
+    )
+    for target in targets:
+        stages = [stage for owner, stage, _ in records if owner == target]
+        assert stages == ["preparing", "configure", "configure"]
+        artifact = result.outcome.detail["artifacts"][f"log_{target}"]
+        assert Path(artifact).parts[-2:] == (target, "run.log")
+        assert (tmp_path / artifact).is_file()
+
+
+def test_explicit_watched_owner_pending_temporary_and_reregistration(tmp_path):
+    from booley.flows.terminal_progress import observe_logs
+
+    sink = observer(tmp_path)
+    pending = tmp_path / "pending.log"
+    sink.stage_changed("candidate: configure", target="a")
+    sink.stage_changed("candidate: synthesis")
+    sink.stage_changed("baseline: checking", target="b")
+    with sink.installed():
+        observe_logs([pending], target="a")
+        assert (sink.target, sink.stage) == ("b", "baseline: checking")
+        pending.touch()
+        sink.footer()
+        records = progress_logs(sink.stream.getvalue())
+        assert records == [("a", "candidate: synthesis", pending)] * 2
+        sink.stage_changed("baseline: synthesis", target="a")
+        observe_logs([pending], target="a", temporary=True)
+        sink.stream.seek(0)
+        sink.stream.truncate()
+        sink.footer()
+        assert progress_logs(sink.stream.getvalue()) == []
+        sink.stage_changed("checking", target="b")
+        observe_logs([pending], target="b")
+        sink.stream.seek(0)
+        sink.stream.truncate()
+        sink.footer()
+        assert progress_logs(sink.stream.getvalue()) == [("b", "checking", pending)]
+
+
 def wait_until(predicate, *, timeout=4):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -529,6 +659,8 @@ def test_observer_failure_never_changes_capture(tmp_path):
 def test_synth_work_unit_observes_registered_stage_file(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from booley.flows import terminal_progress
+
     flow = AsicSynthesizeFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
     build = tmp_path / "synth"
@@ -542,14 +674,26 @@ def test_synth_work_unit_observes_registered_stage_file(tmp_path, monkeypatch):
         flow, "_interpret_boundary_run", lambda *args: (SimpleNamespace(), args[2].stdout)
     )
     sink = observer(tmp_path, flow="synth", tool_output=True)
+    watch = terminal_progress.observe_logs
+
+    def register(paths, *, target, temporary):
+        sink.stage_changed("candidate: unrelated", target="other")
+        watch(paths, target=target, temporary=temporary)
+
+    monkeypatch.setattr(terminal_progress, "observe_logs", register)
     with sink.installed():
         flow._run_single_config("demo")
+    records = progress_logs(sink.stream.getvalue())
+    assert all(target == "demo" for target, _, _ in records)
+    assert records[0][1] == "candidate: configure"
+    assert [stage for _, stage, _ in records[1:]] == ["candidate: synthesis"] * 3
     assert "candidate: yosys" in sink.stream.getvalue()
     assert "real file-only line" in sink.stream.getvalue()
     assert b"real file-only line" in sink.log_path.read_bytes()
 
 
 def test_fpga_work_unit_observes_pending_vivado_child_log(tmp_path, monkeypatch):
+    from booley.flows import terminal_progress
     from booley.flows.fpga.flow import _PreparedFpgaCommand
 
     flow = FpgaImplFlow()
@@ -565,8 +709,18 @@ def test_fpga_work_unit_observes_pending_vivado_child_log(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda _: prepared)
     sink = observer(tmp_path, flow="fpga", tool_output=True)
+    watch = terminal_progress.observe_logs
+
+    def register(paths, *, target, temporary):
+        sink.stage_changed("candidate: unrelated", target="other")
+        watch(paths, target=target, temporary=temporary)
+
+    monkeypatch.setattr(terminal_progress, "observe_logs", register)
     with sink.installed():
         flow._run_single_target("demo")
+    records = progress_logs(sink.stream.getvalue())
+    assert all(target == "demo" for target, _, _ in records)
+    assert [stage for _, stage, _ in records[1:]] == ["candidate: Vivado running"] * 2
     assert "candidate: implementation" in sink.stream.getvalue()
     assert "fresh implementation line" in sink.stream.getvalue()
     assert b"fresh implementation line" in sink.log_path.read_bytes()

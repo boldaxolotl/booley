@@ -23,6 +23,7 @@ import unicodedata
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
@@ -146,6 +147,13 @@ class _FileSource:
         return chunk
 
 
+@dataclass(frozen=True)
+class _RegisteredLog:
+    target: str
+    stage: str
+    temporary: bool
+
+
 class TerminalProgress:
     """Bounded live presentation with a separate append-only observation log."""
 
@@ -178,7 +186,8 @@ class TerminalProgress:
         self._initialize_observation()
 
     def _initialize_observation(self) -> None:
-        self.paths: dict[Path, bool] = {}
+        self.paths: dict[Path, _RegisteredLog] = {}
+        self._target_stages: dict[str, str] = {}
         self.files: list[_FileSource] = []
         self.pipe_lines: dict[str, _Lines] = {}
         # Captures already retain full output in memory. Buffer observations too,
@@ -240,11 +249,13 @@ class TerminalProgress:
             # Below PIPE_BUF; writable POSIX pipes accept this without waiting.
             offset += os.write(fd, payload[offset : offset + 1024])
 
-    def _record(self, text: str) -> None:
+    def _record(self, text: str, *, target: str | None = None, stage: str | None = None) -> None:
         self._clear()
         self._write(
-            f"[booley-progress] {utc_now_rfc3339()} {self.flow} Target={sanitize(self.target)} "
-            f"stage={sanitize(self.stage)} elapsed={int(self.clock() - self.started)}s "
+            f"[booley-progress] {utc_now_rfc3339()} {self.flow} "
+            f"Target={sanitize(self.target if target is None else target)} "
+            f"stage={sanitize(self.stage if stage is None else stage)} "
+            f"elapsed={int(self.clock() - self.started)}s "
             f"{sanitize(text)}\n"
         )
 
@@ -253,6 +264,8 @@ class TerminalProgress:
             return
         with self.lock:
             new_stage = sanitize(stage)
+            owner = self.target if target is None else target
+            self._target_stages[owner] = new_stage
             if new_stage == self.stage and (target is None or target == self.target):
                 return
             if target is not None:
@@ -264,13 +277,19 @@ class TerminalProgress:
             self.stage = new_stage
             self._record("")
 
-    def log_path_known(self, path: Path, *, temporary: bool = False) -> None:
+    def log_path_known(
+        self, path: Path, *, target: str | None = None, temporary: bool = False
+    ) -> None:
         if self.abandoned:
             return
         with self.lock:
-            self.paths[path] = temporary
+            owner = self.target if target is None else target
+            stage = self._target_stages.get(owner, "preparing")
+            self.paths[path] = _RegisteredLog(owner, stage, temporary)
             self._record(
-                f"log={path}" + (" (temporary; copied to transcript)" if temporary else "")
+                f"log={path}" + (" (temporary; copied to transcript)" if temporary else ""),
+                target=owner,
+                stage=stage,
             )
 
     def _open_transcript(self) -> None:
@@ -312,13 +331,15 @@ class TerminalProgress:
                 self.worker = threading.Thread(target=self._run, daemon=True)
                 self.worker.start()
 
-    def watch(self, paths: list[Path], *, temporary: bool = False) -> None:
+    def watch(
+        self, paths: list[Path], *, target: str | None = None, temporary: bool = False
+    ) -> None:
         if self.abandoned:
             return
         with self.lock:
             self.files = [_FileSource(path) for path in paths]
             for path in paths:
-                self.log_path_known(path, temporary=temporary)
+                self.log_path_known(path, target=target, temporary=temporary)
 
     def observe(self, source: str, chunk: bytes) -> None:
         """Never block a pipe reader on terminal or disk I/O."""
@@ -522,11 +543,14 @@ class TerminalProgress:
             self._log_failure()
 
     def footer(self) -> None:
-        if self.log_path is not None:
-            self._record(f"transcript={self.log_path}")
-        for path, temporary in self.paths.items():
-            if not temporary and path.is_file():
-                self._record(f"log={path}")
+        with self.lock:
+            if self.log_path is not None:
+                self._record(f"transcript={self.log_path}")
+            for path, registration in self.paths.items():
+                if not registration.temporary and path.is_file():
+                    self._record(
+                        f"log={path}", target=registration.target, stage=registration.stage
+                    )
 
 
 def announce_unit(stage: str, *, target: str | None = None) -> None:
@@ -536,8 +560,8 @@ def announce_unit(stage: str, *, target: str | None = None) -> None:
         observer.stage_changed(stage, target=target)
 
 
-def observe_logs(paths: list[Path], *, temporary: bool = False) -> None:
+def observe_logs(paths: list[Path], *, target: str | None = None, temporary: bool = False) -> None:
     """Register a bounded known set before dispatch, within the build lease."""
     observer = current_progress()
     if observer is not None:
-        observer.watch(paths, temporary=temporary)
+        observer.watch(paths, target=target, temporary=temporary)

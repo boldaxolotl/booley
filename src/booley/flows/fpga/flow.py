@@ -761,7 +761,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         role = getattr(self, "_execution_role", "candidate")
         self._open_run_log(target, prepared.work_root)
         announce_unit(f"{role}: Vivado running", target=target)
-        observe_logs(list(getattr(prepared, "console_logs", ())), temporary=role == "baseline")
+        observe_logs(
+            list(getattr(prepared, "console_logs", ())),
+            target=target,
+            temporary=role == "baseline",
+        )
 
     def _run_single_target(self, target: str) -> FpgaMetrics:
         """Configure, run, and interpret Vivado inside the Sandbox."""
