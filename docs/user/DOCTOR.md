@@ -6,6 +6,12 @@ verify the design. A design failure that the machinery executes and interprets
 correctly is compatible with healthy machinery. Doctor's existing verdict rules
 still apply; deep currency reporting does not change their classification.
 
+**Known security limitation:** Doctor does not currently detect agent-planted
+Git configuration or hooks. Host-side Doctor runs Git and can itself execute
+those planted commands. A PASS is not evidence that host Git is safe after
+untrusted agent work. See [#1529](https://github.com/boldaxolotl/booley/issues/1529)
+and the [current precautions](TROUBLESHOOTING.md#known-sandbox-escape-through-shared-git-metadata).
+
 A Claude Code or Codex session on the host is expected during Project Setup. `session.agent-on-host`
 is a PASS-level reminder that the Booley MCP server and Booley Flows live only
 in the Sandbox. For Interactive work, reopen in the devcontainer or use

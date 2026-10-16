@@ -228,19 +228,23 @@ was wrong or what evidence you want next.
 ### What the Developer Agent is allowed to do
 
 Inside the container, the Developer Agent **never asks for permission** before acting.
-That is deliberate: the container itself is the safety boundary. It can only
-see your project, and its only network access is to the AI provider. Booley
-does not change your Claude Code or Codex settings outside the container.
+That is deliberate: the Sandbox restricts mounted host paths and network access.
+However, a [known, unresolved escape hatch (#1529)](https://github.com/boldaxolotl/booley/issues/1529)
+allows an agent to plant Git configuration or hooks that execute when Git later
+runs on the host. See the [current precautions](TROUBLESHOOTING.md#known-sandbox-escape-through-shared-git-metadata)
+before using host Git, including editor integrations and Booley commands.
+Booley does not change your Claude Code or Codex settings outside the container.
 
 **Always review changes yourself.** Use `git diff` in a container terminal and
 run the relevant checks. Asking the agent to explain its diff helps, but it
 doesn't replace your own review.
 
-> **Tip: let the Developer Agent commit; you push.** Let the Developer Agent commit its own work;
-> it writes good commit messages. It **can't** push to GitHub or any other
-> server, because the container blocks that network access. So: let it commit,
-> review the commits, then push them yourself from a terminal outside the
-> container.
+> **Commits and pushing:** the Developer Agent can commit inside the Sandbox,
+> but the container blocks pushes to GitHub and other servers. Review commits
+> inside the Sandbox. Pushing from the host on an affected checkout can execute
+> planted code with your host credentials and permissions; avoid that operation
+> after untrusted agent work. There is currently no documented safe host-push
+> procedure for an affected checkout. See the [current precautions](TROUBLESHOOTING.md#known-sandbox-escape-through-shared-git-metadata).
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley/.interactive_logs/`. Chat transcripts live in
