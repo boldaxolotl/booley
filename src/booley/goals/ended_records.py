@@ -20,7 +20,7 @@ directory is renamed to a hidden ``.deleting-<goal-id>`` sibling (so no reader
 sees half a record), and the renamed directory is removed after the lock is
 released. The hidden record stays until its worktree lock is either removed
 or confirmed shared, so the next sweep can retry interrupted lock cleanup.
-Branch probes share a one-second budget; exhaustion keeps remaining records.
+Git probes share a one-second budget; exhaustion keeps remaining records.
 The sweep never raises into its caller.
 
 Windows refuses to rename or delete a path while a file under it is open, so
@@ -60,7 +60,7 @@ DELETING_PREFIX = ".deleting-"
 # Whether the destructive step follows the lock release (see the module docstring).
 _AFTER_RELEASE = sys.platform == "win32"
 # Cleanup must not inherit the lifecycle's generous per-command Git timeout.
-_BRANCH_CHECK_BUDGET_S = 1.0
+_GIT_CHECK_BUDGET_S = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -143,20 +143,27 @@ class _Repository:
 def _sweep(store: GoalStore, repo_dir: Path) -> tuple[str, ...]:
     quick = GoalStore(store.booley_dir, lock_timeout_s=0.0)
     _remove_leftovers(quick)
-    identity = resolve_worktree_identity(repo_dir)
+    deadline = monotonic() + _GIT_CHECK_BUDGET_S
+    identity = resolve_worktree_identity(repo_dir, timeout_s=_GIT_CHECK_BUDGET_S)
     if identity is None:
         return ()  # the repository has no id yet, so no record can be bound to it
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        return ()
     repository = _Repository(
         identity.repository,
-        git_directories(repo_dir).common_dir,
+        git_directories(repo_dir, timeout_s=remaining).common_dir,
         GoalCheckout(repo_dir),
-        monotonic() + _BRANCH_CHECK_BUDGET_S,
+        deadline,
     )
     # Lock waits of zero: a busy lock means someone is using the record or worktree.
     deleted = [
         record
         for record in quick.list_records().records
-        if record.state in ENDED_STATES and _delete(quick, record.id, repository)
+        if record.state in ENDED_STATES
+        and record.worktree.repository == repository.id
+        and _worktree_gone(record.worktree, repository.common_dir)
+        and _delete(quick, record.id, repository)
     ]
     return tuple(record.id for record in deleted)
 
@@ -245,6 +252,10 @@ def _remove_leftovers(store: GoalStore) -> None:
             continue
         try:
             record = GoalRecord.from_json(json.loads((entry / "record.json").read_bytes()))
+        except FileNotFoundError:
+            # Recursive deletion removes record.json only after lock cleanup.
+            shutil.rmtree(entry, ignore_errors=True)
+            continue
         except (OSError, ValueError) as exc:
             logger.debug("Kept interrupted Goal deletion %s: %s", entry, exc)
             continue

@@ -211,7 +211,9 @@ class WorktreeIdentityError(GoalStoreError):
 # ---------------------------------------------------------------------------
 
 
-def resolve_worktree_identity(work_dir: Path, *, create: bool = False) -> WorktreeIdentity | None:
+def resolve_worktree_identity(
+    work_dir: Path, *, create: bool = False, timeout_s: float = 30
+) -> WorktreeIdentity | None:
     """Identify the Git worktree containing *work_dir*, the same from every spelling.
 
     The repository half is a UUID stored in Git's common directory. Without
@@ -221,7 +223,7 @@ def resolve_worktree_identity(work_dir: Path, *, create: bool = False) -> Worktr
     which refuses a missing id while Goal Records occupy worktrees.
     """
     try:
-        directories = git_directories(work_dir)
+        directories = git_directories(work_dir, timeout_s=timeout_s)
     except GitDirectoryInspectionError as exc:
         raise WorktreeIdentityError(str(exc)) from exc
     checkout = _checkout_name(directories.git_dir, directories.common_dir)

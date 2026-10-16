@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
 from argparse import Namespace
 from dataclasses import replace
 from pathlib import Path
@@ -443,3 +444,31 @@ def test_sweep_bounds_git_waits_across_records(goal_mode, monkeypatch):
     assert sweep_ended_records(GoalStore(goal_mode.control), goal_mode.worktree) == ()
     assert len(waits) == 1 and 0 < sum(waits) <= 1.0
     assert exists(goal_mode, first.id) and exists(goal_mode, second.id)
+
+
+def test_sweep_retries_partially_removed_directory(goal_mode):
+    hidden = goals_root(goal_mode.control) / f"{DELETING_PREFIX}old-20200101T000000Z"
+    hidden.mkdir()
+    (hidden / "remaining.log").write_text("deletion stopped after record.json was removed")
+    sweep_ended_records(GoalStore(goal_mode.control), goal_mode.worktree)
+    assert not hidden.exists()
+
+
+@pytest.mark.parametrize("stalled_discovery", [1, 2])
+def test_sweep_bounds_git_discovery(goal_mode, monkeypatch, stalled_discovery):
+    stale = ended_copy(goal_mode, "old-20200101T000000Z")
+    original = subprocess.run
+    discoveries = []
+
+    def stalled_git(args, **kwargs):
+        if "--git-common-dir" in args:
+            discoveries.append(kwargs["timeout"])
+            if len(discoveries) == stalled_discovery:
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", stalled_git)
+    assert sweep_ended_records(GoalStore(goal_mode.control), goal_mode.worktree) == ()
+    assert len(discoveries) == stalled_discovery
+    assert all(0 < timeout <= 1.0 for timeout in discoveries)
+    assert exists(goal_mode, stale.id)
