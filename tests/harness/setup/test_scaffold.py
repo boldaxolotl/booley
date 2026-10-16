@@ -139,7 +139,7 @@ def test_default_combo_files_and_shapes() -> None:
     assert "elab" not in cfg["flows"]
     assert cfg["flows"]["synth"] == {}
     assert sim["flow_options"]["booley"]["doctor"] == ["sim"]
-    assert "fpga" not in cfg["flows"]
+    assert cfg["flows"]["fpga"] == {"enabled": False}
 
     tests_cfg = tomllib.loads(files[".booley/tests.toml"])
     assert tests_cfg["sim"]["tests"] == ["reset", "count"]
@@ -725,3 +725,8 @@ def test_scaffold_trace_main_isolation(tmp_path, monkeypatch, category):
         assert (root / "rtl/my_ip.sv").exists() is (category == "rtl")
         assert (root / "tb/tb_my_ip.sv").exists() is (category == "tb")
         assert (root / "tb/sim_main.cpp").exists() is (category == "tb")
+
+
+def test_scaffold_without_fpga_records_disabled_flow():
+    data = tomllib.loads(scaffold_files(_choices())[".booley/booley.toml"])
+    assert data["flows"].get("fpga", {}).get("enabled") is False, "declined FPGA must be disabled"
