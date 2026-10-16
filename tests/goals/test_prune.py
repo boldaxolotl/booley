@@ -301,7 +301,15 @@ def test_prune_refuses_live_jobs_but_not_stale_running_label(repo):
     job_records.write_record(job, jobs)
     with pytest.raises(GoalStoreError, match="active record-owned Jobs"):
         prune_record(store, repo["main"], record.id, confirm=True)
-    job_records.write_record(replace(job, pid=99999999, started_at="2020-01-01T00:00:00Z"), jobs)
+    from booley.runtime.pid import REUSED, capture_process_identity, observe_process
+
+    identity = capture_process_identity(os.getpid())
+    assert identity is not None
+    reused = replace(identity, start_token=identity.start_token + 1)
+    assert observe_process(reused).state == REUSED
+    job_records.write_record(
+        replace(job, process_identity=reused.to_payload(), started_at="2020-01-01T00:00:00Z"), jobs
+    )
     prune_record(store, repo["main"], record.id, confirm=True)
     assert not jobs.parent.parent.exists()
 
@@ -353,8 +361,12 @@ def test_prune_refuses_expired_job_with_live_writer_identity(repo):
     finally:
         child.terminate()
         child.wait(timeout=5)
-    prune_record(store, repo["main"], record.id, confirm=True)
-    assert not paths.root.exists()
+    if sys.platform == "win32":
+        with pytest.raises(GoalStoreError, match="writer group"):
+            prune_record(store, repo["main"], record.id, confirm=True)
+    else:
+        prune_record(store, repo["main"], record.id, confirm=True)
+        assert not paths.root.exists()
 
 
 def test_prune_refuses_owned_descendant_after_leader_exit(repo, tmp_path):
@@ -370,6 +382,8 @@ def test_prune_refuses_owned_descendant_after_leader_exit(repo, tmp_path):
     from booley.runtime import job_records
     from booley.runtime.pid import capture_process_identity, is_pid_alive
 
+    if sys.platform == "win32":
+        pytest.skip("POSIX owned process-group observation")
     record = terminal(repo)
     remove_checkout(repo)
     store = GoalStore(repo["project"])

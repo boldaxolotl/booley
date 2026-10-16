@@ -38,6 +38,7 @@ from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 from booley.runtime.handles import register_job
 from booley.runtime.pid import is_pid_alive
+from booley.runtime.process_group import ProcessGroup, is_process_group_alive
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -327,10 +328,18 @@ class JobLifecycle:
         return DisplayIdentity(rec.run_id, rec.display_scope)
 
     def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
-        """Drop a finished inline run's record and its pinned root."""
+        """Forget inline state only when no bound descendant can still write."""
         try:
             with self._mutation(rec) as destination:
-                jobrec.delete_record(rec.run_id, root=destination)
+                # A completed leader can leave descendants writing. Retain its
+                # terminal lease so prune can still observe the owned group.
+                retained = (
+                    rec.binding is not None
+                    and rec.pid is not None
+                    and is_process_group_alive(ProcessGroup(rec.pid))
+                )
+                if not retained:
+                    jobrec.delete_record(rec.run_id, root=destination)
         except (GoalStoreError, jobrec.JobRecordError) as exc:
             logger.info("Goal Job %s late forget refused: %s", rec.run_id, exc)
         self._job_roots.pop(rec.run_id, None)

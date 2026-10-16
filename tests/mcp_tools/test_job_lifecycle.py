@@ -857,3 +857,61 @@ def test_bound_job_temporary_link_cannot_write_outside_record(layout, tmp_path):
     with pytest.raises(GoalStoreError, match="linked"):
         JobLifecycle().submit("lint", command("pass"), 30, context=context)
     assert outside.read_bytes() == b"preserved"
+
+
+@pytest.mark.asyncio
+async def test_bound_synchronous_job_retains_lease_for_live_descendant(layout):
+    import contextlib
+    import signal
+
+    from tests.goals.conftest import git
+    from tests.goals.test_record_mutation import bound_context, fence
+
+    if sys.platform != "linux":
+        pytest.skip("Linux owned process-group observation")
+    context = bound_context(layout)
+    ready, release = layout.main / "descendant-ready", layout.main / "release-descendant"
+    report = context.runtime_dir / "flow-reports/late/report.json"
+    descendant_script = (
+        "import os,time\nfrom pathlib import Path\n"
+        f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        f"p=Path({str(report)!r})\np.parent.mkdir(parents=True, exist_ok=True)\n"
+        "p.write_text('{}')\n"
+    )
+    script = (
+        "import os,subprocess,sys,time\nfrom pathlib import Path\n"
+        f"subprocess.Popen([sys.executable,'-c',{descendant_script!r}], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "deadline=time.monotonic()+10\n"
+        f"while not Path({str(ready)!r}).exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        f"assert Path({str(ready)!r}).exists()\nprint(os.getpid())\n"
+    )
+    result = await JobLifecycle().run_synchronous("lint", command(script), 30, context=context)
+    assert result[0] == 0, result
+    leader = int(result[1].strip())
+    descendant = int(ready.read_text())
+    try:
+        retained = job_records.read_record(context.binding.invocation_id, context.jobs_root)
+        assert retained is not None, "bound synchronous Job forgot a live descendant writer"
+        assert retained.status == "done" and is_pid_alive(descendant)
+        from booley.goals.prune import prune_record
+        from booley.goals.store import GoalStore, GoalStoreError
+
+        paths = fence(context, "terminal")
+        git(layout.main, "worktree", "remove", "--force", str(layout.worktree))
+        git(layout.main, "branch", "-D", context.binding.goal_branch)
+        store = GoalStore(layout.control)
+        with pytest.raises(GoalStoreError, match="writer group"):
+            prune_record(store, layout.main, context.binding.record_id, confirm=True)
+        release.touch()
+        await wait_until(lambda: not is_pid_alive(descendant))
+        assert report.is_file()
+        prune_record(store, layout.main, context.binding.record_id, confirm=True)
+        assert not paths.root.exists()
+        assert (paths.root.parent / "history/kept.md").read_bytes() == b"unselected evidence"
+    finally:
+        release.touch()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(leader, signal.SIGKILL)
+        await wait_until(lambda: not is_pid_alive(descendant))
