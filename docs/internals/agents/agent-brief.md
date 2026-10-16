@@ -78,8 +78,9 @@ An issue with an open scope, behavior, or contract question is not
 ## One PR per issue
 
 A brief covers work that fits one pull request: one coherent change that can
-merge on its own and be reviewed in one pass. When the work does not fit,
-split it before it becomes `ready-for-agent`:
+merge on its own, be reviewed in one pass, and stay within the size caps of
+[coding principle 18](../CODING_PRINCIPLES.md#18-pull-requests-stay-small).
+When the work does not fit, split it before it becomes `ready-for-agent`:
 
 - Create one GitHub sub-issue per piece, each with its own brief. Order them
   with `Blocked by: #<n>` lines.
