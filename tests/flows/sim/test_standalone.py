@@ -546,3 +546,21 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     assert "criterion_key" not in report and "criterion_met" not in report
     assert flow.state.criteria["elaborate_standalone"].met is met
     assert flow.state._file_path is None
+
+
+def test_standalone_frontend_identity_is_scalar(tmp_path, monkeypatch):
+    import json
+
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    _write_sources(tmp_path, {"rtl/top.sv": "module top; endmodule\n"})
+    _stub_sources(monkeypatch, ["rtl/top.sv"])
+    flow = _make_flow(tmp_path, config='[flows.sim]\nstandalone_frontend = "iverilog"\n')
+    _stub_probes(monkeypatch, flow)
+    with flow.context.publication_resources:
+        outcome = flow._run_standalone_check(["sim_dut"])
+    assert outcome.passed
+    path = flow.context.write_report(EndpointOutcome())
+    report = json.loads(path.read_bytes())
+    assert report.get("eda_tool") == "iverilog"
+    assert "eda_tools" not in report

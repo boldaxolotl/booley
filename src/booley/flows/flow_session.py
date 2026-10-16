@@ -47,6 +47,7 @@ class FlowSession(EndpointState):
 
     def reset_report_metadata(self) -> None:
         """Clear invocation-local Simulation metadata before admission gates."""
+        super().reset_report_metadata()
         self._simulation_report_outcomes = ()
         self.flow.begin_invocation()
 

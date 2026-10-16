@@ -108,3 +108,13 @@ def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_pa
         ["stress+short@7", "reset@1"],
         ["stress+short@1"],
     ]
+
+
+def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
+    flow = _flow(tmp_path, monkeypatch)
+    flow._record_eda_tool("sim", "verilator")
+    assert flow.context._eda_tool == "verilator"
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim"])
+    assert flow.context._eda_tool is None
+    assert flow.context._eda_tools == {"sim": None}
+    assert flow._target_eda_tools == {"sim": None}
