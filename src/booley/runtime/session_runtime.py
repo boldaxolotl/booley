@@ -308,6 +308,7 @@ def exec_argv(
     *,
     tty: bool = True,
     env: Mapping[str, str] | None = None,
+    cwd: str | None = None,
 ) -> list[str]:
     """Build a ``docker exec`` argv for an already-issued Sandbox."""
     argv = ["docker", "exec"]
@@ -317,6 +318,8 @@ def exec_argv(
         argv += ["-e", "TERM=dumb"]
     for key, value in (env or {}).items():
         argv += ["-e", f"{key}={value}"]
+    if cwd is not None:
+        argv += ["--workdir", cwd]
     return [*argv, "-i", name, *command]
 
 
@@ -2333,7 +2336,70 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     return selected.container_id, command_env
 
 
-def run_project_command(workspace: Path, command: list[str], *, tty: bool = True) -> int:
+def _check_command_cwd(workspace: Path, container_id: str, cwd: str) -> None:
+    """Prove the selected directory still belongs to an authenticated bind mount."""
+    from booley.core.booley_dir import resolve_authoritative_booley_dir
+
+    location = Path(cwd)
+    roots = (
+        (Path("/work"), workspace.resolve()),
+        (Path("/booley-project"), resolve_authoritative_booley_dir(workspace).resolve()),
+    )
+    mapped = next(
+        ((target, source) for target, source in roots if location.is_relative_to(target)), None
+    )
+    if mapped is None:
+        raise SessionError(f"Sandbox directory {cwd!r} is outside issued mounts")
+    target, source = mapped
+    expected = source / location.relative_to(target)
+    state = _strict_refresh_container(container_id)
+    mounts = (
+        state.get("Mounts", []) if state is not None and state.get("Id") == container_id else []
+    )
+    covering = [
+        mount
+        for mount in mounts
+        if isinstance(mount, dict)
+        and isinstance(mount.get("Destination"), str)
+        and location.is_relative_to(mount["Destination"])
+    ]
+    mount = max(covering, key=lambda item: len(item["Destination"]), default=None)
+    if mount is None or not isinstance(mount.get("Source"), str):
+        raise SessionError(f"Sandbox directory {cwd!r} is unavailable or masked by a mount")
+    actual = host_path_from_docker_mount(mount["Source"])
+    if (
+        actual is None
+        or (actual / location.relative_to(mount["Destination"])).resolve() != expected.resolve()
+    ):
+        raise SessionError(f"Sandbox directory {cwd!r} is masked by another mount")
+    _probe_command_cwd(container_id, cwd)
+
+
+def _probe_command_cwd(container_id: str, cwd: str) -> None:
+    probe = _run(
+        [
+            "docker",
+            "exec",
+            "--user",
+            "agent",
+            "--workdir",
+            "/",
+            container_id,
+            "python3",
+            "-I",
+            "-c",
+            "import os,sys; p=sys.argv[1]; sys.exit(0 if os.path.isdir(p) and os.access(p, os.R_OK | os.X_OK) else 1)",
+            cwd,
+        ],
+        timeout=10,
+    )
+    if probe.returncode:
+        raise SessionError(f"Sandbox directory {cwd!r} is missing or inaccessible")
+
+
+def run_project_command(
+    workspace: Path, command: list[str], *, tty: bool = True, cwd: str | None = None
+) -> int:
     """Run one command in this Project's validated Sandbox."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
@@ -2350,19 +2416,27 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
             list(command),
             tty=tty,
             env=command_env,
+            **({"cwd": cwd} if cwd is not None else {}),
         ).exit_code
     except (OSError, subprocess.SubprocessError) as exc:
         raise SessionError(f"could not attach to Sandbox {name!r}: {exc}") from exc
 
 
-def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True) -> int:
+def enter(
+    workspace: Path, command: list[str] | None = None, *, tty: bool = True, cwd: str | None = None
+) -> int:
     """``docker exec`` into the running session; return the command's exit code.
 
     With no *command*, opens an interactive login shell. Starts the container
     first if it exists but is stopped, so this is the one entry point a script
     needs.
     """
-    return run_project_command(workspace, command or ["/bin/bash", "-l"], tty=tty)
+    return run_project_command(
+        workspace,
+        command or ["/bin/bash", "-l"],
+        tty=tty,
+        **({"cwd": cwd} if cwd is not None else {}),
+    )
 
 
 def verify_refreshed_session(

@@ -3680,7 +3680,7 @@ class TestSessionRefresh:
             assert booley._session_prepare(SimpleNamespace(), tmp_path) == 0
 
         assert capsys.readouterr().out.splitlines() == [
-            "no Sandbox container for this folder",
+            "no Sandbox container for this Project",
             "stopped",
             "valid",
             "prepared",
@@ -4903,3 +4903,315 @@ def test_enter_preserves_container_credentials_without_literal_placeholder_overr
     assert "BOOLEY_DIR=/booley-project" in overrides
     assert fixture.state["Id"] in captured
     assert captured[-len(command or ["/bin/bash", "-l"]) :] == (command or ["/bin/bash", "-l"])
+
+
+def _linked_project(tmp_path, monkeypatch, *, external=False, sandbox_pointer=False):
+    from booley.harness import booley as cli
+    from booley.runtime.booley_dir import reset_cache
+
+    root = tmp_path / "owner"
+    root.mkdir()
+    data = root / ".booley"
+    data.mkdir()
+    for argv in (
+        ["git", "init", str(root)],
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    ):
+        subprocess.run(argv, check=True, capture_output=True, timeout=30)
+    linked = tmp_path / "linked" if external else data / "worktrees" / "goal"
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", "--detach", str(linked)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if sandbox_pointer:
+        (linked / ".git").write_text("gitdir: /work/.git/worktrees/goal\n")
+    for key in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
+    monkeypatch.setattr(
+        "booley.runtime.layout_consumers.directory_consumer", lambda *_: nullcontext()
+    )
+    monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_: None)
+    monkeypatch.setattr(
+        "booley.runtime.lifecycle_lock.host_lifecycle_lock", lambda *_: nullcontext()
+    )
+    reset_cache()
+    monkeypatch.chdir(linked)
+    return root, linked
+
+
+def _linked_cli(monkeypatch, argv):
+    import sys
+
+    from booley.harness import booley as cli
+
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    return cli.main()
+
+
+def _linked_attachment(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
+
+    def attach(root, name, command, **kwargs):
+        calls.append((root, name, command, kwargs))
+        return SimpleNamespace(exit_code=7)
+
+    monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attach)
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["command", "shell"])
+def test_session_enter_from_booley_worktree_uses_owner_and_worktree_cwd(
+    tmp_path, monkeypatch, mode
+):
+    root, linked = _linked_project(tmp_path, monkeypatch, sandbox_pointer=True)
+    (linked / ".booley").mkdir()
+    child = linked / "rtl"
+    child.mkdir()
+    monkeypatch.chdir(child)
+    calls = _linked_attachment(monkeypatch)
+    command = ["printf", "%s", "a b;$HOME"] if mode == "command" else ["/bin/bash", "-l"]
+    result = _linked_cli(
+        monkeypatch, ["session", "enter", *(["--", *command] if mode == "command" else [])]
+    )
+    observed = [(r, n, c, kw.get("cwd")) for r, n, c, kw in calls]
+    assert observed == [(root, "immutable-id", command, "/work/.booley/worktrees/goal/rtl")], (
+        "session enter must use the owning Project and mapped worktree cwd"
+    )
+    assert result == 7
+    assert calls[0][3]["tty"] is False
+
+
+@pytest.mark.parametrize(
+    "action", ["default", "up", "up-rebuild", "down", "status", "validate", "refresh"]
+)
+def test_session_lifecycle_from_user_worktree_uses_owner(tmp_path, monkeypatch, action):
+    from booley.harness import booley as cli
+
+    root, _linked = _linked_project(tmp_path, monkeypatch, external=True)
+    observations = []
+    leaf = "up" if action in ("default", "up-rebuild") else action
+    monkeypatch.setattr(
+        cli, "_session_" + leaf, lambda args, selected: observations.append(selected) or 0
+    )
+    argv = ["session"] + (
+        [] if action == "default" else ["up", "--rebuild"] if action == "up-rebuild" else [action]
+    )
+    _linked_cli(monkeypatch, argv)
+    assert observations == [root], "session lifecycle must use the owning Project"
+
+
+def test_session_enter_selected_worktree_ignores_unrelated_cwd(tmp_path, monkeypatch):
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    (linked / ".booley").mkdir()
+    monkeypatch.chdir(tmp_path)
+    calls = _linked_attachment(monkeypatch)
+    _linked_cli(monkeypatch, ["-C", str(linked), "session", "enter", "--", "pwd"])
+    assert [(r, kw.get("cwd")) for r, _, _, kw in calls] == [
+        (root, "/work/.booley/worktrees/goal")
+    ], "explicit worktree selection must control session cwd"
+
+
+def _linked_transport(tmp_path, monkeypatch):
+    from booley.runtime import runtime_attachment
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    (linked / ".booley").mkdir()
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
+    monkeypatch.setattr(
+        sr, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "", "")
+    )
+    if hasattr(sr, "_check_command_cwd"):
+        monkeypatch.setattr(sr, "_check_command_cwd", lambda *_: None)
+    captured = []
+
+    def run(driver, execution_id, argv):
+        captured.append((driver._project_data, argv))
+        return runtime_attachment.ExecutionResult(7, "terminal", True, "complete")
+
+    monkeypatch.setattr(runtime_attachment.SupervisedExecutionDriver, "run", run)
+    _linked_cli(monkeypatch, ["session", "enter", "--", "printf", "a b;$HOME"])
+    return root, captured
+
+
+def test_enter_passes_worktree_cwd_to_docker_exec(tmp_path, monkeypatch):
+    root, captured = _linked_transport(tmp_path, monkeypatch)
+    argv = captured[0][1] if captured else []
+    assert any(
+        argv[i : i + 2] == ["--workdir", "/work/.booley/worktrees/goal"] for i in range(len(argv))
+    ), "linked worktree cwd must reach docker exec"
+    assert captured[0][0] == root / ".booley"
+    assert argv[-2:] == ["printf", "a b;$HOME"]
+    assert argv.index("--workdir") < argv.index("immutable-id")
+
+
+def test_worktree_enter_supervisor_ignores_cwd_imports(tmp_path, monkeypatch):
+    _, captured = _linked_transport(tmp_path, monkeypatch)
+    argv = captured[0][1] if captured else []
+    assert any(argv[i : i + 3] == ["python3", "-P", "-m"] for i in range(len(argv))), (
+        "supervisor bootstrap must ignore worktree import shadowing"
+    )
+
+
+@pytest.mark.parametrize("mode", ["command", "shell"])
+def test_external_worktree_enter_refuses_before_runtime(tmp_path, monkeypatch, capsys, mode):
+    _linked_project(tmp_path, monkeypatch, external=True)
+    calls = _linked_attachment(monkeypatch)
+    result = _linked_cli(
+        monkeypatch, ["session", "enter", *(["--", "pwd"] if mode == "command" else [])]
+    )
+    text = capsys.readouterr().err
+    assert result == 2 and not calls and "run from the Project Root" in text and "mount" in text, (
+        "unmounted linked enter must refuse before runtime selection"
+    )
+
+
+@pytest.mark.parametrize("selection", ["implicit", "explicit"])
+def test_linked_worktree_prepare_refuses_before_validation(
+    tmp_path, monkeypatch, capsys, selection
+):
+    _, linked = _linked_project(tmp_path, monkeypatch)
+    (linked / ".booley").mkdir()
+    effects = []
+    monkeypatch.setattr(sr, "prepare", lambda root: effects.append(root) or "prepared")
+    result = _linked_cli(
+        monkeypatch,
+        ["session", "prepare", *(["--project", str(linked)] if selection == "explicit" else [])],
+    )
+    text = capsys.readouterr().err
+    assert result == 2 and not effects and "run from the Project Root" in text, (
+        "linked prepare must refuse before exact-folder admission"
+    )
+
+
+def test_session_prepare_never_validates_another_folders_spec(tmp_path, monkeypatch, capsys):
+    test_linked_worktree_prepare_refuses_before_validation(
+        tmp_path, monkeypatch, capsys, "explicit"
+    )
+
+
+def test_main_project_subdirectory_retains_work_start(tmp_path, monkeypatch):
+    root, _ = _linked_project(tmp_path, monkeypatch)
+    child = root / "rtl"
+    child.mkdir()
+    monkeypatch.chdir(child)
+    calls = _linked_attachment(monkeypatch)
+    assert _linked_cli(monkeypatch, ["session", "enter", "--", "pwd"]) == 7
+    assert calls[0][0] == root
+    assert calls[0][3].get("cwd") is None
+
+
+def test_project_root_prepare_validates_exact_folder(tmp_path, monkeypatch):
+    root, _ = _linked_project(tmp_path, monkeypatch)
+    monkeypatch.chdir(root)
+    calls = []
+    monkeypatch.setattr(sr, "prepare", lambda selected: calls.append(selected) or "prepared")
+    assert _linked_cli(monkeypatch, ["session", "prepare", "--project", str(root)]) == 0
+    assert calls == [root]
+
+
+@pytest.mark.parametrize("problem", ["missing", "masked", "inaccessible"])
+def test_enter_rejects_unavailable_mapped_cwd(tmp_path, monkeypatch, problem):
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    (linked / ".booley").mkdir()
+    selected = []
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
+    monkeypatch.setattr(
+        sr,
+        "_strict_refresh_container",
+        lambda _: {
+            "Id": "immutable-id",
+            "Mounts": [
+                {
+                    "Source": str(tmp_path / "wrong" if problem == "masked" else root),
+                    "Destination": "/work",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        sr, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", problem)
+    )
+    monkeypatch.setattr(
+        "booley.runtime.runtime_attachment.SupervisedExecutionDriver.run",
+        lambda *_: selected.append(True),
+    )
+    with pytest.raises(sr.SessionError, match="directory"):
+        sr.enter(root, ["pwd"], tty=False, cwd="/work/.booley/worktrees/goal")
+    assert not selected
+
+
+def test_mapped_cwd_probe_is_bounded_and_isolated(tmp_path, monkeypatch):
+    root, _ = _linked_project(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        sr,
+        "_strict_refresh_container",
+        lambda _: {
+            "Id": "immutable-id",
+            "Mounts": [{"Source": str(root), "Destination": "/work"}],
+        },
+    )
+
+    def run(argv, *, timeout):
+        calls.append((argv, timeout))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sr, "_run", run)
+    sr._check_command_cwd(root, "immutable-id", "/work/.booley/worktrees/goal")
+    argv, timeout = calls[0]
+    assert timeout == 10
+    assert argv[:8] == [
+        "docker",
+        "exec",
+        "--user",
+        "agent",
+        "--workdir",
+        "/",
+        "immutable-id",
+        "python3",
+    ]
+    assert argv[8:10] == ["-I", "-c"]
+    assert argv[-1] == "/work/.booley/worktrees/goal"
+
+
+@pytest.mark.parametrize("route", ["global-long", "leaf-short", "leaf-long", "environment"])
+def test_session_owner_selection_routes(tmp_path, monkeypatch, route):
+    from booley.harness import booley as cli
+
+    root, linked = _linked_project(tmp_path, monkeypatch, external=True)
+    monkeypatch.chdir(tmp_path)
+    selected = []
+    monkeypatch.setattr(cli, "_session_status", lambda args, owner: selected.append(owner) or 0)
+    monkeypatch.setattr(cli, "_session_down", lambda args, owner: selected.append(owner) or 0)
+    argv = ["session", "status"]
+    if route == "environment":
+        monkeypatch.setenv("RTL_PROJECT_ROOT", str(linked))
+    elif route == "global-long":
+        argv = ["--project", str(linked), *argv]
+    else:
+        argv = [
+            "session",
+            "down",
+            "-p" if route == "leaf-short" else "--project-root",
+            str(linked),
+        ]
+    assert _linked_cli(monkeypatch, argv) == 0
+    assert selected == [root]

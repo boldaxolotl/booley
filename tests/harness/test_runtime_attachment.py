@@ -448,3 +448,28 @@ def test_protocol_repair_distinguishes_spec_drift_from_runtime_defect(
         assert "rebuild" not in caplog.text
     else:
         assert "refresh" not in caplog.text
+
+
+def test_cwd_disappearing_at_startup_is_not_reported_as_image_defect(
+    tmp_path, monkeypatch, caplog
+):
+    from booley.runtime import session_runtime
+
+    data = tmp_path / ".booley"
+    data.mkdir()
+    _exiting_docker(tmp_path, monkeypatch, data)
+    checks = []
+
+    def check(*args):
+        checks.append(args)
+        if len(checks) == 1:
+            return
+        raise session_runtime.SessionError("Sandbox directory /work/linked is unavailable")
+
+    monkeypatch.setattr(session_runtime, "_check_command_cwd", check)
+    with pytest.raises(session_runtime.SessionError, match="directory /work/linked"):
+        runtime_attachment.run_command(
+            tmp_path, "immutable-id", ["pwd"], tty=False, cwd="/work/linked"
+        )
+    assert len(checks) == 2
+    assert "published image" not in caplog.text

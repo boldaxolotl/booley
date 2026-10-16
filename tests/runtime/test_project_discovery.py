@@ -1,6 +1,7 @@
 """Project discovery distinguishes the checkout from its data repositories."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -269,3 +270,212 @@ def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned)
     else:
         with pytest.raises(discovery.ProjectRootDiscoveryError):
             discovery.discover_project_root(data)
+
+
+def test_session_owner_from_creator_path_with_external_data(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch, sandbox_pointer=True)
+    external = tmp_path / "external-data"
+    external.mkdir()
+    (root / "booley.toml").write_text(f'[project]\ndir = "{external.as_posix()}"\n')
+    (root / ".booley" / "FUSESOC_IGNORE").touch()
+    context = discover_session_context(linked)
+    assert context.project_root == root
+    assert context.booley_dir == external
+    assert context.checkout == linked
+    assert context.cwd == "/work/.booley/worktrees/goal"
+
+
+def test_session_owner_rejects_conflicting_project_evidence(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import (
+        ProjectRootDiscoveryError,
+        discover_session_context,
+    )
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", str(other)], check=True, capture_output=True, timeout=30)
+    (other / ".booley").mkdir()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(other),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    other_linked = tmp_path / "other-linked"
+    subprocess.run(
+        ["git", "-C", str(other), "worktree", "add", "--detach", str(other_linked)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    (linked / ".git").write_bytes((other_linked / ".git").read_bytes())
+    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
+        discover_session_context(linked)
+    assert root != other
+
+
+def test_session_owner_keeps_source_checkout_rejection(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.core.checkout_role import SourceCheckoutProjectError
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    (root / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    with pytest.raises(SourceCheckoutProjectError):
+        discover_session_context(linked)
+
+
+@pytest.mark.parametrize("admin", ["separate", "relative"])
+def test_session_owner_git_administration(tmp_path, monkeypatch, admin):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch, external=True)
+    if admin == "separate":
+        subprocess.run(
+            ["git", "init", "--separate-git-dir", str(tmp_path / "administration"), str(root)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "worktree", "repair", str(linked)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    else:
+        pointer = Path((linked / ".git").read_text().removeprefix("gitdir:").strip())
+        (pointer / "commondir").write_text("../..\n")
+        import os
+
+        (linked / ".git").write_text("gitdir: " + os.path.relpath(pointer, linked) + "\n")
+    if admin == "separate":
+        from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+        with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
+            discover_session_context(linked)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "core.worktree", str(root)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert discover_session_context(root).project_root == root
+        child = root / "rtl"
+        child.mkdir()
+        assert discover_session_context(child).checkout == root
+    context = discover_session_context(linked)
+    assert context.project_root == root
+    assert context.cwd is None
+
+
+@pytest.mark.parametrize("problem", ["malformed", "copied", "unregistered", "symlink-escape"])
+def test_session_owner_rejects_unproven_pointer(tmp_path, monkeypatch, problem):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import (
+        ProjectRootDiscoveryError,
+        discover_session_context,
+    )
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    if problem == "symlink-escape":
+        escaped = tmp_path / "escape"
+        linked.rename(escaped)
+        linked.symlink_to(escaped, target_is_directory=True)
+    elif problem == "copied":
+        copied = root / ".booley" / "worktrees" / "copied"
+        copied.mkdir()
+        (copied / ".git").write_bytes((linked / ".git").read_bytes())
+        linked = copied
+    elif problem == "unregistered":
+        subprocess.run(
+            ["git", "-C", str(root), "worktree", "remove", "--force", str(linked)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        linked.mkdir()
+        (linked / ".git").write_text("gitdir: /work/.git/worktrees/goal\n")
+    else:
+        (linked / ".git").write_text("gitdir: /invented/metadata\n")
+    if problem == "symlink-escape":
+        assert discover_session_context(linked).cwd is None
+    else:
+        with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
+            discover_session_context(linked)
+
+
+def test_session_owner_from_bare_administration(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import discover_session_context
+
+    _linked_project(tmp_path, monkeypatch)
+    bare = tmp_path / "bare.git"
+    subprocess.run(
+        ["git", "clone", "--bare", str(tmp_path / "owner"), str(bare)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    owner = tmp_path / "bare-owner"
+    selected = tmp_path / "bare-selected"
+    for path in (owner, selected):
+        subprocess.run(
+            ["git", "-C", str(bare), "worktree", "add", "--detach", str(path)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    (owner / ".booley").mkdir()
+    assert discover_session_context(selected).project_root == owner
+
+
+def test_external_data_attachment_records_use_owner_authority(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime import runtime_attachment, session_runtime
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    external = tmp_path / "external-data"
+    external.mkdir()
+    (root / "booley.toml").write_text(f'[project]\ndir = "{external.as_posix()}"\n')
+    (linked / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(linked / ".booley"))
+    monkeypatch.setattr(session_runtime, "_check_command_cwd", lambda *_: None)
+    captured = []
+
+    def run(driver, execution_id, argv):
+        captured.append(driver._project_data)
+        return SimpleNamespace(exit_code=0)
+
+    monkeypatch.setattr(runtime_attachment.SupervisedExecutionDriver, "run", run)
+    runtime_attachment.run_command(
+        root, "immutable-id", ["pwd"], tty=False, cwd="/work/.booley/worktrees/goal"
+    )
+    assert captured == [external]

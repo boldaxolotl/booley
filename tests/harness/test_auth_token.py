@@ -974,3 +974,111 @@ def test_codex_subscription_plan_uses_cli_home(isolated_home, monkeypatch, tmp_p
         auth_token.subscription_creds_path("codex", home=tmp_path)
         == tmp_path / ".codex" / "auth.json"
     )
+
+
+def _linked_auth(tmp_path, monkeypatch, *, data=True):
+    from tests.harness.test_session_runtime import _linked_project
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    if data:
+        (linked / ".booley").mkdir()
+    effects = []
+
+    def effect(name, value=None):
+        def call(*args, **kwargs):
+            effects.append(name)
+            return value
+
+        return call
+
+    for name, value in [
+        ("_acquire", _TOKEN),
+        ("_read_token_from_stdin", _TOKEN),
+        ("_prompt_secret", _TOKEN),
+        ("_mint_claude_token", _TOKEN),
+        ("_reseed_spec", True),
+    ]:
+        monkeypatch.setattr(auth_cmd, name, effect(name, value))
+    for name, value in [
+        ("store_token", tmp_path / "token"),
+        ("clear_stored_token", True),
+        ("read_stored_token", None),
+    ]:
+        monkeypatch.setattr(auth_token, name, effect(name, value))
+    return root, linked, effects
+
+
+@pytest.mark.parametrize("mode", ["mint", "token-stdin", "clear"])
+def test_linked_worktree_auth_mutation_requires_project_root(tmp_path, monkeypatch, capsys, mode):
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
+    result = auth_cmd.run_auth(
+        SimpleNamespace(
+            status=False, clear=mode == "clear", token_stdin=mode == "token-stdin", app="claude"
+        ),
+        linked,
+    )
+    text = capsys.readouterr().err
+    assert result == 2 and not effects and "run from the Project Root" in text, (
+        "linked auth must refuse before credential mutation"
+    )
+
+
+@pytest.mark.parametrize(
+    "selection",
+    ["implicit-with-data", "implicit-without-data", "explicit-with-data", "explicit-without-data"],
+)
+def test_cli_linked_auth_refuses_before_required_guard(tmp_path, monkeypatch, capsys, selection):
+    import sys
+
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch, data="without" not in selection)
+    argv = ["booley", "auth"]
+    if selection.startswith("explicit"):
+        monkeypatch.chdir(tmp_path)
+        argv = ["booley", "-C", str(linked), "auth"]
+    monkeypatch.setattr(sys, "argv", argv)
+    result = tlr.main()
+    text = capsys.readouterr().err
+    assert (
+        result == 2
+        and not effects
+        and "run from the Project Root" in text
+        and "booley init" not in text
+    ), "linked CLI auth must require Project Root before generic guards"
+
+
+def test_linked_auth_status_preserves_selected_checkout(tmp_path, monkeypatch):
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
+    selected = []
+    monkeypatch.setattr(
+        auth_cmd, "_safe_report_status", lambda app, root: selected.append(root) or 0
+    )
+    assert auth_cmd.run_auth(SimpleNamespace(status=True), linked) == 0
+    assert selected == [linked]
+    assert not effects
+
+
+def test_auth_from_project_subdirectory_retains_behavior(tmp_path, monkeypatch):
+    root, _, effects = _linked_auth(tmp_path, monkeypatch)
+    child = root / "rtl"
+    child.mkdir()
+    assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), child) == 0
+    assert effects == ["clear_stored_token", "_reseed_spec"]
+
+
+def test_sandbox_auth_retains_behavior(tmp_path, monkeypatch):
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), linked) == 0
+    assert effects == ["clear_stored_token", "_reseed_spec"]
+
+
+def test_uninitialized_nested_checkout_is_not_adopted_as_ancestor_project(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import discover_project_root
+
+    root, _, _ = _linked_auth(tmp_path, monkeypatch)
+    nested = root / "unrelated"
+    nested.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", str(nested)], check=True, capture_output=True, timeout=30)
+    assert discover_project_root(nested) == nested
