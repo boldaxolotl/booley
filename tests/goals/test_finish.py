@@ -7,6 +7,7 @@ import stat
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TextIO
 from uuid import uuid4
 
 import pytest
@@ -294,13 +295,45 @@ def test_recovery_never_overwrites_external_destination(layout, effect):
     assert GoalStore(complete.control).load(complete.record.id).state is GoalState.FINISHING
 
 
-def test_two_identical_finish_calls_share_one_frozen_result(complete):
+def test_two_identical_finish_calls_share_one_frozen_result(
+    complete: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
     from concurrent.futures import ThreadPoolExecutor
 
+    from booley.goals import store
+
     call = request(complete)
+    terminal, contended = threading.Event(), threading.Event()
+    retry = threading.local()
+    wait = store.wait_for_file_lock
+
+    def observe_lock(handle: TextIO, *, timeout_s: float, preserve_contents: bool = False) -> None:
+        wait(
+            handle,
+            timeout_s=timeout_s,
+            preserve_contents=preserve_contents,
+            on_wait=contended.set if getattr(retry, "active", False) else None,
+        )
+
+    def checkpoint(name: str) -> None:
+        if name == "finished":
+            terminal.set()
+            assert contended.wait(15)
+
+    def finish_again() -> dict:
+        assert terminal.wait(90)
+        retry.active = True
+        return finish_goal(call, environment(complete))
+
+    monkeypatch.setattr(store, "wait_for_file_lock", observe_lock)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        futures = [workers.submit(finish_goal, call, environment(complete)) for _ in range(2)]
-        results = [future.result(timeout=30) for future in futures]
+        futures = [
+            workers.submit(finish_goal, call, environment(complete, checkpoint)),
+            workers.submit(finish_again),
+        ]
+        results = [future.result(timeout=90) for future in futures]
+    assert contended.is_set()
     assert results[0] == results[1]
 
 

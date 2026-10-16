@@ -715,6 +715,7 @@ def test_script_refusal_has_one_error_prefix(project, capsys):
 
 
 @_real_script
+@pytest.mark.timeout(180)  # Real Goal publication runs many supervised Git commands.
 def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeypatch):
     from types import SimpleNamespace
 

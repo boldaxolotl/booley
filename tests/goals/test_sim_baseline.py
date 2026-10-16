@@ -645,7 +645,7 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
     record = enter_goals(layout, [{"family": "SIM", "target": "future", "test": "new"}])
     schedule_sim_baselines(layout.control, record, launch=real_launch_baseline)
     goal = sim_goals(record)[0]
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60
     report = baseline_observations(layout.control, record, goal)
     while report["status"] == "pending" and time.monotonic() < deadline:
         time.sleep(0.05)

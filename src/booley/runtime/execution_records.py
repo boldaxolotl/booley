@@ -306,22 +306,34 @@ def request_cancellation(
     reason: str = "cancelled",
 ) -> None:
     """Durably and idempotently request cancellation of one execution."""
-    if force:
-        paths.root.mkdir(parents=True, exist_ok=True)
-        paths.force.touch(exist_ok=True)
     current = read_json(paths.cancel)
     force = force or paths.force.exists()
     if current is not None and (not force or current.get("force") is True):
+        if force:
+            _publish_force_cancellation(paths, current)
         return
-    atomic_write_json(
-        paths.cancel,
-        {
-            "force": force,
-            "reason": reason,
-            "signum": signum,
-            "requested_at": utc_now_rfc3339(),
-        },
-    )
+    payload = {
+        "force": force,
+        "reason": reason,
+        "signum": signum,
+        "requested_at": utc_now_rfc3339(),
+    }
+    if force:
+        _publish_force_cancellation(paths, payload)
+    atomic_write_json(paths.cancel, payload)
+
+
+def _publish_force_cancellation(paths: ExecutionPaths, payload: dict[str, Any]) -> None:
+    """Expose force and its signal together, preserving the legacy emergency fallback."""
+    if paths.force.exists():
+        return
+    try:
+        atomic_write_json(paths.force, payload)
+    except OSError:
+        with suppress(OSError):
+            paths.root.mkdir(parents=True, exist_ok=True)
+            paths.force.touch(exist_ok=True)
+        raise
 
 
 def force_cancellation_requested(paths: ExecutionPaths) -> bool:

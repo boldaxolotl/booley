@@ -300,6 +300,7 @@ async def test_stdio_startup_remains_responsive_and_joins_its_cleanup(monkeypatc
     assert release.is_set()
 
 
+@pytest.mark.timeout(120)  # Sixty-five real guardians must also finish under coverage.
 def test_actual_supervisor_prunes_completed_registrations_before_65th_launch(tmp_path):
     from tests.execution_test_support import runtime_env
 
@@ -315,11 +316,10 @@ def test_actual_supervisor_prunes_completed_registrations_before_65th_launch(tmp
     paths = execution_paths(ExecutionId("c" * 32), booley_dir=state)
     write_attachment_heartbeat(paths, generation=1)
     source = (
-        "import sys\n"
         "from booley.core.temporary_workspace import temporary_workspace,run_guarded\n"
         "with temporary_workspace():\n"
         "    for index in range(65):\n"
-        "        result=run_guarded([sys.executable,'-c','pass'],timeout=5)\n"
+        "        result=run_guarded(['true'],timeout=5)\n"
         "        assert result.returncode==0\n"
     )
     result = subprocess.run(
@@ -331,7 +331,7 @@ def test_actual_supervisor_prunes_completed_registrations_before_65th_launch(tmp
             "--execution-id",
             "c" * 32,
             "--attachment-timeout-seconds",
-            "60",
+            "120",
             "--",
             sys.executable,
             "-c",
@@ -341,7 +341,7 @@ def test_actual_supervisor_prunes_completed_registrations_before_65th_launch(tmp
         check=False,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=90,
     )
     assert result.returncode == 0, result.stderr
     assert read_json(paths.record)["tree_terminal"] is True

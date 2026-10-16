@@ -278,6 +278,10 @@ def _owned_tree_exit_code(
 def _cancellation_request(paths: ExecutionPaths) -> tuple[str, bool, int] | None:
     cancel = read_json(paths.cancel)
     force = force_cancellation_requested(paths)
+    if force:
+        intent = read_json(paths.force)
+        if intent is not None and intent.get("force") is True:
+            cancel = intent
     if cancel is None:
         return ("cancelled", True, signal.SIGINT) if force else None
     reason = as_str(cancel.get("reason"), "cancelled") or "cancelled"

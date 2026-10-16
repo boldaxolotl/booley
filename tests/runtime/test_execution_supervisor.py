@@ -25,6 +25,7 @@ from tests.execution_test_support import (
     wait_for,
 )
 
+from booley.runtime import execution_records, execution_supervisor
 from booley.runtime.execution_records import (
     ExecutionId,
     atomic_write_json,
@@ -93,6 +94,81 @@ def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
 
     assert force_cancellation_requested(paths) is True
     assert read_json(paths.cancel)["force"] is True
+
+
+@pytest.mark.parametrize("graceful_first", [False, True])
+def test_force_signal_is_visible_before_cancel_record_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, graceful_first: bool
+) -> None:
+    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
+    if graceful_first:
+        request_cancellation(paths)
+    observed = []
+    write = execution_records.atomic_write_json
+
+    def observe_publication(path: Path, payload: dict[str, object]) -> None:
+        if path == paths.cancel:
+            observed.append(execution_supervisor._cancellation_request(paths))
+        write(path, payload)
+
+    monkeypatch.setattr(execution_records, "atomic_write_json", observe_publication)
+    request_cancellation(paths, force=True, signum=signal.SIGTERM, reason="forced")
+
+    assert observed == [("forced", True, signal.SIGTERM)]
+    assert execution_supervisor._cancellation_request(paths) == observed[0]
+
+
+def test_force_intent_survives_a_late_graceful_record(tmp_path: Path) -> None:
+    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
+    request_cancellation(paths, force=True, signum=signal.SIGTERM, reason="forced")
+    atomic_write_json(paths.cancel, {"force": False, "reason": "old", "signum": signal.SIGINT})
+
+    assert execution_supervisor._cancellation_request(paths) == ("forced", True, signal.SIGTERM)
+
+
+@pytest.mark.parametrize("replace_first", [False, True])
+def test_force_intent_publication_failure_still_requests_a_hard_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_first: bool
+) -> None:
+    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
+    write = execution_records.atomic_write_json
+
+    def fail_force_publication(path: Path, payload: dict[str, object]) -> None:
+        if path == paths.force:
+            if replace_first:
+                write(path, payload)
+            raise OSError("synthetic force publication failure")
+        write(path, payload)
+
+    monkeypatch.setattr(execution_records, "atomic_write_json", fail_force_publication)
+    with pytest.raises(OSError, match="synthetic force publication failure"):
+        request_cancellation(paths, force=True, signum=signal.SIGTERM)
+
+    assert force_cancellation_requested(paths)
+    expected = signal.SIGTERM if replace_first else signal.SIGINT
+    assert execution_supervisor._cancellation_request(paths) == ("cancelled", True, expected)
+
+
+@pytest.mark.parametrize("with_record", [False, True])
+def test_legacy_empty_force_marker_keeps_its_fallback(tmp_path: Path, with_record: bool) -> None:
+    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
+    paths.root.mkdir(parents=True)
+    paths.force.touch()
+    if with_record:
+        atomic_write_json(paths.cancel, {"reason": "legacy", "signum": signal.SIGTERM})
+
+    expected = (
+        ("legacy", True, signal.SIGTERM) if with_record else ("cancelled", True, signal.SIGINT)
+    )
+    assert execution_supervisor._cancellation_request(paths) == expected
+
+
+def test_repeated_force_preserves_the_first_published_intent(tmp_path: Path) -> None:
+    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
+    request_cancellation(paths, force=True, signum=signal.SIGTERM, reason="first")
+    request_cancellation(paths, force=True, signum=signal.SIGINT, reason="second")
+
+    assert execution_supervisor._cancellation_request(paths) == ("first", True, signal.SIGTERM)
 
 
 def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) -> None:
