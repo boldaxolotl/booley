@@ -8,6 +8,13 @@
  *   --phosphor   body text and headings
  *   --afterglow  secondary text, rules, prompts
  *   --bloom      emphasis and the wordmark core
+ *   --ink        blog post prose: warm off-white, easier on the eyes than
+ *                phosphor over a few thousand words
+ *   --ink-soft   blog post quotes
+ *
+ * Blog posts are the exception to the all-monospace rule: long prose reads
+ * in IBM Plex Serif on warm off-white ink, with amber kept for headings,
+ * links and code (see "Blog posts" below).
  *
  * Fonts are self-hosted (SIL OFL, licenses next to the files), so the site
  * makes no third-party font requests.
@@ -44,6 +51,30 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "IBM Plex Serif";
+  src: url("../assets/fonts/ibm-plex-serif-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Serif";
+  src: url("../assets/fonts/ibm-plex-serif-latin-400-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Serif";
+  src: url("../assets/fonts/ibm-plex-serif-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ---------- Tokens: mapped onto Material's custom properties ---------- */
 
 [data-md-color-scheme="slate"] {
@@ -52,6 +83,8 @@
   --phosphor: #ffb000;
   --afterglow: #b98428;
   --bloom: #ffe2a8;
+  --ink: #eadfca;
+  --ink-soft: #bfb39c;
 
   --font-display: "VT323", ui-monospace, monospace;
   --md-text-font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo,
@@ -264,6 +297,152 @@ body {
 .md-post__header,
 .md-post__meta {
   color: var(--afterglow);
+}
+
+/* ---------- Blog posts: serif prose on the tube ---------- */
+
+/* The post sidebar (back link, date, read time) becomes one line above the
+   title at every width, as Material already lays it out on small screens,
+   so the text gets the full column instead of a mostly empty left rail. */
+.md-content--post {
+  flex-direction: column;
+}
+
+.md-sidebar.md-sidebar--post {
+  position: static;
+  width: 100%;
+  height: auto;
+  padding: 0;
+}
+
+/* Material's sidebar script pins an inline height on the scroll wrapper
+   for a sticky rail; a one-line header has to size to its content. */
+.md-sidebar.md-sidebar--post .md-sidebar__scrollwrap {
+  height: auto !important;
+  margin: 0;
+  overflow: visible;
+}
+
+.md-sidebar.md-sidebar--post .md-sidebar__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 2ch;
+  padding: 0;
+}
+
+.md-sidebar.md-sidebar--post .md-nav {
+  position: static;
+  height: auto;
+  margin: 0;
+}
+
+.md-sidebar.md-sidebar--post .md-post__back {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* Undo the drawer-title styling Material gives this link on small screens. */
+.md-sidebar.md-sidebar--post .md-post__back .md-nav__title {
+  position: static;
+  height: auto;
+  padding: 0;
+  font-weight: 400;
+  line-height: inherit;
+  background: none;
+  box-shadow: none;
+}
+
+.md-sidebar.md-sidebar--post .md-post__back .md-nav__link {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.md-sidebar.md-sidebar--post .md-post__title {
+  display: none;
+}
+
+.md-sidebar.md-sidebar--post .md-post__meta {
+  margin: 0;
+  padding: 0;
+}
+
+.md-sidebar.md-sidebar--post .md-nav__list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 2ch;
+  padding: 0;
+}
+
+.md-sidebar.md-sidebar--post .md-nav__item {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.md-sidebar.md-sidebar--post .md-nav__link {
+  margin: 0;
+  padding: 0;
+}
+
+.md-sidebar.md-sidebar--post .md-nav--primary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 2ch;
+  flex-direction: row;
+  margin-left: 1.2rem;
+  font-size: 0.7rem;
+  color: var(--afterglow);
+}
+
+.md-content--post > .md-content__inner.md-typeset {
+  max-width: 44rem;
+  margin-left: 1.2rem;
+  margin-right: 1.2rem;
+  font-family: "IBM Plex Serif", Georgia, serif;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.md-content--post .md-typeset :is(h1, h2, h3) {
+  font-family: var(--md-text-font-family);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.md-content--post .md-typeset h1 {
+  font-size: 1.9rem;
+  line-height: 1.2;
+}
+
+.md-content--post .md-typeset h2 {
+  font-size: 1.25rem;
+  margin-top: 2.4em;
+}
+
+.md-content--post .md-typeset strong {
+  color: #fff3dc;
+}
+
+.md-content--post .md-typeset code {
+  font-size: 0.82em;
+}
+
+.md-content--post .md-typeset blockquote {
+  color: var(--ink-soft);
+  border-left: 3px solid var(--phosphor);
+  background: var(--tube-lift);
+  padding: 0.6em 1.2em;
+}
+
+.md-content--post .md-typeset li::marker {
+  color: var(--phosphor);
 }
 
 /* ---------- Landing page: man booley ---------- */
