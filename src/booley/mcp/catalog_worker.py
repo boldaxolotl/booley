@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -16,11 +18,14 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from booley.core.boundary import require_dict
+from booley.mcp import catalog
 from booley.runtime.process_group import (
     capture_process_group,
     new_group_kwargs,
     terminate_process_group,
 )
+
+logger = logging.getLogger(__name__)
 
 DISCOVERY_TIMEOUT_SECONDS = 15.0
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -127,8 +132,66 @@ def _read_result(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     )
 
 
+def _import_file_safe(
+    py_path: Path,
+) -> tuple[object | None, str | None]:
+    """Import a Python file as a module. Returns (module, None) or (None, error_msg)."""
+    import importlib.util
+    import traceback
+
+    module_name = py_path.stem
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"booley_custom_mcp_tools.{module_name}",
+            py_path,
+        )
+        if spec is None or spec.loader is None:
+            return None, f"Could not create module spec for {py_path}"
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod.__name__] = mod
+        spec.loader.exec_module(mod)
+        return mod, None
+    except Exception as exc:
+        msg = f"IMPORT FAILED: custom MCP tool {py_path}: {exc}"
+        logger.error(msg, exc_info=True)
+        print(f"[mcp] ERROR {msg}", file=sys.stderr, flush=True)
+        tb = traceback.format_exc()
+        print(f"[mcp] TRACEBACK:\n{tb}", file=sys.stderr, flush=True)
+        return None, msg
+
+
+def _import_and_extract_file(
+    py_path: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Import a custom MCP tool from a file path and extract its schema."""
+    mod, err = _import_file_safe(py_path)
+    if err is not None:
+        return None, err
+
+    found = catalog._find_mcp_tool_class_in_module(mod, str(py_path))
+    if found is None:
+        msg = f"NO MCP ENDPOINT CLASS FOUND: custom MCP tool {py_path} has no recognized MCP endpoint subclass"
+        logger.warning(msg)
+        return None, msg
+
+    cls, _instance, schema = found
+    return catalog._mcp_tool_def_from_class(
+        cls,
+        schema,
+        py_path.stem,
+        is_custom=True,
+        custom_path=str(py_path),
+    ), None
+
+
+def _preload_schema_modules() -> None:
+    """Warm neutral extraction dependencies before enabling Project imports."""
+    for module in ("booley.flows.base", "booley.mcp.base", "booley.mcp.flow_adapter"):
+        importlib.import_module(module)
+
+
 def _main(request: Path, result: Path) -> None:
-    from booley.mcp.server import _import_and_extract_file
+    _preload_schema_modules()
 
     data = require_dict(json.loads(request.read_text()), field="catalog worker request")
     # Only trusted framework/dependency paths were visible during preload.

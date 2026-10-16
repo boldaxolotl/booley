@@ -21,7 +21,7 @@ import anyio
 from booley.mcp.application import McpApplication
 from booley.mcp.catalog_worker import run_schema_worker
 from booley.mcp.endpoint_config import read_endpoint_config
-from booley.mcp.registry import McpToolInfo, discover_mcp_tools
+from booley.mcp.registry import McpToolInfo, discover_mcp_inventory, discover_mcp_tools
 from booley.runtime.booley_dir import resolve_booley_dir
 
 logger = logging.getLogger(__name__)
@@ -59,30 +59,95 @@ def _file_digest(path: Path) -> str:
 def project_fingerprint(directory: Path | None) -> tuple:
     """Hash selected Project inputs and layout guards without importing Project code."""
     if directory is None:
-        return ()
+        return (installed_fingerprint(),)
     root = directory
     selector = (
         ()
         if os.environ.get("BOOLEY_DIR")
         else tuple(
-            (str(parent / "booley.toml"), _file_digest(parent / "booley.toml"))
+            (directory_identity(parent / "booley.toml"), _file_digest(parent / "booley.toml"))
             for parent in (Path.cwd(), *Path.cwd().parents)
             if (parent / "booley.toml").is_file()
         )
     )
     marker_paths = [root / name for name in ("tools", "mcp_tools", "pipeline.toml", "project")]
     marker_paths.append(root.parent / ".booley_project")
-    markers = tuple((str(path), path.exists() or path.is_symlink()) for path in marker_paths)
-    return (_file_digest(root / "booley.toml"), selector, markers, source_fingerprint(directory))
+    markers = tuple(directory_identity(path) for path in marker_paths)
+    return (
+        directory_identity(root),
+        _file_digest(root / "booley.toml"),
+        selector,
+        markers,
+        directory_identity(root / "mcp_tools"),
+        source_fingerprint(directory),
+        installed_fingerprint(),
+    )
+
+
+def directory_identity(path: Path | None) -> tuple:
+    """Include lexical selection, symlink target, type and replacement identity."""
+    if path is None:
+        return ()
+    lexical = str(path.absolute())
+    resolved = str(path.resolve())
+    try:
+        link = path.lstat()
+    except FileNotFoundError:
+        return (lexical, resolved, "missing")
+    link_identity = (link.st_dev, link.st_ino, link.st_mode)
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (lexical, resolved, link_identity, "missing-target")
+    return (lexical, resolved, link_identity, stat.st_dev, stat.st_ino, stat.st_mode)
+
+
+def installed_fingerprint() -> tuple:
+    """Identify installed metadata inputs by contents, including helper edits."""
+    root = Path(__file__).resolve().parent.parent
+    paths = sorted(
+        path
+        for package in ("mcp", "specialists", "flows")
+        for path in (root / package).rglob("*.py")
+    )
+    return (directory_identity(root), tuple((str(path), _file_digest(path)) for path in paths))
+
+
+def _walk_error(error: OSError) -> None:
+    raise error
 
 
 def source_fingerprint(directory: Path | None) -> tuple:
-    """Fingerprint the custom Python input set, including sibling helpers."""
+    """Hash all custom Python inputs within the selected source scope."""
     if directory is None:
         return ()
-    return tuple(
-        (str(path), _file_digest(path)) for path in sorted((directory / "mcp_tools").glob("*.py"))
-    )
+    root = directory / "mcp_tools"
+    if not root.is_dir():
+        return (("directory", directory_identity(root)),)
+    scope = root.resolve()
+    visited: set[Path] = set()
+    inputs: list[tuple] = [("directory", directory_identity(root))]
+    for current, directories, files in os.walk(root, followlinks=True, onerror=_walk_error):
+        parent = Path(current)
+        resolved = parent.resolve()
+        if resolved in visited:
+            directories.clear()
+            continue
+        visited.add(resolved)
+        for name in sorted(directories):
+            if name != "__pycache__":
+                inputs.append(("directory", directory_identity(parent / name)))
+        directories[:] = sorted(
+            name
+            for name in directories
+            if name != "__pycache__" and (parent / name).resolve().is_relative_to(scope)
+        )
+        inputs.extend(
+            (str(parent / name), directory_identity(parent / name), _file_digest(parent / name))
+            for name in sorted(files)
+            if name.endswith(".py")
+        )
+    return tuple(inputs)
 
 
 def ensure_unique_names(candidates: list[McpToolInfo]) -> None:
@@ -111,6 +176,8 @@ class LiveCatalog:
         self._visible = visible
         self._on_publish = on_publish
         self._lock = asyncio.Lock()
+        self._inventory_key: tuple | None = None
+        self._inventory: list[McpToolInfo] = []
         self._published = self.fingerprint()
         self._notified = self._published
         self._builtin_cache = {
@@ -136,28 +203,34 @@ class LiveCatalog:
         """Hash bytes rather than timestamps, including missing input paths."""
         return project_fingerprint(self.directory)
 
-    def _source_fingerprint(self) -> tuple:
-        return source_fingerprint(self.directory)
-
-    def _candidates(self) -> list[Any]:
-        if self.directory is None:
-            specialists, flows = {}, {}
-        else:
-            # The running server retains its startup identity, while the resolver
-            # still enforces newly introduced retired-layout markers.
+    def _candidates(self) -> list[McpToolInfo]:
+        if self.directory is not None:
             resolve_booley_dir()
-            specialists, flows = read_endpoint_config(self.directory / "booley.toml")
+        custom = custom_directory(self.directory)
+        project = project_fingerprint(self.directory)
+        key = (project[:1], project[2:])
+        if key != self._inventory_key:
+            inventory = discover_mcp_inventory(project_mcp_tools_dir=custom)
+            self._inventory, self._inventory_key = inventory, key
+        specialists, flows = (
+            ({}, {})
+            if self.directory is None
+            else read_endpoint_config(
+                self.directory / "booley.toml",
+                specialist_names={
+                    item.name for item in self._inventory if item.kind == "specialist"
+                },
+            )
+        )
         candidates = discover_mcp_tools(
-            project_mcp_tools_dir=custom_directory(self.directory),
-            specialist_config=specialists,
-            flow_config=flows,
+            inventory=self._inventory, specialist_config=specialists, flow_config=flows
         )
         ensure_unique_names(candidates)
         return candidates
 
     def _custom_fingerprint(self, candidates: list[Any]) -> tuple:
         return (
-            self._source_fingerprint(),
+            self.fingerprint(),
             tuple((item.name, item.path) for item in candidates if Path(item.path).is_absolute()),
         )
 
@@ -169,11 +242,14 @@ class LiveCatalog:
         """Read current config on every request; replace only complete generations."""
         async with self._lock:
             fingerprint = self.fingerprint()
+            if fingerprint == self._published:
+                if self.directory is not None:
+                    resolve_booley_dir()
+                    custom_directory(self.directory)
+                return
             candidates = self._candidates()
             if fingerprint != self.fingerprint():
                 raise RuntimeError("MCP catalog inputs changed while reading; retry the request")
-            if fingerprint == self._published:
-                return
             if self._failed is not None and self._failed[0] == fingerprint:
                 raise self._failed[1]
             try:

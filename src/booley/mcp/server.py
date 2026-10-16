@@ -64,11 +64,17 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.warnings import goal_warnings
-from booley.mcp import call_context, endpoint_process, job_lifecycle, job_results, report_encoding
+from booley.mcp import (
+    call_context,
+    catalog,
+    endpoint_process,
+    job_lifecycle,
+    job_results,
+    report_encoding,
+)
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
@@ -172,71 +178,22 @@ logging.basicConfig(
 # the outer client, so exposing these just adds noise and invites the wrong
 # workflow. Keeping the reason next to the name is not decoration: these MCP tools
 # are filtered from the outer client so discovery explains the available surface.
-_INTERACTIVE_HIDDEN_REASONS: dict[str, str] = {}
-_INTERACTIVE_MCP_EXCLUDED = frozenset(_INTERACTIVE_HIDDEN_REASONS)
-_STATUS_MCP_TOOL_NAME = "booley_status"
-_STATUS_MCP_TOOL_DESCRIPTION = "Show whether Booley Interactive Mode is ready in this tab."
-_COVERAGE_EVIDENCE_TOOL_NAME = "coverage_evidence"
-_COVERAGE_EVIDENCE_TOOL_DESCRIPTION = (
-    "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
-    "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' "
-    "to page through RTL sources with no native records, and view='points' for filtered exact "
-    "Coverage Points and view='source' for verified excerpts associated with previously "
-    "returned point_refs."
-)
-_REPORT_MCP_TOOL_NAME = "booley_report"
-_REPORT_MCP_TOOL_DESCRIPTION = (
-    "Fetch the most recent completed run report for a Booley endpoint (e.g. "
-    "sim) from disk — including after a client-side timeout, when the "
-    "inline MCP result was lost but the run finished server-side. Pass the "
-    "optional 'endpoint' argument to target a specific endpoint's latest report; "
-    "omit it for the most recent report across all endpoints."
-)
-_POLL_MCP_TOOL_NAME = "booley_poll"
-_POLL_MCP_TOOL_DESCRIPTION = (
-    "Check on a long-running endpoint (sim / fpga / synth / reviewer / "
-    "mutation_tester / coverage_analyst) that was "
-    "started in the background. When such an endpoint takes longer than "
-    "the inline wait, its call returns a 'run_id' instead of the result; pass "
-    "that run_id here to get the current status. Pass 'wait_seconds' (0-270) to "
-    "long-poll: the call blocks up to that long for the run to finish, turning "
-    "a poll-loop into one blocking call; if the run is still going afterwards "
-    "it returns 'RUNNING' — call again to keep waiting. Prefer few long polls "
-    "over many short ones. Claude and Codex: omit 'wait_seconds' to use the "
-    "Sandbox's configured poll window. Codex: if its programmatic exec "
-    "yields while this MCP call is still running, keep waiting on the same "
-    "running cell in short slices; do not start another booley_poll call. When the "
-    "run finishes it returns the full result (EXIT_CODE + report), exactly as "
-    "the original call would have. Safe to call across a server restart: the "
-    "job is tracked on disk, so a poll always returns a definite answer."
-)
-_CANCEL_MCP_TOOL_NAME = "booley_cancel"
-_CANCEL_MCP_TOOL_DESCRIPTION = (
-    "Cancel a QUEUED or RUNNING background job (pass the run_id a submit or "
-    "poll reported). Running process groups receive SIGTERM, then SIGKILL after "
-    "a bounded grace period. Polling the run_id afterwards reports the distinct "
-    "CANCELLED terminal outcome."
-)
-_TARGETS_MCP_TOOL_NAME = "booley_targets"
-_TARGETS_MCP_TOOL_DESCRIPTION = (
-    "List the project's FuseSoC .core Targets — the values a Booley Flow's "
-    "'target' argument accepts (ADR 0030). Cheap .core-YAML enumeration, no "
-    "fusesoc run: per Target it reports the copy-pasteable selector "
-    "(vlnv#name when the bare name is ambiguous), flow (sim/lint/generic), "
-    "declared EDA tool, cocotb module, declared toplevel, which Doctor Flows the "
-    "Target selects via flow_options.booley.doctor, and which Booley Flows could drive it. "
-    "Optional filters: 'for_flow' (one of synth, fpga, sim, lint) "
-    "keeps only Targets that Flow could drive; "
-    "'glob' matches the bare name or vendor:library:name#target (e.g. "
-    "'soc*', '*#lint'). Returns JSON."
-)
-_SLEEP_MCP_TOOL_NAME = "booley_sleep"
-_SLEEP_MCP_TOOL_DESCRIPTION = (
-    "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold "
-    "this MCP tool call open for 'seconds' server-side, then return timing "
-    "details. Exists to measure the MCP client's MCP-tool-call kill ceiling "
-    "(ADR 0027) — it does no RTL work and is intended for timing diagnostics."
-)
+_INTERACTIVE_HIDDEN_REASONS = catalog._INTERACTIVE_HIDDEN_REASONS
+_INTERACTIVE_MCP_EXCLUDED = catalog._INTERACTIVE_MCP_EXCLUDED
+_STATUS_MCP_TOOL_NAME = catalog._STATUS_MCP_TOOL_NAME
+_STATUS_MCP_TOOL_DESCRIPTION = catalog._STATUS_MCP_TOOL_DESCRIPTION
+_COVERAGE_EVIDENCE_TOOL_NAME = catalog._COVERAGE_EVIDENCE_TOOL_NAME
+_COVERAGE_EVIDENCE_TOOL_DESCRIPTION = catalog._COVERAGE_EVIDENCE_TOOL_DESCRIPTION
+_REPORT_MCP_TOOL_NAME = catalog._REPORT_MCP_TOOL_NAME
+_REPORT_MCP_TOOL_DESCRIPTION = catalog._REPORT_MCP_TOOL_DESCRIPTION
+_POLL_MCP_TOOL_NAME = catalog._POLL_MCP_TOOL_NAME
+_POLL_MCP_TOOL_DESCRIPTION = catalog._POLL_MCP_TOOL_DESCRIPTION
+_CANCEL_MCP_TOOL_NAME = catalog._CANCEL_MCP_TOOL_NAME
+_CANCEL_MCP_TOOL_DESCRIPTION = catalog._CANCEL_MCP_TOOL_DESCRIPTION
+_TARGETS_MCP_TOOL_NAME = catalog._TARGETS_MCP_TOOL_NAME
+_TARGETS_MCP_TOOL_DESCRIPTION = catalog._TARGETS_MCP_TOOL_DESCRIPTION
+_SLEEP_MCP_TOOL_NAME = catalog._SLEEP_MCP_TOOL_NAME
+_SLEEP_MCP_TOOL_DESCRIPTION = catalog._SLEEP_MCP_TOOL_DESCRIPTION
 
 # ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
 # detached background jobs (submit → poll) instead of holding the call open.
@@ -275,7 +232,7 @@ _ASYNC_JOB_MCP_TOOLS = frozenset(
 # ~300s no matter what the MCP-tool timeout is set to — see
 # _POLL_WAIT_SECONDS_MAX.
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
-_DEFAULT_JOB_POLL_WAIT_SECONDS = 240.0
+_DEFAULT_JOB_POLL_WAIT_SECONDS = catalog._DEFAULT_JOB_POLL_WAIT_SECONDS
 
 # Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
 # Clients do not always tear them down promptly, so the server exits itself
@@ -465,19 +422,8 @@ def _index_custom_mcp_tools(
 
 
 def _nested_allowlist() -> set[str] | None:
-    """Return the nested-mode MCP tool allowlist, or None if not nested.
-
-    Set by ``_ensure_nested_codex_home`` via the BOOLEY_NESTED_MCP_TOOLS env
-    var (comma-separated). When BOOLEY_NESTED_AGENT=1, return a (possibly
-    empty) set of allowed MCP tool names — discovery filters strictly to these,
-    so Specialist MCP tools never appear in nested agents (recursion-safe).
-    When BOOLEY_NESTED_AGENT is unset, return None (= developer mode,
-    no filtering).
-    """
-    if os.environ.get("BOOLEY_NESTED_AGENT") != "1":
-        return None
-    raw = os.environ.get("BOOLEY_NESTED_MCP_TOOLS", "")
-    return _split_mcp_tool_csv(raw)
+    nested = catalog.Exposure.from_mapping(os.environ).nested
+    return None if nested is None else set(nested)
 
 
 def _split_mcp_tool_csv(raw: str) -> set[str]:
@@ -488,46 +434,20 @@ def _split_mcp_tool_csv(raw: str) -> set[str]:
 
 
 def _explicit_mcp_allowlist() -> set[str] | None:
-    """Return a first-class MCP exposure allowlist, if configured.
-
-    ``BOOLEY_MCP_TOOLS`` filters *MCP exposure only*. It does not affect the
-    Booley endpoint registry or autonomous execution.
-    """
-    raw = os.environ.get("BOOLEY_MCP_TOOLS")
-    if raw is None:
-        return None
-    return _split_mcp_tool_csv(raw)
+    explicit = catalog.Exposure.from_mapping(os.environ).explicit
+    return None if explicit is None else set(explicit)
 
 
 def _mcp_tool_visible(mcp_tool_name: str) -> bool:
-    """Return whether *mcp_tool_name* should be exposed by this MCP server.
-
-    Precedence:
-    1. Nested runs use their recursion-safe specialist allowlist.
-    2. ``BOOLEY_MCP_TOOLS`` is an explicit MCP-only allowlist.
-    3. ``BOOLEY_MCP_MODE=interactive`` hides autonomous-only workflow MCP tools.
-    4. Default/autonomous mode exposes the normal discovered registry.
-    """
-    from booley.targets.flow_names import canonical
-
-    mcp_tool_name = canonical(mcp_tool_name)
-    nested_allow = _nested_allowlist()
-    if nested_allow is not None:
-        return mcp_tool_name in nested_allow
-
-    explicit_allow = _explicit_mcp_allowlist()
-    if explicit_allow is not None:
-        return mcp_tool_name in explicit_allow
-
-    if os.environ.get("BOOLEY_MCP_MODE", "").strip().lower() == "interactive":
-        return mcp_tool_name not in _INTERACTIVE_MCP_EXCLUDED
-
-    return True
+    return catalog.tool_visible(
+        mcp_tool_name,
+        catalog.Exposure.from_mapping(os.environ),
+        interactive_excluded=_INTERACTIVE_MCP_EXCLUDED,
+    )
 
 
 def _interactive_mcp_mode() -> bool:
-    """Return whether this server is serving a human interactive tab."""
-    return os.environ.get("BOOLEY_MCP_MODE", "").strip().lower() == "interactive"
+    return catalog.Exposure.from_mapping(os.environ).interactive
 
 
 def _interactive_hidden_note(mcp_tool_name: str) -> str | None:
@@ -545,91 +465,35 @@ def _interactive_hidden_note(mcp_tool_name: str) -> str | None:
 
 
 def _status_mcp_tool_visible() -> bool:
-    """Return whether the synthetic status MCP tool should be exposed."""
-    nested_allow = _nested_allowlist()
-    if nested_allow is not None:
-        return _STATUS_MCP_TOOL_NAME in nested_allow
-    if _interactive_mcp_mode():
-        return True
-    explicit_allow = _explicit_mcp_allowlist()
-    return explicit_allow is not None and _STATUS_MCP_TOOL_NAME in explicit_allow
+    return catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _report_mcp_tool_visible() -> bool:
-    """Return whether the synthetic report-fetch MCP tool should be exposed.
-
-    Same gating as the status MCP tool: always on for a human/agent interactive
-    tab (its whole point is recovering a report after a client-side timeout),
-    opt-in via nested/explicit allowlists otherwise.
-    """
-    nested_allow = _nested_allowlist()
-    if nested_allow is not None:
-        return _REPORT_MCP_TOOL_NAME in nested_allow
-    if _interactive_mcp_mode():
-        return True
-    explicit_allow = _explicit_mcp_allowlist()
-    return explicit_allow is not None and _REPORT_MCP_TOOL_NAME in explicit_allow
+    return catalog.report_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _poll_mcp_tool_visible() -> bool:
-    """Return whether the synthetic poll MCP tool should be exposed.
-
-    Always on. The poll MCP tool is the transport-level completion of async
-    dispatch (ADR 0027): any server that can dispatch a heavy endpoint can hand back
-    a run_id, so the caller must always be able to poll it — in EVERY mode,
-    including nested clients (``booley_report`` is Interactive/opt-in). It reads job status only —
-    it cannot invoke an endpoint or recurse — so it is exempt from the
-    recursion-safety allowlists that gate real endpoints.
-    """
-    return not _coverage_evidence_mode()
+    return catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _targets_mcp_tool_visible() -> bool:
-    """Return whether the synthetic targets-listing MCP tool should be exposed.
-
-    Always on, like poll: it only reads ``.core`` YAML and booley.toml — no
-    subprocess, no recursion — so the recursion-safety allowlists that gate
-    real endpoints do not apply, and every agent client (Interactive session or nested Specialist) needs to know what ``target`` values exist.
-    """
-    return not _coverage_evidence_mode()
+    return catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _goal_tools_visible() -> bool:
-    """Return whether the Goal Mode MCP tools are listed and callable.
-
-    Only a human's Interactive Mode tab (never a nested Specialist server), and
-    as required by ADR 0067 D13.
-    """
-    return _interactive_mcp_mode() and _nested_allowlist() is None
+    return catalog.goals_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _coverage_evidence_mode() -> bool:
-    """Return whether this server is the Analyst's single-capability server."""
-    return bool(os.environ.get("BOOLEY_COVERAGE_CAMPAIGN"))
+    return catalog.Exposure.from_mapping(os.environ).campaign
 
 
 def _coverage_evidence_tool_visible() -> bool:
-    """Expose Campaign evidence only inside its bound nested Analyst server."""
-    nested = _nested_allowlist()
-    return (
-        nested is not None
-        and _COVERAGE_EVIDENCE_TOOL_NAME in nested
-        and bool(os.environ.get("BOOLEY_COVERAGE_CAMPAIGN"))
-        and bool(os.environ.get("BOOLEY_COVERAGE_PROJECT"))
-    )
+    return catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _sleep_mcp_tool_visible() -> bool:
-    """Return whether the diagnostic sleep MCP tool should be exposed.
-
-    Off unless ``BOOLEY_MCP_DEBUG_TOOLS`` is truthy. When on it is visible in
-    EVERY mode (like poll): the whole point is measuring the client-side call
-    cap in the exact tab/session shape under suspicion, so allowlists must not
-    filter it. It only sleeps — no subprocess, no recursion — so the
-    recursion-safety exemption that covers poll/cancel applies.
-    """
-    raw = os.environ.get("BOOLEY_MCP_DEBUG_TOOLS", "").strip().lower()
-    return raw not in {"", "0", "false", "no"}
+    return catalog.Exposure.from_mapping(os.environ).debug
 
 
 def _discover_builtin_mcp_tools(
@@ -682,81 +546,19 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def _find_mcp_tool_class_in_module(
-    mod: object,
-    source_label: str,
+    mod: object, source_label: str
 ) -> tuple[type, object, dict] | None:
-    """Find an McpTool/BooleyFlow/Specialist subclass in *mod*, instantiate it, and extract its schema.
-
-    Returns (cls, instance, schema) or None if nothing found.
-    Logs and skips classes whose schema extraction fails.
-    """
-    from booley.flows.base import BooleyFlow, BuiltinFlow
-    from booley.mcp.base import McpTool
-    from booley.mcp.flow_adapter import flow_schema
-
-    for attr_name in dir(mod):
-        obj = getattr(mod, attr_name)
-        if not (
-            isinstance(obj, type)
-            and issubclass(obj, (McpTool, BooleyFlow, BuiltinFlow))
-            and obj is not McpTool
-            and hasattr(obj, "name")
-            and obj.name
-        ):
-            continue
-        try:
-            instance = obj()
-            schema = flow_schema(instance)
-        except Exception as exc:
-            msg = f"SCHEMA EXTRACTION FAILED: {obj.name} in {source_label}: {exc}"
-            logger.error(msg, exc_info=True)
-            print(f"[mcp] ERROR {msg}", file=sys.stderr, flush=True)
-            continue
-        return obj, instance, schema
-    return None
+    return catalog._find_mcp_tool_class_in_module(mod, source_label)
 
 
 def _mcp_tool_def_from_class(
-    cls: type,
-    schema: dict,
-    module_name: str,
-    **extra: Any,
+    cls: type, schema: dict, module_name: str, **extra: Any
 ) -> dict[str, Any]:
-    """Build an MCP tool definition dict from an endpoint class and extracted schema."""
-    from booley.flows.base import BuiltinFlow, FlowMechanics
-    from booley.specialists.specialist import Specialist
-
-    result = {
-        "name": cls.name,
-        "module": module_name,
-        "description": getattr(cls, "description", "") or "",
-        "schema": schema,
-        "default_timeout": getattr(cls, "default_timeout", 0),
-        "is_specialist": issubclass(cls, Specialist),
-        "is_flow": issubclass(cls, FlowMechanics),
-        "is_builtin_flow": issubclass(cls, BuiltinFlow),
-        "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
-    }
-    result.update(extra)
-    return result
+    return catalog._mcp_tool_def_from_class(cls, schema, module_name, **extra)
 
 
-def _import_module_safe(
-    fqn: str,
-) -> tuple[object | None, str | None]:
-    """Import *fqn* and return (module, None) or (None, error_msg)."""
-    import importlib
-    import traceback
-
-    try:
-        return importlib.import_module(fqn), None
-    except Exception as exc:
-        msg = f"IMPORT FAILED: {fqn}: {exc}"
-        logger.error(msg, exc_info=True)
-        print(f"[mcp] ERROR {msg}", file=sys.stderr, flush=True)
-        tb = traceback.format_exc()
-        print(f"[mcp] TRACEBACK:\n{tb}", file=sys.stderr, flush=True)
-        return None, msg
+def _import_module_safe(fqn: str) -> tuple[object | None, str | None]:
+    return catalog._import_module_safe(fqn)
 
 
 def _import_and_extract(
@@ -764,123 +566,15 @@ def _import_and_extract(
     *,
     import_prefix: str = "booley.mcp",
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Import a single endpoint module and extract its schema.
-
-    Returns (mcp_tool_def, error_msg). error_msg is None on success.
-    """
-    fqn = f"{import_prefix}.{module_name}"
-    mod, err = _import_module_safe(fqn)
-    if err is not None:
-        return None, err
-
-    found = _find_mcp_tool_class_in_module(mod, module_name)
-    if found is None:
-        msg = f"NO MCP ENDPOINT CLASS FOUND: {fqn} has no recognized MCP endpoint subclass"
-        logger.warning(msg)
-        return None, msg
-
-    cls, _instance, schema = found
-    is_custom = not import_prefix.startswith("booley.")
-    return (
-        _mcp_tool_def_from_class(
-            cls,
-            schema,
-            module_name,
-            is_custom=is_custom,
-            module_path=f"{import_prefix}.{module_name}",
-        ),
-        None,
-    )
-
-
-def _import_file_safe(
-    py_path: Path,
-) -> tuple[object | None, str | None]:
-    """Import a Python file as a module. Returns (module, None) or (None, error_msg)."""
-    import importlib.util
-    import traceback
-
-    module_name = py_path.stem
-    try:
-        spec = importlib.util.spec_from_file_location(
-            f"booley_custom_mcp_tools.{module_name}",
-            py_path,
-        )
-        if spec is None or spec.loader is None:
-            return None, f"Could not create module spec for {py_path}"
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[mod.__name__] = mod
-        spec.loader.exec_module(mod)
-        return mod, None
-    except Exception as exc:
-        msg = f"IMPORT FAILED: custom MCP tool {py_path}: {exc}"
-        logger.error(msg, exc_info=True)
-        print(f"[mcp] ERROR {msg}", file=sys.stderr, flush=True)
-        tb = traceback.format_exc()
-        print(f"[mcp] TRACEBACK:\n{tb}", file=sys.stderr, flush=True)
-        return None, msg
-
-
-def _import_and_extract_file(
-    py_path: Path,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Import a custom MCP tool from a file path and extract its schema."""
-    mod, err = _import_file_safe(py_path)
-    if err is not None:
-        return None, err
-
-    found = _find_mcp_tool_class_in_module(mod, str(py_path))
-    if found is None:
-        msg = f"NO MCP ENDPOINT CLASS FOUND: custom MCP tool {py_path} has no recognized MCP endpoint subclass"
-        logger.warning(msg)
-        return None, msg
-
-    cls, _instance, schema = found
-    return _mcp_tool_def_from_class(
-        cls,
-        schema,
-        py_path.stem,
-        is_custom=True,
-        custom_path=str(py_path),
-    ), None
+    """Extract a builtin definition through the shared schema owner."""
+    return catalog._import_and_extract(module_name, import_prefix=import_prefix)
 
 
 # ---------------------------------------------------------------------------
 # B-Wave MCP tool definitions (hand-authored)
 # ---------------------------------------------------------------------------
 
-_BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "bwave",
-        "description": (
-            "RTL debug helper for simulation traces: investigate with it, "
-            "not just confirm fixes. If the sim report does not localize a "
-            "failure, or a reproducer unexpectedly passes, query a current "
-            "trace (or rerun `sim` with `trace: true`) before acting on an RTL "
-            "hypothesis. Walk the wrong value backwards cycle by cycle through "
-            "its data, valid, select, and handshake drivers to the first "
-            "divergent signal; for a passing reproducer, verify the suspected "
-            "trigger actually occurred. Confirm the mechanism in the trace "
-            "before editing RTL. Prefer B-Wave over $display prints; use prints "
-            "only if B-Wave cannot capture the evidence, and say why. Diagnose "
-            "compile errors from compiler output. Queries need no GUI; for "
-            "humans, open a scoped, grouped view and relay omitted-signal "
-            'warnings. First call extra_args=["skill"], then '
-            'extra_args=["--help"] for syntax.'
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {
-                "extra_args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Arguments after `bwave`, as documented by CLI help.",
-                },
-            },
-            "required": ["extra_args"],
-        },
-    },
-]
+_BWAVE_MCP_TOOLS = catalog._BWAVE_MCP_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -1119,83 +813,21 @@ def _bwave_mcp_tools_for_mode() -> list[dict[str, Any]]:
 
 
 def _status_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic Interactive Mode status MCP tool definition."""
     if not _status_mcp_tool_visible():
         return None
-    return {
-        "name": _STATUS_MCP_TOOL_NAME,
-        "description": _STATUS_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-    }
+    return catalog._status_mcp_tool_def()
 
 
 def _report_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic report-fetch MCP tool definition (or None if hidden)."""
     if not _report_mcp_tool_visible():
         return None
-    definition: dict[str, Any] = {
-        "name": _REPORT_MCP_TOOL_NAME,
-        "description": _REPORT_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "endpoint": {
-                    "type": "string",
-                    "description": (
-                        "Endpoint name to fetch the latest report for "
-                        "(e.g. 'sim'). Omit for the most recent report "
-                        "across all endpoints."
-                    ),
-                },
-            },
-            "additionalProperties": False,
-        },
-    }
-
-    definition["schema"]["properties"]["work_dir"] = {
-        "type": "string",
-        "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
-    }
-    return definition
+    return catalog._report_mcp_tool_def()
 
 
 def _poll_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic poll MCP tool definition (or None if hidden)."""
     if not _poll_mcp_tool_visible():
         return None
-    return {
-        "name": _POLL_MCP_TOOL_NAME,
-        "description": _POLL_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "run_id": {
-                    "type": "string",
-                    "description": ("The run_id returned by an endpoint that reported RUNNING."),
-                },
-                "wait_seconds": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 270,
-                    "description": (
-                        "Long-poll: block up to this many seconds for the run "
-                        "to finish before answering (clamped to 0-270; longer "
-                        "would die at the HTTP layer's ~300s cap). 0 answers "
-                        "with the current status immediately. Omit to use the "
-                        "server default wait "
-                        f"(BOOLEY_MCP_JOB_POLL_WAIT_SECONDS, "
-                        f"{_DEFAULT_JOB_POLL_WAIT_SECONDS:g}s)."
-                    ),
-                },
-            },
-            "required": ["run_id"],
-            "additionalProperties": False,
-        },
-    }
+    return catalog._poll_mcp_tool_def()
 
 
 def _build_mcp_tool_index(
@@ -1211,135 +843,32 @@ def _build_mcp_tool_index(
 
 
 def _cancel_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic cancel MCP tool definition (or None if hidden).
-
-    Visible wherever poll is (always): any server that can hand back a
-    run_id for a queued or running job must let the caller stop it. Like poll it
-    only manages job state — it cannot invoke an endpoint or recurse — so it is
-    exempt from the recursion-safety allowlists.
-    """
     if not _poll_mcp_tool_visible():
         return None
-    return {
-        "name": _CANCEL_MCP_TOOL_NAME,
-        "description": _CANCEL_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "run_id": {
-                    "type": "string",
-                    "description": "The run_id of the queued or running job to cancel.",
-                },
-            },
-            "required": ["run_id"],
-            "additionalProperties": False,
-        },
-    }
+    return catalog._cancel_mcp_tool_def()
 
 
 def _targets_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic targets-listing MCP tool definition (or None if hidden)."""
     if not _targets_mcp_tool_visible():
         return None
-    from booley.targets.target_surface import TARGET_AWARE_FLOWS
-
-    return {
-        "name": _TARGETS_MCP_TOOL_NAME,
-        "description": _TARGETS_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "for_flow": {
-                    "type": "string",
-                    "enum": list(TARGET_AWARE_FLOWS),
-                    "description": (
-                        "Only Targets this Booley Flow could drive (compatibility, not wiring)."
-                    ),
-                },
-                "glob": {
-                    "type": "string",
-                    "description": (
-                        "Case-sensitive glob over the bare Target name or "
-                        "vendor:library:name#target, e.g. 'soc*' or '*#lint'."
-                    ),
-                },
-                "work_dir": {
-                    "type": "string",
-                    "description": (
-                        "Optional worktree root to enumerate instead of the "
-                        "session workspace (same validation as the Booley Flows' "
-                        "work_dir)."
-                    ),
-                },
-            },
-            "additionalProperties": False,
-        },
-    }
+    return catalog._targets_mcp_tool_def()
 
 
 def _coverage_evidence_tool_def() -> dict[str, Any] | None:
-    """Return the bound Coverage Analyst evidence-tool definition."""
     if not _coverage_evidence_tool_visible():
         return None
-    return {
-        "name": _COVERAGE_EVIDENCE_TOOL_NAME,
-        "description": _COVERAGE_EVIDENCE_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "view": {
-                    "type": "string",
-                    "enum": ["overview", "points", "source", "zero_point_sources"],
-                },
-                "metric": {"type": "string"},
-                "source": {"type": "string"},
-                "covered": {"type": "boolean"},
-                "disposition": {
-                    "type": "string",
-                    "enum": ["eligible", "waived", "unscored"],
-                },
-                "point_refs": {
-                    "type": "array",
-                    "items": {"type": "string", "pattern": COVERAGE_POINT_REFERENCE_PATTERN},
-                    "minItems": 1,
-                    "maxItems": 10,
-                },
-                "cursor": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                "context_lines": {"type": "integer", "minimum": 0, "maximum": 20},
-            },
-            "required": ["view"],
-            "additionalProperties": False,
-        },
-    }
+    return catalog._coverage_evidence_tool_def()
 
 
 def _sleep_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the diagnostic sleep MCP tool definition (or None if hidden)."""
     if not _sleep_mcp_tool_visible():
         return None
-    return {
-        "name": _SLEEP_MCP_TOOL_NAME,
-        "description": _SLEEP_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 86400,
-                    "description": ("How long to hold the call open server-side."),
-                },
-            },
-            "required": ["seconds"],
-            "additionalProperties": False,
-        },
-    }
+    return catalog._sleep_mcp_tool_def()
 
 
 def _all_mcp_tool_defs(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collect every tool definition visible in the current server mode."""
-    mcp_tool_defs = [*mcp_tools, *_bwave_mcp_tools_for_mode()]
+    mcp_tool_defs = [*_bwave_mcp_tools_for_mode()]
     status_def = _status_mcp_tool_def()
     if status_def is not None:
         mcp_tool_defs.append(status_def)
@@ -1363,7 +892,7 @@ def _all_mcp_tool_defs(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         mcp_tool_defs.append(coverage_evidence_def)
     if _goal_tools_visible():
         mcp_tool_defs.extend(goal_tool_defs())
-    return sorted(mcp_tool_defs, key=lambda item: item["name"])
+    return catalog.assemble_tool_definitions(mcp_tools, mcp_tool_defs)
 
 
 def _format_status_card(mcp_tool_names: list[str]) -> str:
@@ -3002,6 +2531,7 @@ def _goal_warning_result(
             binding.booley_dir,
             work_dir=binding.worktree_root,
             session_key=session_key,
+            routing_guidance=catalog.work_dir_guidance(),
         )
     except GoalStoreError as exc:
         prefix = f"WARNING: Goal Record cannot be read: {exc}"

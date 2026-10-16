@@ -270,14 +270,15 @@ def test_initially_disabled_enable_and_helper_bytes_refresh_without_repeat_impor
             assert "first" in (await tools(client))["local_flow"].input_schema["properties"]
             assert marker.read_text().splitlines() == ["import"]
             await tools(client)
+            assert marker.read_text().splitlines() == ["import"]
             config.write_text("[flows.local_flow]\nenabled = true\n[agent]\nmax_turns = 3\n")
             await tools(client)
-            assert marker.read_text().splitlines() == ["import"]
+            assert marker.read_text().splitlines() == ["import", "import"]
             before = helper.stat()
             helper.write_text("OPTION = 'other'\n")
             os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
             assert "other" in (await tools(client))["local_flow"].input_schema["properties"]
-            assert marker.read_text().splitlines() == ["import", "import"]
+            assert marker.read_text().splitlines() == ["import", "import", "import"]
 
     asyncio.run(exercise())
 
@@ -407,6 +408,52 @@ def test_observation_generation_is_independent_and_root_selector_does_not_reloca
         assert await catalog.observe_change()
 
     asyncio.run(exercise())
+
+
+def test_unchanged_catalog_does_not_rescan_installed_sources(project, monkeypatch):
+    from booley.mcp import live_catalog
+
+    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    discover = live_catalog.discover_mcp_tools
+    scans = []
+
+    def observed_discovery(*args, **kwargs):
+        scans.append(True)
+        return discover(*args, **kwargs)
+
+    monkeypatch.setattr(live_catalog, "discover_mcp_tools", observed_discovery)
+
+    async def exercise():
+        await application.live_catalog.refresh()
+        await application.live_catalog.refresh()
+
+    asyncio.run(exercise())
+    assert not scans, "unchanged catalog must not rescan installed endpoint sources"
+
+
+def test_unchanged_catalog_retains_project_boundary_validation(project, monkeypatch):
+    from booley.mcp import live_catalog
+
+    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+
+    def rejected_selection():
+        raise RuntimeError("selected Project boundary rejected")
+
+    monkeypatch.setattr(live_catalog, "resolve_booley_dir", rejected_selection)
+    with pytest.raises(RuntimeError, match="selected Project boundary rejected"):
+        asyncio.run(application.live_catalog.refresh())
+
+
+def test_schema_worker_does_not_load_transport_adapter(project):
+    from booley.mcp.catalog_worker import run_schema_worker
+
+    path = write_endpoint(project)
+    path.write_text(
+        "import sys\nassert 'booley.mcp.server' not in sys.modules\n" + path.read_text()
+    )
+    definitions, errors = run_schema_worker({"local_check": path})
+    assert not errors, "schema discovery must not load the MCP transport adapter"
+    assert definitions[0]["name"] == "local_check"
 
 
 def test_worker_reuses_warmed_framework_bytecode(project, monkeypatch, tmp_path_factory):
@@ -611,3 +658,195 @@ def test_retired_layout_marker_invalidates_and_recovers(project):
         await catalog.refresh()
 
     asyncio.run(exercise())
+
+
+def test_config_only_refresh_reuses_unfiltered_discovery(project, monkeypatch):
+    from booley.mcp import registry
+
+    scans = []
+    original = registry.extract_mcp_tool_info
+
+    def counted(*args, **kwargs):
+        scans.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "extract_mcp_tool_info", counted)
+    write_endpoint(project, "local_flow", family="BooleyFlow")
+    write_endpoint(project, "local_specialist", family="Specialist")
+    sdk, _ = server._build_server()
+    endpoints = registry.discover_mcp_tools(project_mcp_tools_dir=project / "mcp_tools")
+    startup_scans = len(scans)
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            initial = await tools(client)
+            config = project / "booley.toml"
+            for item in endpoints:
+                if item.kind == "mcp_tool" or item.name not in initial:
+                    continue
+                table = "flows" if item.kind == "flow" else "specialists"
+                config.write_text(f"[{table}.{item.name}]\nenabled = false\n")
+                assert item.name not in await tools(client)
+                config.write_text(f"[{table}.{item.name}]\nenabled = true\n")
+                assert (await tools(client))[item.name] == initial[item.name]
+            config.write_text('[unrelated]\nvalue = "new"\n')
+            assert await tools(client) == initial
+            assert len(scans) == startup_scans, (
+                "config-only refresh must reuse unfiltered discovery"
+            )
+
+    asyncio.run(exercise())
+
+
+def test_config_cache_preserves_unknown_specialist_rejection(project, monkeypatch):
+    from booley.mcp import registry
+
+    scans = []
+    original = registry.extract_mcp_tool_info
+
+    def counted(*args, **kwargs):
+        scans.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "extract_mcp_tool_info", counted)
+    write_endpoint(project, "local_specialist", family="Specialist")
+    sdk, _ = server._build_server()
+    startup_scans = len(scans)
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            initial = await tools(client)
+            config = project / "booley.toml"
+            config.write_text("[specialists.local_specialist]\nenabled = false\n")
+            assert "local_specialist" not in await tools(client)
+            config.write_text("[specialists.unknown_specialist]\nenabled = false\n")
+            with pytest.raises(MCPError):
+                await client.list_tools()
+            config.write_text("[specialists.local_specialist]\nenabled = true\n")
+            assert await tools(client) == initial
+            assert len(scans) == startup_scans, (
+                "config validation must reuse complete Specialist inventory"
+            )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("replacement", ["directory", "symlink"])
+def test_selected_root_identity_invalidates_metadata_inventory(project, monkeypatch, replacement):
+    from booley.mcp import registry
+
+    scans = []
+    original = registry.extract_mcp_tool_info
+
+    def counted(*args, **kwargs):
+        scans.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "extract_mcp_tool_info", counted)
+    sdk, _ = server._build_server()
+    startup_scans = len(scans)
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            initial = await tools(client)
+            old = project.with_name("previous")
+            project.rename(old)
+            if replacement == "symlink":
+                new = project.with_name("replacement")
+                new.mkdir()
+                project.symlink_to(new, target_is_directory=True)
+            else:
+                project.mkdir()
+            assert await tools(client) == initial
+            assert len(scans) > startup_scans
+
+    asyncio.run(exercise())
+
+
+def test_config_generation_reexecutes_custom_schema(project):
+    path = write_endpoint(project)
+    path.write_text(
+        path.read_text().replace(
+            "parser.add_argument('--first', help='Current option')",
+            "import os; from pathlib import Path; import tomllib\n"
+            "        config = tomllib.loads((Path(os.environ['BOOLEY_DIR']) / 'booley.toml').read_text())\n"
+            "        parser.add_argument('--' + config['display']['option'])",
+        )
+    )
+    config = project / "booley.toml"
+    config.write_text('[display]\noption = "first"\n')
+    sdk, _ = server._build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            assert "first" in (await tools(client))["local_check"].input_schema["properties"]
+            config.write_text('[display]\noption = "other"\n')
+            current = (await tools(client))["local_check"].input_schema["properties"]
+            assert "other" in current
+            assert "first" not in current
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_nested_helper_same_size_preserved_mtime_refreshes_schema(project, alias):
+    path = write_endpoint(project)
+    package = path.parent / "_support"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    helper = package / "options.py"
+    helper.write_text("OPTION = 'first'\n")
+    import_name = "_support.options"
+    if alias:
+        (path.parent / "linked").symlink_to(package, target_is_directory=True)
+        import_name = "linked.options"
+    source = (
+        path.read_text()
+        .replace("from booley.mcp.base", f"from {import_name} import OPTION\nfrom booley.mcp.base")
+        .replace("'--first'", "'--' + OPTION")
+    )
+    path.write_text(source)
+    sdk, _ = server._build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            assert "first" in (await tools(client))["local_check"].input_schema["properties"]
+            before = helper.stat()
+            helper.write_text("OPTION = 'other'\n")
+            os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
+            assert "other" in (await tools(client))["local_check"].input_schema["properties"], (
+                "nested custom helper bytes must refresh the running schema"
+            )
+
+    asyncio.run(exercise())
+
+
+def test_custom_source_walk_bounds_cycles_and_external_directories(project):
+    from booley.mcp.live_catalog import source_fingerprint
+
+    custom = project / "mcp_tools"
+    custom.mkdir()
+    external = project.parent / "external"
+    external.mkdir()
+    helper = external / "helper.py"
+    helper.write_text("VALUE = 1\n")
+    (custom / "cycle").symlink_to(custom, target_is_directory=True)
+    (custom / "external").symlink_to(external, target_is_directory=True)
+    initial = source_fingerprint(project)
+    helper.write_text("VALUE = 2\n")
+    assert source_fingerprint(project) == initial
+    (custom / "local.py").write_text("VALUE = 3\n")
+    assert source_fingerprint(project) != initial
+
+
+def test_custom_source_walk_propagates_unreadable_input(project, monkeypatch):
+    from booley.mcp import live_catalog
+
+    def unreadable(root, *, followlinks, onerror):
+        onerror(PermissionError("custom input unavailable"))
+        return iter(())
+
+    (project / "mcp_tools").mkdir()
+    monkeypatch.setattr(live_catalog.os, "walk", unreadable)
+    with pytest.raises(PermissionError, match="custom input unavailable"):
+        live_catalog.source_fingerprint(project)
