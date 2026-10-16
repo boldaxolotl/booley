@@ -938,6 +938,41 @@ class TestJobManagerResultText:
         assert "report_text:" not in result
         assert read_roots == [tmp_path]
 
+    def test_automatic_target_notice_from_restarted_job(self, tmp_path, monkeypatch):
+        from booley.runtime import job_records
+        from booley.runtime.timefmt import utc_now_rfc3339
+
+        runtime = tmp_path / "runtime"
+        jobs_root = runtime / "jobs"
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+        monkeypatch.setattr(self.mcp_server, "job_roots", lambda: (jobs_root,))
+        run_id = "restarted-automatic-target"
+        notice = "lint: --target omitted; selected Target lint_dut."
+        rec = job_records.JobRecord(
+            run_id, "lint", utc_now_rfc3339(), 5, status="done", exit_code=0
+        )
+        job_records.write_record(rec, jobs_root)
+        report = {
+            "flow": "lint",
+            "run_id": run_id,
+            "target": "lint_dut",
+            "exit_code": 0,
+            "passed": True,
+            "report_text": f"RESULT: PASS\n{notice}",
+        }
+        path = runtime / "flow-reports/lint/1/report.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(report))
+        manager = self.mcp_server._JobManager()
+
+        result = manager.terminal_result(run_id)
+        text = manager.result_text(run_id)
+
+        assert result.report_fresh is True and result.report == report
+        assert result.stdout == result.stderr == ""
+        assert text.startswith("EXIT_CODE: 0")
+        assert text.count(notice) == text.count("RESULT: PASS") == 1
+
 
 # ---------------------------------------------------------------------------
 # _resolve_transcript_dir

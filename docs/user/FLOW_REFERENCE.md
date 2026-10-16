@@ -30,8 +30,8 @@ Help groups shared controls under **Common**, reporting under **Output**, then
 Flow-specific options. Synth's **Expert: ABC** and **Expert: OpenROAD** sections
 come last and remain visible in ordinary `--help`. Boolean override pairs share
 one help entry; leaving them unset preserves Target/profile/backend resolution.
-Each option explains omission behavior. Required Target flags have no default;
-Simulation discovery and manifest-owned resume settings have their own rules.
+Each option explains omission behavior. Omitted Target selection follows the
+eligible Target cardinality rule below; Simulation resume restores manifest selection.
 
 ### Live progress and logs
 
@@ -107,8 +107,11 @@ captured transcript should pass `--quiet`.
 
 ### Choosing Targets
 
-Every run needs `--target`; there is no project-wide default. (The one exception
-is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
+For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
+exactly one eligible Target, and that selection is announced. With zero or multiple
+eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
+`sim --resume-from` takes its Target from the Campaign it resumes, independent
+of the current catalog.
 
 - `booley targets` lists all Targets; `booley targets --for <flow>` lists
   the ones a Flow can drive.

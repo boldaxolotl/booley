@@ -17,6 +17,7 @@ import pytest
 from booley.mcp import endpoint_process, job_results
 from booley.mcp.call_context import CallContext
 from booley.mcp.job_lifecycle import JobLifecycle
+from booley.mcp.report_encoding import ReportEncoder
 from booley.runtime import job_records, job_slots
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
@@ -276,6 +277,67 @@ async def test_restart_adopts_only_matching_terminal_report(context, foreign):
     assert job_records.read_record(run_id, context.jobs_root).status == (
         "failed" if foreign else "done"
     )
+
+
+@pytest.mark.asyncio
+async def test_restarted_automatic_target_job_retains_selection_notice(context):
+    run_id = "automatic-target"
+    notice = "lint: --target omitted; selected Target lint_dut."
+    rec = job_records.JobRecord(run_id, "lint", utc_now_rfc3339(), 5)
+    job_records.write_record(rec, context.jobs_root)
+    write_report(
+        context,
+        run_id,
+        {
+            "flow": "lint",
+            "target": "lint_dut",
+            "exit_code": 0,
+            "passed": True,
+            "report_text": f"RESULT: PASS\n{notice}",
+        },
+    )
+    restarted = JobLifecycle()
+    restarted.reconcile_orphaned()
+
+    result = (await restarted.poll(run_id)).result
+    text = ReportEncoder().text_result(
+        result.exit_code, result.stdout, result.stderr, result.report
+    )
+
+    assert result.report_fresh is True and result.exit_code == 0
+    assert result.stdout == result.stderr == ""
+    assert text.count(notice) == text.count("RESULT: PASS") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_kind", ["foreign", "stale"], ids=["foreign", "stale"])
+async def test_restarted_job_does_not_borrow_automatic_target_notice(context, report_kind):
+    run_id = "current-automatic"
+    notice = "lint: --target omitted; selected Target lint_dut."
+    rec = job_records.JobRecord(run_id, "lint", utc_now_rfc3339(), 5, status="failed", exit_code=2)
+    job_records.write_record(rec, context.jobs_root)
+    report = {
+        "flow": "lint",
+        "target": "lint_dut",
+        "exit_code": 0,
+        "passed": True,
+        "report_text": f"RESULT: PASS\n{notice}",
+    }
+    if report_kind == "foreign":
+        write_report(context, "different", report)
+    else:
+        report["timestamp"] = "2000-01-01T00:00:00Z"
+        path = context.runtime_dir / "flow-reports/lint.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(report))
+
+    result = (await JobLifecycle().poll(run_id)).result
+    text = ReportEncoder().text_result(
+        result.exit_code, result.stdout, result.stderr, result.report
+    )
+
+    assert result.exit_code == 2 and not result.report_fresh and result.report is None
+    assert notice not in text
 
 
 @pytest.mark.asyncio
