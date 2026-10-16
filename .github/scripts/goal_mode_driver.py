@@ -34,7 +34,7 @@ from booley.goals.presentation import goal_presentation
 from booley.goals.sim_baseline_store import baseline_jobs_dir
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
-from booley.runtime import job_records
+from booley.runtime import job_records, platform_paths
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.process_group import ProcessGroup, request_group_termination
@@ -280,12 +280,13 @@ def create_workspace(
     # Run-owned synthetic Sandbox inputs map the same local namespace.
     definition = primary / ".devcontainer/devcontainer.json"
     definition.parent.mkdir(parents=True, exist_ok=True)
+    host = platform_paths.docker_mount_path(primary)
     definition.write_text(
         json.dumps(
             {
                 "mounts": [
-                    f"source={primary}/.devcontainer,target=/work/.devcontainer,type=bind,readonly",
-                    f"source={primary}/.booley,target=/work/.booley,type=bind",
+                    f"source={host}/.devcontainer,target=/work/.devcontainer,type=bind,readonly",
+                    f"source={host}/.booley,target=/work/.booley,type=bind",
                 ]
             }
         ),

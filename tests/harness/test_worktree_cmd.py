@@ -16,6 +16,7 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context
+from booley.runtime.platform_paths import bash_bin, docker_mount_path
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -1121,7 +1122,7 @@ def test_worktree_new_after_managed_bundle_runtime_init(tmp_path, monkeypatch, p
     baseline = _managed_git(data, "rev-parse", "HEAD")
     assert _run_full_init(root) == 0
     # This direct local fixture models a supported issued namespace.
-    _issued_removal_spec(root, host=str(root))
+    _issued_removal_spec(root, host=root)
     assert _new("runtime-init", root) == 0
     paired = worktree_cmd.worktree_path(root, "runtime-init") / ".booley"
     assert bundle.is_file()
@@ -1323,10 +1324,12 @@ def test_responsible_canonical_negation_keeps_per_path_input(
 
 
 def _issued_removal_spec(
-    root: Path, host: str = "/host/projects/chip", problem: str | None = None
+    root: Path, host: str | Path = "/host/projects/chip", problem: str | None = None
 ) -> None:
     version = re.match(r"git version (\d+)\.(\d+)", _git(root, "--version").stdout)
     assert version and tuple(map(int, version.groups())) >= (2, 48), "Git >=2.48 required"
+    if isinstance(host, Path):
+        host = docker_mount_path(host)
     mounts = [
         f"source={host}/.devcontainer,target=/work/.devcontainer,type=bind,readonly",
         f"source={host}/.booley,target=/work/.booley,type=bind",
@@ -1341,6 +1344,21 @@ def _issued_removal_spec(
     for repository in (root, root / ".booley"):
         if (repository / ".git").exists():
             assert _git(repository, "config", "worktree.useRelativePaths", "true").returncode == 0
+
+
+def test_native_windows_fixture_prints_git_bash_removal(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import platform_paths
+
+    monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
+    _issued_removal_spec(project, host=Path("C:/Users/dev/chip"))
+    assert _new("windows-fixture", project) == 0, "native Windows fixture must create"
+    output = capsys.readouterr()
+    assert (
+        "git -C /c/Users/dev/chip worktree remove "
+        "/c/Users/dev/chip/.booley/worktrees/windows-fixture"
+    ) in output.err
 
 
 def test_snapshot_prints_host_removal_steps(
@@ -1411,7 +1429,7 @@ def test_printed_removal_commands_remove_clean_worktrees(
     root = request.getfixturevalue("project" if kind == "snapshot" else "versioned_project")
     _clean_removal_project(root, kind)
     host = tmp_path / "host-view"
-    _issued_removal_spec(root, host=str(host))
+    _issued_removal_spec(root, host=host)
     assert _new("remove", root) == 0
     output = capsys.readouterr()
     worktree = root / ".booley/worktrees/remove"
@@ -1427,7 +1445,7 @@ def test_printed_removal_commands_remove_clean_worktrees(
     ]
     assert len(commands) == (2 if kind == "paired" else 1)
     for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        result = _run_removal_command(command)
         assert result.returncode == 0, result.stderr
     assert not (host / ".booley/worktrees/remove").exists()
     for repository in (host, host / ".booley") if kind == "paired" else (host,):
@@ -1451,10 +1469,19 @@ def test_printed_removal_commands_preserve_dirty_worktree(
     line = next(line for line in output.err.splitlines() if "Snapshot worktree: " in line)
     command = shlex.split(line.split(": ", 1)[1])
     assert "--force" not in command
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    result = _run_removal_command(command)
     assert result.returncode != 0
     assert (worktree / "README.md").read_text() == "precious tracked work"
     assert (worktree / "untracked.txt").read_text() == "precious untracked work"
+
+
+def _run_removal_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    import shlex
+
+    # Printed drive operands belong to Git Bash, not native Windows argv.
+    if os.name == "nt":
+        command = [bash_bin(), "-c", shlex.join(command)]
+    return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _clean_removal_project(root: Path, kind: str) -> None:

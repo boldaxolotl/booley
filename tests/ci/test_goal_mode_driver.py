@@ -144,7 +144,15 @@ def test_detached_flow_is_bounded_and_never_accepts_submission_as_success() -> N
         asyncio.run(driver.run_flow(session, "lint", {}, poll_limit=2))
 
 
-def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("host_namespace", [None, "/c/Users/dev/owned"], ids=["local", "git-bash"])
+def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch, host_namespace) -> None:
+    from pathlib import PurePosixPath
+
+    from booley.runtime import platform_paths
+    from booley.runtime.worktree_paths import _host_mounts
+
+    if host_namespace is not None:
+        monkeypatch.setattr(platform_paths, "docker_mount_path", lambda _path: host_namespace)
     source = tmp_path / "source"
     state = source / ".booley"
     state.mkdir(parents=True)
@@ -171,6 +179,9 @@ def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(driver, "_run", run)
     monkeypatch.setattr(driver, "is_git_worktree_root", lambda _path: True)
     workspace = driver.create_workspace(source, state, owned)
+    mapped_root, _state = _host_mounts(workspace.primary / ".devcontainer/devcontainer.json")
+    expected = host_namespace or platform_paths.docker_mount_path(workspace.primary)
+    assert mapped_root == PurePosixPath(expected), "owned fixture must preserve host namespace"
     assert all(cwd == owned or owned in cwd.parents for _, cwd in commands)
     assert (workspace.worktree / ".booley/.git").is_file()
     assert workspace.booley_dir == owned / "primary/.booley"
@@ -491,6 +502,7 @@ def test_workspace_creation_uses_real_worktree_preflight(
     from tests.harness.test_worktree_cmd import _git
 
     from booley.runtime import runtime_context
+    from booley.runtime.platform_paths import docker_mount_path
 
     # The real CLI enforces Sandbox venue; its process sees the existing detector.
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -525,8 +537,8 @@ def test_workspace_creation_uses_real_worktree_preflight(
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(workspace.primary / ".booley/worktrees/second")
-    assert f"git -C {workspace.primary} worktree remove" in result.stderr
-    assert f"git -C {workspace.booley_dir} worktree remove" in result.stderr
+    assert f"git -C {docker_mount_path(workspace.primary)} worktree remove" in result.stderr
+    assert f"git -C {docker_mount_path(workspace.booley_dir)} worktree remove" in result.stderr
 
 
 def _real_workspace_source(tmp_path: Path) -> tuple[Path, Path]:
