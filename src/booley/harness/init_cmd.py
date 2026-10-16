@@ -138,7 +138,7 @@ from booley.harness.setup.line_endings import (
     pending_normalization_paths,
     sample_worktree_cleanliness,
 )
-from booley.harness.setup.plan import InitPlan, InitPreconditionError
+from booley.harness.setup.plan import InitPlan, InitPlanBlockedError, InitPreconditionError
 from booley.harness.setup.project_origin import publish_project_origin, read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
@@ -383,7 +383,8 @@ def _step_booley_dir(ctx: InitContext) -> None:
 
     # booley.toml + tests.toml skeletons (idempotent, never overwrites).
     _backfill_config_skeletons(target, ctx)
-    publish_project_origin(target / "booley.toml", "port", expected=BOOLEY_TOML_SKELETON.encode())
+    if not _publish_port_origin(target, ctx):
+        return
     _backfill_fusesoc_ignore(target, ctx)
     _init_project_git_repo(target, ctx)
 
@@ -394,6 +395,18 @@ def _step_booley_dir(ctx: InitContext) -> None:
         "Step 0 (planning). Its Step 2 fills these files."
     )
     ctx.record("booley_dir", "ok", "created with config skeletons")
+
+
+def _publish_port_origin(target: Path, ctx: InitContext) -> bool:
+    try:
+        publish_project_origin(
+            target / "booley.toml", "port", expected=BOOLEY_TOML_SKELETON.encode()
+        )
+    except (InitPreconditionError, InitPlanBlockedError, OSError) as exc:
+        err(f"could not record successful Project creation origin: {exc}")
+        ctx.record("booley_dir", "err", str(exc))
+        return False
+    return True
 
 
 def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
@@ -2286,12 +2299,13 @@ def _run_project_init_steps(
 
     line_ending_baseline = _sample_line_ending_baseline(ctx)  # before any Project write
 
-    # A refusal to scaffold aborts the run — the user asked
-    # for a fresh scaffold and must decide, not get a half-initialized mix.
+    # Scaffold refusal aborts: the user must decide how to handle the existing design.
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
 
     _step_booley_dir(ctx)
+    if any(r.name == "booley_dir" and r.status == "err" for r in ctx.results):
+        return _print_summary(ctx)
     if not _step_agent_config(ctx, selection, agent_config_path):
         return _print_summary(ctx)
     _step_core_projections(ctx)
