@@ -2,8 +2,11 @@
 
 import errno
 import json
+import os
 import socket
 import sys
+from collections.abc import Callable
+from contextlib import suppress
 from itertools import islice
 from pathlib import Path
 
@@ -15,6 +18,55 @@ from booley.runtime.dashboard_tasks import attach_blocker
 
 ALREADY_OPEN = 3
 ATTACH_DISABLED = 4
+_PLATFORM = sys.platform
+
+
+def _name_dashboard_process() -> None:
+    """An optional process adapter must leave unsupported launches silent."""
+    try:
+        from setproctitle import setproctitle
+    except (ImportError, OSError):
+        return
+    with suppress(OSError, ValueError, RuntimeError):
+        setproctitle("dashboard")
+
+
+def _label_terminal() -> Callable[[], None]:
+    """Label a Linux Dashboard, returning best-effort, once-only title cleanup."""
+    stream = sys.stdout
+    pushed = False
+    restored = False
+
+    def restore() -> None:
+        nonlocal restored
+        if restored:
+            return
+        restored = True
+        if pushed:
+            try:
+                stream.write("\x1b[23;2t")
+                stream.flush()
+            except (AttributeError, OSError, ValueError, UnicodeError):
+                pass
+
+    if _PLATFORM != "linux":
+        return restore
+    _name_dashboard_process()
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return restore
+    try:
+        if stream.isatty():
+            stream.write("\x1b[22;2t")
+            pushed = True
+            stream.write("\x1b]2;Booley Dashboard\x07")
+            stream.flush()
+    except (AttributeError, OSError, ValueError, UnicodeError):
+        pass
+    except BaseException:
+        # Acquisition has no outer finally yet; unwind a completed push first.
+        restore()
+        raise
+    return restore
 
 
 def attach_policy(root: Path) -> dict[str, object]:
@@ -80,5 +132,9 @@ def run_dashboard(root: Path, *, on_attach: bool = False) -> int:
                 return ALREADY_OPEN if on_attach else 0
             print(f"Dashboard unavailable: cannot reserve the Sandbox view: {exc}")
             return 2
-        DashboardApp(DashboardReader(root, resolve_booley_dir(root)).read).run()
+        restore = _label_terminal()
+        try:
+            DashboardApp(DashboardReader(root, resolve_booley_dir(root)).read).run()
+        finally:
+            restore()
     return 0
