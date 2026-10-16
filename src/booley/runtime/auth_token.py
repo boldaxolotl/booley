@@ -48,6 +48,7 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 
 APP_CLAUDE = "claude"
@@ -330,6 +331,36 @@ def resolve_oauth_token() -> str | None:
     return resolve_token(APP_CLAUDE)
 
 
+class CredentialStoreError(RuntimeError):
+    """Credential storage is unsafe or unavailable; no secret belongs in the error."""
+
+
+def _token_store() -> PrivateStore:
+    directory = config_dir()
+    return PrivateStore(directory, directory.parent, "credential store", CredentialStoreError)
+
+
+def _validate_token_file(path: Path, info: os.stat_result) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        raise CredentialStoreError(f"credential must be a regular file: {path}")
+    if os.name != "nt" and info.st_uid != os.getuid():
+        raise CredentialStoreError(f"credential must be owned by current user: {path}")
+
+
+def preflight_store_token(app: str = APP_CLAUDE) -> None:
+    """Inspect existing credential paths without creating or changing them."""
+    store = _token_store()
+    store.validate_existing_directory()
+    path = token_path(app)
+    if path.is_symlink():
+        raise CredentialStoreError(f"credential must not be a symlink: {path}")
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return
+    _validate_token_file(path, info)
+
+
 def store_token(token: str, app: str = APP_CLAUDE) -> Path:
     """Persist *token* for *app* with mode 0600. Returns the path.
 
@@ -343,17 +374,25 @@ def store_token(token: str, app: str = APP_CLAUDE) -> Path:
     if any(ch.isspace() for ch in token):
         raise ValueError("credential contains whitespace — it would corrupt a docker --env-file")
 
-    directory = config_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    directory.chmod(stat.S_IRWXU)  # 0700
-
+    preflight_store_token(app)
+    _token_store().ensure_directory()
     path = token_path(app)
-    # Open with 0600 BEFORE any content lands, so the secret is never briefly
-    # world-readable (a plain write + chmod has exactly that window).
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(f"{token}\n")
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600 even if the file pre-existed
+    # Docker binds this inode: tighten its mode before truncating, never replace it.
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        _validate_token_file(path, os.fstat(descriptor))
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        os.ftruncate(descriptor, 0)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(f"{token}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     return path
 
 
