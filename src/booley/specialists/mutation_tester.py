@@ -1143,6 +1143,7 @@ replacement must differ, and every proposal must remain a single source edit.
             },
         )
         result.display_lines = lines
+        result.summary = summary
         return result
 
     def _auto_count_explanation(self, plan: MutationRunPlan, budget: dict) -> list[str]:

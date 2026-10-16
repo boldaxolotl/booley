@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
@@ -556,7 +557,7 @@ def _assert_preview_lines(result, count):
     "sizes,timeout_ms,formula_count,budget_cap,count",
     [
         ((4, 1), 1800000, 3, 12, 3),
-        ((40, 41), 1800000, 9, 12, 9),
+        ((40, 41), 1800500, 9, 12, 9),
         ((100, 125), 1800000, 15, 12, 12),
         ((400, 500), 4500000, 25, 30, 25),
         ((0, 0), 1800000, 3, 12, 3),
@@ -598,7 +599,7 @@ def test_auto_dry_run_explains_source_size_count(
     assert "max(3, min(25, round(sqrt(total_source_lines or 1))))" in text
     assert f"round(sqrt({total} or 1)) = {round((total or 1) ** 0.5)}" in text
     assert f"source clamp [3, 25] => {formula_count}" in text
-    assert f"configured timeout: {timeout_ms // 1000} seconds" in text
+    assert f"configured timeout: {(timeout_ms + 999) // 1000} seconds" in text
     assert "max(3, timeout_seconds // 150)" in text
     assert f"budget cap = {budget_cap}" in text
     assert f"min({formula_count}, {budget_cap}) = {count}" in text
@@ -657,6 +658,13 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch, ca
         )
     assert "total: 80 source lines; 800 bytes" in result.report_text
     assert "min(9, 12) = 9" in result.report_text
+    event = _display_safe_event(
+        _endpoint_end_event("mutation_tester", "lite", result, 0.0, dry_run=True)
+    )
+    assert event["display_lines_truncated"] > 0
+    assert event["summary"] == result.display_lines[-1], (
+        "bounded display event loses the proposed count summary"
+    )
     endpoint._console_publication_requested = True
     endpoint._publish_console_report(result)
     assert capsys.readouterr().out == result.report_text + "\n"
