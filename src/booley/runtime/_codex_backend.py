@@ -21,6 +21,7 @@ from booley.core.temporary_workspace import (
     LeaseLaunch,
     launch_failed,
     launch_finished,
+    launch_result,
     prepare_launch,
     registry_root,
     settle_launch,
@@ -705,6 +706,9 @@ async def _codex_run_in_home(
             timeout_seconds=params.timeout_seconds,
             launch=launch,
         )
+        from booley.core.workspace_async import filesystem_call
+
+        native_result = await filesystem_call(launch_result, launch)
     finally:
         from booley.core.workspace_async import filesystem_call
 
@@ -713,7 +717,7 @@ async def _codex_run_in_home(
     return (
         bytes(stdout_buf).decode("utf-8", errors="replace"),
         bytes(stderr_buf).decode("utf-8", errors="replace"),
-        proc.returncode,
+        proc.returncode if native_result is None else native_result,
     )
 
 
@@ -740,8 +744,18 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
             await asyncio.wait_for(proc.wait(), timeout=1)
 
 
+class _CleanupDeadlineError(RuntimeError):
+    """Native work finished, but its descendant settlement exceeded the bound."""
+
+
+async def _wait_native_settlement(task: asyncio.Task[None]) -> None:
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=16)
+    except TimeoutError as error:
+        raise _CleanupDeadlineError from error
+
+
 async def _native_work_deadline(work, launch: LeaseLaunch | None, timeout_seconds: int) -> None:
-    from booley.core.temporary_workspace import launch_result
     from booley.core.workspace_async import filesystem_call
 
     if launch is None or not launch.roots:
@@ -752,7 +766,7 @@ async def _native_work_deadline(work, launch: LeaseLaunch | None, timeout_second
     try:
         while not task.done():
             if await filesystem_call(launch_result, launch) is not None:
-                await asyncio.wait_for(asyncio.shield(task), timeout=16)
+                await _wait_native_settlement(task)
                 return
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -760,7 +774,7 @@ async def _native_work_deadline(work, launch: LeaseLaunch | None, timeout_second
                 # freezes its result; descendant settlement has its own bound.
                 if await filesystem_call(launch_result, launch) is None:
                     raise TimeoutError
-                await asyncio.wait_for(asyncio.shield(task), timeout=16)
+                await _wait_native_settlement(task)
                 return
             await asyncio.wait({task}, timeout=min(0.02, remaining))
         task.result()
@@ -789,6 +803,9 @@ async def _run_codex_work(
             await joined(cleanup)
         except (OSError, TimeoutError, asyncio.CancelledError):
             logger.warning("Codex cleanup was interrupted or remains uncertain; retaining scratch")
+        if isinstance(error, _CleanupDeadlineError):
+            logger.warning("Native Codex result preserved; descendant cleanup remains uncertain")
+            return
         if isinstance(error, TimeoutError):
             raise AgentTimeoutError(f"Codex timed out after {timeout_seconds}s") from error
         raise

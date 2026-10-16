@@ -199,11 +199,12 @@ def test_grant_rejects_non_booley_directory(tmp_path: Path, private_state: Path)
         authority._add_grant(unrelated, "vivado", installation="vivado_2025_2")
 
 
-@pytest.mark.parametrize("root", [Path("/"), Path.home(), Path("/etc"), Path("/tmp")])
+@pytest.mark.parametrize("root", [Path("/"), "home", Path("/etc"), Path("/tmp")])
 def test_grant_rejects_broad_or_system_root(
-    tmp_path: Path, private_state: Path, root: Path
+    tmp_path: Path, private_state: Path, root: Path | str
 ) -> None:
     _registered(tmp_path)
+    root = Path.home() if root == "home" else Path(root)
     if not root.exists():
         pytest.skip(f"system root absent on this platform: {root}")
 

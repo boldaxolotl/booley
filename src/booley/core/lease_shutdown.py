@@ -180,8 +180,7 @@ class ShutdownGroup:
 
     @contextlib.contextmanager
     def locked(self, *, initial: bool = False) -> Iterator[dict[str, Any]]:
-        import fcntl
-
+        from booley.core.file_lock import acquire_descriptor_lock
         from booley.core.temporary_workspace import _open_regular, _publish_json
 
         info = self.path.lstat()
@@ -191,7 +190,7 @@ class ShutdownGroup:
             raise ValueError("scratch shutdown directory is not private")
         fd = _open_regular(self.path / "lock", os.O_CREAT | os.O_RDWR)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            acquire_descriptor_lock(fd, blocking=True)
             data = {} if initial else self._read()
             before = json.dumps(data, sort_keys=True)
             yield data

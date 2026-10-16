@@ -21,10 +21,17 @@ async def joined(task: asyncio.Task[T]) -> T:
             await asyncio.shield(task)
         except asyncio.CancelledError as exc:
             cancellation = exc
-    result = task.result()
+        except BaseException as error:
+            if cancellation is not None:
+                raise cancellation from error
+            raise
     if cancellation is not None:
+        try:
+            task.result()
+        except BaseException as error:
+            raise cancellation from error
         raise cancellation
-    return result
+    return task.result()
 
 
 async def filesystem_call(function: Callable[..., T], *args: Any, **kwargs: Any) -> T:

@@ -376,3 +376,41 @@ def test_endpoint_group_sigkill_or_explicit_force_settles_registered_tree(tmp_pa
         if process.poll() is None:
             request_cancellation(paths, force=True)
             process.communicate(timeout=10)
+
+
+def _completed_group_with_unfinished_marker(root):
+    from booley.core.lease_shutdown import ShutdownGroup
+
+    launch = tw.prepare_launch([sys.executable, "-c", "pass"])
+    group = ShutdownGroup.create(root)
+    group.register(launch.roots, launch.token)
+    descriptors = tw.register_launch(launch.roots, launch.token, group=group)
+    for fd in descriptors:
+        os.close(fd)
+    with group.locked() as data:
+        data["terminal"] = True
+    return group
+
+
+def test_interrupted_deletion_survives_removal_of_shutdown_proof(monkeypatch):
+    remove = tw.shutil.rmtree
+    group = None
+
+    def interrupt_after_group(path, **kwargs):
+        remove(path, **kwargs)
+        if group is not None and path == group.path.name and kwargs.get("dir_fd") is not None:
+            raise OSError("synthetic death after shutdown proof removal")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tw, "owner_alive", lambda _: False)
+        patch.setattr(tw.shutil, "rmtree", interrupt_after_group)
+        interrupt_after_group.avoids_symlink_attacks = True
+        with tw.temporary_workspace() as raw:
+            group = _completed_group_with_unfinished_marker(Path(raw))
+    claimed = list(Path(raw).parent.glob(".booley-reaping-*"))
+    assert len(claimed) == 1
+    marker, _ = tw._validated_marker(claimed[0])
+    assert marker["launches"] == {}
+    assert not (claimed[0] / group.path.name).exists()
+    assert tw._delete_owned(claimed[0], require_dead=False)
+    assert not claimed[0].exists()

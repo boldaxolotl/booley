@@ -191,6 +191,35 @@ def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.parametrize(
+    ("state", "budget", "accepted"),
+    [
+        ("cancelling", 20, True),
+        ("cancelling", 0, True),
+        ("running", 20, False),
+        ("cancelling", True, False),
+        ("cancelling", -1, False),
+        ("cancelling", 21, False),
+        ("cancelling", float("nan"), False),
+        ("cancelling", float("inf"), False),
+    ],
+)
+def test_inherited_execution_validates_optional_cleanup_budget(tmp_path, state, budget, accepted):
+    supervisor = ProcessIdentity(10, "fake", 1)
+    execution_id = "a" * 32
+    record = _active_execution_record(supervisor)
+    record.update(state=state, cleanup_budget_seconds=budget)
+    atomic_write_json(execution_paths(execution_id, booley_dir=tmp_path).record, record)
+    verified = verify_inherited_execution_id(
+        execution_id,
+        booley_dir=tmp_path,
+        owner_pid=20,
+        observe_identity=lambda _: ProcessObservation(RUNNING),
+        ancestor_check=lambda *_: True,
+    )
+    assert (verified == execution_id) is accepted
+
+
 @pytest.mark.parametrize("record_kind", ["missing", "malformed", "terminal", "future"])
 def test_verified_inherited_execution_rejects_unusable_records(
     tmp_path: Path, record_kind: str

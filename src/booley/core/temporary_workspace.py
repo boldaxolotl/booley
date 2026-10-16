@@ -113,11 +113,11 @@ def _open_regular(path: Path, flags: int) -> int:
 
 @contextlib.contextmanager
 def _exclusion(parent: Path) -> Iterator[None]:
-    import fcntl
+    from booley.core.file_lock import acquire_descriptor_lock
 
     fd = _open_regular(parent / ".booley-registry.lock", os.O_CREAT | os.O_RDWR)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        acquire_descriptor_lock(fd, blocking=True)
         yield
     finally:
         os.close(fd)
@@ -267,7 +267,7 @@ def _settled_launches(data: dict[str, Any]) -> bool:
 
 
 def _delete_owned(root: Path, *, require_dead: bool) -> bool:
-    import fcntl
+    from booley.core.file_lock import acquire_descriptor_lock
 
     with _exclusion(root.parent):
         data, marker_id = _validated_marker(root)
@@ -277,7 +277,7 @@ def _delete_owned(root: Path, *, require_dead: bool) -> bool:
             return False
         fd = _open_regular(root / _GUARD, os.O_RDWR)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_descriptor_lock(fd)
         except BlockingIOError:
             os.close(fd)
             return False
@@ -315,6 +315,13 @@ def _claim_and_remove(root: Path, data: dict[str, Any], marker_id: tuple[int, in
         if not shutil.rmtree.avoids_symlink_attacks:
             logger.warning("Retaining scratch: safe recursive deletion unavailable: %s", root)
             return False
+        if data["launches"]:
+            # Terminal proof must survive removal of shutdown rendezvous files.
+            data = {**data, "launches": {}}
+            _write_marker(root, data)
+            refreshed, marker_id = _validated_marker(root)
+            if refreshed != data:
+                raise ValueError("scratch proof changed before deletion")
         claimed = root.with_name(".booley-reaping-" + uuid.uuid4().hex)
         root.rename(claimed)
         try:
@@ -605,14 +612,14 @@ def _unsupported_workspace(prefix: str, parent: str | Path | None, kind: str) ->
 
 
 def _allocate(parent: Path, prefix: str, kind: str) -> WorkspaceLease:
-    import fcntl
+    from booley.core.file_lock import acquire_descriptor_lock
 
     _directory(parent, private=False)
     with _exclusion(parent):
         root = Path(tempfile.mkdtemp(prefix="booley-owned-" + prefix, dir=parent))
         info, parent_info = root.stat(), parent.stat()
         fd = _open_regular(root / _GUARD, os.O_CREAT | os.O_RDWR)
-        fcntl.flock(fd, fcntl.LOCK_SH)
+        acquire_descriptor_lock(fd, shared=True, blocking=True)
         data = {
             "schema": 1,
             "kind": kind,
@@ -682,9 +689,9 @@ def prepare_launch(command: list[str], guard_fds: tuple[int, ...] = ()) -> Lease
         }
     )
     launcher = [sys.executable, str(Path(__file__).with_name("lease_exec.py")), payload, *command]
-    return LeaseLaunch(
-        launcher, {"pass_fds": descriptors, "start_new_session": True}, roots, token
-    )
+    from booley.core.process_spawn import new_session_kwargs
+
+    return LeaseLaunch(launcher, {"pass_fds": descriptors, **new_session_kwargs()}, roots, token)
 
 
 def _guard_root(fd: int) -> Path:
@@ -729,7 +736,7 @@ def register_launch(
     roots: tuple[Path, ...], token: str, inherited: tuple[int, ...] = (), *, group: Any = None
 ) -> tuple[int, ...]:
     """Reacquire shared guards before publishing the pending-to-running handoff."""
-    import fcntl
+    from booley.core.file_lock import acquire_descriptor_lock
 
     descriptors: list[int] = []
     try:
@@ -746,7 +753,7 @@ def register_launch(
                 )
                 descriptors.append(fd)
                 if existing is None:
-                    fcntl.flock(fd, fcntl.LOCK_SH)
+                    acquire_descriptor_lock(fd, shared=True, blocking=True)
                 data["launches"][token] = {
                     "state": "running",
                     "supervisor": process_identity(os.getpid()),

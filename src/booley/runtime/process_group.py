@@ -12,6 +12,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from booley.core.process_spawn import new_session_kwargs
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,7 +126,7 @@ class _PosixProcessGroups:
 
     @staticmethod
     def new_group_kwargs() -> dict[str, Any]:
-        return {"start_new_session": True}
+        return dict(new_session_kwargs())
 
     @staticmethod
     def request(group: ProcessGroup) -> None:

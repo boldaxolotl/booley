@@ -18,6 +18,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from booley.core.lease_shutdown import ENV, SETTLE_SECONDS, ShutdownGroup
+from booley.core.process_spawn import new_session_kwargs
 from booley.core.temporary_workspace import (
     complete_launch,
     process_identity,
@@ -167,7 +168,7 @@ def supervise(payload: str, command: list[str]) -> int:
             return -pending.requested
         try:
             leader = subprocess.Popen(
-                command, start_new_session=True, env={**os.environ, ENV: str(group.path)}
+                command, env={**os.environ, ENV: str(group.path)}, **new_session_kwargs()
             )
         except OSError:
             complete_launch(roots, data["token"])

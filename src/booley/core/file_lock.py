@@ -46,6 +46,21 @@ class LockTimeoutError(TimeoutError):
     """The requested file lock stayed contended for the allowed wait."""
 
 
+def acquire_descriptor_lock(fd: int, *, shared: bool = False, blocking: bool = False) -> None:
+    """Lock a POSIX descriptor; its owner retains descriptor and lock lifetime."""
+    if sys.platform == "win32":
+        raise NotImplementedError("inherited shared descriptor leases require POSIX flock")
+    import fcntl
+
+    flags = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+    if not blocking:
+        flags |= fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, flags)
+    except OSError as exc:
+        _raise_lock_error(exc)
+
+
 def _raise_lock_error(exc: OSError) -> None:
     contention_codes = {errno.EACCES, errno.EAGAIN}
     if sys.platform == "win32":

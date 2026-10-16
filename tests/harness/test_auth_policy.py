@@ -243,12 +243,15 @@ class TestCodexSpawnScrub:
             return object()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(_codex_backend, "validate_native_command", lambda *_: None)
         params = AgentCallParams(prompt="p", model="gpt-5.5", cwd=".")
 
-        await _codex_backend._codex_spawn(["codex"], params, "subscription")
+        async with _codex_backend._async_invocation_home():
+            await _codex_backend._codex_spawn(["codex"], params, "subscription")
         assert captured["env"] is not None and "OPENAI_API_KEY" not in captured["env"]
 
-        await _codex_backend._codex_spawn(["codex"], params, "auto")
+        async with _codex_backend._async_invocation_home():
+            await _codex_backend._codex_spawn(["codex"], params, "auto")
         # auto on the host inherits the environment untouched
         assert captured["env"]["OPENAI_API_KEY"] == "sk-proj-x"
 
@@ -602,6 +605,7 @@ async def _captured_codex_child(root, monkeypatch, policy, key, stored, login):
         return object()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(_codex_backend, "validate_native_command", lambda *_: None)
     monkeypatch.setattr(_codex_backend, "_inside_container", lambda: False)
     usable = (
         (key or stored) if policy == "api_key" else login if policy == "subscription" else True
@@ -609,9 +613,11 @@ async def _captured_codex_child(root, monkeypatch, policy, key, stored, login):
     params = AgentCallParams(prompt="p", model="gpt-5.5", cwd=str(root))
     if not usable:
         with pytest.raises(ValueError, match="no usable credential"):
-            await _codex_backend._codex_spawn(["codex"], params, policy)
+            async with _codex_backend._async_invocation_home():
+                await _codex_backend._codex_spawn(["codex"], params, policy)
         return None
-    await _codex_backend._codex_spawn(["codex"], params, policy)
+    async with _codex_backend._async_invocation_home():
+        await _codex_backend._codex_spawn(["codex"], params, policy)
     return captured["env"] or dict(os.environ)
 
 

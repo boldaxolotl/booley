@@ -116,3 +116,29 @@ async def test_cancelled_codex_spawn_joins_and_reaps_obtained_process(tmp_path, 
         await asyncio.wait_for(task, 20)
     assert processes[0].returncode is not None
     assert not list(tw.registry_root().glob("booley-owned-*"))
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_survives_a_failing_joined_worker():
+    from booley.core.workspace_async import filesystem_call
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def worker():
+        entered.set()
+        assert release.wait(5)
+        finished.set()
+        raise OSError("synthetic failed worker")
+
+    task = asyncio.create_task(filesystem_call(worker))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError) as error:
+        await asyncio.wait_for(task, 5)
+    assert isinstance(error.value.__cause__, OSError)
+    assert finished.is_set()

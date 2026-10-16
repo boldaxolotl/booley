@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_finite_number
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.pid import RUNNING, ProcessIdentity, ProcessObservation, observe_process
@@ -164,7 +165,7 @@ def verify_inherited_execution_id(
     except ValueError:
         return None
     record = read_json(execution_paths(execution_id, booley_dir=booley_dir).record)
-    if record is None or set(record) != _TERMINAL_FIELDS:
+    if record is None or not _active_record_fields(record):
         return None
     if (
         record.get("schema_version") != PROTOCOL_VERSION
@@ -188,6 +189,23 @@ def verify_inherited_execution_id(
     if owner_pid != supervisor.pid and not ancestor_check(owner_pid, supervisor.pid):
         return None
     return execution_id
+
+
+def _active_record_fields(record: dict[str, Any]) -> bool:
+    fields = _TERMINAL_FIELDS
+    if "cleanup_budget_seconds" in record:
+        if record.get("state") != "cancelling":
+            return False
+        try:
+            budget = require_finite_number(
+                record["cleanup_budget_seconds"], field="cleanup budget"
+            )
+        except BoundaryError:
+            return False
+        if not 0 <= budget <= 20:
+            return False
+        fields = fields | {"cleanup_budget_seconds"}
+    return set(record) == fields
 
 
 def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
