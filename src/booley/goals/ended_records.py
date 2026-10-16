@@ -125,17 +125,13 @@ def schedule_ended_cleanup(store: GoalStore, repo_dir: Path) -> None:
 
 
 def _launch_cleanup(booley_dir: Path, repo_dir: Path) -> None:
-    options = (
-        {"creationflags": subprocess.DETACHED_PROCESS}
-        if sys.platform == "win32"
-        else {"start_new_session": True}
-    )
     process = subprocess.Popen(
         [sys.executable, "-m", "booley.goals.ended_records", str(booley_dir), str(repo_dir)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **options,
+        creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
+        start_new_session=sys.platform != "win32",
     )
     # Reap in long-lived MCP servers without making CLI shutdown wait for cleanup.
     threading.Thread(target=process.wait, daemon=True).start()

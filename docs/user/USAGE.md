@@ -648,7 +648,8 @@ Paired Checkout summaries stay local.
 
 Booley deletes a finished, abandoned, or failed Goal Record, with its Session
 Summary and Review Package, once both its worktree and its Goal Branch are gone.
-A worktree is gone once Git no longer lists it: after `git worktree remove`, or
+A worktree is gone when it is absent from Git’s worktree registry: after
+`git worktree remove`, or
 after `git worktree prune` for a worktree directory you deleted by hand.
 Booley starts a background cleanup after every Goal entry, Finish, and abandonment;
 the command returns without waiting for Git checks or deletion. If the worker
