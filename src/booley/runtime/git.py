@@ -11,6 +11,7 @@ from pathlib import Path
 
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
+from booley.core.temporary_workspace import run_guarded
 from booley.runtime.git_environment import inherited_git_environment
 
 from .agent_errors import BlockingError
@@ -24,11 +25,12 @@ BOOLEY_EXCLUDE_HEADER = "# Booley (generated; local, uncommitted)"
 def git_run(wt: Path, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a git command in a working tree, returning CompletedProcess.
 
-    Centralizes the common pattern: subprocess.run(["git", ...], cwd=str(wt),
+    Centralizes the common pattern: run_guarded(["git", ...], cwd=str(wt),
     capture_output=True, text=True, encoding="utf-8", timeout=N).
     """
-    result = subprocess.run(
+    result = run_guarded(
         ["git", *args],
+        runner=subprocess.run,
         cwd=str(wt),
         env=inherited_git_environment(),
         capture_output=True,
@@ -40,8 +42,9 @@ def git_run(wt: Path, args: list[str], timeout: int = 30) -> subprocess.Complete
     )
     if _is_index_lock_failure(result) and _remove_stale_index_lock(wt):
         logger.warning("Removed stale git index.lock for %s; retrying git %s", wt, " ".join(args))
-        result = subprocess.run(
+        result = run_guarded(
             ["git", *args],
+            runner=subprocess.run,
             cwd=str(wt),
             env=inherited_git_environment(),
             capture_output=True,
@@ -69,8 +72,9 @@ def _is_index_lock_failure(result: subprocess.CompletedProcess) -> bool:
 def _git_dir_for_worktree(wt: Path) -> Path | None:
     """Resolve the real git dir for a worktree without using git_run recursion."""
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["git", "rev-parse", "--git-dir"],
+            runner=subprocess.run,
             cwd=str(wt),
             env=inherited_git_environment(),
             capture_output=True,
@@ -107,8 +111,9 @@ def _git_common_dir(wt: Path) -> Path | None:
     are actually honored from every worktree.
     """
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["git", "rev-parse", "--git-common-dir"],
+            runner=subprocess.run,
             cwd=str(wt),
             env=inherited_git_environment(),
             capture_output=True,
@@ -328,8 +333,9 @@ def _iter_git_process_cmdlines_windows() -> list[str]:
         "ForEach-Object { $_.CommandLine }"
     )
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["powershell", "-NoProfile", "-Command", script],
+            runner=subprocess.run,
             capture_output=True,
             text=True,
             encoding="utf-8",

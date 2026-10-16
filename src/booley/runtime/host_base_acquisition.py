@@ -7,12 +7,12 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
 from booley.core.boundary import BoundaryError, is_str_list, require_dict, require_str_value
+from booley.core.temporary_workspace import run_guarded, temporary_workspace
 from booley.runtime.docker_build import run_docker_build
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
@@ -30,7 +30,7 @@ REFERENCE = "booley-runtime-base:local"
 
 def _inspect(reference: str) -> dict | None:
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["docker", "image", "inspect", reference],
             capture_output=True,
             text=True,
@@ -132,7 +132,7 @@ def _upgrade(root: Path, installed: dict, plan: DockerBuildPlan | None) -> str:
         pinned = _inspect(parent)
         if pinned is None or pinned["Id"] != image_id:
             raise RuntimeError("Bootstrap metadata migration parent alias changed")
-        with tempfile.TemporaryDirectory(prefix="booley-base-metadata-") as directory:
+        with temporary_workspace(prefix="booley-base-metadata-") as directory:
             recipe = Path(directory) / "Dockerfile"
             recipe.write_text(f"FROM {parent}\n", encoding="utf-8")
             if not _build(root, recipe, candidate, migration_plan):
@@ -159,7 +159,7 @@ def _verified_upgrade(installed: dict, candidate: str, labels: dict[str, str]) -
 
 def _tag(source: str, target: str) -> None:
     try:
-        subprocess.run(
+        run_guarded(
             ["docker", "tag", source, target],
             capture_output=True,
             text=True,
@@ -174,7 +174,7 @@ def _cleanup_migration(references: tuple[str, ...], primary: BaseException | Non
     failures = []
     for reference in references:
         try:
-            result = subprocess.run(
+            result = run_guarded(
                 ["docker", "image", "rm", reference],
                 capture_output=True,
                 text=True,

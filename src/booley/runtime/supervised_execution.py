@@ -44,8 +44,8 @@ class SupervisedProcessSet:
         with self._gate:
             self._processes.add(process)
             cancelled = self._cancelled()
-            if cancelled:
-                kill_process_tree(process)
+        if cancelled:
+            kill_process_tree(process)
         if self._execution_id is not None and not cancelled and not self._cancelled():
             identity = capture_process_identity(process.pid)
             self._write_record("running", identity, tree_terminal=False)

@@ -557,8 +557,7 @@ def test_snapshot_refuses_tracked_file_beneath_external_symlink_parent(tmp_path)
 def test_snapshot_rebases_relative_reentry_symlink_without_writing_live_files(
     tmp_path, monkeypatch
 ):
-    import tempfile
-
+    from booley.core.temporary_workspace import temporary_workspace
     from tests.conftest import symlink_or_skip
     from tests.test_target_catalog import _category_sim_core
 
@@ -577,10 +576,9 @@ def test_snapshot_rebases_relative_reentry_symlink_without_writing_live_files(
     outsider = snapshots / "repo/shared"
     outsider.mkdir(parents=True)
     (outsider / "dut.sv").write_text("must remain unchanged\n")
-    original = tempfile.TemporaryDirectory
     monkeypatch.setattr(
-        "booley.specialists.specialist_workspace.tempfile.TemporaryDirectory",
-        lambda **kwargs: original(dir=snapshots, **kwargs),
+        "booley.specialists.specialist_workspace.temporary_workspace",
+        lambda **kwargs: temporary_workspace(parent=snapshots, **kwargs),
     )
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with isolated_agent_workspace(params, "read_only", "rtl"):
@@ -835,3 +833,83 @@ def test_spaced_source_cannot_gain_opposite_scope(tmp_path, category, suffix, co
     assert name in partition
     assert validate_scope_category([name], category, repo)
     assert source.read_text() == "authored source\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(__import__("os").name != "posix", reason="requires POSIX SIGKILL")
+async def test_prelaunch_removes_actual_killed_snapshot_and_home(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import time
+    from types import SimpleNamespace
+
+    from booley.runtime import agent
+
+    repo = _repo(tmp_path)
+    home = tmp_path / "synthetic-home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex/auth.json").write_text('{"synthetic":true}')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("BOOLEY_SCRATCH_ROOT", str(tmp_path / "registry"))
+    scratch = tmp_path / "worker-temp"
+    scratch.mkdir()
+    report = tmp_path / "worker.json"
+    script = tmp_path / "worker.py"
+    script.write_text(_INTERRUPTED_SPECIALIST_WORKER)
+    worker = _start_interrupted_specialist(script, repo, report, scratch)
+    paths = []
+    try:
+        deadline = time.monotonic() + 5
+        while not report.exists() and worker.poll() is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert report.exists(), worker.communicate(timeout=10)[1].decode()
+        paths = [Path(path) for path in json.loads(report.read_text())]
+        assert all(path.is_dir() for path in paths)
+        worker.kill()
+        worker.communicate(timeout=10)
+
+        monkeypatch.setattr(
+            agent,
+            "get_backend_config",
+            lambda: SimpleNamespace(active_backend=SimpleNamespace(call=_completed_provider_call)),
+        )
+        await agent.call_agent(AgentCallParams(prompt="synthetic", model="chosen", cwd=repo))
+        assert not any(path.exists() for path in paths), "fresh prelaunch retained killed scratch"
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+        worker.communicate(timeout=10)
+
+
+_INTERRUPTED_SPECIALIST_WORKER = (
+    "import json, pathlib, signal, sys, tempfile\n"
+    "from booley.core.models import AgentCallParams\n"
+    "from booley.specialists.specialist_workspace import isolated_agent_workspace\n"
+    "from booley.runtime import _codex_backend as cb\n"
+    "root, report, scratch = map(pathlib.Path, sys.argv[1:])\n"
+    "tempfile.tempdir = str(scratch)\n"
+    "params = AgentCallParams(prompt='synthetic', model='chosen', cwd=root)\n"
+    "with isolated_agent_workspace(params, 'read_only') as (isolated, snapshot):\n"
+    "    with cb._invocation_home() as home:\n"
+    "        cb._prepare_private_home(params, home)\n"
+    "        report.write_text(json.dumps([str(snapshot.snapshot_root), str(home)]))\n"
+    "        signal.pause()\n"
+)
+
+
+async def _completed_provider_call(params, **kwargs):
+    return AgentResult(output="done")
+
+
+def _start_interrupted_specialist(script, repo, report, scratch):
+    import os
+    import sys
+
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
+    return subprocess.Popen(
+        [sys.executable, str(script), str(repo), str(report), str(scratch)],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )

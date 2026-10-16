@@ -37,6 +37,7 @@ from pathlib import Path
 import yaml
 
 from booley.core.boundary import as_dict, as_str
+from booley.core.temporary_workspace import run_guarded
 
 from .compiler_cache import RESERVED as COMPILER_CACHE_MANAGED
 
@@ -200,8 +201,9 @@ def elf_dependencies(path: Path) -> tuple[Path, ...] | None:
     """List dynamic libraries for a local ELF executable, or decline reuse."""
     if not is_elf(path):
         return None
-    result = subprocess.run(
+    result = run_guarded(
         ["ldd", str(path)],
+        runner=subprocess.run,
         capture_output=True,
         text=True,
         timeout=_SUBPROCESS_TIMEOUT_S,
@@ -484,8 +486,9 @@ def _verilator_root(environment: Mapping[str, str]) -> tuple[Path, Path] | None:
 
 
 def _run(argv: list[str], environment: Mapping[str, str], *, stderr: bool = False) -> str | None:
-    result = subprocess.run(
+    result = run_guarded(
         argv,
+        runner=subprocess.run,
         capture_output=True,
         text=True,
         timeout=_SUBPROCESS_TIMEOUT_S,

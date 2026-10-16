@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from booley.core.temporary_workspace import run_guarded
 from booley.runtime.git_environment import inherited_git_environment
 
 
@@ -31,8 +32,9 @@ def ignored_paths(root: Path, paths: list[Path], *, no_index: bool = False) -> s
 
 def _git(root: Path, arguments: list[str], payload: bytes | None = None) -> bytes:
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["git", *arguments],
+            runner=subprocess.run,
             cwd=root,
             env=inherited_git_environment(),
             input=payload,

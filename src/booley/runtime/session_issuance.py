@@ -31,6 +31,7 @@ from booley.core.boundary import (
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.project_identity import project_label_id
+from booley.core.temporary_workspace import temporary_workspace
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
@@ -1970,7 +1971,7 @@ def _validate_image_contract(image_id: str) -> None:
     if created.returncode != 0 or not container:
         raise RuntimeSpecError("cannot create inert container for Sandbox Image inspection")
     try:
-        with tempfile.TemporaryDirectory(prefix="booley-image-contract-") as raw:
+        with temporary_workspace(prefix="booley-image-contract-") as raw:
             root = Path(raw)
             sources = {
                 "/usr/local/bin/vivado": root / "vivado-wrapper",

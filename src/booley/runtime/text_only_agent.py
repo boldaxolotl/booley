@@ -13,8 +13,6 @@ from pathlib import Path
 from booley.core.boundary import require_dict, require_list
 from booley.core.models import AgentCallParams
 
-from .mcp_config import generate_codex_config
-
 _DISABLED_FEATURES = (
     "shell_tool",
     "multi_agent",
@@ -44,38 +42,32 @@ def prepare_codex_text_only(
     environment: Mapping[str, str],
     *,
     auth_mode: str = "auto",
+    private: Path,
 ) -> tuple[list[str], dict[str, str]]:
     """Build an isolated invocation config; missing exact model metadata is an error."""
-    original = Path(
-        environment.get("CODEX_HOME") or Path(environment.get("HOME", str(Path.home()))) / ".codex"
-    )
-    selected = _exact_model(original, params.model)
-    model = {
-        **selected,
-        "shell_type": "disabled",
-        "apply_patch_tool_type": None,
-        "experimental_supported_tools": [],
-        "tool_mode": "direct",
-        "node_repl_disabled": True,
-        "supports_search_tool": False,
-    }
-    private = Path(params.cwd) / ".text-only-codex"
-    private.mkdir(exist_ok=True, mode=0o700)
-    catalog = private / "model-catalog.json"
-    catalog.write_text(json.dumps({"models": [model]}), encoding="utf-8")
-    from .auth_token import copy_codex_auth
+    from booley.core.temporary_workspace import registry_root
 
-    copy_codex_auth(original / "auth.json", private / "auth.json", auth_mode)
-    if params.nested_mcp_tools:
-        nested_env = {
-            **(params.nested_mcp_env or {}),
-            "BOOLEY_NESTED_AGENT": "1",
-            "BOOLEY_NESTED_MCP_TOOLS": ",".join(params.nested_mcp_tools),
-        }
-        config_path = private / "config.toml"
-        existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
-        config_path.write_text(
-            generate_codex_config(extra_env=nested_env, existing_config=existing), encoding="utf-8"
+    from ._codex_backend import _canonical_codex_home, _populate_private_codex_home
+
+    original = _canonical_codex_home(dict(environment))
+    catalog = _write_text_only_catalog(original, private, params.model)
+    nested_env = {
+        **(params.nested_mcp_env or {}),
+        "BOOLEY_NESTED_AGENT": "1",
+        "BOOLEY_SCRATCH_ROOT": str(registry_root()),
+        "BOOLEY_NESTED_MCP_TOOLS": ",".join(params.nested_mcp_tools or []),
+    }
+    _populate_private_codex_home(
+        private,
+        nested_env,
+        params.nested_mcp_tools or [],
+        canonical=original,
+        auth_mode=auth_mode,
+    )
+    if not params.nested_mcp_tools:
+        config = private / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").split("[mcp_servers.", 1)[0], encoding="utf-8"
         )
     env = {**environment, "CODEX_HOME": str(private)}
     settings = [
@@ -89,6 +81,23 @@ def prepare_codex_text_only(
     ]
     overrides = [part for setting in settings for part in ("-c", setting)]
     return [*command[:-1], "--skip-git-repo-check", *overrides, command[-1]], env
+
+
+def _write_text_only_catalog(original: Path, private: Path, name: str) -> Path:
+    selected = _exact_model(original, name)
+    model = {
+        **selected,
+        "shell_type": "disabled",
+        "apply_patch_tool_type": None,
+        "experimental_supported_tools": [],
+        "tool_mode": "direct",
+        "node_repl_disabled": True,
+        "supports_search_tool": False,
+    }
+    private.mkdir(parents=True, exist_ok=True, mode=0o700)
+    catalog = private / "model-catalog.json"
+    catalog.write_text(json.dumps({"models": [model]}), encoding="utf-8")
+    return catalog
 
 
 def _exact_model(original: Path, name: str) -> dict[str, object]:

@@ -8,12 +8,17 @@ git without disturbing the caller's working tree.
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
+from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -21,6 +26,7 @@ from booley.flows.baseline_worktree import (
     git_short_sha,
 )
 from booley.runtime.submodule_materialization import materialize_submodules
+from tests.runtime.scratch_support import reap_guardian, wait
 
 
 @pytest.fixture(autouse=True)
@@ -89,8 +95,9 @@ def test_yields_baseline_content_and_leaves_tree_untouched(tmp_path: Path) -> No
     with baseline_worktree(tmp_path, "HEAD~1") as wt:
         # The worktree holds the *baseline* content...
         assert (wt / "f.txt").read_text(encoding="utf-8") == "v1\n"
-        # ...it lives under .booley/ and is PID-tagged.
-        assert wt.parent.name == ".booley"
+        # The unique owned container remains under the selected Booley Directory.
+        assert wt.parent.parent == tmp_path / ".booley" / ".runtime" / "owned-scratch"
+        assert (wt.parent / ".booley-lease.json").is_file()
         assert ".baseline-wt-" in wt.name
         # ...while the caller's tree still has the dirty edit.
         assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "dirty\n"
@@ -199,7 +206,7 @@ def test_submodule_checkout_failure_is_an_infrastructure_error(
         baseline_worktree(tmp_path, "HEAD"),
     ):
         pass
-    assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
+    assert not list((tmp_path / ".booley").glob("booley-owned-baseline-*"))
 
 
 def test_stealth_cores_copied_into_worktree(tmp_path: Path) -> None:
@@ -393,7 +400,7 @@ def test_link_target_missing_from_the_ref_is_refused(tmp_path: Path) -> None:
     ):
         pass
     # The failed setup still cleaned its worktree up.
-    assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
+    assert not list((tmp_path / ".booley").glob("booley-owned-baseline-*"))
 
 
 def test_no_stealth_cores_is_a_noop(tmp_path: Path) -> None:
@@ -547,7 +554,7 @@ def test_standalone_project_baseline_failure_cleans_worktree(tmp_path, monkeypat
             _assert_topology_baseline(baseline, root, "sim_core")
             raise RuntimeError("body failed")
         assert not baseline.exists()
-    assert not list((root / ".booley").glob(".baseline-wt-*"))
+    assert not list((root / ".booley").glob("booley-owned-baseline-*"))
 
 
 def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkeypatch):
@@ -866,3 +873,232 @@ def test_paired_baseline_without_progress_observer_emits_no_direct_output(tmp_pa
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+def test_killed_paired_baseline_recovers_exact_registrations(tmp_path):
+    from booley.flows.baseline_worktree import sweep_project_workspaces
+
+    goal, paired, entry = _paired_checkout_without_upstream(tmp_path)
+    report = tmp_path / "baseline-report.json"
+    code = (
+        "import json, pathlib, signal, sys\n"
+        "from booley.flows.baseline_worktree import baseline_worktree\n"
+        "from booley.evidence.acceptance import PairedProjectBaseline\n"
+        'with baseline_worktree(pathlib.Path(sys.argv[1]), "HEAD", '
+        "paired_project=PairedProjectBaseline.entry_pinned(sys.argv[2])) as root:\n"
+        "    pathlib.Path(sys.argv[3]).write_text(json.dumps(str(root)))\n"
+        "    signal.pause()\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
+    child = subprocess.Popen([sys.executable, "-c", code, str(goal), entry, str(report)], env=env)
+    try:
+        deadline = time.monotonic() + 5
+        while not report.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert report.exists()
+        payload = Path(json.loads(report.read_text()))
+        assert str(payload) in _git(goal, "worktree", "list", "--porcelain")
+        assert str(payload / ".booley") in _git(paired, "worktree", "list", "--porcelain")
+        sweep_project_workspaces(goal)
+        assert payload.exists(), "live owner must survive startup cleanup"
+        child.kill()
+        child.wait(timeout=10)
+        with baseline_worktree(
+            goal, "HEAD", paired_project=PairedProjectBaseline.entry_pinned(entry)
+        ) as live:
+            sweep_project_workspaces(goal)
+            assert live.exists()
+            assert not payload.parent.exists()
+            assert str(payload) not in _git(goal, "worktree", "list", "--porcelain")
+            assert str(payload / ".booley") not in _git(paired, "worktree", "list", "--porcelain")
+            assert paired.exists()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+def test_baseline_cleanup_failure_retains_marker_then_retries(tmp_path, monkeypatch):
+    from booley.flows import baseline_worktree as module
+
+    _init_repo(tmp_path)
+    real_remove = module._remove_owned_registration
+    monkeypatch.setattr(module, "_remove_owned_registration", lambda *_: False)
+    with baseline_worktree(tmp_path, "HEAD") as payload:
+        pass
+    assert (payload.parent / ".booley-lease.json").is_file()
+    monkeypatch.setattr(module, "_remove_owned_registration", real_remove)
+    # Simulate proven dead ownership without PID-only inference.
+    _simulate_dead_baseline(payload)
+    module.sweep_project_workspaces(tmp_path)
+    assert not payload.parent.exists()
+    assert str(payload) not in _git(tmp_path, "worktree", "list", "--porcelain")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+def test_partial_baseline_add_failure_cleans_registration(tmp_path, monkeypatch):
+    from booley.flows import baseline_worktree as module
+
+    _init_repo(tmp_path)
+    real_git = module._git
+    added = []
+
+    def add_then_fail(cwd, *args, timeout):
+        result = real_git(cwd, *args, timeout=timeout)
+        if "add" in args and "worktree" in args:
+            added.append(Path(args[-2]))
+            return subprocess.CompletedProcess(result.args, 1, "", "synthetic post-add failure")
+        return result
+
+    monkeypatch.setattr(module, "_git", add_then_fail)
+    with (
+        pytest.raises(BaselineWorktreeError, match="synthetic post-add failure"),
+        baseline_worktree(tmp_path, "HEAD"),
+    ):
+        pytest.fail("must not yield a failed baseline")
+    assert len(added) == 1
+    assert not added[0].parent.exists()
+    assert str(added[0]) not in _git(tmp_path, "worktree", "list", "--porcelain")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux subreaper and flock")
+def test_killed_baseline_sweeper_hands_exclusive_guard_to_native_descendants(
+    tmp_path, monkeypatch, linux_subreaper
+):
+
+    from booley.flows import baseline_worktree as module
+
+    payload = _retained_dead_baseline(tmp_path, monkeypatch)
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    native = tmp_path / "fake-git.py"
+    native.write_text(_DETACHED_GIT_SOURCE)
+    code = _BASELINE_SWEEPER_WORKER
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
+    worker = subprocess.Popen(
+        [sys.executable, "-c", code, str(tmp_path), str(native), str(ready), str(release)],
+        env=env,
+    )
+    guardian = None
+
+    try:
+        wait(ready.exists)
+        guardian = int(ready.read_text())
+        worker.kill()
+        worker.wait(timeout=10)
+        module.sweep_project_workspaces(tmp_path)
+        assert payload.exists(), (
+            "concurrent cleanup must preserve a surviving native Git descendant"
+        )
+        assert str(payload) in _git(tmp_path, "worktree", "list", "--porcelain")
+        release.touch()
+        reap_guardian(guardian)
+        guardian = None
+        module.sweep_project_workspaces(tmp_path)
+        assert not payload.parent.exists()
+        assert str(payload) not in _git(tmp_path, "worktree", "list", "--porcelain")
+    finally:
+        release.touch()
+        if worker.poll() is None:
+            worker.kill()
+        worker.wait(timeout=10)
+        if guardian is not None:
+            reap_guardian(guardian)
+
+
+def _simulate_dead_baseline(payload):
+    marker = payload.parent / ".booley-lease.json"
+    data = json.loads(marker.read_text())
+    data["owner"]["start"] += 1
+    marker.write_text(json.dumps(data))
+
+
+def _retained_dead_baseline(tmp_path, monkeypatch):
+    from booley.flows import baseline_worktree as module
+
+    _init_repo(tmp_path)
+    real_remove = module._remove_owned_registration
+    monkeypatch.setattr(module, "_remove_owned_registration", lambda *_: False)
+    with baseline_worktree(tmp_path, "HEAD") as payload:
+        pass
+    monkeypatch.setattr(module, "_remove_owned_registration", real_remove)
+    _simulate_dead_baseline(payload)
+    return payload
+
+
+def test_sim_recovery_reaps_the_actual_marked_baseline_layout(tmp_path, monkeypatch):
+    from booley.mcp.sim_baseline_execution import reap_owned_checkout
+
+    payload = _retained_dead_baseline(tmp_path, monkeypatch)
+    request = {
+        "owned_checkout": str(payload),
+        "source_repository": str(tmp_path),
+        "scratch_parent": str(payload.parent),
+        "identity": {"base_sha": _git(tmp_path, "rev-parse", "HEAD")},
+    }
+    reap_owned_checkout(request, os.getpid())
+    assert not payload.parent.exists()
+    assert str(payload) not in _git(tmp_path, "worktree", "list", "--porcelain")
+
+
+def test_reviewer_snapshot_prelaunch_uses_original_project_cleanup_authority(
+    tmp_path, monkeypatch
+):
+    from booley.core.models import AgentCallParams
+    from booley.specialists.specialist_workspace import isolated_agent_workspace
+
+    payload = _retained_dead_baseline(tmp_path, monkeypatch)
+    (tmp_path / ".git/info/exclude").write_text("/.booley\n")
+    params = AgentCallParams(
+        prompt="synthetic review", model="synthetic", cwd=tmp_path, label="reviewer"
+    )
+    with isolated_agent_workspace(params, "read_only") as (isolated, snapshot):
+        assert not payload.parent.exists()
+        assert snapshot.real_root == tmp_path
+        assert Path(isolated.cwd).is_dir()
+        assert isolated.workspace_guard_fds
+    assert not Path(isolated.cwd).exists()
+
+
+def test_foreign_project_cannot_authorize_baseline_cleanup(tmp_path, monkeypatch):
+    from booley.flows.baseline_worktree import sweep_project_workspaces
+
+    payload = _retained_dead_baseline(tmp_path, monkeypatch)
+    foreign = tmp_path / "foreign-project"
+    foreign.mkdir()
+    _init_repo(foreign)
+    sentinel = foreign / "sentinel"
+    sentinel.write_bytes(b"foreign project bytes")
+    sweep_project_workspaces(foreign)
+    assert payload.is_dir()
+    assert sentinel.read_bytes() == b"foreign project bytes"
+    sweep_project_workspaces(tmp_path)
+    assert not payload.parent.exists()
+    assert sentinel.read_bytes() == b"foreign project bytes"
+
+
+_BASELINE_SWEEPER_WORKER = (
+    "import pathlib, sys\n"
+    "from booley.flows import baseline_worktree as module\n"
+    "from booley.core.temporary_workspace import run_guarded\n"
+    "real_git = module._git\n"
+    "def blocked_git(cwd, *args, timeout):\n"
+    '    if args[:2] == ("worktree", "remove"):\n'
+    "        return run_guarded([sys.executable, *sys.argv[2:]], timeout=20, capture_output=True, text=True)\n"
+    "    return real_git(cwd, *args, timeout=timeout)\n"
+    "module._git = blocked_git\n"
+    "module.sweep_project_workspaces(pathlib.Path(sys.argv[1]))\n"
+)
+
+
+_DETACHED_GIT_SOURCE = (
+    "import os, pathlib, sys, time\n"
+    "guardian = os.getppid()\n"
+    "if os.fork() == 0:\n"
+    "    os.setsid()\n"
+    "    pathlib.Path(sys.argv[1]).write_text(str(guardian))\n"
+    "    end = time.monotonic() + 15\n"
+    "    while not pathlib.Path(sys.argv[2]).exists() and time.monotonic() < end: time.sleep(.01)\n"
+    "    os._exit(0)\n"
+)

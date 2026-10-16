@@ -23,7 +23,6 @@ import copy
 import logging
 import os
 import re
-import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +35,7 @@ from booley.core.boundary import (
     require_bool,
 )
 from booley.core.build_paths import work_root_for
+from booley.core.temporary_workspace import temporary_workspace
 from booley.evidence.fields import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
@@ -76,6 +76,7 @@ from ..baseline_worktree import (
     baseline_worktree,
     git_full_sha,
     git_short_sha,
+    owned_scratch_parent,
     resolve_ticket_baseline,
 )
 from ..implementation_comparison import (
@@ -467,9 +468,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         for target in targets:
             try:
                 if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
+                    with temporary_workspace(
                         prefix=".booley-fpga-plan-",
-                        dir=self.args.work_dir,
+                        parent=owned_scratch_parent(Path(self.args.work_dir)),
                     ) as scratch:
                         recipe = self._resolve_fpga_recipe(
                             target,

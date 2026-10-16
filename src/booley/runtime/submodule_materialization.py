@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
+from booley.core.temporary_workspace import run_guarded, temporary_workspace
 from booley.runtime.booley_dir import checkout_booley_dir_relative_to
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
@@ -307,7 +308,7 @@ def _remove_empty_placeholder(destination: Path, root: Path) -> bool:
 
 
 def _create_repository(source: Path, destination: Path, commit: str, relative: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="booley-git-template-") as template:
+    with temporary_workspace(prefix="booley-git-template-") as template:
         _run_git(destination.parent, "init", "-q", f"--template={template}", str(destination))
     _transfer_objects(source, destination, commit, relative)
     check = _run_git(
@@ -332,7 +333,7 @@ def _transfer_objects(source: Path, destination: Path, commit: str, relative: Pa
             prefix="booley-submodule-", suffix=".pack", delete=False
         ) as pack:
             pack_path = Path(pack.name)
-            packed = subprocess.run(
+            packed = run_guarded(
                 _git_command(source, "pack-objects", "--stdout", "--revs"),
                 input=f"{commit}\n".encode(),
                 stdout=pack,
@@ -347,7 +348,7 @@ def _transfer_objects(source: Path, destination: Path, commit: str, relative: Pa
                 f"local objects for submodule {relative.as_posix()} are incomplete: {detail}"
             )
         with pack_path.open("rb") as pack_input:
-            indexed = subprocess.run(
+            indexed = run_guarded(
                 _git_command(destination, "index-pack", "--stdin", "--fix-thin"),
                 stdin=pack_input,
                 capture_output=True,
@@ -401,7 +402,7 @@ def _run_git(
     *args: str,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
+    result = run_guarded(
         _git_command(cwd, *args),
         capture_output=True,
         text=True,

@@ -158,5 +158,9 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     otherwise become orphaned zombies. Safe to call on an already-dead
     process (best-effort, swallows errors).
     """
+    from booley.core.temporary_workspace import stop_guarded_process
+
+    if stop_guarded_process(proc):
+        return
     group = capture_process_group(proc)
     terminate_process_group(proc, group, is_windows=IS_WINDOWS)

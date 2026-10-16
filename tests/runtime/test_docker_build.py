@@ -1009,3 +1009,45 @@ def test_progress_state_failed_announcement_is_attempted_once(monkeypatch) -> No
         state.accept(_PARALLEL_PROGRESS_RECORDS[2])
     assert output.attempts == 1
     assert state.last_visible == 0.0
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux scratch guards")
+def test_real_build_client_observes_registered_workspace_guard():
+    import io
+
+    from booley.core.temporary_workspace import temporary_workspace
+
+    with temporary_workspace() as raw:
+        command = [
+            sys.executable,
+            "-c",
+            "import json, os, pathlib, sys; "
+            'marker=json.loads((pathlib.Path(sys.argv[1])/".booley-lease.json").read_text()); '
+            'assert any(state.get("supervisor", {}).get("pid") == os.getppid() '
+            'for state in marker["launches"].values()); print(">>> guarded")',
+            raw,
+        ]
+        output = io.StringIO()
+        result = docker_build._run_captured(
+            command, image="synthetic", verbose=False, timeout=5, output=output
+        )
+        assert result.returncode == 0
+        assert ">>> guarded" in output.getvalue()
+    assert not Path(raw).exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux scratch guards")
+def test_guarded_missing_build_client_preserves_lookup_error(tmp_path):
+    import io
+
+    from booley.core.temporary_workspace import temporary_workspace
+
+    with temporary_workspace() as raw, pytest.raises(FileNotFoundError):
+        docker_build._run_captured(
+            [str(tmp_path / "missing-client")],
+            image="synthetic",
+            verbose=False,
+            timeout=5,
+            output=io.StringIO(),
+        )
+    assert not Path(raw).exists()

@@ -45,6 +45,7 @@ import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
 
 from booley.core.boundary import as_dict, is_str_list
+from booley.core.temporary_workspace import run_guarded
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -2449,8 +2450,9 @@ def _run_setup_command(
 ) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
     try:
-        proc = runner(
+        proc = run_guarded(
             cmd,
+            runner=runner,
             cwd=str(project_root),
             env=dict(env) if env is not None else None,
             capture_output=True,

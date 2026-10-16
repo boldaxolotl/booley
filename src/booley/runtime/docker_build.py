@@ -12,6 +12,12 @@ from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from typing import TextIO
 
+from booley.core.temporary_workspace import (
+    launch_failed,
+    launch_finished,
+    prepare_launch,
+    validate_native_command,
+)
 from booley.runtime.docker_capacity import (
     DockerBuildPlan,
     DockerBuildRequest,
@@ -195,14 +201,22 @@ def _close_capture(
 def _run_captured(
     command: Sequence[str], *, image: str, verbose: bool, timeout: float, output: TextIO
 ) -> DockerBuildResult:
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    launch = prepare_launch(list(command))
+    try:
+        if launch.roots:
+            validate_native_command(list(command), {})
+        process = subprocess.Popen(
+            launch.command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **launch.kwargs,
+        )
+    except OSError:
+        launch_failed(launch)
+        raise
     if process.stdout is None:
         raise OSError("Docker build output pipe was not created")
     records: Queue[object] = Queue(maxsize=_QUEUE_SIZE)
@@ -218,6 +232,7 @@ def _run_captured(
         timed_out = _await_exit(process, state.deadline, timed_out)
     finally:
         _close_capture(process, stop, reader)
+        launch_finished(launch)
     diagnostics = (
         _diagnostics(
             state.tail,

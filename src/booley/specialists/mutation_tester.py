@@ -1408,6 +1408,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 f"mutation_creator_round{attempt}",
             ),
             label=f"mutation_creator_round{attempt}",
+            session_state_dir=lock_mod.lock_dir() / "native-codex-sessions",
             needs_skills=False,
         )
         if resume:

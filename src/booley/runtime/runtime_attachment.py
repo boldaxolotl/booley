@@ -161,7 +161,11 @@ def _force_recovery_if_due(
     recovery_started: float | None,
     now: float,
 ) -> None:
-    if recovery_started is None or now - recovery_started < _RECOVERY_FORCE_SECONDS:
+    payload = read_json(paths.record) or {}
+    budget = payload.get("cleanup_budget_seconds", 0)
+    if type(budget) not in (int, float) or not 0 <= budget <= 20:
+        budget = 0
+    if recovery_started is None or now - recovery_started < max(_RECOVERY_FORCE_SECONDS, budget):
         return
     request_cancellation(
         paths,
@@ -169,6 +173,14 @@ def _force_recovery_if_due(
         signum=pending.signum or signal.SIGTERM,
         reason="cancelled" if pending.signum is not None else "transport_lost",
     )
+
+
+def _recovery_limit(paths: ExecutionPaths) -> float:
+    payload = read_json(paths.record) or {}
+    budget = payload.get("cleanup_budget_seconds", 0)
+    if type(budget) not in (int, float) or not 0 <= budget <= 20:
+        budget = 0
+    return max(_RECOVERY_LIMIT_SECONDS, budget + 5)
 
 
 def _drive_execution(
@@ -182,9 +194,7 @@ def _drive_execution(
     recovery_started: float | None = None
     transport_failed = False
     protocol_failure: ExecutionResult | None = None
-    while (
-        recovery_started is None or time.monotonic() - recovery_started < _RECOVERY_LIMIT_SECONDS
-    ):
+    while recovery_started is None or time.monotonic() - recovery_started < _recovery_limit(paths):
         now = time.monotonic()
         if now >= next_heartbeat:
             generation += 1

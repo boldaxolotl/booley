@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import io
 import json
 import logging
 import os
+import sys
 import time
 from collections import deque
 from collections.abc import Callable
@@ -31,6 +33,12 @@ from booley.core.models import (
     AgentCallParams,
     AgentResult,
     ArtifactPathResolver,
+)
+from booley.core.temporary_workspace import (
+    LeaseLaunch,
+    active_guard_fds,
+    prepare_launch,
+    settle_launch,
 )
 from booley.runtime.timefmt import rfc3339_from_epoch, utc_now_rfc3339
 
@@ -145,18 +153,21 @@ class ClaudeSDKBackend:
         # --- Retry loop ---
         for attempt in range(1, MAX_API_RETRIES + 1):
             try:
-                return await self._call_once(
-                    params.prompt,
-                    options,
-                    params.timeout_seconds,
-                    transcript_path=_transcript_path_for_attempt(params.transcript_path, attempt),
-                    artifact_paths=params.artifact_paths,
-                    output_format=params.output_format,
-                    capture_agent_capability_calls=params.capture_agent_capability_calls,
-                    attempt=attempt,
-                    label=params.label,
-                    on_event=on_event,
-                )
+                async with _guarded_sdk_options(options, params.workspace_guard_fds) as guarded:
+                    return await self._call_once(
+                        params.prompt,
+                        guarded,
+                        params.timeout_seconds,
+                        transcript_path=_transcript_path_for_attempt(
+                            params.transcript_path, attempt
+                        ),
+                        artifact_paths=params.artifact_paths,
+                        output_format=params.output_format,
+                        capture_agent_capability_calls=params.capture_agent_capability_calls,
+                        attempt=attempt,
+                        label=params.label,
+                        on_event=on_event,
+                    )
             except (UsageLimitError, ContextExhaustedError):
                 raise
             except TransientAPIError as e:
@@ -425,6 +436,90 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
         if not os.environ.get(key):
             env_overrides[key] = value
     return env_overrides
+
+
+def _native_sdk_cli(options: ClaudeAgentOptions) -> str:
+    """Keep pinned SDK bundled/PATH/native-platform discovery behind one adapter."""
+    from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
+
+    transport = SubprocessCLITransport(prompt="", options=options)
+    return transport._cli_path or transport._find_cli()
+
+
+@contextlib.asynccontextmanager
+async def _guarded_sdk_options(options: ClaudeAgentOptions, guard_fds: tuple[int, ...]):
+    """Protect both SDK version probe and main command through supported cli_path."""
+    if not guard_fds and not active_guard_fds():
+        from booley.core.temporary_workspace import mark_external_workspace_use
+
+        mark_external_workspace_use()
+        yield options
+        return
+    from booley.core.workspace_async import async_workspace, filesystem_call
+
+    native = await filesystem_call(_native_sdk_cli, options)
+    async with async_workspace(prefix="claude-launcher-") as raw:
+        main, version, guarded = await filesystem_call(
+            _prepare_guarded_sdk_options, options, native, guard_fds, Path(raw)
+        )
+        try:
+            yield guarded
+        finally:
+            task = asyncio.create_task(_settle_sdk_launches(main, version))
+            from booley.core.workspace_async import joined
+
+            await joined(task)
+
+
+def _prepare_guarded_sdk_options(options, native: str, guard_fds: tuple[int, ...], root: Path):
+    main = prepare_launch([native], guard_fds)
+    version = prepare_launch([native], guard_fds)
+    shim = root / "claude-supervised"
+    shim.write_text(_sdk_shim_source(native, main, version), encoding="utf-8")
+    shim.chmod(0o700)
+    guarded = copy.copy(options)
+    guarded.cli_path = str(shim)
+    return main, version, guarded
+
+
+async def _settle_sdk_launches(main: LeaseLaunch, version: LeaseLaunch) -> None:
+    await asyncio.gather(settle_launch(main), settle_launch(version))
+
+
+def _sdk_shim_source(native: str, main: LeaseLaunch, version: LeaseLaunch) -> str:
+    def payload(launch: LeaseLaunch) -> str:
+        return json.dumps({"roots": [str(root) for root in launch.roots], "token": launch.token})
+
+    from booley.core import lease_exec
+
+    return (
+        f"#!{sys.executable}\n"
+        "import ctypes, json, os, pathlib, signal, subprocess, sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+        "from booley.core.temporary_workspace import LeaseLaunch, launch_failed\n"
+        f"main = {payload(main)!r}\n"
+        f"version = {payload(version)!r}\n"
+        "probe = sys.argv[1:] == ['-v']\n"
+        "if not probe:\n"
+        "    unused = json.loads(version)\n"
+        "    launch_failed(LeaseLaunch([], {}, tuple(pathlib.Path(p) for p in unused['roots']), unused['token']))\n"
+        "data = json.loads(version if probe else main)\n"
+        "data['parent'] = os.getpid()\n"
+        "data['fds'] = []\n"
+        "ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0)\n"
+        f"if os.getppid() != {os.getpid()}: raise SystemExit(143)\n"
+        f"process = subprocess.Popen([sys.executable, {str(Path(lease_exec.__file__))!r}, json.dumps(data), {native!r}, *sys.argv[1:]], start_new_session=True)\n"
+        "def stop(signum, frame):\n"
+        "    if process.poll() is None:\n"
+        "        process.send_signal(signum)\n"
+        "for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):\n"
+        "    signal.signal(signum, stop)\n"
+        "status = process.wait()\n"
+        "if status < 0:\n"
+        "    signal.signal(-status, signal.SIG_DFL)\n"
+        "    os.kill(os.getpid(), -status)\n"
+        "raise SystemExit(status)\n"
+    )
 
 
 def _build_sdk_options(

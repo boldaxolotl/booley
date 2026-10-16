@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.temporary_workspace import run_guarded
+
 
 @dataclass
 class CommandRun:
@@ -121,7 +123,7 @@ def run_command(
 
     start = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = run_guarded(
             argv,
             cwd=cwd,
             env=full_env,

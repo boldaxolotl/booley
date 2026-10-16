@@ -907,6 +907,9 @@ def _call_agent_sync(
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _invoke())
+            import contextvars
+
+            context = contextvars.copy_context()
+            future = pool.submit(context.run, asyncio.run, _invoke())
             return future.result(timeout=params.timeout_seconds + 30)
     return asyncio.run(_invoke())

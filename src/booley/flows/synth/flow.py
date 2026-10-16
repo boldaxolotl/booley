@@ -21,7 +21,6 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -30,6 +29,7 @@ from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, require_bool
 from booley.core.build_paths import work_root_for
+from booley.core.temporary_workspace import temporary_workspace
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
     ClockTiming,
@@ -67,6 +67,7 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.worktree_paths import worktree_state_dir
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
@@ -77,6 +78,7 @@ from ..baseline_worktree import (
     baseline_worktree,
     git_full_sha,
     git_short_sha,
+    owned_scratch_parent,
     resolve_ticket_baseline,
 )
 from ..implementation_comparison import (
@@ -1004,6 +1006,30 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _is_selected_staged_constraint(
+    source: fusesoc_registry.ResolvedFile,
+    resolved: fusesoc_registry.ResolvedTarget,
+    work_dir: Path,
+    path: Path,
+) -> bool:
+    """Admit EDAM-owned exported sources in this exact selected-state build root."""
+    name = Path(source.name)
+    if name.is_absolute() or ".." in name.parts or len(name.parts) < 3:
+        return False
+    if name.parts[0] != "src" or not source.core:
+        return False
+    if name.parts[1] != source.core.lstrip(":").replace(":", "_"):
+        return False
+    build_root = resolved.build_root.resolve()
+    selected = worktree_state_dir(work_dir).resolve()
+    return (
+        build_root.is_relative_to(selected)
+        and resolved.edam_path.resolve().parent == build_root
+        and path.is_relative_to(build_root)
+        and path.is_relative_to(selected)
+    )
+
+
 class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
@@ -1105,10 +1131,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             try:
                 path.relative_to(work_dir.resolve())
             except ValueError as exc:
-                raise BoundaryError(
-                    f"synth: Target {target!r} SDC escapes the selected checkout "
-                    f"{work_dir.resolve()}: {path}"
-                ) from exc
+                if not _is_selected_staged_constraint(sdc_file, resolved, work_dir, path):
+                    raise BoundaryError(
+                        f"synth: Target {target!r} SDC escapes the selected checkout "
+                        f"{work_dir.resolve()}: {path}"
+                    ) from exc
             if not path.is_file():
                 raise BoundaryError(f"synth: Target {target!r} SDC file not found: {path}")
             try:
@@ -2090,9 +2117,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         for target in targets:
             try:
                 if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
+                    with temporary_workspace(
                         prefix=".booley-synth-plan-",
-                        dir=self.args.work_dir,
+                        parent=owned_scratch_parent(Path(self.args.work_dir)),
                     ) as scratch:
                         planned = self._resolve_synth_recipe(
                             target,

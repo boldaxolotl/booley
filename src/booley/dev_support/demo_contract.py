@@ -6,11 +6,11 @@ import argparse
 import hashlib
 import subprocess
 import sys
-import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.core.temporary_workspace import run_guarded, temporary_workspace
 from booley.dev_support.demo_contract_codec import (
     DemoContract,
     DemoContractError,
@@ -50,7 +50,7 @@ def _resolve_catalog_target(
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_guarded(
         ["git", *args],
         cwd=repo,
         capture_output=True,
@@ -86,7 +86,7 @@ def _validate_targets(root: Path, targets: tuple[str, ...]) -> list[str]:
     """Resolve every advertised Target; readiness never allows future inputs."""
     errors: list[str] = []
     catalog = TargetCatalog.build(root)
-    with tempfile.TemporaryDirectory(prefix="booley-demo-targets-") as build_root:
+    with temporary_workspace(prefix="booley-demo-targets-") as build_root:
         for index, target in enumerate(targets):
             try:
                 resolved = _resolve_catalog_target(

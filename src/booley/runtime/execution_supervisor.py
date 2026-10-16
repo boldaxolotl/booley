@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import ctypes
 import os
 import signal
@@ -22,6 +23,7 @@ from types import FrameType
 from typing import Any
 
 from booley.core.boundary import BoundaryError, as_float, as_str, require_int
+from booley.core.lease_shutdown import ENV, GRACE_SECONDS, SETTLE_SECONDS, ShutdownGroup
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
@@ -43,6 +45,10 @@ _PR_SET_CHILD_SUBREAPER = 36
 _POLL_SECONDS = 0.02
 _FORCE_REAP_SECONDS = 5.0
 _EXECUTION_HEARTBEAT_SECONDS = 0.25
+
+_GROUP: contextvars.ContextVar[ShutdownGroup | None] = contextvars.ContextVar(
+    "execution_scratch_group", default=None
+)
 
 
 @dataclass
@@ -137,6 +143,10 @@ def _execution_record(
 
 
 def _signal_processes(pids: set[int], signum: int) -> None:
+    group = _GROUP.get()
+    if group is not None and group.active() and signum != signal.SIGKILL:
+        group.tick()
+        return
     for pid in pids:
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signum)
@@ -144,6 +154,9 @@ def _signal_processes(pids: set[int], signum: int) -> None:
 
 def _signal_owned_tree(signum: int) -> set[int]:
     pids = set(descendant_pids(os.getpid()))
+    group = _GROUP.get()
+    if group is not None and group.active() and signum != signal.SIGKILL:
+        group.stop(signum)
     _signal_processes(pids, signum)
     return pids
 
@@ -197,6 +210,9 @@ def _terminate_tree(
     initial_signal: int,
     force: bool = False,
 ) -> bool:
+    group = _GROUP.get()
+    if group is not None and group.active() and not force:
+        grace_seconds = GRACE_SECONDS + SETTLE_SECONDS
     stages = (
         [(signal.SIGKILL, _FORCE_REAP_SECONDS)]
         if force
@@ -319,6 +335,13 @@ def _finish_prestart_cancellation(
     return exit_code
 
 
+def _publish_cancelling(paths, supervisor, leader) -> None:
+    cancelling = _execution_record(state="cancelling", supervisor=supervisor, leader=leader)
+    if _GROUP.get() is not None and _GROUP.get().active():
+        cancelling["cleanup_budget_seconds"] = GRACE_SECONDS + SETTLE_SECONDS + 5
+    atomic_write_json(paths.record, cancelling)
+
+
 def _finish_owned_tree(
     child: subprocess.Popen[Any],
     paths: ExecutionPaths,
@@ -331,8 +354,7 @@ def _finish_owned_tree(
     cancelled = terminal_cause != "exited"
     cancellation_after_root_exit = False
     if cancelled:
-        cancelling = _execution_record(state="cancelling", supervisor=supervisor, leader=leader)
-        atomic_write_json(paths.record, cancelling)
+        _publish_cancelling(paths, supervisor, leader)
     root_returncode = child.returncode
     tree_terminal = _terminate_tree(
         child,
@@ -341,6 +363,8 @@ def _finish_owned_tree(
         initial_signal=requested_signal,
         force=force,
     )
+    if tree_terminal and _GROUP.get() is not None:
+        _GROUP.get().complete(owner=True)
     child.poll()
     root_returncode = child.returncode if root_returncode is None else root_returncode
     late_cancellation = _cancellation_request(paths) if not cancelled else None
@@ -396,21 +420,37 @@ def supervise(
         if cancellation is not None:
             return _finish_prestart_cancellation(paths, supervisor, cancellation)
         grouped_tty = tty and os.isatty(0) and hasattr(os, "tcsetpgrp")
-        child = subprocess.Popen(command, process_group=0 if grouped_tty else None)
+        group = ShutdownGroup.create(paths.record.parent)
+        token = _GROUP.set(group)
         pending = _RuntimeSignals()
-        with _capture_runtime_signals(pending), _foreground_child(child, enabled=grouped_tty):
-            leader = capture_process_identity(child.pid)
-            running = _execution_record(state="running", supervisor=supervisor, leader=leader)
-            atomic_write_json(paths.record, running)
-            stop = _wait_until_stop(child, paths, attachment_timeout_s, pending)
-        return _finish_owned_tree(
-            child,
-            paths,
-            supervisor,
-            leader,
-            stop,
-            grace_seconds,
-        )
+        try:
+            with _capture_runtime_signals(pending):
+                return _run_owned_command(
+                    command,
+                    grouped_tty,
+                    group,
+                    paths,
+                    supervisor,
+                    pending,
+                    attachment_timeout_s,
+                    grace_seconds,
+                )
+        finally:
+            _GROUP.reset(token)
+
+
+def _run_owned_command(
+    command, grouped_tty, group, paths, supervisor, pending, attachment_timeout_s, grace_seconds
+):
+    child = subprocess.Popen(
+        command, process_group=0 if grouped_tty else None, env={**os.environ, ENV: str(group.path)}
+    )
+    with _foreground_child(child, enabled=grouped_tty):
+        leader = capture_process_identity(child.pid)
+        running = _execution_record(state="running", supervisor=supervisor, leader=leader)
+        atomic_write_json(paths.record, running)
+        stop = _wait_until_stop(child, paths, attachment_timeout_s, pending)
+    return _finish_owned_tree(child, paths, supervisor, leader, stop, grace_seconds)
 
 
 @contextlib.contextmanager

@@ -141,45 +141,52 @@ def schedule_sim_baselines(
     try:
         inputs = entry_inputs(project, record)
         for goal in sim_goals(record):
-            identity = request_identity(record, goal, inputs)
-            path = request_path(project, identity)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with (
-                (path.parent / "launch.lock").open("a+b") as handle,
-                nonblocking_file_lock(handle),
-            ):
-                if path.exists():
-                    _reconcile_request(path)
-                    continue
-                request = {
-                    "schema": SCHEMA,
-                    "identity": identity,
-                    "inputs": inputs,
-                    "booley_dir": str(project),
-                    "record": record.to_json(),
-                    "source_repository": str(
-                        ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()
-                        or Path(record.worktree_path)
-                    ),
-                    "status": "pending",
-                    "results": [],
-                    "job_id": f"sim-baseline-{path.parent.name}",
-                    "jobs_root": str(baseline_jobs_dir(project)),
-                }
-                write_document(path, request)
-                try:
-                    launcher(path, request)
-                except (OSError, ValueError, RuntimeError) as exc:
-                    write_document(
-                        path,
-                        request
-                        | {
-                            "status": "unavailable",
-                            "reason": f"baseline Job launch failed: {exc}",
-                        },
-                    )
+            try:
+                _schedule_goal(project, record, goal, inputs, launcher)
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Simulation baseline unavailable for Goal %s: %s", goal, exc)
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
+
+
+def _schedule_goal(project, record, goal, inputs, launcher):
+    identity = request_identity(record, goal, inputs)
+    path = request_path(project, identity)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        (path.parent / "launch.lock").open("a+b") as handle,
+        nonblocking_file_lock(handle),
+    ):
+        if path.exists():
+            _reconcile_request(path)
+            return
+        request = {
+            "schema": SCHEMA,
+            "identity": identity,
+            "inputs": inputs,
+            "booley_dir": str(project),
+            "record": record.to_json(),
+            "source_repository": str(
+                ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()
+                or Path(record.worktree_path)
+            ),
+            "status": "pending",
+            "results": [],
+            "job_id": f"sim-baseline-{path.parent.name}",
+            "jobs_root": str(baseline_jobs_dir(project)),
+        }
+        write_document(path, request)
+        try:
+            launcher(path, request)
+        except (OSError, ValueError, RuntimeError) as exc:
+            write_document(
+                path,
+                request
+                | {
+                    "status": "unavailable",
+                    "reason": f"baseline Job launch failed: {exc}",
+                },
+            )
 
 
 def _reconcile_request(path: Path) -> None:
@@ -197,7 +204,11 @@ def _reconcile_request(path: Path) -> None:
     if job is not None and job.pid is not None and not is_pid_alive(job.pid):
         from booley.mcp.sim_baseline_execution import reap_owned_checkout
 
-        reap_owned_checkout(request, job.pid)
+        try:
+            reap_owned_checkout(request, job.pid)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Retaining interrupted baseline scratch at %s: %s", path, exc)
+            write_document(path, request | {"cleanup_reason": str(exc)})
 
 
 def _cancel(_signal: int, _frame: object) -> None:

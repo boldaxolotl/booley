@@ -366,14 +366,28 @@ class SessionObserver:
 class SessionMaintenanceApp:
     """Own a maintenance task for the HTTP ASGI lifespan, including idle periods."""
 
-    def __init__(self, app: Any, observer: SessionObserver) -> None:
+    def __init__(
+        self,
+        app: Any,
+        observer: SessionObserver,
+        *,
+        startup_cleanup: Callable[[], None] | None = None,
+    ) -> None:
         self.app = app
         self.observer = observer
+        self.startup_cleanup = startup_cleanup
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "lifespan":
             await self.app(scope, receive, send)
             return
+        from booley.core.workspace_async import filesystem_call, joined
+
+        cleanup = (
+            None
+            if self.startup_cleanup is None
+            else asyncio.create_task(filesystem_call(self.startup_cleanup))
+        )
         task = asyncio.create_task(self.observer.maintenance_loop())
         try:
             await self.app(scope, receive, send)
@@ -382,3 +396,5 @@ class SessionMaintenanceApp:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+            if cleanup is not None:
+                await joined(cleanup)

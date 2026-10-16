@@ -35,7 +35,10 @@ def test_text_only_catalog_removes_model_supplied_tools_and_ambient_servers(tmp_
     root.mkdir()
     params = AgentCallParams(prompt="Analyze", model="chosen", cwd=root, text_only=True)
     command, env = prepare_codex_text_only(
-        ["codex", "exec", "-"], params, {"CODEX_HOME": str(cache)}
+        ["codex", "exec", "-"],
+        params,
+        {"CODEX_HOME": str(cache)},
+        private=tmp_path / "private-codex",
     )
     catalog_path = Path(env["CODEX_HOME"]) / "model-catalog.json"
     model = json.loads(catalog_path.read_text())["models"][0]
@@ -47,14 +50,21 @@ def test_text_only_catalog_removes_model_supplied_tools_and_ambient_servers(tmp_
     assert "agents.enabled=false" in command
     assert "features.multi_agent_v2=false" in command
     assert Path(env["CODEX_HOME"]) != cache
-    assert not (Path(env["CODEX_HOME"]) / "config.toml").exists()
+    assert "mcp_servers" not in tomllib.loads(
+        (Path(env["CODEX_HOME"]) / "config.toml").read_text()
+    )
 
 
 def test_text_only_missing_exact_model_fails_closed(tmp_path):
     (tmp_path / "models_cache.json").write_text('{"models": []}')
     params = AgentCallParams(prompt="Analyze", model="missing", cwd=tmp_path, text_only=True)
     with pytest.raises(ValueError, match="exact model"):
-        prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
+        prepare_codex_text_only(
+            ["codex", "exec", "-"],
+            params,
+            {"CODEX_HOME": str(tmp_path)},
+            private=tmp_path / "private-codex",
+        )
 
 
 def test_text_only_codex_may_expose_one_scoped_nested_mcp_tool(tmp_path):
@@ -74,7 +84,12 @@ def test_text_only_codex_may_expose_one_scoped_nested_mcp_tool(tmp_path):
         nested_mcp_env={"BOOLEY_COVERAGE_CAMPAIGN": "/reports/coverage.json"},
     )
 
-    _, env = prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(cache)})
+    _, env = prepare_codex_text_only(
+        ["codex", "exec", "-"],
+        params,
+        {"CODEX_HOME": str(cache)},
+        private=tmp_path / "private-codex",
+    )
 
     config = (Path(env["CODEX_HOME"]) / "config.toml").read_text()
     assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
@@ -113,7 +128,12 @@ def test_text_only_regeneration_preserves_destination_preference(
     params = AgentCallParams(
         prompt="Analyze", model="chosen", cwd=invocation, text_only=True, nested_mcp_tools=["lint"]
     )
-    _, env = prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(original)})
+    _, env = prepare_codex_text_only(
+        ["codex", "exec", "-"],
+        params,
+        {"CODEX_HOME": str(original)},
+        private=tmp_path / "private-codex",
+    )
     config = Path(env["CODEX_HOME"]) / "config.toml"
     assert tomllib.loads(config.read_text())["suppress_unstable_features_warning"] is True
     if preference is not None or toml11:
@@ -123,7 +143,12 @@ def test_text_only_regeneration_preserves_destination_preference(
             else f"suppress_unstable_features_warning={str(preference).lower()}\n"
         )
         config.write_text(choice + ("features={\n mcp_2026_07_28=true,\n}\n" if toml11 else ""))
-    prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(original)})
+    prepare_codex_text_only(
+        ["codex", "exec", "-"],
+        params,
+        {"CODEX_HOME": str(original)},
+        private=tmp_path / "private-codex",
+    )
     parsed = tomllib.loads(config.read_text())
     assert "malformed" not in caplog.text
     assert parsed["suppress_unstable_features_warning"] is (
@@ -131,9 +156,13 @@ def test_text_only_regeneration_preserves_destination_preference(
     )
     assert parsed["mcp_servers"]["booley"]["env"]["BOOLEY_NESTED_MCP_TOOLS"] == "lint"
     params.nested_mcp_tools = None
-    before = config.read_bytes()
-    prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(original)})
-    assert config.read_bytes() == before
+    prepare_codex_text_only(
+        ["codex", "exec", "-"],
+        params,
+        {"CODEX_HOME": str(original)},
+        private=tmp_path / "private-codex",
+    )
+    assert "mcp_servers" not in tomllib.loads(config.read_text())
 
 
 def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path):
@@ -147,12 +176,20 @@ def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path)
     params = AgentCallParams(prompt="Explain", model="chosen", cwd=root, text_only=True)
     command = ["codex", "exec", "-"]
     environment = {"CODEX_HOME": str(original)}
-    _, child = prepare_codex_text_only(command, params, environment, auth_mode="subscription")
+    _, child = prepare_codex_text_only(
+        command, params, environment, private=root / "private", auth_mode="subscription"
+    )
     copied = Path(child["CODEX_HOME"]) / "auth.json"
     assert copied.exists()
-    prepare_codex_text_only(command, params, environment, auth_mode="api_key")
+    prepare_codex_text_only(
+        command, params, environment, private=root / "private", auth_mode="api_key"
+    )
     assert not copied.exists()
-    prepare_codex_text_only(command, params, environment, auth_mode="subscription")
+    prepare_codex_text_only(
+        command, params, environment, private=root / "private", auth_mode="subscription"
+    )
     native.unlink()
-    prepare_codex_text_only(command, params, environment, auth_mode="subscription")
+    prepare_codex_text_only(
+        command, params, environment, private=root / "private", auth_mode="subscription"
+    )
     assert not copied.exists()

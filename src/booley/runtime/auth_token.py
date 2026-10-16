@@ -526,29 +526,24 @@ def credential_plan(
     )
 
 
-def copy_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
-    """Reconcile a Booley-owned private auth copy at every invocation."""
-    import shutil
-    import tempfile
+def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> bool:
+    """Publish a policy-eligible canonical credential link without copying secrets."""
+    import uuid
 
     allowed_credential_keys(APP_CODEX, policy)
     allowed = policy == "auto" or (
         policy == "subscription" and subscription_available(APP_CODEX, policy, source)
     )
-    if source.is_file() and allowed:
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{destination.name}.", dir=destination.parent
-        )
-        os.close(descriptor)
-        temporary_path = Path(temporary)
-        try:
-            shutil.copyfile(source, temporary_path)
-            temporary_path.chmod(0o600)
-            temporary_path.replace(destination)
-        finally:
-            temporary_path.unlink(missing_ok=True)
-    else:
+    if not source.is_file() or not allowed:
         destination.unlink(missing_ok=True)
+        return False
+    staging = destination.with_name(".auth-link-" + uuid.uuid4().hex)
+    try:
+        staging.symlink_to(source.absolute())
+        staging.replace(destination)
+    finally:
+        staging.unlink(missing_ok=True)
+    return True
 
 
 def credential_warnings(plan: CredentialPlan) -> tuple[str, ...]:

@@ -592,6 +592,9 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
     state = {"i": 0}
 
     def _fake(self, params, on_event=None):
+        from booley.dev_support import mutation_lock
+
+        assert params.session_state_dir == mutation_lock.lock_dir() / "native-codex-sessions"
         i = state["i"]
         state["i"] = i + 1
         r = results[min(i, len(results) - 1)]

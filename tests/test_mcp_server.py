@@ -2365,3 +2365,74 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
     assert checkpoint["complete"] is False and checkpoint["partial"] is True
     assert "passed" not in payload and "exit_code" not in checkpoint
     assert server._payload_size(payload) <= server._MAX_STRUCTURED_REPORT_BYTES
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+@pytest.mark.asyncio
+async def test_server_entrypoints_sweep_dead_global_and_project_roots(
+    tmp_path, monkeypatch, transport
+):
+
+    from booley.core import temporary_workspace as tw
+    from booley.mcp import server
+
+    roots = _dead_startup_roots(tmp_path, monkeypatch)
+    with tw.temporary_workspace() as live:
+
+        async def startup(*args):
+            async with asyncio.timeout(5):
+                while any(root.exists() for root in roots):
+                    await asyncio.sleep(0.01)
+
+        if transport == "stdio":
+            monkeypatch.setattr(server, "_serve_stdio", startup)
+            await server._main()
+        else:
+            import uvicorn
+
+            captured = []
+            monkeypatch.setattr(server, "_streamable_http_app", lambda _: startup)
+            monkeypatch.setattr(server, "_maybe_configure_interactive_logs_dir", lambda: None)
+            monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: captured.append(app))
+            server._run_http(0)
+            await captured[0]({"type": "lifespan"}, None, None)
+        assert all(not root.exists() for root in roots)
+        assert Path(live).is_dir()
+
+
+def _dead_startup_roots(tmp_path, monkeypatch):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    from booley.runtime.booley_dir import reset_cache
+
+    reset_cache()
+    monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
+    monkeypatch.delenv("BOOLEY_MCP_NESTED", raising=False)
+    parent = tmp_path / ".booley" / ".runtime" / "owned-scratch"
+    parent.mkdir(parents=True)
+    code = (
+        "import json, os, pathlib, sys\n"
+        "from booley.core.temporary_workspace import temporary_workspace\n"
+        "with temporary_workspace() as global_root:\n"
+        "    with temporary_workspace(parent=pathlib.Path(sys.argv[1])) as local_root:\n"
+        "        print(json.dumps([global_root, local_root]), flush=True)\n"
+        "        os._exit(0)\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    created = subprocess.run(
+        [sys.executable, "-c", code, str(parent)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    roots = list(map(Path, json.loads(created.stdout)))
+    return roots

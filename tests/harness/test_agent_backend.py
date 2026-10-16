@@ -1445,11 +1445,6 @@ async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, mo
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "unrelated"))
     monkeypatch.setattr(_codex_backend, "_inside_container", lambda: True)
-    monkeypatch.setattr(
-        _codex_backend,
-        "_ensure_nested_codex_home",
-        lambda *args, **kwargs: str(tmp_path / "private"),
-    )
     captured = {}
 
     async def spawn(*args, **kwargs):
@@ -1457,11 +1452,17 @@ async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, mo
         return object()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    _, sessions = await _codex_backend._codex_spawn(
-        ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=tmp_path)
+    from booley.core.temporary_workspace import LeaseLaunch
+
+    monkeypatch.setattr(
+        _codex_backend, "prepare_launch", lambda *args: LeaseLaunch(args[0], {}, (), "")
     )
-    assert captured["env"]["CODEX_HOME"] == str(tmp_path / "private" / ".codex")
-    assert sessions == tmp_path / "private" / ".codex" / "sessions"
+    with _codex_backend._invocation_home() as home:
+        _, sessions, _ = await _codex_backend._codex_spawn(
+            ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=tmp_path)
+        )
+        assert captured["env"]["CODEX_HOME"] == str(home / ".codex")
+        assert sessions == home / ".codex" / "sessions"
 
 
 def test_private_codex_copy_uses_cli_home(tmp_path, monkeypatch):
@@ -1510,7 +1511,15 @@ async def test_subscription_codex_pins_relative_cli_home_before_changing_cwd(
         return object()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    await _codex_backend._codex_spawn(
-        ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=child), "subscription"
+    from booley.core.temporary_workspace import LeaseLaunch
+
+    monkeypatch.setattr(
+        _codex_backend, "prepare_launch", lambda *args: LeaseLaunch(args[0], {}, (), "")
     )
-    assert captured["env"]["CODEX_HOME"] == str(parent / "alternate")
+    with _codex_backend._invocation_home():
+        await _codex_backend._codex_spawn(
+            ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=child), "subscription"
+        )
+        private = Path(captured["env"]["CODEX_HOME"])
+        assert (private / "auth.json").is_symlink()
+        assert (private / "auth.json").resolve() == parent / "alternate" / "auth.json"

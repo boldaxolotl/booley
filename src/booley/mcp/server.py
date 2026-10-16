@@ -458,7 +458,7 @@ def _index_custom_mcp_tools(
 def _nested_allowlist() -> set[str] | None:
     """Return the nested-mode MCP tool allowlist, or None if not nested.
 
-    Set by ``_ensure_nested_codex_home`` via the BOOLEY_NESTED_MCP_TOOLS env
+    Set by ``_async_invocation_home`` via the BOOLEY_NESTED_MCP_TOOLS env
     var (comma-separated). When BOOLEY_NESTED_AGENT=1, return a (possibly
     empty) set of allowed MCP tool names — discovery filters strictly to these,
     so Specialist MCP tools never appear in nested agents (recursion-safe).
@@ -2838,7 +2838,27 @@ def _load_agent_settings_from_toml() -> None:
         logger.debug("Failed to load agent settings from booley.toml", exc_info=True)
 
 
+def _sweep_startup_workspaces() -> None:
+    if os.environ.get("BOOLEY_NESTED_AGENT") == "1" or os.environ.get("BOOLEY_MCP_NESTED") == "1":
+        return
+    from booley.core.temporary_workspace import sweep_stale_workspaces
+    from booley.flows.baseline_worktree import sweep_project_workspaces
+
+    sweep_stale_workspaces()
+    sweep_project_workspaces(Path.cwd())
+
+
 async def _main() -> None:
+    from booley.core.workspace_async import filesystem_call, joined
+
+    cleanup = asyncio.create_task(filesystem_call(_sweep_startup_workspaces))
+    try:
+        await _serve_stdio()
+    finally:
+        await joined(cleanup)
+
+
+async def _serve_stdio() -> None:
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
@@ -2892,7 +2912,7 @@ def _run_http(port: int) -> None:
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
     app = _streamable_http_app(server)
-    app = SessionMaintenanceApp(app, lifetime.sessions)
+    app = SessionMaintenanceApp(app, lifetime.sessions, startup_cleanup=_sweep_startup_workspaces)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
     uvicorn.run(app, host=_HTTP_HOST, port=port, log_level="warning")
 

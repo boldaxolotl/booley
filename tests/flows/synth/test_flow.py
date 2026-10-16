@@ -364,6 +364,11 @@ def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     st.save()
     monkeypatch.setenv("BOOLEY_SLUG", "test-ticket")
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
+    # Recipe-only fixtures still supply a trusted Booley Directory for scratch.
+    from booley.runtime.booley_dir import reset_cache
+
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    reset_cache()
     return sf
 
 
@@ -5690,3 +5695,53 @@ def test_earlier_loop_report_survives_representative_saturation(
     if not huge:
         assert "\\feedback" in result.report_text
     assert result.detail["implementation"]["results"]["lite"]["status"]["grade"] == "warn"
+
+
+@pytest.mark.parametrize(
+    "threat", ["absolute", "parent", "missing_core", "core_mismatch", "symlink", "foreign_edam"]
+)
+def test_external_state_constraints_require_exact_staged_provenance(tmp_path, monkeypatch, threat):
+    from booley.runtime.booley_dir import reset_cache
+
+    project, selected = tmp_path / "project", tmp_path / "selected-state"
+    project.mkdir()
+    selected.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(selected))
+    reset_cache()
+    build = selected / "build"
+    source = build / "src" / "synthetic_0" / "clock.sdc"
+    source.parent.mkdir(parents=True)
+    source.write_text("create_clock -period 4 [get_ports clk]\n")
+    edam = build / "synthetic.eda.yml"
+    edam.write_text("synthetic EDAM-owned staging")
+    name, core = source.relative_to(build).as_posix(), "::synthetic:0"
+    if threat == "absolute":
+        name = str(source)
+    elif threat == "parent":
+        other = selected / "other.sdc"
+        other.write_bytes(source.read_bytes())
+        name = "../other.sdc"
+    elif threat == "missing_core":
+        core = None
+    elif threat == "core_mismatch":
+        core = "::another:0"
+    elif threat == "symlink":
+        other = selected / "other.sdc"
+        source.replace(other)
+        source.symlink_to(other)
+    else:
+        edam = selected / "foreign.eda.yml"
+        edam.write_text("foreign EDAM")
+    resolved = dataclasses.replace(
+        _fake_synth_resolved(project),
+        build_root=build,
+        edam_path=edam,
+        files=(fusesoc_registry.ResolvedFile(name=name, file_type="SDC", core=core),),
+    )
+    try:
+        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
+            AsicSynthesizeFlow()._append_sta_constraint_args(
+                [], resolved, "lite", project, SynthMode.PHYSICAL
+            )
+    finally:
+        reset_cache()

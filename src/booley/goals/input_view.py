@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
-import tempfile
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from booley.core.config_paths import resolve_toml
+from booley.core.temporary_workspace import temporary_workspace
 from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.committed_export import confined as _confined
 from booley.goals.committed_export import (
@@ -361,7 +361,7 @@ def committed_view(
     selection: InputSelection, record: GoalRecord, *, control_project: Path, baseline: bool = False
 ) -> Generator[CommittedView]:
     """One pinned view for freshness, semantic diff and package; no ambient fallback."""
-    with tempfile.TemporaryDirectory(prefix="booley-goal-inputs-") as scratch:
+    with temporary_workspace(prefix="booley-goal-inputs-") as scratch:
         root = Path(scratch) / "rtl"
         snapshot = (
             None

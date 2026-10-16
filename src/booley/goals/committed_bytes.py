@@ -6,12 +6,12 @@ import hashlib
 import os
 import stat
 import subprocess
-import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.temporary_workspace import temporary_workspace
 from booley.goals.lifecycle import LifecycleError
 from booley.runtime.git_attributes_policy import (
     GITATTRIBUTES_RULE,
@@ -64,7 +64,7 @@ def shadow_repository(
     repository: Path, info_attributes: bytes
 ) -> Generator[tuple[Path, dict[str, str]]]:
     """Object-only scratch repository with only the explicitly captured local policy."""
-    with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
+    with temporary_workspace(prefix="booley-pinned-bytes-") as scratch:
         shadow, template = Path(scratch) / "repository", Path(scratch) / "template"
         template.mkdir()
         algorithm = (

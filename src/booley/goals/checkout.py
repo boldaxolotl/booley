@@ -13,6 +13,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.temporary_workspace import run_guarded
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
@@ -47,8 +48,9 @@ class GoalCheckout:
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         try:
-            result = subprocess.run(
+            result = run_guarded(
                 ["git", *args],
+                runner=subprocess.run,
                 cwd=self.root,
                 env=inherited_git_environment(),
                 capture_output=True,
@@ -114,8 +116,9 @@ class GoalCheckout:
     def _git_bytes(self, *args: str) -> bytes:
         """Run git and return raw stdout: path-bearing output is read as bytes."""
         try:
-            result = subprocess.run(
+            result = run_guarded(
                 ["git", *args],
+                runner=subprocess.run,
                 cwd=self.root,
                 env=inherited_git_environment(),
                 capture_output=True,

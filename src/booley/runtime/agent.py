@@ -57,6 +57,10 @@ async def call_agent(
     container-only (ADR 0028), so specialists already execute inside the
     Sandbox and the old per-call DockerSandboxBackend wrap is gone.
     """
+    from booley.core.temporary_workspace import sweep_stale_workspaces
+    from booley.core.workspace_async import filesystem_call
+
+    await filesystem_call(sweep_stale_workspaces)
     cfg = get_backend_config()
 
     if step_name is not None and step_name in STEP_TIERS:

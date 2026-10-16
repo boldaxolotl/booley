@@ -10,6 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from booley.core.file_lock import active_child_lease_fd
+from booley.core.temporary_workspace import guarded_popen, launch_finished, run_guarded
 from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
@@ -236,8 +237,9 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, **child_kwargs):
     observer = current_progress()
     scope = current_supervised_execution()
     if scope is None and observer is None:
-        return subprocess.run(
+        return run_guarded(
             command,
+            runner=subprocess.run,
             cwd=cwd,
             env=env,
             capture_output=True,
@@ -259,7 +261,7 @@ def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer
         supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
     if observer is not None:
         observer.begin_command()
-    process = subprocess.Popen(
+    process, launch = guarded_popen(
         command,
         cwd=cwd,
         env=supervised_env,
@@ -276,6 +278,7 @@ def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer
     try:
         stdout, stderr = _communicate_pre_sim(process, command, timeout, observer)
     finally:
+        launch_finished(launch)
         if scope is not None:
             scope.processes.unregister(process)
         if observer is not None:

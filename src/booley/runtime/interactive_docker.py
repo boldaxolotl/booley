@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.config.settings import InteractiveConfig
+from booley.core.temporary_workspace import run_guarded
 from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
 
 if TYPE_CHECKING:
@@ -62,7 +63,7 @@ def _run_docker(
 
     Tests patch this single function to simulate the Docker CLI.
     """
-    return subprocess.run(
+    return run_guarded(
         [executable, *args],
         capture_output=True,
         text=True,

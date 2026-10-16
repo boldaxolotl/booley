@@ -22,6 +22,12 @@ from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
+from booley.core.temporary_workspace import (
+    launch_failed,
+    launch_finished,
+    prepare_launch,
+    validate_native_command,
+)
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows import execution
@@ -119,23 +125,36 @@ def _popen_kwargs_with_lease() -> dict[str, Any]:
 def _start_local_process(cmd, cwd, env, scope):
     if scope is not None and scope.cancelled():
         return None
+    launch = prepare_launch(cmd)
+    kwargs = _popen_kwargs_with_lease()
+    inherited = tuple(kwargs.get("pass_fds", ()))
+    kwargs.update(launch.kwargs)
+    if inherited:
+        kwargs["pass_fds"] = tuple(dict.fromkeys((*inherited, *kwargs.get("pass_fds", ()))))
     try:
+        if launch.roots:
+            validate_native_command(cmd, {"cwd": cwd, "env": env})
         proc = subprocess.Popen(
-            cmd,
+            launch.command,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             env=env,
-            **_popen_kwargs_with_lease(),
+            **kwargs,
         )
+        from booley.core.temporary_workspace import register_guarded_process
+
+        register_guarded_process(proc, launch)
         if scope is not None:
             scope.processes.register(proc)
-        return proc
+        return proc, launch
     except FileNotFoundError:
+        launch_failed(launch)
         logger.error("Command not found: %s", cmd[0])
         return None
-    except BaseException:
+    except OSError:
+        launch_failed(launch)
         raise
 
 
@@ -367,14 +386,8 @@ class FlowMechanics:
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd()
         env = {**os.environ, **self._extra_subprocess_env()}
-        try:
-            cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
-        except (OSError, RuntimeError, ValueError):
-            cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
-        env = relocate_python_artifacts(
-            env,
-            cache_root,
-            pytest_scope=f"flow:{getattr(self, 'name', type(self).__name__)}:{cwd.resolve()}",
+        env = _local_artifact_environment(
+            cwd, env, f"flow:{getattr(self, 'name', type(self).__name__)}:{cwd.resolve()}"
         )
         cmd, scope = _prepare_supervised_command(cmd, env)
         from booley.flows.terminal_progress import current_progress
@@ -388,20 +401,25 @@ class FlowMechanics:
                 env["PYTHONUNBUFFERED"] = "1"
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
-        proc = _start_local_process(cmd, cwd, env, scope)
-        if proc is None:
+        started_process = _start_local_process(cmd, cwd, env, scope)
+        if started_process is None:
             if observer is not None:
                 observer.end_command()
             return SubprocessResult(returncode=-1)
+        proc, launch = started_process
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
-        if observer is not None:
-            return _observe_local_process(
-                proc, observer, scope, memory_monitor, oom_before, start, timeout
+        try:
+            if observer is not None:
+                return _observe_local_process(
+                    proc, observer, scope, memory_monitor, oom_before, start, timeout
+                )
+            return _communicate_local_process(
+                cmd, proc, scope, memory_monitor, oom_before, start, timeout
             )
-        return _communicate_local_process(
-            cmd, proc, scope, memory_monitor, oom_before, start, timeout
-        )
+
+        finally:
+            launch_finished(launch)
 
     def _execute(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
         """Run a subprocess locally (inside the Sandbox, ADR 0028)."""
@@ -780,3 +798,15 @@ def _decode_output(data: str | bytes | None) -> str:
     if isinstance(data, bytes):
         return data.decode("utf-8", errors="replace")
     return data
+
+
+def _local_artifact_environment(cwd: Path, env: dict[str, str], scope: str) -> dict[str, str]:
+    try:
+        cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
+    except (OSError, RuntimeError, ValueError):
+        cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
+    return relocate_python_artifacts(
+        env,
+        cache_root,
+        pytest_scope=scope,
+    )

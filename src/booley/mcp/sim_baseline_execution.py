@@ -232,18 +232,15 @@ def baseline_kind(plan: TargetTestPlan | None, run: TestRun) -> tuple[str, str]:
 
 
 def _ignored_destination(root: Path, base: str) -> None:
-    destination = worktree_state_dir(root) / f".baseline-wt-{os.getpid()}-{base[:7]}"
-    owner = GoalCheckout(destination.parent).containing_repository()
+    # Query a file leaf beneath the exact prospective namespace. Existing
+    # .runtime directory exclusions apply without creating scratch to query it.
+    destination = worktree_state_dir(root).resolve() / ".runtime" / "owned-scratch" / "probe"
+    owner = GoalCheckout(worktree_state_dir(root).resolve()).containing_repository()
     if owner is None:
         raise ValueError("baseline scratch has no repository owner")
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", str(destination)],
-        cwd=owner[0],
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode != 0:
+    from booley.runtime.git_ignore import ignored_paths
+
+    if destination not in ignored_paths(owner[0], [destination]):
         raise ValueError("baseline scratch directory is not ignored; run Project initialization")
 
 
@@ -404,7 +401,15 @@ def execute_child(
         },
     )
     command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
-    process = subprocess.Popen(command, env=baseline_environment(), **new_group_kwargs())
+    from booley.core.temporary_workspace import (
+        guarded_popen,
+        launch_finished,
+        stop_guarded_process,
+    )
+
+    process, launch = guarded_popen(
+        command, runner=subprocess.Popen, env=baseline_environment(), **new_group_kwargs()
+    )
     group = capture_process_group(process)
     from booley.runtime.pid import capture_process_identity
 
@@ -419,7 +424,9 @@ def execute_child(
         process.wait(timeout=_remaining_seconds(output))
         return read_document(output / "simulation-result.json")
     finally:
-        terminate_process_group(process, group)
+        if not stop_guarded_process(process):
+            terminate_process_group(process, group)
+        launch_finished(launch)
 
 
 def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None:
@@ -427,13 +434,15 @@ def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None
     from booley.core.process_identity import ProcessIdentity
     from booley.flows.baseline_worktree import _cleanup_baseline_worktree
     from booley.runtime.pid import ProcessState, observe_process
-    from booley.runtime.pinned_history import raw_git
 
     value = request.get("owned_checkout")
     if value is None:
         return
     checkout, source = Path(value), Path(request["source_repository"])
     if not checkout.exists():
+        return
+    if checkout.name == ".baseline-wt-rtl":
+        _reap_marked_checkout(checkout, source, request, supervisor_pid)
         return
     if (
         checkout.parent != Path(request["scratch_parent"])
@@ -447,6 +456,13 @@ def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None
         or observe_process(child).state not in {ProcessState.DEAD, ProcessState.ZOMBIE}
     ):
         return  # no cleanup while a child may still consume the checkout
+    paired = _validate_legacy_baseline_pins(checkout, source, request)
+    _cleanup_baseline_worktree(source, checkout, paired)
+
+
+def _validate_legacy_baseline_pins(checkout, source, request):
+    from booley.runtime.pinned_history import raw_git
+
     if GoalCheckout(checkout).head_sha() != request["identity"]["base_sha"]:
         raise ValueError("interrupted baseline checkout pin differs")
     actual = Path(
@@ -469,7 +485,37 @@ def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None
             or GoalCheckout(paired).head_sha() != request["identity"]["paired_base_sha"]
         ):
             raise ValueError("interrupted paired baseline ownership differs")
-    _cleanup_baseline_worktree(source, checkout, paired)
+    return paired
+
+
+def _reap_marked_checkout(
+    checkout: Path, source: Path, request: Mapping[str, Any], supervisor_pid: int
+) -> None:
+    from booley.core.temporary_workspace import (
+        _delete_owned,
+        _validated_marker,
+        baseline_project_scope,
+    )
+    from booley.flows.baseline_worktree import (
+        _baseline_metadata,
+        cleanup_owned_baseline,
+        owned_scratch_parent,
+    )
+
+    container = checkout.parent
+    if checkout.is_symlink() or container.parent != owned_scratch_parent(source):
+        raise ValueError("interrupted baseline scratch ownership differs")
+    marker, _ = _validated_marker(container)
+    if (
+        marker["kind"] != "baseline"
+        or marker["owner"]["pid"] != supervisor_pid
+        or marker.get("baseline") != _baseline_metadata(source)
+    ):
+        raise ValueError("interrupted baseline scratch identity differs")
+    if GoalCheckout(checkout).head_sha() != request["identity"]["base_sha"]:
+        raise ValueError("interrupted baseline checkout pin differs")
+    with baseline_project_scope(source, cleanup_owned_baseline):
+        _delete_owned(container, require_dead=True)
 
 
 def _remaining_seconds(output: Path) -> float:
