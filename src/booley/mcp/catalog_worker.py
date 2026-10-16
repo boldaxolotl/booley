@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -37,25 +38,21 @@ def run_schema_worker(
         directory = Path(temporary)
         request = directory / "request.json"
         result = directory / "result.json"
-        request.write_text(json.dumps([str(path) for path in paths.values()]))
+        environment, search_path = _worker_environment(paths)
+        request.write_text(
+            json.dumps(
+                {"paths": [str(path) for path in paths.values()], "search_path": search_path}
+            )
+        )
         command = [
             sys.executable,
             "-B",
-            "-X",
-            f"pycache_prefix={directory / 'pycache'}",
+            "-P",
             "-m",
             "booley.mcp.catalog_worker",
             str(request),
             str(result),
         ]
-        environment = dict(os.environ)
-        # Schema hooks must retain the running server's selected root even if
-        # the Project Root selector was edited after server startup.
-        environment["BOOLEY_DIR"] = str(next(iter(paths.values())).parent.parent)
-        source_root = str(Path(__file__).resolve().parents[2])
-        environment["PYTHONPATH"] = os.pathsep.join(
-            [source_root, *sys.path, environment.get("PYTHONPATH", "")]
-        )
         with (directory / "worker.log").open("wb") as output:
             process = subprocess.Popen(
                 command, stdout=output, stderr=output, env=environment, **new_group_kwargs()
@@ -69,6 +66,27 @@ def run_schema_worker(
                 # Also terminate descendants that outlive a successfully exited importer.
                 terminate_process_group(process, group, grace_seconds=0.2)
         return _read_result(result)
+
+
+def _worker_environment(paths: dict[str, Path]) -> tuple[dict[str, str], list[str]]:
+    """Keep Project imports out of the framework preload's shared bytecode cache."""
+    environment = dict(os.environ)
+    directory = next(iter(paths.values())).parent.parent
+    # Retain the server's selection even after a Project Root selector edit.
+    environment["BOOLEY_DIR"] = str(directory)
+    source_root = str(Path(__file__).resolve().parents[2])
+    search_path = [source_root, *sys.path, *environment.get("PYTHONPATH", "").split(os.pathsep)]
+    project_roots = {Path.cwd().resolve(), directory.resolve()}
+    project_roots.update(path.parent.resolve() for path in paths.values())
+    installed = {Path(value).resolve() for value in sysconfig.get_paths().values()}
+    bootstrap = []
+    for raw_path in search_path:
+        path = Path(raw_path).resolve()
+        trusted = str(path) == source_root or path in installed
+        if trusted or not any(path.is_relative_to(root) for root in project_roots):
+            bootstrap.append(raw_path)
+    environment["PYTHONPATH"] = os.pathsep.join(bootstrap)
+    return environment, search_path
 
 
 def _diagnostic_tail(path: Path) -> str:
@@ -112,9 +130,14 @@ def _read_result(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
 def _main(request: Path, result: Path) -> None:
     from booley.mcp.server import _import_and_extract_file
 
+    data = require_dict(json.loads(request.read_text()), field="catalog worker request")
+    # Only trusted framework/dependency paths were visible during preload.
+    # Project modules and sibling helpers must never reuse timestamp-based pyc.
+    sys.pycache_prefix = str(result.parent / "pycache")
+    sys.path[:] = data["search_path"]
     definitions, errors = [], []
     adapter = TypeAdapter(dict[str, Any])
-    for raw_path in json.loads(request.read_text()):
+    for raw_path in data["paths"]:
         path = Path(raw_path)
         sys.path.insert(0, str(path.parent))
         try:

@@ -197,6 +197,9 @@ def test_running_catalog_sends_list_changed(tmp_path, monkeypatch):
                 action()
                 event = await asyncio.wait_for(anext(subscription), 4)
                 assert isinstance(event, ToolsListChanged)
+                # Settle this generation before editing again. Each invalidation
+                # must still arrive before its first tools/list request.
+                await client.list_tools()
 
     try:
         asyncio.run(exercise())

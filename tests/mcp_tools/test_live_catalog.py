@@ -409,8 +409,70 @@ def test_observation_generation_is_independent_and_root_selector_does_not_reloca
     asyncio.run(exercise())
 
 
+def test_worker_reuses_warmed_framework_bytecode(project, monkeypatch, tmp_path_factory):
+    import py_compile
+
+    from booley.mcp.catalog_worker import run_schema_worker
+
+    py_compile.compile(server.__file__, doraise=True)
+    marker = project / "framework-recompiled"
+    observer = tmp_path_factory.mktemp("catalog-import-observer")
+    (observer / "sitecustomize.py").write_text(
+        "import os, sys\n"
+        "def observe(event, args):\n"
+        f"    if event == 'compile' and os.path.normcase(str(args[1])) == {os.path.normcase(server.__file__)!r}:\n"
+        f"        with open({str(marker)!r}, 'w') as output: output.write('compiled')\n"
+        "sys.addaudithook(observe)\n"
+    )
+    monkeypatch.syspath_prepend(str(observer))
+    definitions, errors = run_schema_worker({"local_check": write_endpoint(project)})
+    assert not errors
+    assert definitions[0]["name"] == "local_check"
+    assert not marker.exists(), "schema worker must reuse warmed framework bytecode"
+
+
+def test_worker_isolates_project_imports_before_reusing_dependency_cache(project, monkeypatch):
+    import py_compile
+
+    from booley.mcp.catalog_worker import run_schema_worker
+
+    path = write_endpoint(project)
+    helper = path.parent / "_schema_helper.py"
+    helper.write_text("OPTION = 'first'\n")
+    py_compile.compile(str(helper), doraise=True)
+    path.write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "assert Path(sys.pycache_prefix).parent.name.startswith('booley-catalog-')\n"
+        "from _schema_helper import OPTION\n"
+        + path.read_text().replace("'--first'", "'--' + OPTION")
+    )
+    py_compile.compile(str(path), doraise=True)
+    source, source_stat = path.read_text(), path.stat()
+    unsafe_import = project / "unsafe-bootstrap-import"
+    for directory in (project.parent, path.parent):
+        for name in ("sitecustomize", "json", "pydantic"):
+            (directory / f"{name}.py").write_text(
+                f"open({str(unsafe_import)!r}, 'w').write('Project imported before isolation')\n"
+                "raise AssertionError('Project module shadowed a framework dependency')\n"
+            )
+    monkeypatch.syspath_prepend(str(path.parent))
+    for option in ("first", "other"):
+        before = helper.stat()
+        helper.write_text(f"OPTION = {option!r}\n")
+        os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
+        description = "Local capability" if option == "first" else "Other capability"
+        path.write_text(source.replace("Local capability", description))
+        os.utime(path, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+        definitions, errors = run_schema_worker({"local_check": path})
+        assert not errors
+        assert option in definitions[0]["schema"]["properties"]
+        assert definitions[0]["description"] == description
+    assert not unsafe_import.exists()
+
+
 def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     import time
+    from types import SimpleNamespace
 
     from booley.mcp import catalog_worker
 
@@ -418,17 +480,49 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     pid_file = project / "worker-pids"
     path.write_text(
         "import os, subprocess, sys, time\nfrom pathlib import Path\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
         f"Path({str(pid_file)!r}).write_text(str(os.getpid()) + ' ' + str(child.pid))\n"
-        "time.sleep(30)\n" + path.read_text()
+        "time.sleep(120)\n" + path.read_text()
     )
-    monkeypatch.setattr(catalog_worker, "DISCOVERY_TIMEOUT_SECONDS", 5)
+    ready_at = None
+
+    def discovery_time():
+        nonlocal ready_at
+        now = time.monotonic()
+        if pid_file.exists():
+            ready_at = ready_at or now
+            return now + catalog_worker.DISCOVERY_TIMEOUT_SECONDS
+        return now
+
+    # Expire discovery only after the real importer has spawned its child.
+    # The production deadline still independently bounds importer startup.
+    monkeypatch.setattr(catalog_worker, "time", SimpleNamespace(monotonic=discovery_time))
     started = time.monotonic()
     with pytest.raises(RuntimeError, match="timed out"):
         catalog_worker.run_schema_worker({"local_check": path})
-    assert time.monotonic() - started < 8
     assert pid_file.exists()
+    assert ready_at is not None
+    assert ready_at - started < catalog_worker.DISCOVERY_TIMEOUT_SECONDS
+    # Two taskkill calls (10s each), 0.2s grace, and a 5s reap are bounded.
+    assert time.monotonic() - ready_at < 26
     for pid in pid_file.read_text().split():
+        assert_worker_pid_stopped(pid)
+
+
+def assert_worker_pid_stopped(pid):
+    import csv
+    import subprocess
+
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        assert all(len(row) < 2 or row[1] != pid for row in csv.reader(result.stdout.splitlines()))
+    else:
         stat = Path(f"/proc/{pid}/stat")
         assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
 
