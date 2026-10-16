@@ -58,7 +58,7 @@ What the agent gets on top of a plain shell:
 - **B-Wave**, a custom binary written in Rust that lets agents query waveforms directly. A simulation run with tracing on records a waveform, and the agent asks it questions: list signals, find the first cycle where a condition holds, print a few signals over a window of cycles as a text table, etc.
 - **The build system is part of the harness.** Caliptra's sources, simulator flags and firmware build are described once, in FuseSoC core files and a test list. The agent never touches Caliptra's Makefiles or the environment variables they expect. The no-harness agent has a build system too: those Makefiles, which it has to figure out on its own.
 
-The Caliptra project setup used in this experiment: [booley-prj-caliptra](https://github.com/boldaxolotl/booley-prj-caliptra). Its README walks through the setup. Use it to play with Booley on Caliptra, or to rerun this experiment: revert the VeeR fix linked above and give your agent the bug report from "The bug". <!-- TODO: repo is still private; flip visibility before publishing -->
+The Caliptra project setup used in this experiment: [booley-prj-caliptra](https://github.com/boldaxolotl/booley-prj-caliptra). Its README walks through the setup. Use it to play with Booley on Caliptra, or to rerun this experiment: revert the VeeR fix linked above and give your agent the bug report from "The bug".
 
 ## Results
 
@@ -78,25 +78,21 @@ With the harness, the agent built once with tracing on and asked the waveform 16
 
 Here's what those questions look like, from trial b1 (equivalent command lines, output trimmed). The agent's test kept passing on the buggy design, so it asked when the suspicious address match fires:
 
-```
-$ bwave find trace.fst '*bus_intf.ld_addr_rhit_lo_lo' 1
-cycle 4687 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
-cycle 4696 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
-...
-# 32 matches found
-```
+    $ bwave find trace.fst '*bus_intf.ld_addr_rhit_lo_lo' 1
+    cycle 4687 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
+    cycle 4696 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
+    ...
+    # 32 matches found
 
 32 times. So why does the test pass? It took a snapshot of the first hit:
 
-```
-$ bwave value trace.fst --at 4687 -s '*bus_intf.ld_*' -s '*bus_intf.lsu_busreq*' -s '*bus_intf.is_sideeffects_m' ...
-# Snapshot at cycle 4687
-lsu_busreq_m                             = 1
-is_sideeffects_m                         = 1
-lsu_busreq_r                             = 0
-ld_addr_rhit_lo_lo                       = 1
-ld_full_hit_m                            = 0
-```
+    $ bwave value trace.fst --at 4687 -s '*bus_intf.ld_*' -s '*bus_intf.lsu_busreq*' -s '*bus_intf.is_sideeffects_m' ...
+    # Snapshot at cycle 4687
+    lsu_busreq_m                             = 1
+    is_sideeffects_m                         = 1
+    lsu_busreq_r                             = 0
+    ld_addr_rhit_lo_lo                       = 1
+    ld_full_hit_m                            = 0
 
 A ROM load matches a store that isn't even on the bus: that's the bug. But the load is flagged as side-effect, so the forward is cancelled and the test passes anyway. The agent changed the test's memory-attribute setting, and half a minute later the test failed on the buggy design.
 
