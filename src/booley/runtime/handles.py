@@ -194,6 +194,16 @@ def session_writer(booley_dir: Path) -> Iterator[None]:
         yield
 
 
+def reserve_session_handle(booley_dir: Path, key: str) -> str:
+    """Durably reserve a display handle without publishing session presence."""
+    with session_writer(booley_dir):
+        store = HandleStore(booley_dir)
+        handles = store.load()
+        handle = handles.reserve(key, "S")
+        store.save(handles)
+        return handle
+
+
 @contextmanager
 def job_writer(booley_dir: Path) -> Iterator[None]:
     """Serialize cross-process Job allocation with a bounded wait."""

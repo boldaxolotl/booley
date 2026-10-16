@@ -130,6 +130,74 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
+def _current_nonstealth_init(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = repo / ".booley"
+    project.mkdir()
+    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    image = LifecycleResult(
+        selected_reference="booley-sandbox",
+        selected_id="sha256:test-image",
+        status=ImageLifecycleStatus.CURRENT,
+    )
+
+    def current_image(ctx, _bootstrap=None):
+        ctx.record("docker_image", "skip", "current")
+        return image
+
+    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image)
+    monkeypatch.setattr(
+        init_cmd, "_step_auth", lambda ctx, *args, **kwargs: ctx.record("auth", "skip", "current")
+    )
+
+
+@pytest.mark.timeout(120)
+def test_nonstealth_init_reports_global_ignored_booley_paths(repo, monkeypatch, capsys):
+    _current_nonstealth_init(repo, monkeypatch)
+    ignores = repo.parent / "global ignores"
+    ignores.write_text("# local policy\n.booley/\n")
+    subprocess.run(["git", "config", "core.excludesFile", str(ignores)], cwd=repo, check=True)
+    assert _run_full_init(repo) == 0
+    output = capsys.readouterr().out
+    assert "trackability" in output and str(ignores) in output, (
+        "non-Stealth init must warn with the excluding source"
+    )
+    assert ":2" in output and ".booley/booley.toml" in output
+    assert "edit the reported" in output and "warn" in output.lower()
+    assert ignores.read_text() == "# local policy\n.booley/\n"
+
+
+@pytest.mark.timeout(120)
+def test_nonstealth_trackability_check_only_is_read_only(repo, monkeypatch, capsys):
+    _current_nonstealth_init(repo, monkeypatch)
+    assert _run_full_init(repo) == 0
+    capsys.readouterr()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "initialized",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    ignores = repo.parent / "global ignores"
+    ignores.write_text("# local policy\n.booley/\n")
+    subprocess.run(["git", "config", "core.excludesFile", str(ignores)], cwd=repo, check=True)
+    before = _filesystem_snapshot(repo)
+    args = _init_args()
+    args.check_only = True
+    assert init_cmd.run_init(args, repo) == 1
+    output = capsys.readouterr().out
+    assert "project_trackability" in output and str(ignores) + ":2" in output
+    assert _filesystem_snapshot(repo) == before
+
+
 class TestFullInitRerun:
     # Windows CI measured 34.1s: 3x slowest rounded up to 30s requires 120s.
     @pytest.mark.timeout(120)

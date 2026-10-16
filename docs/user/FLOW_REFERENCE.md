@@ -386,8 +386,7 @@ Goal Mode translates Goals into evidence keys. Ordinary Interactive Mode runs
 report verdicts without a Goal Record. In an active Goal worktree, pass its
 absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 `booley_targets`, and `booley_report` so calls select that worktree.
-`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
-`coverage_evidence`, and `bwave` accept no `work_dir`. See
+`booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`. See
 [worktree routing](USAGE.md#working-with-evidence) for the full inventory and
 when `work_dir` is required.
 

@@ -70,9 +70,8 @@ Pass the absolute worktree root as `work_dir` to Booley Flows, Specialists,
 Goal tools, `booley_targets`, and `booley_report`. While a Goal Record
 occupies the Project, calls without it are refused (only `booley_targets` may
 omit it), and Project-defined endpoints must declare `work_dir` to run.
-`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
-`coverage_evidence`, and `bwave` accept no `work_dir`. Resume saved proposal
-and Finish IDs rather than editing records. Protected Input changes block
+`booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`.
+Resume saved proposal and Finish IDs rather than editing records. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
 Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
 Main Booley Directory (`BOOLEY_DIR` in the Sandbox); a

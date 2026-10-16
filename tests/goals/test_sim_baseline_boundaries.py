@@ -410,3 +410,176 @@ def test_child_result_is_read_after_a_clean_exit(baseline, monkeypatch) -> None:
     assert result == published
     assert terminated == [process]
     assert "child_process" in read_document(path)
+
+
+@pytest.fixture
+def scratch_policy(layout, isolated_git_excludes):
+    """Ignore tests use no outer blanket or host excludes."""
+    from tests.goals.conftest import git
+
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    git(layout.main, "config", "core.excludesFile", str(isolated_git_excludes))
+    return layout
+
+
+def _select_scratch_state(layout, tmp_path, monkeypatch, selection):
+    from booley.core.booley_dir import reset_cache
+    from booley.runtime.worktree_paths import worktree_state_dir
+    from tests.conftest import symlink_or_skip
+    from tests.goals.conftest import install_paired_project
+
+    selected, owner = layout.control, layout.main
+    if selection == "custom":
+        selected = layout.main / "custom-state"
+        selected.mkdir()
+    elif selection == "paired":
+        selected = install_paired_project(layout, tmp_path)
+        owner = selected
+    elif selection == "symlink":
+        import shutil
+
+        selected = layout.main / "physical-state"
+        selected.mkdir()
+        alias = layout.worktree / ".booley"
+        shutil.rmtree(alias)
+        symlink_or_skip(alias, selected, target_is_directory=True)
+        monkeypatch.setenv("BOOLEY_DIR", str(selected))
+    if selection != "symlink":
+        monkeypatch.setenv("BOOLEY_DIR", str(selected))
+    reset_cache()
+    if selection == "symlink":
+        assert worktree_state_dir(layout.worktree) == alias
+    return selected, owner
+
+
+@pytest.mark.parametrize("selection", ["main", "custom", "paired", "symlink"])
+def test_scratch_refusal_names_selected_owner_policy_without_creating_directory(
+    scratch_policy, tmp_path, monkeypatch, selection
+):
+    from booley.goals.checkout import GoalCheckout
+    from booley.runtime.worktree_paths import worktree_state_dir
+    from tests.goals.conftest import git
+
+    layout = scratch_policy
+    selected, owner = _select_scratch_state(layout, tmp_path, monkeypatch, selection)
+    policy = selected / ".gitignore"
+    policy.write_bytes(b"# no scratch policy\n")
+    assert worktree_state_dir(layout.worktree).resolve() == selected.resolve()
+    assert GoalCheckout(selected).containing_repository()[0].resolve() == owner.resolve()
+    base = git(layout.main, "rev-parse", "HEAD")
+    scratch = selected / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    assert not scratch.exists()
+    with pytest.raises(ValueError) as failure:
+        execution._ignored_destination(layout.worktree, base)
+    assert "not classified as ignored" in str(failure.value)
+    assert "/.baseline-wt-*/" in str(failure.value)
+    assert str(policy.resolve()) in str(failure.value)
+    assert not scratch.exists()
+    # The same selected owner accepts the prospective directory with its policy.
+    policy.write_bytes(b"/.baseline-wt-*/\n")
+    execution._ignored_destination(layout.worktree, base)
+    assert not scratch.exists()
+
+
+@pytest.mark.parametrize("exists", [False, True])
+@pytest.mark.parametrize("abbrev", [7, 12])
+def test_scratch_symlink_is_refused_without_touching_target(scratch_policy, exists, abbrev):
+    from tests.conftest import symlink_or_skip
+    from tests.goals.conftest import git
+
+    layout = scratch_policy
+    (layout.control / ".gitignore").write_bytes(b"/.baseline-wt-*/\n")
+    git(layout.main, "config", "core.abbrev", str(abbrev))
+    base = git(layout.main, "rev-parse", "HEAD")
+    short = git(layout.worktree, "rev-parse", "--short", base)
+    assert len(short) == abbrev
+    target = layout.control / ".baseline-wt-target"
+    if exists:
+        target.mkdir()
+    scratch = layout.control / f".baseline-wt-{os.getpid()}-{short}"
+    symlink_or_skip(scratch, target, target_is_directory=True)
+    with pytest.raises(ValueError, match=r"baseline scratch.*symlink"):
+        execution._ignored_destination(layout.worktree, base)
+    assert scratch.is_symlink()
+    assert target.exists() is exists
+    if exists:
+        assert list(target.iterdir()) == []
+
+
+def test_scratch_with_no_repository_owner_is_refused(scratch_policy, tmp_path, monkeypatch):
+    from booley.core.booley_dir import reset_cache
+
+    outside = tmp_path / "unowned-state"
+    outside.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(outside))
+    reset_cache()
+    with pytest.raises(ValueError, match="baseline scratch has no repository owner"):
+        execution._ignored_destination(scratch_policy.worktree, "abcdef1")
+    assert list(outside.iterdir()) == []
+
+
+def test_indexed_uninitialized_gitlink_refuses_scratch_without_mutation(scratch_policy):
+    from tests.goals.conftest import git
+
+    layout = scratch_policy
+    policy = layout.control / ".gitignore"
+    policy.write_bytes(b"/.baseline-wt-*/\n")
+    base = git(layout.main, "rev-parse", "HEAD")
+    scratch = layout.control / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    relative = scratch.relative_to(layout.main).as_posix()
+    git(layout.main, "update-index", "--add", "--cacheinfo", f"160000,{base},{relative}")
+    assert not scratch.exists()
+    with pytest.raises(ValueError) as failure:
+        execution._ignored_destination(layout.worktree, base)
+    assert "not classified as ignored" in str(failure.value)
+    assert "/.baseline-wt-*/" in str(failure.value)
+    assert str(policy.resolve()) in str(failure.value)
+    assert "missing rule" not in str(failure.value)
+    assert not scratch.exists()
+
+
+def test_scratch_ignore_query_uses_discovered_owner_despite_leaked_git_dir(
+    scratch_policy, tmp_path, monkeypatch
+):
+    from booley.goals.checkout import GoalCheckout
+    from tests.goals.conftest import git
+
+    layout = scratch_policy
+    (layout.control / ".gitignore").write_bytes(b"# no local scratch rule\n")
+    # Only the discovered owner's Git directory provides the deciding rule.
+    (layout.main / ".git/info/exclude").write_bytes(b"/.booley/.baseline-wt-*/\n")
+    base = git(layout.main, "rev-parse", "HEAD")
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    git(foreign, "init", "-q")
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+    assert GoalCheckout(layout.control).containing_repository()[0] == layout.main
+    execution._ignored_destination(layout.worktree, base)
+    assert not list(layout.control.glob(".baseline-wt-*"))
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+def test_scratch_git_failure_retains_context_and_selected_policy(
+    scratch_policy, monkeypatch, failure
+):
+    import subprocess
+
+    from booley.runtime import git_ignore
+
+    original = subprocess.run
+
+    def fail(command, **kwargs):
+        if command[1] != "check-ignore":
+            return original(command, **kwargs)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 30)
+        return subprocess.CompletedProcess(command, 128, b"", b"index unavailable")
+
+    monkeypatch.setattr(git_ignore.subprocess, "run", fail)
+    with pytest.raises(ValueError) as raised:
+        execution._ignored_destination(scratch_policy.worktree, "abcdef1")
+    message = str(raised.value)
+    assert "timed out" in message if failure == "timeout" else "index unavailable" in message
+    assert str((scratch_policy.control / ".gitignore").resolve()) in message
+    assert "not classified" not in message
+    assert not list(scratch_policy.control.glob(".baseline-wt-*"))

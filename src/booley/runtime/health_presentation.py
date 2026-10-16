@@ -1,8 +1,28 @@
 """Brief Doctor text shared by presentation adapters, without execution policy."""
 
 from pathlib import Path
+from typing import Literal
 
 from booley.runtime import health
+
+HealthSeverity = Literal["fail", "warn", "ok", "unavailable", "unknown"]
+
+
+def count_line(snapshot: health.HealthSnapshot | None) -> tuple[str, HealthSeverity]:
+    """Render compact active counts and freshness from one already-read observation."""
+    if snapshot is None:
+        return "Doctor: unavailable: no readable automatic result", "unavailable"
+    assessment = snapshot.assessment
+    counts = []
+    if assessment.fail_count:
+        counts.append(f"{assessment.fail_count} FAIL")
+    if assessment.warn_count:
+        counts.append(f"{assessment.warn_count} WARN")
+    text = "Doctor: " + (" · ".join(counts) if counts else "OK")
+    severity: HealthSeverity = (
+        "fail" if assessment.fail_count else "warn" if assessment.warn_count else "ok"
+    )
+    return text + (" · stale" if snapshot.due else ""), severity
 
 
 def brief_message(snapshot: health.HealthSnapshot) -> str:
