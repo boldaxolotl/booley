@@ -30,9 +30,9 @@ from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.goals.binding import GoalBindingError, GoalRunBinding, bind_run
 from booley.goals.paths import record_paths
 from booley.goals.protected_inputs import ProtectedInputRoots
-from booley.goals.rules import work_dir_guidance
 from booley.goals.session_key import session_key
 from booley.goals.store import GoalRecordCorruptError, GoalStore, WorktreeIdentityError
+from booley.mcp.catalog import work_dir_guidance
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.job_records import make_run_id
 from booley.runtime.session_paths import session_jobs_dir

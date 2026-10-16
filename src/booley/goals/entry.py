@@ -173,6 +173,7 @@ class EntryEnvironment:
     #: approved changes of the Goal Mode; tests supply a deterministic source.
     draw_seeds: SeedDraw = draw_seeds
     schedule_baselines: Callable[[GoalRecord], None] | None = None
+    routing_guidance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -301,7 +302,10 @@ def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResul
             logging.getLogger(__name__).warning("Baseline scheduling unavailable: %s", exc)
     warnings = (*plan.warnings, *_session_warnings(env, identity))
     return EntryResult(
-        active, warnings, goal_mode_rules(active.declared_protected_inputs), recovered
+        active,
+        warnings,
+        goal_mode_rules(active.declared_protected_inputs, routing_guidance=env.routing_guidance),
+        recovered,
     )
 
 

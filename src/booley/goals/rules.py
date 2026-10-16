@@ -9,6 +9,9 @@ so the rules and the check cannot drift apart.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from booley.goals.declared_inputs import DeclaredCapture
 from booley.goals.protected_inputs import PROTECTED_INPUT_NAMES
 
@@ -24,16 +27,15 @@ WORK_DIR_REQUIREMENT = (
 )
 
 
-def work_dir_guidance() -> str:
-    """Render routing prose from the default Interactive advertised schemas."""
-    from booley.mcp.catalog import default_interactive_work_dir_inventory
-
-    inventory = default_interactive_work_dir_inventory()
+def work_dir_guidance(
+    inventory: tuple[Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None = None,
+) -> str:
+    """Render routing prose from schemas supplied by the calling entry point."""
     if inventory is None:
         return (
             "Pass `work_dir` (the absolute worktree root) to calls whose advertised "
-            "schema accepts it. Utilities that accept no `work_dir` follow their "
-            "advertised schemas. " + WORK_DIR_REQUIREMENT
+            "schema accepts it. For utilities, follow the advertised schema rather than "
+            "supplying an unsupported `work_dir`. " + WORK_DIR_REQUIREMENT
         )
     accepting, nonaccepting = inventory
     utilities = [
@@ -52,7 +54,9 @@ def work_dir_guidance() -> str:
     )
 
 
-def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
+def goal_mode_rules(
+    declared: DeclaredCapture | None = None, *, routing_guidance: str | None = None
+) -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline."""
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
     if declared is not None:
@@ -62,7 +66,7 @@ def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
         protected += ". Declarations: " + ", ".join(f"`{rule}`" for rule in declared.declarations)
         protected += "; changing these declarations requires abandon and re-entry"
     bullets = (
-        work_dir_guidance(),
+        routing_guidance if routing_guidance is not None else work_dir_guidance(),
         "Only Booley Flows and Specialists produce evidence. Nothing you write or "
         "report meets a Goal.",
         f"Protected inputs: {protected}. Editing one blocks Finish until it is "

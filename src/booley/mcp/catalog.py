@@ -187,7 +187,6 @@ def _mcp_tool_def_from_class(
 ) -> dict[str, Any]:
     """Build an MCP tool definition dict from an endpoint class and extracted schema."""
     from booley.flows.base import BuiltinFlow, FlowMechanics
-    from booley.specialists.specialist import Specialist
 
     result = {
         "name": cls.name,
@@ -195,7 +194,7 @@ def _mcp_tool_def_from_class(
         "description": getattr(cls, "description", "") or "",
         "schema": schema,
         "default_timeout": getattr(cls, "default_timeout", 0),
-        "is_specialist": issubclass(cls, Specialist),
+        "is_specialist": getattr(cls, "endpoint_kind", None) == "specialist",
         "is_flow": issubclass(cls, FlowMechanics),
         "is_builtin_flow": issubclass(cls, BuiltinFlow),
         "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
@@ -622,3 +621,10 @@ def reset_guidance_cache() -> None:
     """Reset process-static guidance discovery for isolated tests."""
     with _GUIDANCE_LOCK:
         _cached_default_inventory.cache_clear()
+
+
+def work_dir_guidance() -> str:
+    """Compose Goal routing text with the default Interactive schema inventory."""
+    from booley.goals.rules import work_dir_guidance as render_guidance
+
+    return render_guidance(default_interactive_work_dir_inventory())

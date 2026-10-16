@@ -208,7 +208,7 @@ def test_fresh_process_import_orders(first, second):
 def test_goal_schema_import_failure_degrades_renderer_once(monkeypatch, caplog):
     import builtins
 
-    from booley.goals.rules import work_dir_guidance
+    from booley.mcp.catalog import work_dir_guidance
 
     original_import = builtins.__import__
     attempts = []
@@ -221,7 +221,7 @@ def test_goal_schema_import_failure_degrades_renderer_once(monkeypatch, caplog):
 
     monkeypatch.setattr(builtins, "__import__", import_without_goal_schemas)
     first = work_dir_guidance()
-    assert "Utilities that accept no `work_dir` follow their advertised schemas" in first
+    assert "For utilities, follow the advertised schema" in first
     assert "While any Goal Record occupies" in first
     assert work_dir_guidance() == first
     assert len(attempts) == 1

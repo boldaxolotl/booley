@@ -8,8 +8,9 @@ from copy import deepcopy
 
 import pytest
 
-from booley.goals.rules import goal_mode_rules, work_dir_guidance
+from booley.goals.rules import goal_mode_rules
 from booley.mcp import catalog
+from booley.mcp.catalog import work_dir_guidance
 from booley.mcp.registry import discover_mcp_tools
 
 
@@ -38,7 +39,7 @@ def test_rules_do_not_claim_red_first_is_enforced() -> None:
 
 
 def test_rules_distinguish_routed_calls_from_tools_without_work_dir() -> None:
-    rules = goal_mode_rules()
+    rules = goal_mode_rules(routing_guidance=work_dir_guidance())
     assert "every Booley call" not in rules
     assert "`booley_targets`" in rules
     assert "`booley_report`" in rules
@@ -111,6 +112,6 @@ def test_nonaccepting_configurable_endpoint_uses_safe_fallback(monkeypatch):
     monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
     text = work_dir_guidance()
     assert text.startswith("Pass `work_dir`")
-    assert "Utilities that accept no `work_dir` follow their advertised schemas" in text
+    assert "For utilities, follow the advertised schema" in text
     assert "configured_endpoint" not in text
     assert "While any Goal Record occupies" in text

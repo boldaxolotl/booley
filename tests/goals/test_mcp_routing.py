@@ -237,6 +237,7 @@ def test_shared_worktree_and_missing_path_warning(goal_mode):
         work_dir=None,
         session_key="one",
         other_sessions=("one", "two"),
+        routing_guidance=server.catalog.work_dir_guidance(),
     )
     assert "another session" in warning
     assert "pass work_dir" in warning.casefold()
@@ -959,7 +960,9 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
     assert [view.record.id for view in views] == [goal_mode.record.id]
     expected = render_status(views)
     if rules:
-        expected += "\n\n" + goal_mode_rules()
+        from booley.mcp.catalog import work_dir_guidance
+
+        expected += "\n\n" + goal_mode_rules(routing_guidance=work_dir_guidance())
     result = asyncio.run(
         dispatch_goal_tool(
             "goal_status",
@@ -1121,9 +1124,9 @@ def test_catalog_failure_preserves_goal_entry_status_warning_and_refusal(
 
     # The goal_mode fixture entered successfully after discovery was made unavailable.
     assert goal_mode.record.state == GoalState.ACTIVE
-    assert unavailable_guidance_catalog.call_count == 1
+    assert unavailable_guidance_catalog.call_count == 0
     rules = goal_mode_rules()
-    assert "Utilities that accept no `work_dir` follow their advertised schemas" in rules
+    assert "For utilities, follow the advertised schema" in rules
     assert "While any Goal Record occupies" in rules
     status = asyncio.run(
         dispatch_goal_tool(
@@ -1133,7 +1136,7 @@ def test_catalog_failure_preserves_goal_entry_status_warning_and_refusal(
         )
     )
     assert not status.is_error
-    from booley.goals.rules import work_dir_guidance
+    from booley.mcp.catalog import work_dir_guidance
 
     assert work_dir_guidance() in status.value[0][0].text
     warning = goal_warnings(goal_mode.record, goal_mode.control, work_dir=None)
@@ -1141,9 +1144,61 @@ def test_catalog_failure_preserves_goal_entry_status_warning_and_refusal(
     assert "booley_targets may omit it" in warning
     with pytest.raises(GoalBindingError, match="Pass work_dir") as refusal:
         resolve_call_context({})
-    assert "Utilities that accept no work_dir" in str(refusal.value)
+    assert "For utilities, follow the advertised schema" in str(refusal.value)
     assert unavailable_guidance_catalog.call_count == 1
     diagnostics = [*caplog.get_records("setup"), *caplog.records]
     assert (
         sum("Interactive MCP guidance unavailable;" in item.message for item in diagnostics) == 1
     )
+
+
+def test_mcp_composes_schema_guidance_for_entry_status_warning_and_refusal(layout, monkeypatch):
+    from booley.goals.warnings import goal_warnings
+    from booley.mcp import catalog
+    from tests.goals.conftest import TESTS_TOML, TOP_CORE, write_tests_toml
+
+    definitions = [
+        {"name": "utility_custom", "schema": {"properties": {}}},
+        {"name": "accepting_custom", "schema": {"properties": {"work_dir": {}}}},
+    ]
+    catalog.reset_guidance_cache()
+    monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
+    try:
+        (layout.worktree / "top.core").write_text(TOP_CORE)
+        (layout.worktree / "rtl.v").write_text("module top; endmodule\n")
+        git(layout.worktree, "add", "top.core", "rtl.v")
+        git(layout.worktree, "commit", "-q", "-m", "top core")
+        write_tests_toml(layout, TESTS_TOML)
+        entered = asyncio.run(
+            dispatch_goal_tool(
+                "goal_enter",
+                {
+                    "work_dir": str(layout.worktree),
+                    "slug": "routing",
+                    "goals": [{"family": "LINT", "target": "top"}],
+                },
+                booley_dir=layout.control,
+            )
+        )
+        assert not entered.is_error, entered.value
+        guidance = catalog.work_dir_guidance()
+        assert "`utility_custom` accept no `work_dir`" in guidance
+        assert "Goal tools, `accepting_custom`." in guidance
+        assert guidance in entered.value[0][0].text
+        status = asyncio.run(
+            dispatch_goal_tool(
+                "goal_status",
+                {"work_dir": str(layout.worktree), "rules": True},
+                booley_dir=layout.control,
+            )
+        )
+        assert not status.is_error
+        assert guidance in status.value[0][0].text
+        record = GoalStore(layout.control).active_for_worktree(layout.worktree)
+        warning = goal_warnings(record, layout.control, work_dir=None, routing_guidance=guidance)
+        assert guidance.replace("`", "") in warning
+        with pytest.raises(GoalBindingError) as refusal:
+            resolve_call_context({})
+        assert guidance.replace("`", "") in str(refusal.value)
+    finally:
+        catalog.reset_guidance_cache()

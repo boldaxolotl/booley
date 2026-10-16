@@ -2551,6 +2551,7 @@ def _goal_warning_result(
             binding.booley_dir,
             work_dir=binding.worktree_root,
             session_key=session_key,
+            routing_guidance=catalog.work_dir_guidance(),
         )
     except GoalStoreError as exc:
         prefix = f"WARNING: Goal Record cannot be read: {exc}"
