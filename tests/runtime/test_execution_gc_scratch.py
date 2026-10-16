@@ -107,7 +107,19 @@ def test_actual_terminal_gc_preserves_recoverable_scratch_proof(
 
 
 @pytest.mark.parametrize(
-    "damage", ["live", "live_member", "nonterminal", "corrupt", "unknown", "symlink", "marker"]
+    "damage",
+    [
+        "live",
+        "live_member",
+        "nonterminal",
+        "corrupt",
+        "null",
+        "array",
+        "scalar",
+        "unknown",
+        "symlink",
+        "marker",
+    ],
 )
 def test_terminal_gc_retains_uncertain_shutdown_groups(completed_execution, damage):
     state, paths, root, group_path = completed_execution
@@ -124,6 +136,10 @@ def test_terminal_gc_retains_uncertain_shutdown_groups(completed_execution, dama
                 data["terminal"] = False
     elif damage == "corrupt":
         (group_path / "state.json").write_text("invalid")
+    elif damage in {"null", "array", "scalar"}:
+        (group_path / "state.json").write_text(
+            {"null": "null", "array": "[{}]", "scalar": "1"}[damage]
+        )
     elif damage == "unknown":
         (group_path / "foreign").write_text("preserve")
     elif damage == "marker":

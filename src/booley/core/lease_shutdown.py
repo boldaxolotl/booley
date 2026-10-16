@@ -258,6 +258,7 @@ class ShutdownGroup:
         data = json.loads(raw)
         if (
             len(raw) > 2097152
+            or not isinstance(data, dict)
             or set(data) != {"owner", "members", "stops", "terminal"}
             or not _valid_process_identity(data["owner"])
             or type(data["terminal"]) is not bool
