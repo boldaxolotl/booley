@@ -1,0 +1,33 @@
+Bug report against this Caliptra RTL snapshot.
+
+Runtime ROM self-integrity digest is wrong, but only when the digest loop uses a DCCM scratch buffer
+
+Early in the boot flow the runtime firmware recomputes a digest over its own
+ROM image (a self-integrity check) and compares it against a constant that was
+fixed at build time. The check normally passes.
+
+We hit a case where the computed digest is wrong even though the ROM image on
+the part is byte-for-byte unchanged and the compare constant is correct. No
+error, fault, or status bit is set anywhere; the core reports no exception and
+the memories report no ECC or parity events. The wrong digest is fully
+deterministic across resets.
+
+While bisecting the firmware we found the trigger is a coding pattern, not the
+data: the digest routine that fails reads the ROM image word by word and, in
+the same tight loop, writes each partially-accumulated result to a small
+scratch buffer that the linker placed in DCCM. A functionally identical
+version of the routine that keeps the accumulator only in registers (no scratch
+writes in the loop), or that moves the scratch buffer out of DCCM, produces the
+correct digest every time. The failing and passing routines compute the same
+math and touch the same ROM bytes; only the placement/interleaving of the
+scratch writes differs.
+
+The corruption is confined to the very start of the digested region: the
+recomputed digest diverges from the expected one as if one word of the ROM
+input had been replaced, and everything after that point is consistent with the
+true ROM contents.
+
+No existing test reproduces the problem.
+
+Find and correct the RTL root cause. Add a test that reproduces the problem
+and passes after your fix, then run the relevant verification checks.
