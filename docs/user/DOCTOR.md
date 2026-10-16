@@ -147,15 +147,13 @@ custom endpoints, and Goal presence. Goal warnings distinguish active records
 from quiet attributable session presence; quiet does not prove abandonment.
 
 Retained terminal Goal Records whose registered worktree and exact local Goal
-Branch are both missing produce an informational **NOTE**, with record IDs,
-per-record logical bytes and a known-byte total. Unknown sizes are named;
-unavailable presence never proves orphanhood. Host Doctor reports this check
-unavailable and suggests `booley session enter -- booley doctor`. Existing active
-presence warnings remain independent. Pending cleanup includes its retained
-quarantine path, remaining bytes and exact resume command. The NOTE does not
-authorize deletion: follow the [retained record preview and confirmation
-instructions](USAGE.md#inspecting-and-cleaning-retained-goal-records) before
-permanently removing evidence.
+Branch are both missing produce an informational **NOTE** with record IDs,
+per-record logical bytes and a known-byte total; unknown sizes are named.
+Unavailable presence never proves orphanhood; host Doctor reports the check
+unavailable, so run `booley session enter -- booley doctor`. Pending cleanup is
+also reported. The NOTE does not authorize deletion; see [Inspecting and
+cleaning retained Goal
+Records](USAGE.md#inspecting-and-cleaning-retained-goal-records).
 
 - `tests.toml`: one line says whether the file loads (section keys, Test and
   Test Variant names, `select` and `seed` templates). A failure names the
