@@ -9070,11 +9070,16 @@ def test_sim_copyto_literal_cwd_controls_collision(copyto_audit):
         literal.write_bytes(b"collision")
 
 
-def test_sim_copyto_unusable_paths_are_skipped(copyto_audit):
+def test_sim_copyto_unusable_paths_are_skipped(copyto_audit, monkeypatch):
     source, destination, configured, check = copyto_audit
     assert check(), "missing copyto collision warning"
     core = source.parent / "input.core"
     core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: nested/runtime.mem"))
+
+    def reject_comparison(*args, **kwargs):
+        pytest.fail("unusable destination must not be compared")
+
+    monkeypatch.setattr("booley.flows.sim.runtime_inputs.filecmp.cmp", reject_comparison)
     parent = destination.parent / "nested"
     parent.symlink_to(source.parent, target_is_directory=True)
     (source.parent / destination.name).write_bytes(source.read_bytes())
@@ -9083,8 +9088,12 @@ def test_sim_copyto_unusable_paths_are_skipped(copyto_audit):
     parent.unlink()
     parent.write_bytes(b"obstruction")
     assert check() == []
+    core.write_text(core.read_text().replace("copyto: nested/runtime.mem", "copyto: runtime.mem"))
     configured[0] = "{{escaped}}"
+    escaped = destination.parent / configured[0]
+    escaped.mkdir()
+    (escaped / destination.name).write_bytes(b"collision")
     assert check() == []
-    configured[0] = str(source.parent)
+    configured[0] = "."
     source.unlink()
     assert check() == []
