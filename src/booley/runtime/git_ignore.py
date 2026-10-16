@@ -10,7 +10,13 @@ from booley.core.temporary_workspace import run_guarded
 from booley.runtime.git_environment import inherited_git_environment
 
 
-def ignored_paths(root: Path, paths: list[Path], *, no_index: bool = False) -> set[Path]:
+def ignored_paths(
+    root: Path,
+    paths: list[Path],
+    *,
+    no_index: bool = False,
+    directories: frozenset[Path] = frozenset(),
+) -> set[Path]:
     """Read bounded, NUL-safe ignore membership outside indexed submodule boundaries."""
     if not paths:
         return set()
@@ -23,7 +29,11 @@ def ignored_paths(root: Path, paths: list[Path], *, no_index: bool = False) -> s
     selected = [path for path in paths if not any(path.is_relative_to(link) for link in gitlinks)]
     if not selected:
         return set()
-    payload = b"".join(os.fsencode(path.relative_to(root).as_posix()) + b"\0" for path in selected)
+    payload = b"".join(
+        os.fsencode(path.relative_to(root).as_posix() + ("/" if path in directories else ""))
+        + b"\0"
+        for path in selected
+    )
     output = _git(
         root, ["check-ignore", "-z", "--stdin", *(["--no-index"] if no_index else [])], payload
     )

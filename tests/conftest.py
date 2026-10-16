@@ -52,6 +52,22 @@ def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "isolated-xdg"))
 
 
+@pytest.fixture
+def isolated_git_excludes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_git_attributes: None
+) -> Path:
+    """Return an empty excludes file without inherited command-scope Git policy."""
+    for key in tuple(os.environ):
+        if key.startswith("GIT_CONFIG_") and key not in {
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+        }:
+            monkeypatch.delenv(key)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    return empty
+
+
 def symlink_or_skip(link: Path, target: Path | str, **kwargs: object) -> None:
     """``link.symlink_to(target)``, skipping the test if the OS forbids it.
 

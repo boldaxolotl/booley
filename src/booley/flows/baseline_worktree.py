@@ -63,9 +63,14 @@ class BaselineWorktreeError(RuntimeError):
 
 def owned_scratch_parent(project_root: Path) -> Path:
     """Place transient payloads and registry metadata under existing runtime policy."""
-    parent = worktree_state_dir(project_root).resolve() / ".runtime" / "owned-scratch"
+    parent = owned_scratch_path(project_root)
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     return parent
+
+
+def owned_scratch_path(project_root: Path) -> Path:
+    """Resolve the prospective runtime namespace without creating payload or registry state."""
+    return worktree_state_dir(project_root).resolve() / ".runtime" / "owned-scratch"
 
 
 def git_short_sha(ref: str, cwd: Path) -> str:

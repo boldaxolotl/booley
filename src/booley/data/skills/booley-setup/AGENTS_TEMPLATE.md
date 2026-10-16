@@ -13,6 +13,14 @@ says when to keep each.
 ```markdown
 # AGENTS.md
 
+Root `AGENTS.md` and `CLAUDE.md` normally link to the canonical Booley Directory
+guide; editing either link edits that guide. In an embedded non-Stealth layout,
+stage it with `git add .booley/AGENTS.md` (substitute the configured Booley
+Directory). In a separate Booley repository, including Stealth, stage and commit
+`AGENTS.md` inside that repository. Root links remain ignored. An explicitly
+selected hybrid footprint instead has a matching tracked root `AGENTS.md` copy;
+keep that copy and the canonical guide identical and stage their changes.
+
 ## Project-Specific Instructions
 
 - Project purpose: <one sentence describing what this Project builds.>

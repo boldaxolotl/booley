@@ -22,7 +22,7 @@ from typing import Any
 from booley.core.boundary import require_dict, require_list, require_str_value
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.evidence.acceptance import PairedProjectBaseline
-from booley.flows.baseline_worktree import baseline_worktree
+from booley.flows.baseline_worktree import baseline_worktree, owned_scratch_path
 from booley.flows.campaign_results import StartedCampaign
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import current_declaration
@@ -48,6 +48,7 @@ from booley.goals.sim_baseline_store import (
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.git_ignore import ignored_paths
 from booley.runtime.process_group import (
     ProcessGroup,
     capture_process_group,
@@ -55,7 +56,6 @@ from booley.runtime.process_group import (
     request_group_termination,
     terminate_process_group,
 )
-from booley.runtime.worktree_paths import worktree_state_dir
 
 SIM_KEY = "sim_pass_baseline"
 # Digest of the canonical empty file list, for declaration-only fingerprint categories.
@@ -231,17 +231,31 @@ def baseline_kind(plan: TargetTestPlan | None, run: TestRun) -> tuple[str, str]:
     return "runnable", ""
 
 
-def _ignored_destination(root: Path, base: str) -> None:
-    # Query a file leaf beneath the exact prospective namespace. Existing
-    # .runtime directory exclusions apply without creating scratch to query it.
-    destination = worktree_state_dir(root).resolve() / ".runtime" / "owned-scratch" / "probe"
-    owner = GoalCheckout(worktree_state_dir(root).resolve()).containing_repository()
+def _ignored_destination(root: Path, _base: str) -> None:
+    # The ignored parent covers every random owned container and its RTL checkout.
+    # Query directory intent before allocating either payload or registry metadata.
+    destination = owned_scratch_path(root)
+    state_dir = destination.parent.parent
+    policy = state_dir / ".gitignore"
+    if destination.is_symlink():
+        raise ValueError(
+            f"baseline scratch directory {destination} is a symlink; "
+            f"expected an unused directory path (policy {policy})"
+        )
+    owner = GoalCheckout(state_dir).containing_repository()
     if owner is None:
         raise ValueError("baseline scratch has no repository owner")
-    from booley.runtime.git_ignore import ignored_paths
-
-    if destination not in ignored_paths(owner[0], [destination]):
-        raise ValueError("baseline scratch directory is not ignored; run Project initialization")
+    try:
+        ignored = ignored_paths(
+            owner[0].resolve(), [destination], directories=frozenset({destination})
+        )
+    except OSError as exc:
+        raise ValueError(f"baseline scratch ignore query failed (policy {policy}): {exc}") from exc
+    if destination not in ignored:
+        raise ValueError(
+            f"baseline scratch directory {destination} is not classified as ignored; "
+            f"expected .runtime/ in {policy}"
+        )
 
 
 def run_baseline(
