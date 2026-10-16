@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from claude_agent_sdk import ClaudeSDKError
 
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
@@ -1013,7 +1014,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     server_env = options_seen[0].mcp_servers["booley"]["env"]
     assert server_env["BOOLEY_NESTED_MCP_TOOLS"] == "coverage_evidence"
     assert server_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
-    assert not Path(options_seen[0].cwd).exists()
+    assert_native_workspace_lifetimes([Path(options_seen[0].cwd)])
     assert list((tmp_path / "transcripts").rglob("*.jsonl"))
 
 

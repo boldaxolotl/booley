@@ -14,6 +14,7 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -819,7 +820,7 @@ def test_user_worktree_standalone_baseline_pins_pairing_base(
         frozen = baseline / ".booley"
         assert git(frozen, "rev-parse", "HEAD") == base
         assert "create_clock" in (frozen / "cores/constraints/top.sdc").read_text()
-    assert not baseline.exists()
+    assert_native_workspace_lifetimes([baseline.parent])
     assert (paired / "cores/constraints/top.sdc").read_text() == "# later design\n"
 
 

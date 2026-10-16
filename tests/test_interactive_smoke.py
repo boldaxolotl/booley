@@ -26,6 +26,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 _BOOLEY_ENV_VARS = (
     "BOOLEY_CONTROL_PROJECT_ROOT",
@@ -342,7 +343,7 @@ targets:
         assert marker.read_text(encoding="utf-8") == before
         # ...work_dir was restored, and the worktree was cleaned up.
         assert Path(tool.args.work_dir) == repo
-        assert not seen_work_dirs[0].exists()
+        assert_native_workspace_lifetimes([seen_work_dirs[0].parent])
 
 
 # ---------------------------------------------------------------------------

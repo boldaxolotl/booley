@@ -40,6 +40,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, TargetHandle
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -1908,4 +1909,5 @@ def test_fpga_baseline_materializes_project_topologies(tmp_path, monkeypatch, to
     assert results["fpga_core"].lut_count == 7
     assert flow.args.work_dir == root
     assert flow._target_handles is candidate_handles
-    assert roots and all(not path.exists() for path in roots)
+    assert roots
+    assert_native_workspace_lifetimes(path.parent for path in roots)

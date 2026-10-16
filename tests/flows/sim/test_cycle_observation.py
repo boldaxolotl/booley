@@ -23,6 +23,7 @@ from booley.flows.test_runs import build_test_run
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
@@ -655,7 +656,8 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
     assert units[0].target_identity == handle.identity
     assert units[0].revision == revision
     assert flow.args.work_dir == root
-    assert roots and all(not path.exists() for path in roots)
+    assert roots
+    assert_native_workspace_lifetimes(path.parent for path in roots)
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
@@ -688,4 +690,5 @@ def test_cycle_baseline_execution_materializes_project_topologies(tmp_path, monk
     assert list(results) == [handle.identity]
     assert results[handle.identity].target_identity == handle.identity
     assert flow.args.work_dir == root
-    assert roots and all(not path.exists() for path in roots)
+    assert roots
+    assert_native_workspace_lifetimes(path.parent for path in roots)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 
 def _git(args: list[str], cwd: Path) -> None:
@@ -358,7 +360,7 @@ def test_mutation_snapshot_proposals_resolve_live_wip(tmp_path, monkeypatch, tb_
     assert resolved.mutations[0].line == 1
     assert (repo / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
     assert (repo / "tracked.sv").read_text() == "concurrent author\n"
-    assert all(not root.exists() for root in snapshots)
+    assert_native_workspace_lifetimes(snapshots)
 
 
 @pytest.mark.parametrize("returned_path", ["current", "stale", "outside"])
@@ -374,7 +376,7 @@ def test_mutation_snapshot_resume_paths(tmp_path, monkeypatch, returned_path):
         assert not (root / "tb/tb.sv").exists()
         if snapshots:
             assert params.resume_session and params.session_id == "resume-id"
-            assert not snapshots[0].exists()
+            assert_native_workspace_lifetimes([snapshots[0]])
             assert root != snapshots[0]
         snapshots.append(root)
         path = root / "rtl/dut.sv"
@@ -393,7 +395,7 @@ def test_mutation_snapshot_resume_paths(tmp_path, monkeypatch, returned_path):
             assert resolved is None and "escapes scope" in problem
         else:
             assert resolved is not None and problem == ""
-    assert all(not root.exists() for root in snapshots)
+    assert_native_workspace_lifetimes(snapshots)
 
 
 def test_mutation_snapshot_cleanup_on_provider_exception(tmp_path, monkeypatch):
@@ -411,7 +413,7 @@ def test_mutation_snapshot_cleanup_on_provider_exception(tmp_path, monkeypatch):
     specs, elapsed, error = endpoint._proposal_round("propose", 1)
     assert specs == [] and elapsed == 0 and error.exit_code == 2
     assert (repo / "tb/tb.sv").is_file()
-    assert all(not root.exists() for root in snapshots)
+    assert_native_workspace_lifetimes(snapshots)
 
 
 def test_result_json_windows_snapshot_paths_are_restored():
@@ -836,7 +838,7 @@ def test_spaced_source_cannot_gain_opposite_scope(tmp_path, category, suffix, co
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(__import__("os").name != "posix", reason="requires POSIX SIGKILL")
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
 async def test_prelaunch_removes_actual_killed_snapshot_and_home(tmp_path, monkeypatch):
     import asyncio
     import json

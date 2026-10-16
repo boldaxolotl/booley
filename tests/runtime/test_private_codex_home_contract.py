@@ -5,6 +5,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 
 @pytest.fixture
@@ -78,7 +79,7 @@ async def test_completed_cli_call_removes_private_home(tmp_path, synthetic_neste
         )
         assert status == 0
         child = json.loads(report.read_text())
-        assert not Path(child["home"]).exists(), "completed call retained its private HOME"
+        assert_native_workspace_lifetimes([Path(child["home"])])
 
 
 @pytest.mark.parametrize("preference", [True, False])
@@ -183,8 +184,10 @@ async def test_actual_cli_failure_reaps_and_removes_home(
         expected = AgentTimeoutError
     with pytest.raises(expected):
         await asyncio.wait_for(task, timeout=8)
-    assert not home.exists()
-    assert not any((tmp_path / "registry").glob("booley-owned-codex-home-*"))
+    assert_native_workspace_lifetimes([home])
+    assert set((tmp_path / "registry").glob("booley-owned-codex-home-*")) == (
+        {home} if home.exists() else set()
+    )
 
 
 @pytest.mark.asyncio
@@ -224,11 +227,11 @@ async def test_concurrent_calls_cleanup_only_the_completed_home(
         assert homes[0] != homes[1]
         releases[0].touch()
         await asyncio.wait_for(tasks[0], timeout=5)
-        assert not homes[0].exists()
+        assert_native_workspace_lifetimes([homes[0]])
         assert homes[1].is_dir()
         releases[1].touch()
         await asyncio.wait_for(tasks[1], timeout=5)
-        assert not homes[1].exists()
+        assert_native_workspace_lifetimes([homes[1]])
     finally:
         for release in releases:
             release.touch()
@@ -344,7 +347,7 @@ def test_installed_native_uuid_resume_finds_lock_owned_rollout_in_fresh_home(
             )
         records = [json.loads(line) for line in outcome.value.output.splitlines()]
         assert {"type": "thread.started", "thread_id": identity} in records
-    assert not fresh.exists()
+    assert_native_workspace_lifetimes([fresh])
     assert rollout.name in {path.name for path in sessions.iterdir()}
 
 
@@ -381,7 +384,11 @@ async def test_backend_call_failure_always_releases_private_home(
     expected = OSError if failure == "spawn" else ValueError
     with pytest.raises(expected, match=f"synthetic {failure} failure"):
         await cb.CodexBackend()._call_once(params, full_prompt="synthetic", transcript_path=None)
-    assert observed and all(not home.exists() for home in observed)
+    assert observed
+    if failure == "preparation":
+        assert all(not home.exists() for home in observed)
+    else:
+        assert_native_workspace_lifetimes(observed)
 
 
 def test_explicit_canonical_home_is_only_auth_source_and_metadata_is_private(
@@ -434,7 +441,7 @@ async def test_actual_retry_uses_fresh_home_and_cleans_each_completed_attempt(
     def command(*args, **kwargs):
         index = len(reports)
         for earlier in reports:
-            assert not Path(earlier.read_text()).exists()
+            assert_native_workspace_lifetimes([Path(earlier.read_text())])
         report = tmp_path / f"retry-home-{index}"
         reports.append(report)
         return [sys.executable, str(script), str(report), str(index)], None
@@ -448,7 +455,7 @@ async def test_actual_retry_uses_fresh_home_and_cleans_each_completed_attempt(
     assert len(reports) == 2
     homes = [Path(report.read_text()) for report in reports]
     assert homes[0] != homes[1]
-    assert all(not home.exists() for home in homes)
+    assert_native_workspace_lifetimes(homes)
 
 
 def test_text_only_relative_auth_source_and_explicit_scratch_handoff(
@@ -481,7 +488,7 @@ def test_text_only_relative_auth_source_and_explicit_scratch_handoff(
 
 
 @pytest.mark.asyncio
-async def test_missing_native_codex_raises_original_lookup_error_and_cleans_home(
+async def test_missing_native_codex_preserves_lookup_error_and_ownership_policy(
     tmp_path, synthetic_nested_environment
 ):
     from booley.core.models import AgentCallParams
@@ -494,7 +501,11 @@ async def test_missing_native_codex_raises_original_lookup_error_and_cleans_home
             full_prompt="synthetic",
             on_event=None,
         )
-    assert not any((tmp_path / "registry").glob("booley-owned-codex-home-*"))
+    homes = list((tmp_path / "registry").glob("booley-owned-codex-home-*"))
+    from tests.runtime.scratch_support import scratch_process_ownership_supported
+
+    assert len(homes) == (0 if scratch_process_ownership_supported() else 1)
+    assert_native_workspace_lifetimes(homes)
 
 
 def _seed_native_rollout(home: Path, identity: str, tmp_path: Path) -> Path:

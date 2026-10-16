@@ -17,6 +17,7 @@ from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, Simu
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 
 def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
@@ -295,7 +296,7 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
         assert flow.args.work_dir == root
     finally:
         flow.context.publication_resources.close()
-    assert not baseline.exists()
+    assert_native_workspace_lifetimes([baseline.parent])
 
 
 def test_prepare_resets_report_only_metadata_before_early_gate(monkeypatch):

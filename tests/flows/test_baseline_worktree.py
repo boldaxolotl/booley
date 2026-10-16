@@ -26,7 +26,13 @@ from booley.flows.baseline_worktree import (
     git_short_sha,
 )
 from booley.runtime.submodule_materialization import materialize_submodules
-from tests.runtime.scratch_support import reap_guardian, wait
+from tests.runtime.scratch_support import (
+    assert_native_workspace_lifetimes,
+    reap_guardian,
+    scratch_process_ownership_supported,
+    wait,
+    worktree_registrations,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +109,7 @@ def test_yields_baseline_content_and_leaves_tree_untouched(tmp_path: Path) -> No
         assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "dirty\n"
 
     # Cleaned up on exit; caller's tree untouched throughout.
-    assert not wt.exists()
+    assert_native_workspace_lifetimes([wt.parent])
     assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "dirty\n"
 
 
@@ -116,7 +122,8 @@ def test_worktree_removed_even_when_body_raises(tmp_path: Path) -> None:
         assert wt.exists()
         raise RuntimeError("boom")
 
-    assert captured and not captured[0].exists()
+    assert captured
+    assert_native_workspace_lifetimes([captured[0].parent])
 
 
 def test_detached_ref_already_checked_out_elsewhere(tmp_path: Path) -> None:
@@ -223,7 +230,7 @@ def test_stealth_cores_copied_into_worktree(tmp_path: Path) -> None:
         assert copied.read_text(encoding="utf-8").startswith("CAPI=2:")
 
     # The copied (untracked) files must not break force-removal on exit.
-    assert not wt.exists()
+    assert_native_workspace_lifetimes([wt.parent])
     # ...and the real stealth cores are untouched.
     assert (stealth / "top.core").is_file()
 
@@ -471,7 +478,7 @@ def test_standalone_project_baseline_copies_stealth_cores(
         assert (baseline / "vendor/dependency/f.txt").read_text(encoding="utf-8") == "v1\n"
         assert (dependency / "f.txt").read_text(encoding="utf-8") == "v2\n"
         assert (link / "top.v").read_text(encoding="utf-8") == "current\n"
-    assert not baseline.exists()
+    assert_native_workspace_lifetimes([baseline.parent])
 
 
 def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tuple[Path, str]:
@@ -553,7 +560,7 @@ def test_standalone_project_baseline_failure_cleans_worktree(tmp_path, monkeypat
         ):
             _assert_topology_baseline(baseline, root, "sim_core")
             raise RuntimeError("body failed")
-        assert not baseline.exists()
+        assert_native_workspace_lifetimes([baseline.parent])
     assert not list((root / ".booley").glob("booley-owned-baseline-*"))
 
 
@@ -568,7 +575,7 @@ def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkey
     with baseline_worktree(root, revision) as baseline:
         _assert_topology_baseline(baseline, root, "sim_core")
         assert (baseline / ".booley/.git").is_file()
-    assert not baseline.exists()
+    assert_native_workspace_lifetimes([baseline.parent])
 
 
 def _link_project_checkout(tmp_path: Path, project: Path) -> None:
@@ -619,7 +626,7 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
         ).read_bytes()
         assert not (baseline / ".booley/.git").exists()
         assert (project / ".git").is_dir()
-    assert not baseline.exists()
+    assert_native_workspace_lifetimes([baseline.parent])
 
 
 def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
@@ -671,15 +678,33 @@ def test_standalone_paired_project_without_upstream_is_refused(tmp_path: Path) -
     _assert_paired_baseline_refuses(goal, paired, "no baseline upstream")
 
 
+def _assert_baseline_registration_lifetime(goal, paired, registrations):
+    from booley.flows.baseline_worktree import owned_scratch_path
+
+    containers = list(owned_scratch_path(goal).glob("booley-owned-baseline-*"))
+    assert len(containers) == (0 if scratch_process_ownership_supported() else 1)
+    assert_native_workspace_lifetimes(containers)
+    payloads = [container / ".baseline-wt-rtl" for container in containers]
+    for repo, before, suffix in zip(
+        (goal, paired), registrations, (Path(), Path(".booley")), strict=True
+    ):
+        after = worktree_registrations(repo)
+        retained = {
+            payload / suffix for payload in payloads if (payload / suffix / ".git").is_file()
+        }
+        assert set(after) == set(before) | retained
+        assert all(after[path] == record for path, record in before.items())
+
+
 def _assert_paired_baseline_refuses(goal: Path, paired: Path, message: str) -> None:
-    registrations = (_git(goal, "worktree", "list"), _git(paired, "worktree", "list"))
+    registrations = (worktree_registrations(goal), worktree_registrations(paired))
     with pytest.raises(BaselineWorktreeError, match=message), baseline_worktree(goal, "HEAD"):
         pytest.fail("invalid baseline must refuse before yielding")
-    assert (_git(goal, "worktree", "list"), _git(paired, "worktree", "list")) == registrations
+    _assert_baseline_registration_lifetime(goal, paired, registrations)
 
 
 def _assert_paired_baseline(goal: Path, paired: Path, expected: str, rule: str, caplog) -> None:
-    registrations = (_git(goal, "worktree", "list"), _git(paired, "worktree", "list"))
+    registrations = (worktree_registrations(goal), worktree_registrations(paired))
     candidate = _git(paired, "rev-parse", "HEAD")
     recipe = (paired / "cores/top.core").read_bytes()
     caplog.set_level(logging.INFO, logger="booley.flows.baseline_worktree")
@@ -689,8 +714,8 @@ def _assert_paired_baseline(goal: Path, paired: Path, expected: str, rule: str, 
             paired, "show", f"{expected}:cores/top.core"
         )
     assert f"Paired Checkout baseline: {rule} -> {expected}" in caplog.text
-    assert not baseline.exists()
-    assert (_git(goal, "worktree", "list"), _git(paired, "worktree", "list")) == registrations
+    assert_native_workspace_lifetimes([baseline.parent])
+    _assert_baseline_registration_lifetime(goal, paired, registrations)
     assert _git(paired, "rev-parse", "HEAD") == candidate
     assert (paired / "cores/top.core").read_bytes() == recipe
 
@@ -805,7 +830,7 @@ def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode,
     policy = getattr(PairedProjectBaseline, mode)(entry_sha)
     with baseline_worktree(goal, "HEAD", paired_project=policy) as baseline:
         assert git_full_sha("HEAD", baseline / ".booley") == entry_sha
-    assert not baseline.exists()
+    assert_native_workspace_lifetimes([baseline.parent])
     assert "Paired Checkout baseline:" not in caplog.text
 
 
@@ -1027,6 +1052,7 @@ def _retained_dead_baseline(tmp_path, monkeypatch):
     return payload
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
 def test_sim_recovery_reaps_the_actual_marked_baseline_layout(tmp_path, monkeypatch):
     from booley.mcp.sim_baseline_execution import reap_owned_checkout
 
@@ -1042,6 +1068,7 @@ def test_sim_recovery_reaps_the_actual_marked_baseline_layout(tmp_path, monkeypa
     assert str(payload) not in _git(tmp_path, "worktree", "list", "--porcelain")
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
 def test_reviewer_snapshot_prelaunch_uses_original_project_cleanup_authority(
     tmp_path, monkeypatch
 ):
@@ -1061,6 +1088,7 @@ def test_reviewer_snapshot_prelaunch_uses_original_project_cleanup_authority(
     assert not Path(isolated.cwd).exists()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
 def test_foreign_project_cannot_authorize_baseline_cleanup(tmp_path, monkeypatch):
     from booley.flows.baseline_worktree import sweep_project_workspaces
 

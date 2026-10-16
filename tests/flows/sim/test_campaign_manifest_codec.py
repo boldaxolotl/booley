@@ -46,6 +46,7 @@ from booley.flows.sim.execution.contract import SimulationTargetOutcome, Simulat
 from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
 from booley.flows.test_runs import build_test_run
 from booley.targets.catalog import TargetCatalog
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
@@ -1098,7 +1099,7 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
         assert roots[0].exists()
     finally:
         flow.context.publication_resources.close()
-    assert not roots[0].exists()
+    assert_native_workspace_lifetimes(root.parent for root in roots)
 
 
 def _diagnostic_document(*, sources=(), parameters=(), names=()):

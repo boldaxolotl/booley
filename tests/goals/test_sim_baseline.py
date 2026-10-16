@@ -49,6 +49,7 @@ from tests.goals.conftest import (
     write_tests_toml,
 )
 from tests.goals.test_test_run_evidence import _record
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -121,7 +122,7 @@ def test_worker_runs_base_after_candidate_edit_and_cleans_checkout(baseline):
     rows = _complete(baseline, execute)
     assert rows[0]["grade"] == "pass"
     assert rows[0]["proof"]["base_sha"] == baseline.record.base_sha
-    assert not checkouts[0].exists()
+    assert_native_workspace_lifetimes([checkouts[0].parent])
     assert (baseline.worktree / "rtl.v").read_bytes() == b"module edited; endmodule\n"
 
 
@@ -843,6 +844,5 @@ def test_initialized_directory_policy_runs_baseline_and_reports_transition(
     assert "fail -> pass" in summary
     assert "unavailable" not in summary
     assert len(checkouts) == 1
-    assert not checkouts[0].exists()
-    assert not checkouts[0].parent.exists()
+    assert_native_workspace_lifetimes([checkouts[0].parent])
     assert policy.read_bytes() == before

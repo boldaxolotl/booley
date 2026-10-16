@@ -19,6 +19,11 @@ from booley.projects import inventory
 from booley.runtime import project_worktree_pairing
 from tests.diagnostic_helpers import _Rec
 from tests.flows.test_baseline_worktree import _init_repo, _paired_checkout_without_upstream
+from tests.runtime.scratch_support import (
+    assert_native_workspace_lifetimes,
+    scratch_process_ownership_supported,
+    worktree_registrations,
+)
 from tests.test_guidance_links import _make_project
 
 
@@ -66,14 +71,19 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     reset_cache()
     head = baseline.git_full_sha("HEAD", tmp_path)
-    before = baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout
+    before = worktree_registrations(tmp_path)
     with (
         pytest.raises(baseline.BaselineWorktreeError, match="Paired Checkout is unavailable"),
         baseline.baseline_worktree(tmp_path, "HEAD", paired_project=pin(head)),
     ):
         pytest.fail("missing paired inputs were accepted")
     assert baseline.git_full_sha("HEAD", tmp_path) == head
-    assert baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout == before
+    containers = list(baseline.owned_scratch_path(tmp_path).glob("booley-owned-baseline-*"))
+    assert len(containers) == (0 if scratch_process_ownership_supported() else 1)
+    assert_native_workspace_lifetimes(containers)
+    after = worktree_registrations(tmp_path)
+    assert set(after) == set(before) | {container / ".baseline-wt-rtl" for container in containers}
+    assert all(after[path] == record for path, record in before.items())
 
 
 def test_absent_pairing_policy_refuses_existing_paired_inputs(tmp_path, monkeypatch):

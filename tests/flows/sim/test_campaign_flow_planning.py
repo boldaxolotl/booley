@@ -11,6 +11,7 @@ from booley.flows.sim.execution.contract import SimulationPreview
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
+from tests.runtime.scratch_support import assert_native_workspace_lifetimes
 
 
 def test_resolved_target_plans_one_private_serial_item_per_exact_test(
@@ -167,7 +168,7 @@ def test_campaign_baseline_planning_materializes_project_topologies(
         assert roots and roots[0].exists()
     finally:
         flow.context.publication_resources.close()
-    assert not roots[0].exists()
+    assert_native_workspace_lifetimes(root.parent for root in roots)
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
@@ -209,7 +210,8 @@ def test_campaign_baseline_preview_materializes_project_topologies(
     assert previews == [preview]
     assert prerequisites == {"sim_core": [prerequisite]}
     assert flow.args.work_dir == root
-    assert roots and not roots[0].exists()
+    assert roots
+    assert_native_workspace_lifetimes(root.parent for root in roots)
 
 
 @pytest.mark.parametrize("mapping", [False, True])

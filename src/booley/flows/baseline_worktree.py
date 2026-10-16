@@ -5,8 +5,9 @@ re-run the Flow at a past commit and compare QoR metrics. This module creates
 a throwaway ``git worktree`` at the baseline ref and preserves the caller's
 working tree in Interactive and Goal Mode. The worktree lives under
 ``<project>/.booley/`` — git-ignored (never pollutes ``git status``) and
-inside the Sandbox workspace. It is force-removed on context exit,
-even if the body raises.
+inside the Sandbox workspace. Linux removes it after proven descendant
+settlement, even if the body raises; unsupported or uncertain native ownership
+remains marked for operator recovery.
 
 For a paired ``.booley`` repository, the outer baseline worktree
 receives a nested detached worktree at the recorded creation base's merge-base
