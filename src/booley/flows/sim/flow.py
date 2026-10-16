@@ -5315,10 +5315,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _record_campaign_tool(self, manifest: SimulationCampaignManifest) -> None:
         """Use the frozen execution recipe, including when execution later fails."""
         document = manifest.document
-        self._record_eda_tool(
-            str(document["target"]["selector"]),
-            str(document["workload"]["eda"]["kind"]),
-        )
+        target = cast(Mapping[str, str], document["target"])
+        workload = cast(Mapping[str, object], document["workload"])
+        eda = cast(Mapping[str, str], workload["eda"])
+        self._record_eda_tool(str(target["selector"]), str(eda["kind"]))
 
     def _campaign_policy(self) -> CampaignPolicy:
         return CampaignPolicy(
