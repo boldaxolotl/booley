@@ -12,6 +12,7 @@ from uuid import uuid4
 from booley.core.boundary import require_dict, require_list, require_str_value
 from booley.goals.apply import recover_locked
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
+from booley.goals.ended_records import sweep_ended_records
 from booley.goals.lifecycle import (
     LifecycleError,
     LifecycleOperation,
@@ -191,7 +192,7 @@ def abandon_goal(
         )
         if saved is not None:
             return saved
-    return _abandon_current(
+    result = _abandon_current(
         store,
         work_dir,
         env,
@@ -200,6 +201,9 @@ def abandon_goal(
         instruction_quote=instruction_quote,
         on_bound=on_bound,
     )
+    # After every lock is released; cleanup never changes the result.
+    sweep_ended_records(store, work_dir)
+    return result
 
 
 def _abandon_current(

@@ -64,6 +64,7 @@ from booley.flows.baseline_pins import (
 )
 from booley.flows.test_runs import draw_seeds
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_name, branch_ref
+from booley.goals.ended_records import sweep_ended_records
 from booley.goals.goalsets import GOALSETS_DIR
 from booley.goals.model import (
     GoalArg,
@@ -256,15 +257,22 @@ def _goalset_names(raw: object) -> tuple[str, ...]:
 
 
 def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult:
-    """Serialize entry publication against a directory migration."""
+    """Serialize entry publication against a directory migration, then sweep ended records.
+
+    :func:`~booley.goals.ended_records.sweep_ended_records` deletes ended Goal
+    Records whose worktree and Goal Branch are gone; it never changes the result.
+    """
     from booley.core.file_lock import LockTimeoutError
     from booley.core.layout_lock import layout_gate
 
     try:
         with layout_gate(env.booley_dir.absolute().parent, timeout_s=env.lock_timeout_s):
-            return _enter_goal_mode(request, env)
+            result = _enter_goal_mode(request, env)
     except LockTimeoutError as exc:
         raise GoalEntryError("Goal entry or directory migration lock stayed busy") from exc
+    # After every lock is released; cleanup never changes the result.
+    sweep_ended_records(GoalStore(env.booley_dir.absolute()), request.work_dir)
+    return result
 
 
 def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult:

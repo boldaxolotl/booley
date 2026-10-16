@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from hypothesis import settings
+from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import (
     Bundle,
@@ -22,11 +22,20 @@ from booley.runtime import job_slots
 from booley.runtime.job_slots import SlotCaps, SlotStore, SlotToken
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
 
-PR_SETTINGS = settings(derandomize=True, max_examples=100, stateful_step_count=25)
+# Each step touches the real slot store on disk, so input generation slows down
+# on a loaded host; that wall-clock health check would make the verdict depend on load.
+_LOAD_INDEPENDENT = (HealthCheck.too_slow,)
+PR_SETTINGS = settings(
+    derandomize=True,
+    max_examples=100,
+    stateful_step_count=25,
+    suppress_health_check=_LOAD_INDEPENDENT,
+)
 EXPLORATORY_SETTINGS = settings(
     derandomize=False,
     max_examples=100,
     stateful_step_count=50,
+    suppress_health_check=_LOAD_INDEPENDENT,
 )
 
 _CLASSES = (job_slots.CLASS_HEAVY, job_slots.CLASS_LIGHT)

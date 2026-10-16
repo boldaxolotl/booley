@@ -854,6 +854,7 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
     if args.goal_command == "status":
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
+        from booley.goals.ended_records import with_last_ended
         from booley.goals.format import render_status
         from booley.goals.proposal_errors import ProposalError
         from booley.goals.state_store import GoalStateError
@@ -864,21 +865,20 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         try:
             from booley.flows.sim.unpublished_results import read_unpublished_results
 
-            selection = select_status(
-                GoalStore(resolve_booley_dir(_project_root)),
-                _goal_checkout(args, _project_root),
-                campaign_reader=read_unpublished_results,
-            )
+            store = GoalStore(resolve_booley_dir(_project_root))
+            checkout = _goal_checkout(args, _project_root)
+            selection = select_status(store, checkout, campaign_reader=read_unpublished_results)
             from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 
             for view in selection.views:
                 schedule_sim_baselines(resolve_booley_dir(_project_root), view.record)
             short = True if args.short else False if args.long else None
-            print(
+            text = (
                 render_status(selection.views, short=short, project_wide=selection.project_wide)
                 if selection.views
                 else "No active Goal Mode."
             )
+            print(with_last_ended(text, store, checkout, project_wide=selection.project_wide))
             return 0
         except (GoalStoreError, GoalStateError, ProposalError, AcceptanceLedgerError) as exc:
             message = unavailable_diagnostic(exc) if is_unnamable_error(exc) else str(exc)
