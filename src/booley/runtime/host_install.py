@@ -27,6 +27,18 @@ class HostInstallationError(RuntimeError):
     """The canonical host-installation identity is absent, invalid, or different."""
 
 
+class MissingHostInstallationError(HostInstallationError):
+    """The canonical registration does not exist."""
+
+
+@dataclass(frozen=True, slots=True)
+class HostInstallationInspection:
+    """Read-only registration readiness, independent of mutation authority."""
+
+    pending: bool = False
+    error: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class HostInstallationIdentity:
     """Persisted identity of the wheel allowed to mutate host-owned state."""
@@ -135,7 +147,7 @@ def load_host_installation(path: Path | None = None) -> HostInstallationIdentity
     try:
         return _parse_identity(json.loads(source.read_text(encoding="utf-8")))
     except FileNotFoundError as exc:
-        raise HostInstallationError(
+        raise MissingHostInstallationError(
             "canonical host installation is not recorded; run `booley bootstrap` "
             "from the intended installed wheel"
         ) from exc
@@ -226,3 +238,32 @@ def host_install_error(
             "host `booley bootstrap --update` if this upgrade is intentional"
         )
     return None
+
+
+def inspect_host_installation(package_resource: Path) -> HostInstallationInspection:
+    """Distinguish an eligible unregistered wheel from invalid host state."""
+    if error := _eligibility_error(package_resource):
+        return HostInstallationInspection(
+            error=error + "; run the canonical host `booley bootstrap`"
+        )
+    try:
+        candidate = _validated_candidate(package_resource)
+        recorded = load_host_installation()
+    except MissingHostInstallationError:
+        return HostInstallationInspection(pending=True)
+    except HostInstallationError as exc:
+        return HostInstallationInspection(
+            error=f"{exc}; restore the recorded identity or reinstall a valid installed build"
+        )
+    except OSError as exc:
+        return HostInstallationInspection(
+            error=f"cannot inspect installed Booley resources at {package_resource}: {exc}; "
+            "restore package read access or reinstall a valid build"
+        )
+    if recorded != candidate:
+        return HostInstallationInspection(
+            error="this Booley process does not match the canonical host installation "
+            f"({host_identity_differences(recorded, candidate)}); run "
+            "`booley bootstrap --update` if this upgrade is intentional"
+        )
+    return HostInstallationInspection()
