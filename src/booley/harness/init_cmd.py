@@ -2305,6 +2305,18 @@ def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> N
     )
 
 
+def _initialize_project_configuration(
+    ctx: InitContext,
+    selection: AgentSelection,
+    agent_config_path: Path,
+) -> bool:
+    """Prepare the Directory before allowing agent configuration writes."""
+    _step_booley_dir(ctx)
+    if any(result.name == "booley_dir" and result.status == "err" for result in ctx.results):
+        return False
+    return _step_agent_config(ctx, selection, agent_config_path)
+
+
 def _run_project_init_steps(
     ctx: InitContext,
     args: argparse.Namespace,
@@ -2325,10 +2337,7 @@ def _run_project_init_steps(
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
 
-    _step_booley_dir(ctx)
-    if any(r.name == "booley_dir" and r.status == "err" for r in ctx.results):
-        return _print_summary(ctx)
-    if not _step_agent_config(ctx, selection, agent_config_path):
+    if not _initialize_project_configuration(ctx, selection, agent_config_path):
         return _print_summary(ctx)
     _step_core_projections(ctx)
     _step_goalsets(ctx)
