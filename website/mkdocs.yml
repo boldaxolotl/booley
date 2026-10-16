@@ -1,0 +1,64 @@
+# Project site published at https://boldaxolotl.github.io/booley/ by
+# .github/workflows/pages.yml. Preview locally from this directory:
+#   pip install -r requirements.txt && mkdocs serve
+site_name: Booley
+site_url: https://boldaxolotl.github.io/booley/
+site_description: The open-source agentic RTL IDE
+site_author: A.R.
+repo_url: https://github.com/boldaxolotl/booley
+repo_name: boldaxolotl/booley
+edit_uri: ""
+copyright: Booley is licensed under Apache-2.0
+
+# Build output stays inside website/ and is gitignored.
+site_dir: _build
+
+theme:
+  name: material
+  # System fonts only: no requests to Google Fonts, so no third-party
+  # tracking and no cookie banner.
+  font: false
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - content.code.copy
+
+plugins:
+  - search
+  - blog:
+      blog_dir: blog
+      # Permanent post URLs: /blog/<slug>/, no date segments, so a post
+      # keeps its link if its date is ever corrected.
+      post_url_format: "{slug}"
+      post_readtime: true
+      archive: false
+      categories: false
+      # Posts marked `draft: true` render under `mkdocs serve` only and are
+      # left out of the published build.
+      draft_on_serve: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Blog: blog/index.md
+  - GitHub: https://github.com/boldaxolotl/booley
