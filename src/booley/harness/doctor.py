@@ -3225,6 +3225,7 @@ def _run_project_checks(
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
     )
+    _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
@@ -3338,6 +3339,30 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     _pass("transient Booley state is gitignored")
 
 
+def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> None:
+    """Inspect durable inputs in their owning repositories, separately from outer history."""
+    from booley.commit_policy import stealth_enabled
+    from booley.runtime.project_trackability import (
+        FIX,
+        HISTORY_PROBE,
+        inspect_project_trackability,
+    )
+
+    if stealth_enabled(root, booley_dir=booley_dir):
+        return
+    inspection = inspect_project_trackability(root, booley_dir)
+    for group in inspection.ignored:
+        # The existing outer publication check owns this exact synthetic path.
+        if group.history and HISTORY_PROBE in group.paths:
+            continue
+        check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
+        _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
+    for error in inspection.errors:
+        _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
+            error, "repair repository access and rerun booley doctor"
+        )
+
+
 def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
     from booley.runtime.booley_dir import BOOLEY_DIR_NAME
     from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
@@ -3360,19 +3385,19 @@ def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _war
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+    from booley.runtime.project_trackability import query_ignores
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
     relative = (Path(BOOLEY_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
-    inspect_warning = _warning_sink(_warn, "goals.history-ignored")
+    inspect_warning = _warning_sink(_warn, "goals.history-inspection")
     try:
-        result = subprocess.run(
-            ["git", "check-ignore", "--no-index", "-v", "--", relative],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        matches = query_ignores(root, (relative,))
+        result = subprocess.CompletedProcess(
+            ["git", "check-ignore"],
+            0 if matches else 1,
+            "\n".join(f"{m.source}:{m.line}:{m.pattern}\t{m.path}" for m in matches),
+            "",
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         inspect_warning(

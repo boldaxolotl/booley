@@ -112,5 +112,7 @@ An `issues_only` channel does not record clean observations. So issue A, then
 clean, then the same issue A stays silent on that channel; a channel that
 consumes clean observations announces the recurrence.
 
-The Dashboard reads one non-consuming snapshot, hides a current healthy state,
-and labels unavailable or stale ones.
+The Dashboard reads one non-consuming snapshot and renders compact active FAIL
+and WARN counts, or `Doctor: OK` when clean. It labels unavailable results and
+adds a stale suffix when a recheck is due. The separate `brief_message()` adapter
+retains verbose findings and transcript paths for existing CLI and MCP callers.

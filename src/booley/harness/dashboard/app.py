@@ -20,6 +20,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
+from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
@@ -48,12 +49,24 @@ HELP = (
     "Navigation is read-only; approvals remain in chat."
 )
 
-_STATUS_STYLE = {
+_ACCENT = f"color({PALETTE_DODGER_BLUE})"
+_CHROME = f"color({PALETTE_MAUVE})"
+SEMANTIC_STYLE = {
+    "pass": "green",
+    "met": "green",
     "passing": "green",
-    "failing": "red",
-    "needs recheck": "dark_orange",
+    "warn": "yellow",
+    "fail": "bold red",
+    "failing": "bold red",
+    "running": _ACCENT,
+    "checking": _ACCENT,
+    "needs recheck": f"color({PALETTE_ORANGE})",
+    "attention": f"color({PALETTE_ORANGE})",
+    "unknown": "dim",
+    "not run": "dim",
     "not yet run": "dim",
-    "checking": "cyan",
+    "unavailable": "dim",
+    "ok": "dim",
 }
 
 
@@ -88,8 +101,7 @@ def _measure(value: int | float | None) -> str:
     return "—" if value is None else f"{value / 1024**3:.1f} GiB"
 
 
-def resource_summary(resources: Resources) -> str:
-    """Label Sandbox CPU by its measured capacity; Job CPU uses separate core units."""
+def _resource_parts(resources: Resources) -> tuple[tuple[str, str], ...]:
     cpu = "—" if resources.cpu_percent is None else f"{resources.cpu_percent:.1f}%"
     capacity = (
         "capacity unavailable"
@@ -97,17 +109,55 @@ def resource_summary(resources: Resources) -> str:
         else f"of {resources.cpu_capacity:g} CPUs"
     )
     return (
-        f"Sandbox CPU {cpu} {capacity} · Memory {_measure(resources.memory)} / "
-        f"{_measure(resources.memory_limit)} · Free disk {_measure(resources.disk_free)}"
+        ("Sandbox CPU", f"{cpu} {capacity}"),
+        ("Memory", f"{_measure(resources.memory)} / {_measure(resources.memory_limit)}"),
+        ("Free disk", _measure(resources.disk_free)),
     )
+
+
+def resource_summary(resources: Resources) -> str:
+    """Label Sandbox CPU by its measured capacity; Job CPU uses separate core units."""
+    return " · ".join(f"{label} {value}" for label, value in _resource_parts(resources))
+
+
+def _resource_text(resources: Resources) -> Text:
+    text = Text()
+    for label, value in _resource_parts(resources):
+        if text:
+            text.append(" · ")
+        text.append(label, style=_CHROME)
+        text.append(" " + value)
+    return text
+
+
+def _orientation_text(orientation: str) -> Text:
+    title, separator, details = orientation.partition("\n")
+    text = Text(title, style="bold " + _ACCENT)
+    # Keep detail lines outside the title's base style.
+    return Text.assemble(text, separator + details)
+
+
+def _health_text(snapshot: DashboardSnapshot) -> Text:
+    text = Text()
+    for line in snapshot.health:
+        if text:
+            text.append("\n")
+        text.append(
+            line.text, style=SEMANTIC_STYLE[line.severity] if line.severity is not None else None
+        )
+    for diagnostic in (*snapshot.diagnostics, *snapshot.jobs.diagnostics):
+        if text:
+            text.append("\n")
+        text.append(diagnostic)
+    return text
 
 
 def _goal_text(goal: GoalDetail) -> Text:
     text = Text()
     if goal.checking:
-        text.append("checking · ", style=_STATUS_STYLE["checking"])
-    text.append(goal.state + " · ", style=_STATUS_STYLE[goal.state])
-    text.append(goal.presentation.label + " · " + goal.presentation.detail, style="cyan")
+        text.append("checking · ", style=SEMANTIC_STYLE["checking"])
+    text.append(goal.state + " · ", style=SEMANTIC_STYLE[goal.state])
+    text.append(goal.presentation.label + " · " + goal.presentation.detail, style=_ACCENT)
     return text
 
 
@@ -260,7 +310,7 @@ class DashboardApp(App[None]):
     ]
     CSS = """
     #orientation { height: auto; max-height: 8; }
-    #resources { height: 1; color: $text-muted; }
+    #resources { height: 1; }
     #health { height: auto; max-height: 6; }
     #body { height: 1fr; }
     #list { width: 1fr; }
@@ -338,7 +388,12 @@ class DashboardApp(App[None]):
     def _show_stale(self, reason: str) -> None:
         health = self._health()
         if health is not None:
-            health.update(f"Dashboard data unavailable/stale: {reason}")
+            health.update(
+                Text(
+                    f"Dashboard data unavailable/stale: {reason}",
+                    style=SEMANTIC_STYLE["attention"],
+                )
+            )
 
     def _assign_shortcuts(self) -> None:
         connected = {row.attribution.key for row in self.snapshot.sessions}
@@ -689,7 +744,7 @@ class DashboardApp(App[None]):
     def render_snapshot(self) -> None:
         """Refresh content while retaining row identity and scroll position."""
         orientation, keys, rows = self._content()
-        self.query_one("#orientation", Static).update(orientation)
+        self.query_one("#orientation", Static).update(_orientation_text(orientation))
         self.query_one("#empty", Static).update(
             "No connected sessions"
             if not rows and self.navigation.view == "overview"
@@ -697,16 +752,8 @@ class DashboardApp(App[None]):
                 "No Jobs match this filter" if not rows and self.navigation.view == "jobs" else ""
             )
         )
-        self.query_one("#resources", Static).update(resource_summary(self.snapshot.resources))
-        self.query_one("#health", Static).update(
-            "\n".join(
-                (
-                    *self.snapshot.health,
-                    *self.snapshot.diagnostics,
-                    *self.snapshot.jobs.diagnostics,
-                )
-            )
-        )
+        self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
+        self.query_one("#health", Static).update(_health_text(self.snapshot))
         table = self.query_one(DataTable)
         selected = self._selected_key()
         scope = (self.navigation.view, self.navigation.session, self.navigation.job_filter)

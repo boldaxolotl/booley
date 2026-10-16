@@ -1826,6 +1826,28 @@ def _step_advisories(ctx: InitContext) -> None:
     ctx.record("advisories", "ok", detail)
 
 
+def _step_project_trackability(ctx: InitContext) -> None:
+    """Advise on effective exclusions after full Project reconciliation."""
+    from booley.runtime.project_trackability import FIX, inspect_project_trackability
+
+    selected = booley_dir_for_init(ctx.project_root)
+    if stealth_enabled(ctx.project_root, booley_dir=selected):
+        return
+    ctx.step_banner("Project trackability")
+    inspection = inspect_project_trackability(ctx.project_root, selected)
+    for group in inspection.ignored:
+        warn(group.message)
+        info(f"  fix: {FIX}")
+    for error in inspection.errors:
+        warn(error)
+    problems = len(inspection.ignored) + len(inspection.errors)
+    ctx.record(
+        "project_trackability",
+        "warn" if problems else "ok",
+        f"{problems} exclusion/inspection warning(s)" if problems else "current",
+    )
+
+
 def _step_project_inventory(ctx: InitContext) -> None:
     """Remember a Project only after its ordinary initialization succeeded."""
     if ctx.check_only or any(result.status == "err" for result in ctx.results):
@@ -2250,6 +2272,7 @@ def _run_project_init_steps(
         init_will_create_booley_dir=True,
     )
     _step_project_inventory(ctx)
+    _step_project_trackability(ctx)
     _step_advisories(ctx)
 
     return _print_summary(ctx)
