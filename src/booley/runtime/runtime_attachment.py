@@ -22,7 +22,6 @@ from booley.runtime.execution_records import (
     ExecutionId,
     ExecutionPaths,
     execution_paths,
-    gc_terminal_executions,
     read_json,
     request_cancellation,
     write_attachment_heartbeat,
@@ -282,7 +281,6 @@ def run_command(
 
     execution_id = ExecutionId(uuid.uuid4().hex)
     project_data = resolve_checkout_booley_dir(project_root)
-    gc_terminal_executions(project_data)
     supervisor = _supervisor_command(execution_id, command, tty=tty)
     docker_argv = exec_argv(
         container_name,

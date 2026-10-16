@@ -24,6 +24,7 @@ from typing import Any
 
 from booley.core.boundary import BoundaryError, as_float, as_str, require_int
 from booley.core.lease_shutdown import ENV, GRACE_SECONDS, SETTLE_SECONDS, ShutdownGroup
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
@@ -32,6 +33,7 @@ from booley.runtime.execution_records import (
     child_context_matches,
     execution_paths,
     force_cancellation_requested,
+    gc_terminal_executions,
     read_attachment_heartbeat,
     read_json,
     request_cancellation,
@@ -526,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         return 125
+    gc_terminal_executions(resolve_booley_dir())
     return supervise(
         paths,
         command,

@@ -16,6 +16,7 @@ import os
 import platform
 import signal
 import stat
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -407,6 +408,8 @@ class ShutdownGroup:
         """Retire dead terminal metadata only after every scratch proof is independent."""
         from booley.core.temporary_workspace import owner_alive
 
+        if sys.platform != "linux":
+            return False
         try:
             identity = self.path.lstat()
             with self.locked() as data:

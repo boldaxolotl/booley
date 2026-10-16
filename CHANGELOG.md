@@ -71,7 +71,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   Specialist launch. An initial force cancellation publishes its requested signal
   with the force intent, avoiding a SIGINT exit status when SIGTERM was requested
   before any graceful cancellation. Terminal execution records release their
-  shutdown metadata only after surviving scratch has independent completion proof.
+  shutdown metadata inside the Sandbox's PID namespace, only after surviving
+  scratch has independent completion proof. Portable hosts retain foreign Linux
+  metadata without invoking Linux ownership APIs.
   Unsupported or uncertain native ownership and old unmarked
   leftovers remain for verified operator cleanup. Sharing auth removes credential
   replicas; concurrent native credential writes remain unserialized and can
