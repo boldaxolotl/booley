@@ -336,7 +336,20 @@ def test_corrupt_record_is_kept_and_keeps_every_worktree_lock(goal_mode):
     assert corrupt.is_dir() and lock.exists()
 
 
-@pytest.mark.parametrize("after_release", [False, True], ids=["posix", "windows-order"])
+@pytest.mark.parametrize(
+    "after_release",
+    [
+        pytest.param(
+            False,
+            id="posix",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows requires closing lock files before deletion",
+            ),
+        ),
+        pytest.param(True, id="windows-order"),
+    ],
+)
 def test_worktree_lock_is_removed_only_when_unshared(goal_mode, monkeypatch, after_release):
     monkeypatch.setattr(ended_records, "_AFTER_RELEASE", after_release)
     unshared = ended_copy(goal_mode, "gone-20200101T000000Z")
