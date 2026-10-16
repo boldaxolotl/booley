@@ -98,3 +98,17 @@ def test_artifact_projection_preserves_authored_delta_and_epoch_membership(kind)
         assert projected["after"]["filesets"] == [{"path": "kept.hex", "type": "user"}]
         assert projected["after"]["parameters"] == surface["parameters"]
     assert project_target_changes([row], frozenset(), frozenset()) == [row]
+
+
+def test_changed_revision_has_no_current_candidate_and_keeps_declared_params(goal_mode):
+    from booley.goals.state_store import load_goal_state
+    from booley.goals.store import GoalStore
+    from tests.goals.conftest import LINT_KEY, bump_spec
+
+    publish(goal_mode)
+    bump_spec(goal_mode, LINT_KEY)
+    store = GoalStore(goal_mode.control)
+    state = load_goal_state(store, store.load(goal_mode.record.id))
+    assert state.criteria[LINT_KEY].met is False
+    assert state.criteria[LINT_KEY].detail == {}
+    assert state.criteria[LINT_KEY].params["target"] == "top"

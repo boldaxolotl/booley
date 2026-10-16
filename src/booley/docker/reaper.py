@@ -13,7 +13,7 @@ image, mirroring ``proxy_entry.py``. It shells out to the ``docker`` CLI.
 Idle signal: protected Sandbox activity writes an epoch timestamp to
 :data:`HEARTBEAT_PATH`; the reaper reads it via ``docker exec``. When no
 heartbeat is available (older session, activity not started) it falls back to the
-container's start time, so the timeout degrades to a max-lifetime cap. The
+container's start time. Running client Docker execs prevent idle reaping. The
 heartbeat is also clamped to that start time: it persists across stop→start in
 the writable layer, so a stale one must never make a just-booted container look
 idle.
@@ -21,11 +21,13 @@ idle.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import math
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -60,6 +62,7 @@ class SessionContainer:
     name: str
     started_at: float  # epoch seconds
     last_activity: float  # epoch seconds (heartbeat, else started_at)
+    attachments: int | None = 0
 
 
 @dataclass(frozen=True)
@@ -118,7 +121,9 @@ def _reap_reasons(
     now: float,
     idle_timeout: float,
 ) -> dict[str, frozenset[str]]:
-    idle = {c.id for c in containers if now - c.last_activity > idle_timeout}
+    idle = {
+        c.id for c in containers if c.attachments == 0 and now - c.last_activity > idle_timeout
+    }
     return {cid: frozenset({"idle"}) for cid in idle}
 
 
@@ -166,7 +171,21 @@ def parse_docker_time(value: str) -> float | None:
 
 def _run(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["docker", *args],
+        ["docker", "--host", "unix:///var/run/docker.sock", *args],
+        env={
+            k: v
+            for k, v in os.environ.items()
+            if k
+            not in {
+                "DOCKER_HOST",
+                "DOCKER_CONTEXT",
+                "DOCKER_TLS",
+                "DOCKER_TLS_VERIFY",
+                "DOCKER_CERT_PATH",
+                "DOCKER_CONFIG",
+                "DOCKER_API_VERSION",
+            }
+        },
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -174,6 +193,91 @@ def _run(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
         timeout=timeout,
         check=False,
     )
+
+
+_EXEC_ID_RE = re.compile(r"^[0-9a-f]{1,64}$")
+_EXEC_RESPONSE_LIMIT = 1024 * 1024
+
+
+class _EngineConnection(http.client.HTTPConnection):
+    """Bounded HTTP transport to the reaper's mounted Engine socket."""
+
+    def __init__(self) -> None:
+        super().__init__("localhost", timeout=5)
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect("/var/run/docker.sock")
+
+
+def inspect_exec(exec_id: str) -> dict:
+    """Read one Engine exec object, rejecting incomplete or oversized responses."""
+    if _EXEC_ID_RE.fullmatch(exec_id) is None:
+        raise ValueError("invalid exec ID")
+    connection = _EngineConnection()
+    try:
+        connection.request("GET", f"/exec/{exec_id}/json")
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError("exec inspection HTTP failure")
+        body = response.read(_EXEC_RESPONSE_LIMIT + 1)
+        if len(body) > _EXEC_RESPONSE_LIMIT:
+            raise ValueError("exec inspection response too large")
+        value = json.loads(body.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("exec inspection is not an object")
+        return value
+    finally:
+        connection.close()
+
+
+def _client_exec(value: dict) -> bool:
+    if not isinstance(value, dict) or type(value.get("Running")) is not bool:
+        raise ValueError("invalid exec Running state")
+    if not value["Running"]:
+        return False
+    config = value.get("ProcessConfig")
+    if (
+        not isinstance(config, dict)
+        or not isinstance(config.get("entrypoint"), str)
+        or not isinstance(config.get("arguments"), list)
+        or not all(isinstance(arg, str) for arg in config["arguments"])
+    ):
+        raise ValueError("invalid running exec command")
+    return not (
+        config["entrypoint"] == "sh" and config["arguments"] == ["-c", _HEARTBEAT_READ_SCRIPT]
+    )
+
+
+def _attachments(cid: str, run: Callable, inspector: Callable) -> int | None:
+    try:
+        result = run(["inspect", cid, "--format", "{{json .ExecIDs}}"])
+        if result.returncode != 0:
+            raise ValueError("container exec inspection failed")
+        ids = json.loads(result.stdout)
+        if ids is None:
+            ids = []
+        if not isinstance(ids, list) or not all(
+            isinstance(eid, str) and _EXEC_ID_RE.fullmatch(eid) for eid in ids
+        ):
+            raise ValueError("invalid container exec IDs")
+    except (ValueError, OSError, subprocess.SubprocessError):
+        logger.warning("keeping %s; unknown client exec inspection", cid)
+        return None
+    count, unknown = 0, False
+    for eid in ids:
+        try:
+            count += _client_exec(inspector(eid))
+        except (ValueError, OSError, http.client.HTTPException, subprocess.SubprocessError):
+            unknown = True
+    if count:
+        logger.info("keeping %s; %d live client attachments", cid, count)
+        return count
+    if unknown:
+        logger.warning("keeping %s; unknown client exec inspection", cid)
+        return None
+    return 0
 
 
 def list_session_containers(
@@ -229,19 +333,39 @@ def _idle_after_revalidation(
     now: float,
     idle_timeout: float,
     run: Callable[..., subprocess.CompletedProcess],
+    exec_inspector: Callable,
 ) -> bool:
     reading = _read_heartbeat(container.id, run)
     if reading.status in {"error", "invalid"}:
+        logger.warning("keeping %s; uncertain heartbeat inspection", container.id)
         return False
     last_activity = (
         max(reading.value, container.started_at)
         if reading.value is not None
         else container.started_at
     )
-    return now - last_activity > idle_timeout
+    if _attachments(container.id, run, exec_inspector) != 0:
+        return False
+    if now - last_activity <= idle_timeout:
+        logger.info("keeping %s; fresh heartbeat before stop", container.id)
+        return False
+    logger.info(
+        "stopping %s; effective activity=%.0f heartbeat absent=%s; "
+        "no live client attachments; idle age=%.0fs timeout=%.0fs",
+        container.id,
+        last_activity,
+        reading.status == "missing",
+        now - last_activity,
+        idle_timeout,
+    )
+    return True
 
 
-def collect(run: Callable[..., subprocess.CompletedProcess] = _run) -> list[SessionContainer]:
+def collect(
+    run: Callable[..., subprocess.CompletedProcess] = _run,
+    *,
+    exec_inspector: Callable = inspect_exec,
+) -> list[SessionContainer]:
     """Gather Sandboxes with their activity timestamps."""
     out: list[SessionContainer] = []
     for cid, name in list_session_containers(run):
@@ -252,6 +376,7 @@ def collect(run: Callable[..., subprocess.CompletedProcess] = _run) -> list[Sess
         heartbeat = _heartbeat(cid, run)
         out.append(
             SessionContainer(
+                attachments=_attachments(cid, run, exec_inspector),
                 id=cid,
                 name=name,
                 started_at=started,
@@ -388,9 +513,10 @@ def reap_once(
     now: float,
     idle_timeout: float,
     run: Callable[..., subprocess.CompletedProcess] = _run,
+    exec_inspector: Callable = inspect_exec,
 ) -> list[str]:
     """One reap pass: collect, select, stop. Returns the stopped IDs."""
-    containers = collect(run)
+    containers = collect(run, exec_inspector=exec_inspector)
     reasons = _reap_reasons(
         containers,
         now=now,
@@ -409,8 +535,8 @@ def reap_once(
             now=now,
             idle_timeout=idle_timeout,
             run=run,
+            exec_inspector=exec_inspector,
         ):
-            logger.info("skipping %s; it became active before the idle stop decision", cid)
             continue
         if not stop_container(cid, run):
             continue

@@ -160,7 +160,7 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
     binding = command_project_bindings()[command]
     if binding is ProjectBinding.AUTH:
-        return ProjectBinding.INDEPENDENT if args.status else ProjectBinding.REQUIRED
+        return ProjectBinding.OPTIONAL if args.status else ProjectBinding.REQUIRED
     return binding
 
 
@@ -433,7 +433,10 @@ def _build_parser() -> argparse.ArgumentParser:
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
     _add_goal_subparser(sub)
-    sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
+    dashboard = sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
+    attach = dashboard.add_mutually_exclusive_group()
+    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
+    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
 
     _install_project_options(parser)
     _decorate_command_help(sub)
@@ -499,8 +502,11 @@ def _add_auth_subparser(sub) -> None:
     auth_p.add_argument(
         "--app",
         choices=("claude", "codex"),
-        default="claude",
-        help="Which agent app to authenticate (default: claude)",
+        default=None,
+        help=(
+            "AI agent client (credential changes default to claude; "
+            "status uses the Project provider or both clients)"
+        ),
     )
     auth_p.add_argument(
         "--status", action="store_true", help="Report which credential each agent would use"
@@ -830,9 +836,11 @@ def _add_goal_subparser(sub) -> None:
     )
 
 
-def _cmd_dashboard(_args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness.dashboard.command import run_dashboard
+def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness.dashboard.command import run_attach, run_dashboard
 
+    if args.attach_policy or args.on_attach:
+        return run_attach(project_root, policy_only=args.attach_policy)
     return run_dashboard(project_root)
 
 
@@ -1192,15 +1200,18 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     return 0
 
 
-def _report_session_health(project_root: Path, *, startup_due_reason: str | None = None) -> None:
+def _report_session_health(
+    project_root: Path, *, startup_due_reason: str | None = None, started: bool = True
+) -> None:
     """Surface the result, or the scheduled check, after Sandbox start."""
     from booley.runtime import health, health_presentation
 
     due_reason = startup_due_reason or health.due_reason(project_root)
     if due_reason is not None:
+        timing = "from before startup " if started else ""
         print(
-            f"Automatic Doctor is running in the Sandbox ({due_reason}); "
-            "persisted findings from before startup will not be reported as current.",
+            f"Automatic Doctor is {'running' if started else 'due'} in the Sandbox ({due_reason}); "
+            f"persisted findings {timing}will not be reported as current.",
             file=sys.stderr,
         )
         return
@@ -1217,20 +1228,14 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
     _report_upgrade_before_session(project_root)
-    vscode = sr.conflicting_vscode_session(project_root)
     startup_due_reason = health.due_reason(project_root)
-    name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
-    if vscode:
-        print(
-            f"warning: VS Code is already running a Sandbox for this "
-            f"folder ({vscode}).\n"
-            f"  Both mount the agent's home-state volume read-write, so two "
-            f"agents now share one\n"
-            f"  set of credentials, transcripts, and todos. Prefer the VS Code "
-            f"container, or close it.",
-            file=sys.stderr,
-        )
-    _report_session_health(project_root, startup_due_reason=startup_due_reason)
+    result = sr.ensure(project_root, rebuild=getattr(args, "rebuild", False))
+    name = result.name
+    if result.vscode:
+        print(f"Reusing Sandbox owned by VS Code: {name}")
+    _report_session_health(
+        project_root, startup_due_reason=startup_due_reason, started=result.started
+    )
     from booley.harness.doctor import observe_deep_status
 
     print(observe_deep_status(project_root, container=name).render())
@@ -1264,7 +1269,7 @@ def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
         project_root,
         startup_due_reason=health.due_reason(project_root),
     )
-    print(f"Refreshed Sandbox: {result.selected_reference} ({result.selected_id})")
+    print(result.message)
     return 0
 
 
@@ -1285,8 +1290,6 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
         details = []
         if result.headless:
             details.append(f"removed {sr.session_container_name(project_root)}")
-        if result.vscode_stopped:
-            details.append("stopped VS Code Sandbox " + ", ".join(result.vscode_stopped))
         if result.claim_cleared:
             details.append("cleared pending editor start claim")
         print("; ".join(details) or "removed Sandbox resources")

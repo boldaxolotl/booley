@@ -79,6 +79,7 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.edam import normalize_eda_tool
 from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
+from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
     core_security,
     fusesoc_registry,
@@ -568,9 +569,11 @@ class _Reporter:
         self.skip_(f"{description} skipped by --skip-agent-checks")
         return False
 
-    def fail_(self, msg: str, fix: str = "") -> None:
+    def fail_(
+        self, msg: str, fix: str = "", *, check_id: str | None = None, subject: str | None = None
+    ) -> None:
         assert self.findings is not None
-        self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix))
+        self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix, check_id, subject))
         err(f"FAIL  {msg}")
         if fix:
             info(f"  fix: {fix}")
@@ -766,7 +769,26 @@ def _report_deep_currency(
         except (FileNotFoundError, OSError):
             booley_dir = None
         if booley_dir is not None:
-            attempt = summary.attempt(version=booley.__version__, clean=result.clean)
+            blockers = tuple(
+                finding
+                for finding in result.diagnostics.active_findings
+                if not (
+                    finding.severity == Severity.WARN
+                    and finding.check_id == "upgrade.review-pending"
+                )
+            )
+            failures = sum(finding.severity == Severity.FAIL for finding in blockers)
+            warnings = tuple(
+                finding.check_id
+                for finding in blockers
+                if finding.severity == Severity.WARN and finding.check_id is not None
+            )
+            attempt = summary.attempt(
+                version=booley.__version__,
+                clean=not blockers,
+                failure_count=failures,
+                blocking_warning_ids=warnings,
+            )
             storage_failed = not doctor_deep.record_deep_attempt(booley_dir, attempt)
     status = observe_deep_status(project_root, unsaved_attempt=attempt if storage_failed else None)
     if storage_failed:
@@ -2178,6 +2200,17 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     _pass("Dashboard session-activity hooks installed")
 
 
+def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> None:
+    """Check image-owned delivery independently of editor trust and user preferences."""
+    from booley.runtime.dashboard_extension import installed_error
+
+    error = installed_error()
+    if error:
+        _warn(f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox")
+        return
+    _pass("Dashboard workspace extension bundled in the Sandbox Image")
+
+
 def _check_container_runtime_payload(
     check: Callable[[str, list[str], str], None],
 ) -> None:
@@ -2223,6 +2256,7 @@ def _run_container_checks(
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
+        _check_current_runtime_dashboard_extension(_pass, _warn)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
@@ -2363,6 +2397,7 @@ def _run_mcp_checks(
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
         expected_cache_mount=nangate_pdk.CONTAINER_ROOT if nangate_pdk.is_ready() else None,
+        booley_dir=project.booley_dir,
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
@@ -2388,8 +2423,21 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         return
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
+    try:
+        plan = auth_token.credential_plan(provider, auth_policy)
+    except ValueError as exc:
+        reporter.fail_(str(exc), check_id="agent.credential-policy", subject=provider)
+        return
     _check_agent_auth_token(
-        provider, reporter.pass_, reporter.warn_, reporter.skip_, policy=auth_policy
+        provider,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        policy=auth_policy,
+        plan=plan,
+        _fail=lambda message: reporter.fail_(
+            message, check_id="agent.credential-missing", subject=provider
+        ),
     )
     _check_oauth_token(
         provider,
@@ -2398,8 +2446,11 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         reporter.skip_,
         policy=auth_policy,
         _note=reporter.note_,
+        plan=plan,
     )
-    _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
+    _check_subscription_creds_health(
+        provider, reporter.pass_, reporter.warn_, policy=auth_policy, plan=plan
+    )
 
 
 def _check_interactive_logs_tracked(
@@ -2529,13 +2580,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
 
 
 def _configured_auth_policy(project: ProjectAudit | None) -> str:
-    """The project's ``[agent] auth`` policy, defaulting to ``auto``.
-
-    Mirrors :func:`_configured_provider`: ``BOOLEY_PRIMARY_AUTH`` beats the
-    project's booley.toml. Doctor is fail-soft, so an invalid toml value
-    degrades to ``auto`` here — :func:`_validate_agent_table` already FAILed
-    on it upstream.
-    """
+    """Audit the selected Project policy; ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
         _DEFAULT_AUTH,
         _VALID_AUTH_MODES,
@@ -2544,10 +2589,8 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
     )
 
     env_auth = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip()
-    if env_auth in _VALID_AUTH_MODES:
-        return env_auth
     if project is None:
-        return _DEFAULT_AUTH
+        return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
     agent_section = project.booley_toml.get("agent")
     if not isinstance(agent_section, dict):
         return _DEFAULT_AUTH
@@ -2579,6 +2622,9 @@ def _check_agent_auth_token(
     _warn: Check,
     _skip: Check,
     policy: str = "auto",
+    *,
+    _fail: Check | None = None,
+    plan: auth_token.CredentialPlan | None = None,
 ) -> None:
     """ADR 0018: verify the agent's credential where it actually lives (not assumed).
 
@@ -2594,11 +2640,17 @@ def _check_agent_auth_token(
     credentials, so their absence is not a finding worth a warning.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
+    plan = plan or auth_token.credential_plan(provider, policy)
+    if policy != "auto" and plan.selected is None:
+        (_fail or _warn)(
+            f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
+        )
+        return
     if not _agent_app_installed(provider):
         _skip(f"agent auth token check skipped - {_provider_not_installed_reason(provider)}")
         return
     label = _AGENT_APP_LABELS[provider]
-    effective = auth_token.effective_credential(provider, policy=policy)
+    effective = plan.selected
     if effective is None:
         hint = (
             f"[agent] auth = '{policy}' pins the billing mode — provide that credential "
@@ -2617,7 +2669,9 @@ def _check_agent_auth_token(
     _pass(line)
 
 
-def _rotation_free_state(provider: str, policy: str) -> tuple[bool, bool, str | None]:
+def _rotation_free_state(
+    provider: str, policy: str, plan: auth_token.CredentialPlan | None = None
+) -> tuple[bool, bool, str | None]:
     """The credentials that could cover *provider*: ``(api_key, env_token, stored)``.
 
     An exported API key outranks every other credential under the agent CLI's
@@ -2629,18 +2683,16 @@ def _rotation_free_state(provider: str, policy: str) -> tuple[bool, bool, str | 
     so none of them can be the rotation-free credential. For Codex that covers
     its env/stored key too (its token IS an API key).
     """
+    plan = plan or auth_token.credential_plan(provider, policy)
     credential = auth_token.CREDENTIALS[provider]
-    api_key_var = auth_token.API_KEY_ENV[provider]
-    env_token = bool((os.environ.get(credential.env_var) or "").strip())
-    stored = auth_token.read_stored_token(provider)
-    api_key = api_key_var != credential.env_var and bool(
-        (os.environ.get(api_key_var) or "").strip()
+    values = dict(plan.values)
+    api_key = credential.env_var != auth_token.API_KEY_ENV[provider] and bool(
+        values.get(auth_token.API_KEY_ENV[provider])
     )
-    if policy == "subscription":
-        api_key = False
-        if credential.env_var == api_key_var:
-            env_token = False
-            stored = None
+    env_token = credential.env_var in plan.allowed_env and bool(os.environ.get(credential.env_var))
+    stored = (
+        auth_token.read_stored_token(provider) if credential.env_var in plan.allowed_env else None
+    )
     return api_key, env_token, stored
 
 
@@ -2652,6 +2704,7 @@ def _check_oauth_token(
     policy: str = "auto",
     *,
     _note: Check | None = None,
+    plan: auth_token.CredentialPlan | None = None,
 ) -> None:
     """Report whether agents run on a rotation-free credential or a refreshing one.
 
@@ -2675,10 +2728,13 @@ def _check_oauth_token(
             f"rotation-free credential check skipped - {_provider_not_installed_reason(provider)}"
         )
         return
+    plan = plan or auth_token.credential_plan(provider, policy)
+    if policy == "api_key" and plan.selected is None:
+        return
     label = _AGENT_APP_LABELS[provider]
     credential = auth_token.CREDENTIALS[provider]
     api_key_var = auth_token.API_KEY_ENV[provider]
-    api_key, env_token, stored = _rotation_free_state(provider, policy)
+    api_key, env_token, stored = _rotation_free_state(provider, policy, plan)
 
     if not api_key and not env_token and not stored:
         message = (
@@ -2733,6 +2789,8 @@ def _check_subscription_creds_health(
     _pass: Check,
     _warn: Check,
     policy: str = "auto",
+    *,
+    plan: auth_token.CredentialPlan | None = None,
 ) -> None:
     """A PRESENT subscription login can still be DEAD — check what's checkable.
 
@@ -2759,9 +2817,10 @@ def _check_subscription_creds_health(
     ):
         return
     app = auth_token.APP_CLAUDE
-    rotation_free = bool(auth_token.resolve_token(app)) or (
-        policy != "subscription" and bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
-    )
+    selected = (plan or auth_token.credential_plan(app, policy)).selected
+    rotation_free = bool(selected and selected.rotation_free)
+    if policy == "api_key":
+        return
 
     now = time.time()
     creds_path = auth_token.subscription_creds_path(app)
@@ -2959,7 +3018,11 @@ def _check_wcp_server(
     if not docker_exe:
         _skip(f"{description} - container runtime unavailable")
         return
-    container = session_runtime.vscode_session_container(project.project_root)
+    try:
+        container = session_runtime.vscode_session_container(project.project_root)
+    except session_runtime.SessionError as exc:
+        _fail(f"{description} - {exc}", "resolve the Sandbox inventory before retrying")
+        return
     if container is None:
         _skip(f"{description} - no VS Code devcontainer running for this project")
         return
@@ -4010,13 +4073,28 @@ def _check_sim_target_setup(
 ) -> None:
     """Run source-backed setup checks for every simulation Target."""
     for name, ref in sorted(inputs.refs.items()):
-        if ref.flow != "sim":
+        if not flow_can_drive("sim", ref):
             continue
         try:
             sources = inputs.sources_for(name)
         except fusesoc_registry.FuseSocError:
             continue  # malformed CAPI2 is already reported by the schema audit
-        _check_sim_target_tb_staging(name, sources, _pass, _fail)
+        explicit = fusesoc_registry.explicit_target_sources(project.project_root, ref)
+        inferred = sorted(
+            item.path
+            for item in inputs.inspection_for(name).inputs
+            if item.file_type.lower() in {"cppsource", "csource"}
+            and "tb" in item.tags
+            and fusesoc_registry.canonical_project_path(project.project_root, item.path)
+            not in explicit.tb_files
+        )
+        if inferred:
+            _warn(
+                f"sim Target '{name}' untagged C/C++ harness files: {', '.join(inferred)}; add tags:[tb] to their fileset"
+            )
+        if ref.flow != "sim":
+            continue  # preserve legacy setup auditing while still warning on inferred roles
+        _check_sim_target_tb_staging(name, explicit, _pass, _fail)
         _check_sim_verdict_setup(
             project,
             project.project_root,
@@ -5635,6 +5713,28 @@ def _report_native_dependencies(
         )
 
 
+def _native_dependency_sources(project: ProjectAudit) -> list[str]:
+    """Collect selected compile inputs from both source roles for native scanning."""
+    seeds = _project_target_matrix(project).seed_targets
+    if not seeds:
+        return []
+    sources: list[str] = []
+    try:
+        catalog = TargetCatalog.build(project.project_root)
+    except FuseSocError:
+        return []
+    for token in seeds:
+        try:
+            sources.extend(
+                item.path
+                for item in catalog.inspect(catalog.select(token)).inputs
+                if not item.is_include
+            )
+        except FuseSocError:
+            continue  # an unresolvable Target is already reported elsewhere
+    return sources
+
+
 def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
     """Warn when a Target's C/C++ sources need a native package the image lacks.
 
@@ -5647,20 +5747,8 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     Advisory by design — this is a curated header list, not a resolver, so it
     can only be a hint. It never fails the gate.
     """
-    seeds = _project_target_matrix(project).seed_targets
-    if not seeds:
-        return
     root = project.project_root
-    sources: list[str] = []
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        return
-    for token in seeds:
-        try:
-            sources.extend(catalog.inspect(catalog.select(token)).rtl_files)
-        except FuseSocError:
-            continue  # an unresolvable Target is already reported elsewhere
+    sources = _native_dependency_sources(project)
 
     needed: dict[str, set[str]] = {}
     scanned = 0
@@ -6281,6 +6369,7 @@ def _run_selftest_checks(
             expect_pass=True,
             flow_runtime=flow_runtime,
             _pass=_pass,
+            _warn=_warn,
             _skip=_skip,
             _fail=_fail,
         )
@@ -6292,6 +6381,7 @@ def _run_selftest_checks(
             expect_pass=False,
             flow_runtime=flow_runtime,
             _pass=_pass,
+            _warn=_warn,
             _skip=_skip,
             _fail=_fail,
         )
@@ -6400,6 +6490,99 @@ def _execute_selftest(
     return result
 
 
+def _selftest_report_path(project: ProjectAudit) -> Path:
+    return project.booley_dir / _DOCTOR_TMP / "flow-reports" / "sim.json"
+
+
+def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
+    report = require_dict(json.loads(_selftest_report_path(project).read_text(encoding="utf-8")))
+    if report.get("$schema") != "booley.simulation-report/v3" or report.get("flow") != "sim":
+        raise ValueError("report is not a Simulation Flow v3 report")
+    if require_int(report.get("exit_code"), field="exit_code") != rc:
+        raise ValueError("report exit code does not match this invocation")
+    campaigns = require_dict(require_dict(report.get("detail")).get("campaigns"))
+    campaign = require_dict(campaigns.get(case.target), field="selected campaign")
+    if campaign.get("complete") is not True:
+        raise ValueError("selected Simulation Campaign is incomplete")
+    return campaign
+
+
+def _selftest_observation_pairs(campaign: dict) -> list[tuple[dict, dict]]:
+    rows = require_list(campaign.get("test_runs"), field="test_runs")
+    observations = require_list(campaign.get("observations"), field="observations")
+    if (
+        require_int(campaign.get("test_run_total")) != len(rows)
+        or require_int(campaign.get("observation_total")) != len(observations)
+        or len(rows) != len(observations)
+        or campaign.get("test_runs_truncated") is not False
+        or campaign.get("observations_truncated") is not False
+    ):
+        raise ValueError("Test Run rows and observations are truncated or inconsistent")
+    pairs = [
+        (require_dict(row), require_dict(obs)) for row, obs in zip(rows, observations, strict=True)
+    ]
+    if any(
+        "test" not in row or "test" not in obs or row["test"] != obs["test"] for row, obs in pairs
+    ):
+        raise ValueError("Test Run rows and observations do not correspond")
+    return pairs
+
+
+def _selftest_row_selected(row: dict, case: _SelftestCase) -> bool:
+    if row["test"] is None:
+        if row.get("variant") is not None:
+            raise ValueError("unnamed Test Run has a Variant")
+        return case.test is None
+    recorded = parse_test_selector(require_str(row, "name"))
+    if row["test"] != recorded.test or row.get("variant") != recorded.variant:
+        raise ValueError("Test Run name contradicts its Test or Variant")
+    if case.test is None:
+        return True
+    selected = parse_test_selector(case.test)
+    return recorded.test == selected.test and recorded.variant == selected.variant
+
+
+def _sim_selftest_evidence(campaign: dict, case: _SelftestCase) -> tuple[bool, str | None]:
+    pairs = _selftest_observation_pairs(campaign)
+    selected = [(row, obs) for row, obs in pairs if _selftest_row_selected(row, case)]
+    for _row, obs in selected:
+        if obs.get("execution") == "blocked_by_build" and obs.get("failure_class") == "design":
+            detail = require_dict(obs.get("detail"))
+            return False, require_str(detail, "reason")
+    if require_list(campaign.get("build_stage"), field="build_stage"):
+        raise ValueError("report contains failed build-stage evidence")
+    for row, obs in selected:
+        if (
+            row.get("grade") == "fail"
+            and obs.get("execution") == "completed"
+            and obs.get("failure_class") in (None, "design")
+            and (obs.get("functional") == "fail" or obs.get("assertions") == "dirty")
+        ):
+            return True, None
+    raise ValueError("no selected completed behavioral Test failure was observed")
+
+
+def _grade_sim_bad_selftest(project, case, result, label, _pass, _warn) -> bool:
+    try:
+        campaign = _read_selftest_campaign(project, case, result.returncode)
+        accepted, compiler_reason = _sim_selftest_evidence(campaign, case)
+    except (OSError, ValueError, BoundaryError) as exc:
+        _warning_sink(_warn, "flow.selftest-evidence-unvalidated", subject="sim")(
+            f"{label} fail-path unvalidated - {exc}"
+        )
+        return False
+    if not accepted:
+        overlay = selftest_overlay.bad_overlay_dir(project.booley_dir, "sim").resolve()
+        _warning_sink(_warn, "flow.selftest-overlay-build-failed", subject="sim")(
+            f"{label}: bad overlay no longer builds against the current design — update {overlay}"
+        )
+        for line in (compiler_reason or "").splitlines()[-8:]:
+            info(f"    {line[:300]}")
+        return False
+    _pass(f"{label} correctly graded a failure")
+    return True
+
+
 def _grade_selftest_result(
     result: subprocess.CompletedProcess,
     label: str,
@@ -6448,6 +6631,7 @@ def _run_one_selftest(
     expect_pass: bool,
     flow_runtime: _DoctorFlowRuntime,
     _pass: Check,
+    _warn: Check,
     _skip: Check,
     _fail: Fail,
 ) -> bool:
@@ -6466,10 +6650,20 @@ def _run_one_selftest(
     if prepared is None:
         return False
     cmd, env, timeout_s = prepared
+    if flow_name == "sim" and not expect_pass:
+        try:
+            _selftest_report_path(project).unlink(missing_ok=True)
+        except OSError as exc:
+            _fail(
+                f"{label} cannot clear prior report: {exc}", "remove the Doctor-owned sim report"
+            )
+            return False
     _announce_long_check(label, f"real EDA run; timeout {_format_minutes(timeout_s)}")
     result = _execute_selftest(project, cmd, env, timeout_s, label, flow_name, _fail=_fail)
     if result is None:
         return False
+    if flow_name == "sim" and not expect_pass and result.returncode == _TOOL_EXIT_DESIGN_FAIL:
+        return _grade_sim_bad_selftest(project, case, result, label, _pass, _warn)
     _grade_selftest_result(result, label, expect_pass=expect_pass, _pass=_pass, _fail=_fail)
 
     return True

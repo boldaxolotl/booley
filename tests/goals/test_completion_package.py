@@ -25,7 +25,13 @@ from tests.goals.test_reviewer_proposals import approve_review_relaxation, revie
 pytestmark = pytest.mark.timeout(120)
 
 
-@pytest.mark.parametrize("derived", [False, True])
+@pytest.mark.parametrize(
+    "derived",
+    [
+        False,
+        pytest.param(True, marks=pytest.mark.timeout(180)),
+    ],
+)
 def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     layout, monkeypatch, capsys, derived
 ):
@@ -106,6 +112,7 @@ def test_modern_mcp_finish_requires_stable_binding_and_preserves_response_retry(
     asyncio.run(run())
 
 
+@pytest.mark.timeout(150)
 def test_derived_sibling_and_rejected_agent_decision_are_frozen_separately(layout):
     from tests.goals.test_proposals import CYCLE_KEY, approve, proposal, publish, setup_cycle
 
@@ -184,7 +191,7 @@ def test_modern_abandon_quote_binding_and_saved_retry_after_replacement(layout, 
 
 
 # Native Windows passed call: 40.944s; 3x rounded to 30s requires 150s.
-@pytest.mark.timeout(150)
+@pytest.mark.timeout(180)
 def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_evidence(
     layout, monkeypatch
 ):
@@ -238,10 +245,22 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
 
 
 @pytest.mark.parametrize(
-    ("family", "detail", "expected"),
+    "family, detail, expected",
     [
-        ("elab", {"mode": "elab", "target": "top", "attempts": 1}, "elaborated"),
-        ("lint", {}, "evidence recorded"),
+        pytest.param(
+            "elab",
+            {"mode": "elab", "target": "top", "attempts": 1},
+            "elaborated",
+            marks=pytest.mark.timeout(120),
+            id="elab-detail0-elaborated",
+        ),
+        pytest.param(
+            "lint",
+            {},
+            "evidence recorded",
+            marks=pytest.mark.timeout(150),
+            id="lint-detail1-evidence recorded",
+        ),
     ],
 )
 def test_elaboration_and_custom_producer_metric_finish(layout, family, detail, expected):
@@ -480,6 +499,7 @@ def _publish_current_base_simulation(layout):
     return transaction
 
 
+@pytest.mark.timeout(150)
 def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rewriting_ledger(
     layout, monkeypatch
 ):

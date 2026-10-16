@@ -278,6 +278,7 @@ class TestWorktreeCreateScript:
         assert _git(worktree, "config", "user.name").stdout.strip() == "Dev"
         assert _git(worktree, "config", "user.email").stdout.strip() == "dev@localhost"
 
+    @pytest.mark.timeout(120)  # Windows CI: 37.4 s including fixtures; retain 3x headroom.
     def test_invalid_git_identity_fails_worktree_creation(self, tmp_path: Path):
         project_root, project_data = _submodule_project(tmp_path)
         (project_data / "booley.toml").write_text(
@@ -290,6 +291,7 @@ class TestWorktreeCreateScript:
         assert result.returncode != 0
         assert "[agent.git] name must be a string" in result.stderr
 
+    @pytest.mark.timeout(120)
     def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
         """Worktree slug must not escape the worktrees directory."""
         from booley.runtime.paths import worktree_create_script
@@ -347,6 +349,7 @@ class TestWorktreeCreateScript:
         assert placeholder.is_dir()
         assert not any(placeholder.iterdir())
 
+    @pytest.mark.timeout(120)
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
         """Host setup must survive a parent config polluted with /work."""
         from booley.runtime.paths import worktree_create_script

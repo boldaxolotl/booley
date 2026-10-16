@@ -59,6 +59,7 @@ class RuntimeInspectionRequest:
     eda: dict[str, EdaConfig] | None = None
     fpga_enabled: bool = False
     expected_cache_mount: str | None = None
+    booley_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -144,13 +145,15 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     if not _image_current(request, spec, report):
         return
-    if not _seed_mounts_current(request, spec, report):
+    seed_currency = _seed_mounts_current(request, spec, report)
+    if seed_currency is False:
         return
     if not _viewer_extensions_current(request, spec, report):
         return
     if not _preview_terminal_current(request, spec, report):
         return
-    report.pass_("devcontainer.json present and structurally current")
+    if seed_currency is not None:
+        report.pass_("devcontainer.json present and structurally current")
 
 
 def _provider_persistence_current(
@@ -167,7 +170,7 @@ def _provider_persistence_current(
             f"'{request.declared_provider}': the Booley MCP entry is registered for "
             f"'{spec_app}', so a '{request.declared_provider}' session sees no Booley "
             f"MCP tools, and '{request.declared_provider}' home-state is not persisted",
-            "re-run `booley init --seed`, then rebuild the container in VS Code",
+            _spec_remedy(request),
         )
         return False
     if spec_state_is_persisted(spec) is False:
@@ -176,7 +179,7 @@ def _provider_persistence_current(
             report,
             "devcontainer.json is stale: no persistent volume for the agent's "
             "home-state - in-container transcripts/plans are lost on every "
-            "rebuild; re-run `booley init` to regenerate",
+            "rebuild",
         )
         return False
     return True
@@ -216,14 +219,15 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
             report,
             f"devcontainer.json image '{spec_image}' != logical [sandbox].image "
             f"'{request.image}': the Sandbox runs a stale image "
-            "(missing toolchains it should have) - re-run `booley init --seed`, "
-            "then rebuild the container in VS Code",
+            "(missing toolchains it should have)",
         )
         return False
     return True
 
 
-def _seed_mounts_current(request: RuntimeInspectionRequest, spec: dict, report: Findings) -> bool:
+def _seed_mounts_current(
+    request: RuntimeInspectionRequest, spec: dict, report: Findings
+) -> bool | None:
     if request.expected_cache_mount and not dc.spec_mounts_target(
         spec, request.expected_cache_mount
     ):
@@ -232,25 +236,49 @@ def _seed_mounts_current(request: RuntimeInspectionRequest, spec: dict, report: 
             report,
             "devcontainer.json omits the verified Nangate45 cache mount at "
             f"{request.expected_cache_mount}: ASIC synthesis will fail before "
-            "elaboration - re-run `booley init --seed`, then rebuild the container",
+            "elaboration",
         )
         return False
     remote_env = spec.get("remoteEnv")
     app = remote_env.get("BOOLEY_AGENT_APP") if isinstance(remote_env, dict) else None
-    if (
-        app in auth_token.CREDENTIALS
-        and auth_token.read_stored_token(app)
-        and spec_mounts_token_seed(spec) is False
-    ):
+    if app not in auth_token.CREDENTIALS:
+        return True
+    expected_seed = _expected_token_seed(request, app, report)
+    if expected_seed is None:
+        return None
+    if expected_seed and spec_mounts_token_seed(spec) is False:
         _spec_warning(
             request,
             report,
             "devcontainer.json predates the stored `booley auth` credential: "
-            "VS Code sessions fall back to the refreshing one - re-run "
-            "`booley init --seed`, then rebuild the container in VS Code",
+            "VS Code sessions fall back to the refreshing one",
         )
         return False
     return True
+
+
+def _expected_token_seed(
+    request: RuntimeInspectionRequest, app: str, report: Findings
+) -> bool | None:
+    from booley.config.agent import BackendConfigError, project_credential_policy
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.checkout_role import SourceCheckoutProjectError
+
+    try:
+        _, policy = project_credential_policy(request.project_root, booley_dir=request.booley_dir)
+        return auth_token.credential_plan(app, policy).token_seed is not None
+    except (
+        BackendConfigError,
+        BooleyLayoutError,
+        SourceCheckoutProjectError,
+        ValueError,
+        OSError,
+    ):
+        report.fail(
+            "Sandbox credential mount expectation is unavailable: Project credential policy or seed could not be inspected",
+            "repair the selected Project credential policy and seed configuration, then refresh the Sandbox",
+        )
+        return None
 
 
 def _viewer_extensions_current(
@@ -263,16 +291,14 @@ def _viewer_extensions_current(
             "devcontainer.json predates the Waveform Viewer (ADR 0035) or its "
             "WCP auto-start patch: VaporView/WCP settings or the postAttach "
             "manifest patch are missing, so in-container `bwave gui` finds no "
-            "running viewer - re-run `booley init --seed`, then rebuild the "
-            "container in VS Code",
+            "running viewer",
         )
         return False
     if not dc.spec_installs_hdl_highlight(spec):
         report.note(
             "devcontainer.json predates the Verilog/SystemVerilog + Tcl "
             "highlighting extensions: RTL and SDC/XDC constraints render as "
-            "plain text in attached VS Code windows - re-run "
-            "`booley init --seed`, then reload the container window"
+            "plain text in attached VS Code windows; " + _spec_remedy(request)
         )
         return False
     return True
@@ -286,24 +312,28 @@ def _preview_terminal_current(
             request,
             report,
             "devcontainer.json lacks the collision-safe Live Preview setup: "
-            "rendered review HTML may open as a blank preview - re-run init "
-            "with `--seed`, then rebuild the container in VS Code",
+            "rendered review HTML may open as a blank preview",
         )
         return False
     if not dc.spec_disables_python_terminal_activation(spec):
         report.note(
             "devcontainer.json predates the Python terminal activation fix: a "
             "synced Python extension can inject a delayed `source .venv/bin/activate` "
-            "into new terminals - re-run init with `--seed`, then rebuild the "
-            "container in VS Code"
+            "into new terminals; " + _spec_remedy(request)
         )
         return False
     return True
 
 
+def _spec_remedy(request: RuntimeInspectionRequest) -> str:
+    from booley.runtime.session_runtime import sandbox_remedy
+
+    return sandbox_remedy(request.project_root)
+
+
 def _spec_warning(request: RuntimeInspectionRequest, report: Findings, message: str) -> None:
     report.warn(
-        message,
+        message + "; " + _spec_remedy(request),
         check_id="interactive.devcontainer-drift",
         subject=str(devcontainer_path(request.project_root)),
     )
@@ -325,7 +355,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
         report.fail(
             f"Sandbox host issuance is invalid: {exc}",
-            "run `booley init --seed` on the host and recreate the Sandbox",
+            _spec_remedy(request),
         )
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
@@ -337,6 +367,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         request.docker_exe,
         issuance.image,
         report,
+        project_root=request.project_root,
     )
     _inspect_live_runtime(request, spec, issuance, report)
 
@@ -356,7 +387,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     ):
         report.fail(
             "host-provisioned Vivado is absent from the Sandbox",
-            "reissue the spec on the host and recreate the Sandbox",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return
     if mounted:
@@ -366,12 +397,33 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     return
 
 
+def _inspect_active_sandbox(
+    request: RuntimeInspectionRequest,
+    spec: dict,
+    issuance: runtime_spec.Issuance,
+    report: Findings,
+) -> None:
+    try:
+        selected = session_runtime.resolve_running_sandbox(request.project_root)
+        if selected is not None and not session_runtime._container_matches_issuance(
+            selected.container_id,
+            issuance,
+            spec=spec,
+            workspace=request.project_root,
+            expected_id=selected.container_id,
+        ):
+            report.fail("active Sandbox differs from current host issuance", "rebuild its Sandbox")
+    except session_runtime.SessionError as exc:
+        report.fail(str(exc), "resolve the Sandbox inventory before retrying")
+
+
 def _inspect_live_runtime(
     request: RuntimeInspectionRequest,
     spec: dict,
     issuance: runtime_spec.Issuance,
     report: Findings,
 ) -> None:
+    _inspect_active_sandbox(request, spec, issuance, report)
     try:
         result = _list_issued_containers(request, issuance)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -436,14 +488,21 @@ def _list_issued_containers(
     )
 
 
-def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings) -> None:
+def _check_runtime_booley_version(
+    docker_exe: str,
+    image: str,
+    report: Findings,
+    *,
+    project_root: Path | None = None,
+) -> None:
     """Require comparable host and issued-image Booley identities to agree."""
     result = idk.compare_issued_build(image, executable=docker_exe)
     if result.status is image_identity.Status.MISMATCH:
         report.fail(
             f"host and issued Sandbox Image contain different Booley code ({result.detail})",
-            "run `booley init --force`, then `booley session down` and "
-            "`booley session up` to recreate the Sandbox",
+            session_runtime.sandbox_remedy(project_root)
+            if project_root is not None
+            else "on the host run `booley session refresh`",
         )
         return
     if result.status is image_identity.Status.MATCH:
@@ -455,7 +514,7 @@ def _check_runtime_isolation(report: Findings) -> bool:
     if os.environ.get("BOOLEY_DIR") != "/booley-project":
         report.fail(
             "Sandbox Booley Directory identity differs from /booley-project",
-            "reissue the spec on the host and recreate the Sandbox",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     required = Path("/booley-project")
@@ -470,7 +529,7 @@ def _check_runtime_isolation(report: Findings) -> bool:
     if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
-            "reissue the spec on the host and recreate the Sandbox",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     report.pass_("Sandbox Booley Directory and host-authority isolation verified")
@@ -501,7 +560,8 @@ def _check_issued_license_relay(
     image_id = issuance.relay_image_id
     if not isinstance(image_id, str):
         report.fail(
-            "issued License Profile lacks an immutable relay image", "run `booley init --seed`"
+            "issued License Profile lacks an immutable relay image",
+            session_runtime.sandbox_remedy(project_root),
         )
         return
     relay = resources_for_session(str(project_root.resolve()))
@@ -509,7 +569,7 @@ def _check_issued_license_relay(
         if containers:
             report.fail(
                 "licensed Sandbox has no relay topology",
-                "run `booley session up --rebuild`",
+                "run `booley session down`, then `booley session up --rebuild`",
             )
         return
     try:
@@ -549,12 +609,15 @@ def _mounted_vivado_files(report: Findings) -> bool:
     try:
         digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
     except OSError as exc:
-        report.fail(f"mounted Vivado wrapper is unreadable: {exc}", "rebuild the Sandbox Image")
+        report.fail(
+            f"mounted Vivado wrapper is unreadable: {exc}",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+        )
         return False
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         report.fail(
             "mounted Vivado wrapper/release layout differs from built-in policy",
-            "rebuild the image and reissue the Sandbox spec on the host",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     compatibility = (
@@ -565,7 +628,7 @@ def _mounted_vivado_files(report: Findings) -> bool:
     if any(not path.is_file() for path in compatibility):
         report.fail(
             "Sandbox Image lacks the fixed Vivado compatibility libraries or locale",
-            "rebuild the Sandbox Image and reissue the spec",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     return True
@@ -582,7 +645,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     if len(matches) != 1 or "ro" not in matches[0][5].split(","):
         report.fail(
             "Vivado release root is not one exact read-only runtime mount",
-            "reissue the spec and recreate the Sandbox",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     license_pointer = os.environ.get("XILINXD_LICENSE_FILE")
@@ -592,7 +655,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     ):
         report.fail(
             "XILINXD_LICENSE_FILE differs from the fixed private-relay contract",
-            "reissue the Sandbox from the host License Profile",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     return True
@@ -644,7 +707,11 @@ def _check_interactive_state_volumes(
         return
 
     project_id = dc.canonical_project_id(project_root)
-    mine = {dc.state_volume_name(app, project_id) for app in (dc.APP_CLAUDE, dc.APP_CODEX)}
+    mine = {
+        dc.state_volume_name(app, project_id, policy)
+        for app in (dc.APP_CLAUDE, dc.APP_CODEX)
+        for policy in ("auto", "subscription", "api_key")
+    }
     others = sorted(v for v in vols if v not in mine)
 
     present_mine = sorted(v for v in vols if v in mine)

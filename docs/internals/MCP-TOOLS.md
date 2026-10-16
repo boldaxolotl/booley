@@ -310,21 +310,23 @@ McpToolResult(
 )
 ```
 
-Flow and Specialist results supply `exit_code` and `report_text`; their headline
-Criterion fields are derived centrally from effective `set_criterion()` evaluations.
-Exactly one mapped and evaluated Criterion yields its key and boolean verdict;
-zero/multiple mapped Criteria, no evaluation, or multiple selected Targets yield
-an empty key and `None`. `McpToolResult` also carries optional fields,
-most usefully `detail: dict` for structured evidence (written into
-`report.json`). Token/cost fields are populated automatically by `Specialist`;
-line-count fields (`lines_added`/`lines_removed`) are stamped by the base
-`McpTool` for any code-modifying endpoint.
+Flow and Specialist results supply `exit_code` and `report_text`. For executions with an
+acceptance identity (normally Goal-bound), their headline Criterion fields are derived
+centrally from effective `set_criterion()` evaluations. Exactly one mapped and evaluated
+Criterion yields its key and boolean verdict; zero/multiple mapped Criteria, no
+evaluation, or multiple selected Targets yield an empty key and `None`. Unbound
+Flow/Specialist results have an empty key and `None`; their reports omit both keys,
+including for Interactive MCP calls. Report consumers must use optional-key access.
+`McpToolResult` also carries optional fields, most usefully `detail: dict` for
+structured evidence (written into `report.json`). Token/cost fields are populated
+automatically by `Specialist`; line-count fields (`lines_added`/`lines_removed`) are
+stamped by the base `McpTool` for any code-modifying endpoint.
 
-**`set_criterion()` and reports:** call `set_criterion(key, met)` for each Criterion
-you evaluate. The effective changes determine the Flow/Specialist report even if
-later persistence fails; `exit_code` independently exposes that failure. Goal
-completion is judged on persisted, current evidence for the declared Goals.
-Standalone evaluations remain in memory.
+**`set_criterion()` and reports:** call `set_criterion(key, met)` for each Criterion you
+evaluate. For Flow/Specialist reports with an acceptance identity (normally Goal-bound),
+the effective changes determine the headline even if later persistence fails;
+`exit_code` independently exposes that failure. Goal completion is judged on persisted,
+current evidence for the declared Goals. Standalone evaluations remain in memory.
 Flow/Specialist extensions that supplied result-only headlines must migrate to
 `set_criterion()`; explicit result fields no longer determine their final headline.
 Generic `mcp_tool` endpoints retain their existing result-field contract, including

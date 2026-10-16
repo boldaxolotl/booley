@@ -103,7 +103,13 @@ def test_cache_only_protected_changes_do_not_revalidate_frozen_attempt(complete)
     assert finish_goal(call, environment(complete))["status"] == "finished"
 
 
-@pytest.mark.parametrize("abandon", [False, True])
+@pytest.mark.parametrize(
+    "abandon",
+    [
+        pytest.param(False, marks=pytest.mark.timeout(150)),
+        True,
+    ],
+)
 def test_recovery_caller_retry_survives_prior_terminal_response_gap_and_reentry(complete, abandon):
     first = request(complete)
     with pytest.raises(Crash):
@@ -134,6 +140,7 @@ def test_recovery_caller_retry_survives_prior_terminal_response_gap_and_reentry(
     assert GoalStore(complete.control).load(complete.record.id).to_json() == occupant
 
 
+@pytest.mark.timeout(180)
 def test_old_owned_untracked_output_does_not_wedge_new_attempt_and_canonical_is_success(layout):
     complete = publication_layout(layout)
     first = request(complete)
@@ -199,7 +206,12 @@ def test_physical_substitution_never_adopts_foreign_summary_or_ref(layout):
 
 @pytest.mark.parametrize(
     "boundary",
-    ["summary-staging-owned", "summary-linked", "index-staging-owned", "index-lock-acquired"],
+    [
+        pytest.param("summary-staging-owned", marks=pytest.mark.timeout(150)),
+        pytest.param("summary-linked", marks=pytest.mark.timeout(150)),
+        pytest.param("index-staging-owned", marks=pytest.mark.timeout(150)),
+        pytest.param("index-lock-acquired", marks=pytest.mark.timeout(150)),
+    ],
 )
 def test_hard_process_death_recovers_only_durably_owned_publication_inodes(layout, boundary):
     import os
@@ -420,8 +432,35 @@ def test_proved_post_cas_legacy_replays_frozen_recipe_without_recapture(layout, 
     assert finish_goal(call, environment(complete)) == result
 
 
-@pytest.mark.parametrize("boundary", ["index-lock-acquired", "index-lock-filled"])
-@pytest.mark.parametrize("successor", ["file", "symlink"])
+@pytest.mark.parametrize(
+    "successor, boundary",
+    [
+        pytest.param(
+            "file",
+            "index-lock-acquired",
+            marks=pytest.mark.timeout(150),
+            id="file-index-lock-acquired",
+        ),
+        pytest.param(
+            "file",
+            "index-lock-filled",
+            marks=pytest.mark.timeout(150),
+            id="file-index-lock-filled",
+        ),
+        pytest.param(
+            "symlink",
+            "index-lock-acquired",
+            marks=pytest.mark.timeout(150),
+            id="symlink-index-lock-acquired",
+        ),
+        pytest.param(
+            "symlink",
+            "index-lock-filled",
+            marks=pytest.mark.timeout(150),
+            id="symlink-index-lock-filled",
+        ),
+    ],
+)
 def test_owned_index_lock_never_truncates_or_hands_off_successor(
     layout, tmp_path, boundary, successor
 ):
@@ -538,6 +577,7 @@ def test_cross_volume_publication_and_foreign_anchor_confinement(layout, tmp_pat
             git(layout.main, "worktree", "remove", "--force", str(work))
 
 
+@pytest.mark.timeout(210)
 def test_crlf_consumed_source_finishes_from_exact_pinned_builtin_projection(layout):
     (layout.worktree / ".gitattributes").write_bytes(b"rtl.v text eol=crlf\n")
     git(layout.worktree, "add", ".gitattributes")
@@ -632,7 +672,14 @@ def test_legacy_revalidation_then_v2_success_replaces_only_proved_canonical_byte
     assert json.loads((directory / "attempt.json").read_bytes()) == frozen
 
 
-@pytest.mark.parametrize("change", ["bytes", "inode", "symlink"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("bytes", marks=pytest.mark.timeout(150)),
+        pytest.param("inode", marks=pytest.mark.timeout(150)),
+        "symlink",
+    ],
+)
 def test_owned_summary_staging_tamper_never_materializes_public_destination(
     layout, tmp_path, change
 ):

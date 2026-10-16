@@ -329,7 +329,10 @@ Booley Flows, it skips config authoring and runs only two:
   gate.
 
 Then replace the counter in `rtl/my_ip.sv` with your design and grow the
-testbench, keeping the generated wiring as the pattern. Re-run the doctor gate
+testbench, keeping the generated wiring as the pattern. Refresh
+`.booley/selftest/sim/bad-overlay/<top>.sv` under your selected Booley Directory
+to match the current interface, keeping it buildable and behaviorally failing
+the selected smoke Test. Re-run the doctor gate
 whenever the shape of the project changes (new Target, new flow, new
 constraints). From there, drive development the normal way: see
 [USAGE.md](USAGE.md) to enter your first Goal Mode with `/booley-goal`, or start an Interactive

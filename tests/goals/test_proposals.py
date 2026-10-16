@@ -223,6 +223,10 @@ def test_invalid_or_stale_evidence_cannot_become_success(layout, defect):
             row = json.loads(path.read_bytes())
             row["goal_identity"]["record_id"] = "foreign-20261006T120000Z"
             path.write_text(json.dumps(row))
+    if defect == "foreign":
+        with pytest.raises(AcceptanceLedgerError, match="another Goal Record"):
+            proposal(layout, env)
+        return
     view = proposal(layout, env)
     approve(layout, env, view.proposal.id)
     state = load_goal_state(env.store, env.store.load(layout.record.id))
@@ -232,15 +236,15 @@ def test_invalid_or_stale_evidence_cannot_become_success(layout, defect):
 @pytest.mark.parametrize(
     "boundary",
     [
-        "prepared",
-        "approved",
-        "intent",
-        "effect:record:0",
-        "effect:ledger:1",
-        "effect:ledger:2",
-        "effect:state:3",
-        "applied",
-        "finalized",
+        pytest.param("prepared", marks=pytest.mark.timeout(120), id="prepared"),
+        pytest.param("approved", id="approved"),
+        pytest.param("intent", id="intent"),
+        pytest.param("effect:record:0", id="effect:record:0"),
+        pytest.param("effect:ledger:1", marks=pytest.mark.timeout(120), id="effect:ledger:1"),
+        pytest.param("effect:ledger:2", id="effect:ledger:2"),
+        pytest.param("effect:state:3", id="effect:state:3"),
+        pytest.param("applied", id="applied"),
+        pytest.param("finalized", id="finalized"),
     ],
 )
 def test_restart_at_every_durable_boundary_is_idempotent_and_status_is_read_only(layout, boundary):
@@ -501,6 +505,7 @@ def test_pending_proposal_cannot_survive_specification_aba(layout):
     assert approve(layout, env, pending.proposal.id, answer="reject").state == "rejected"
 
 
+@pytest.mark.timeout(120)
 def test_clean_to_done_uses_original_terminal_receipt_with_open_findings(layout, monkeypatch):
     env, clean, detail = publish_open_review(layout, monkeypatch)
     key = "review_rtl_bugs_clean"

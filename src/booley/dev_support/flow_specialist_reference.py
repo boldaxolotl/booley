@@ -223,6 +223,14 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "every finding to be fixed "
         "or waived with a justification.",
         "",
+        "Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus "
+        "Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, "
+        ".cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly "
+        "scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be "
+        "mutation scope. Declared opposite-category sources are refused in either mode; "
+        "unregistered scoped sources retain the registration warning and receive only an exact "
+        "per-file category grant.",
+        "",
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
         "",
@@ -334,7 +342,9 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "with the same flags. Common options are `-C/--project PATH`, `--report-dir`, "
         "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
-        "Model-call minimum budgets apply; seconds-only providers round up.",
+        "Model-call minimum budgets apply; seconds-only providers round up. "
+        "CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's "
+        "Goal-bound MCP calls with `work_dir`.",
         "",
         "| Specialist | Purpose | Sets | Modifies code |",
         "|------------|---------|------|:-------------:|",

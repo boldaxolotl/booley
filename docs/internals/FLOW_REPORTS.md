@@ -41,7 +41,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 |---|---|
 | `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
 | `exit_code`, `passed` | The overall result. |
-| `criterion_key`, `criterion_met` | The effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). `passed` remains independent of this verdict. |
+| `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
 | `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |

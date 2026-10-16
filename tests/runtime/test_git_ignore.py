@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 
 import pytest
@@ -13,19 +12,11 @@ from booley.runtime.git_ignore import ignored_paths
 
 
 @pytest.fixture
-def repository(tmp_path, monkeypatch, isolated_git_attributes):
-    for key in tuple(os.environ):
-        if key.startswith("GIT_CONFIG_") and key not in {
-            "GIT_CONFIG_GLOBAL",
-            "GIT_CONFIG_NOSYSTEM",
-        }:
-            monkeypatch.delenv(key)
+def repository(tmp_path, isolated_git_excludes):
     root = tmp_path / "repository"
     root.mkdir()
     git(root, "init", "-q")
-    empty = tmp_path / "empty-excludes"
-    empty.write_bytes(b"")
-    git(root, "config", "core.excludesFile", str(empty))
+    git(root, "config", "core.excludesFile", str(isolated_git_excludes))
     return root
 
 

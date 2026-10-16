@@ -1047,28 +1047,33 @@ def replay_projection(
     """Rebuild *state*'s Criteria from active evidence, then apply completion fencing."""
     active = _active_evidence_records(scope, log_dir, state, identity)
     for payload in projection.current_observations(log_dir, state, identity, active):
-        criterion = payload.get("criterion")
-        if not isinstance(criterion, str) or criterion not in state.criteria:
-            raise AcceptanceLedgerError("Criterion evidence names an undeclared Criterion")
-        entry = state.criteria[criterion]
-        met = payload.get("met")
-        if not isinstance(met, bool):
-            raise AcceptanceLedgerError("Criterion evidence has invalid met value")
-        entry.met = met
-        entry.mandatory = payload.get("mandatory", entry.mandatory)
-        entry.params = dict(payload.get("params") or {})
-        entry.detail = dict(payload.get("detail") or {})
-        entry.ever_met = entry.ever_met or met
-        entry.ever_failed = entry.ever_failed or not met
-        if entry.params.get("from_state") == "fail":
-            transition = {
-                "met": met,
-                "recorded_at": payload.get("recorded_at"),
-                "detail": dict(entry.detail),
-            }
-            if transition not in entry.transition_evidence:
-                entry.transition_evidence.append(transition)
+        apply_observation(state, payload)
     projection.project_state(state, log_dir, identity)
+
+
+def apply_observation(state: DevelopmentState, payload: Mapping[str, Any]) -> None:
+    """Apply one canonical observation without reevaluating or merging its detail."""
+    criterion = payload.get("criterion")
+    if not isinstance(criterion, str) or criterion not in state.criteria:
+        raise AcceptanceLedgerError("Criterion evidence names an undeclared Criterion")
+    entry = state.criteria[criterion]
+    met = payload.get("met")
+    if not isinstance(met, bool):
+        raise AcceptanceLedgerError("Criterion evidence has invalid met value")
+    entry.met = met
+    entry.mandatory = payload.get("mandatory", entry.mandatory)
+    entry.params = deepcopy(payload.get("params") or {})
+    entry.detail = deepcopy(payload.get("detail") or {})
+    entry.ever_met = entry.ever_met or met
+    entry.ever_failed = entry.ever_failed or not met
+    if entry.params.get("from_state") == "fail":
+        transition = {
+            "met": met,
+            "recorded_at": payload.get("recorded_at"),
+            "detail": dict(entry.detail),
+        }
+        if transition not in entry.transition_evidence:
+            entry.transition_evidence.append(transition)
 
 
 #: Every field a selected transaction's saved state hands back to the live state.

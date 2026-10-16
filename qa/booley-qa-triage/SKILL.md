@@ -18,7 +18,7 @@ that derived root, never from the process working directory.
 
 Input: one or more QA run directories (each has `findings.md` and `log.md`).
 The maintainer decides; you verify each finding and prepare the decision.
-Triage is a conversation, one **brief** per turn.
+Triage is a conversation, one **cluster summary** per turn.
 
 1. **Read.** Read every run's `log.md` and `findings.md` in full. Note each
    run's identity header (build under test, mission revision) so findings from
@@ -36,8 +36,11 @@ Triage is a conversation, one **brief** per turn.
    with its finding refs, the decision, and the issue number or mission change.
    It is the resume point after an interruption or handoff. Show the maintainer a
    short overview (counts by kind and severity, the cluster order) and start.
-5. **Brief one cluster, then wait.** Order: `qa-bug` clusters first, then product
-   clusters by severity. Each brief states:
+5. **Summarize one cluster, then wait.** Order: `qa-bug` clusters first, then product
+   clusters by severity. Start every cluster summary, and every batch of
+   low-severity clusters, with a progress line computed from `triage.md`:
+   `Progress: <clusters decided>/<all clusters> clusters · <findings decided>/<all findings> findings · <findings left> findings left`.
+   Each cluster summary states:
    - what happened, with the decisive command and output excerpt from the evidence;
    - the cause, **verified against current `origin/main`** (`git fetch`, then
      `git show`/`git grep` on `origin/main`) with `file:line`: the build under test
@@ -54,21 +57,27 @@ Triage is a conversation, one **brief** per turn.
 
    Wait for the maintainer's decision. Answer their questions with more code
    reading before re-proposing. Done when the maintainer has decided this cluster.
-6. **Act on the decision immediately**, then log it in `triage.md` and brief the
-   next cluster.
+6. **Act on the decision immediately**, then log it in `triage.md` and summarize
+   the next cluster.
    - `file` (a product or doc cluster, or a `qa-bug` the maintainer asks to file):
-     draft the issue in a local file with problem, repro, build identity, the verified
-     cause, the **approved fix direction only** under a `## Fix` heading, and
-     acceptance criteria. When the
-     blast radius is yes or likely, the fix section starts with **Step 1: audit**,
-     naming the suspected places and the pattern to search for; the fix then
-     covers every affected place the audit finds. When the decision widens scope in
-     other ways (for example "add a Doctor check"), write that into the issue too.
-     Follow the issue rules in `AGENTS.md`: scan title and body with the
-     confidential-content guard, then `gh issue create`. Label with `bug`,
-     `documentation`, or `enhancement`, and with the triage role from
-     `docs/internals/agents/triage-labels.md` (`ready-for-agent` when the fix is
-     decided, `needs-triage` for open design).
+     draft two local files. The issue body holds the context: problem, repro,
+     build identity, the verified cause with `file:line`, and the blast radius
+     assessment. The Agent Brief holds the **approved fix direction only**, per
+     `docs/internals/agents/agent-brief.md`. When the blast radius is yes or
+     likely, the brief's `**Audit:**` field names the pattern and the suspected
+     places, and an acceptance criterion requires fixing every place the audit
+     finds. When the decision widens scope in other ways (for example "add a
+     Doctor check"), write that into the brief too. Follow the issue rules in
+     `AGENTS.md`: scan title, body, and brief with the confidential-content
+     guard, then `gh issue create` with the category label (`bug`,
+     `documentation`, or `enhancement`, matching the brief's Category) and
+     `needs-triage`. When the fix is decided, post the brief with
+     `gh issue comment`, then replace `needs-triage` with `ready-for-agent`, so
+     the issue never looks ready without its brief. Open design keeps
+     `needs-triage` and gets no brief. When the approved fix does not fit one
+     PR, file a parent issue (context only, no brief, never
+     `ready-for-agent`) and one sub-issue per piece, each with its own brief
+     and `Blocked by` order, per the brief doc's "One PR per issue".
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
    - `fix mission`: record the exact change in `triage.md`; mission edits are
      batched in step 7.

@@ -413,20 +413,12 @@ def test_child_result_is_read_after_a_clean_exit(baseline, monkeypatch) -> None:
 
 
 @pytest.fixture
-def scratch_policy(layout, tmp_path, monkeypatch, isolated_git_attributes):
+def scratch_policy(layout, isolated_git_excludes):
     """Ignore tests use no outer blanket or host excludes."""
     from tests.goals.conftest import git
 
-    for key in tuple(os.environ):
-        if key.startswith("GIT_CONFIG_") and key not in {
-            "GIT_CONFIG_GLOBAL",
-            "GIT_CONFIG_NOSYSTEM",
-        }:
-            monkeypatch.delenv(key)
     (layout.main / ".git/info/exclude").write_bytes(b"")
-    empty = tmp_path / "empty-excludes"
-    empty.write_bytes(b"")
-    git(layout.main, "config", "core.excludesFile", str(empty))
+    git(layout.main, "config", "core.excludesFile", str(isolated_git_excludes))
     return layout
 
 

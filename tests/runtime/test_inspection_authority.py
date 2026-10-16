@@ -76,7 +76,7 @@ def _fake_runtime_transport(monkeypatch):
             return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
         if argv[1] == "run" and "--entrypoint=python3" in argv and "canonical-alias" in argv[-1]:
             return subprocess.CompletedProcess(argv, 0, "directory\n", "")
-        if argv[1:3] == ["ps", "-aq"]:
+        if argv[1] == "ps":
             return subprocess.CompletedProcess(argv, int(observations["listing_error"]), "", "")
         pytest.fail(f"unexpected command: {argv}")
 
@@ -101,6 +101,13 @@ def _issue_runtime_request(project, *, active: bool):
         eda={"vivado": EdaConfig("vivado")},
         fpga_enabled=active,
     )
+
+
+@pytest.fixture(autouse=True)
+def headless_repair_owner(monkeypatch):
+    from booley.runtime import session_runtime
+
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
 
 
 @pytest.fixture(params=[False, True], ids=["no-active-eda", "active-image-eda"])

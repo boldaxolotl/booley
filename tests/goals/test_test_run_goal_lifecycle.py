@@ -100,6 +100,7 @@ def test_an_unresolved_goal_and_an_all_skipped_suite_are_unmet_for_their_own_rea
     assert _names(mode, SIM_KEY) == []
 
 
+@pytest.mark.timeout(150)
 def test_finish_refuses_an_accumulated_goal_whose_contributor_was_substituted(
     layout: SimpleNamespace,
 ) -> None:

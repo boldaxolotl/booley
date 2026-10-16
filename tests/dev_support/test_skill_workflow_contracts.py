@@ -153,7 +153,23 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
         "host: final plain `booley doctor`",
     ):
         assert required in skill
-    assert "A clean run is the final deep evidence" in skill
+    normalized = " ".join(skill.split())
+    assert (
+        "A complete, qualifying run with no active findings other than the expected "
+        "`upgrade.review-pending` warning is the final deep evidence"
+    ) in normalized
+    assert "Any other warning or failure blocks completion" in normalized
+    ordered_steps = (
+        "When plain Doctor has no active findings other than the expected",
+        "`booley doctor --deep`. A complete, qualifying run",
+        "Sandbox: final plain `booley doctor`",
+        "Sandbox: final `booley doctor --deep`",
+        "host: final plain `booley doctor`",
+        "booley upgrade acknowledge --expected-target <pending_target>",
+        "On success, run final plain `booley doctor`",
+    )
+    positions = [normalized.index(step) for step in ordered_steps]
+    assert positions == sorted(positions)
     assert "instead of rerunning the whole deep matrix after each edit" in skill
 
 

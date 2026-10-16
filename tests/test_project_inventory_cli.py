@@ -593,7 +593,6 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import subprocess
     from types import SimpleNamespace
 
     from booley.runtime import interactive_docker, session_admission, session_runtime
@@ -604,8 +603,12 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
     container = "c" * 64
     keeper_host.tags[tag] = image
     keeper_host.containers[container] = image
-    item = SimpleNamespace(container_id=container, name="editor", running=True)
-    monkeypatch.setattr(session_admission, "vscode_sandboxes", lambda *args, **kwargs: (item,))
+    item = SimpleNamespace(container_id=container, name="editor", running=True, vscode=True)
+    monkeypatch.setattr(
+        session_admission,
+        "running_project_sandboxes",
+        lambda *args, **kwargs: (item,) if item.running else (),
+    )
     monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: False)
     monkeypatch.setattr(interactive_docker, "container_exists", lambda _name: False)
     monkeypatch.setattr(session_runtime, "_relay_objects_exist", lambda _relay: False)
@@ -614,13 +617,14 @@ def test_actual_vscode_down_then_forget_retains_stopped_container(
 
     def run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         commands.append(args)
-        assert args == ["docker", "stop", container]
-        item.running = False
-        return subprocess.CompletedProcess(args, 0, "", "")
+        pytest.fail(f"CLI must not mutate the editor Sandbox: {args}")
 
     monkeypatch.setattr(session_runtime, "_run", run)
-    assert session_runtime.down(project).vscode_stopped == ("editor",)
-    assert commands == [["docker", "stop", container]] and container in keeper_host.containers
+    with pytest.raises(session_runtime.SessionError, match="VS Code owns"):
+        session_runtime.down(project)
+    assert item.running and commands == [] and container in keeper_host.containers
+    # Dev Containers owns stopping its Sandbox; the stopped object still pins its image.
+    item.running = False
     assert _run(_parser().parse_args(["projects", "forget", str(project), "--json"])) == 0
     assert json.loads(capsys.readouterr().out)["keeper"]["status"] == "retained-in-use"
     assert tag in keeper_host.tags

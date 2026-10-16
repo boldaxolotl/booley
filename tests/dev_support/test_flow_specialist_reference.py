@@ -171,7 +171,8 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
 def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
     rendered = render_specialists_reference()
     assert "booley specialist <name> [args...]" in rendered
-    assert "MCP" not in rendered
+    assert "CLI Flow and Specialist runs never record Goal evidence" in rendered
+    assert "Goal-bound MCP calls with `work_dir`" in rendered
     assert "CLI-only controls" in rendered
     for name in ("coverage_analyst", "reviewer", "mutation_tester"):
         assert f"Call the `{name}` Specialist from your Developer Agent session" in rendered
@@ -189,3 +190,17 @@ def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None
             text = document.read_text(encoding="utf-8")
             for name in specialists:
                 assert f"booley flow {name}" not in text, document
+
+
+def test_reviewer_reference_states_mode_kind_and_opposite_scope_contract():
+    text = render_specialists_reference()
+    assert "(.v, .vh, .sv, .svh)" in text
+    assert "Goal Mode also accepts other explicitly scoped support files" in text
+    assert "opposite-category sources are refused in either mode" in text
+
+
+def test_reviewer_reference_admits_exact_cpp_headers():
+    text = render_specialists_reference()
+    assert "(.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx)" in text
+    assert "only an exact per-file category grant" in text
+    assert "refuses C/C++ kinds" not in text

@@ -680,3 +680,56 @@ def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
     assert session_admission._command(
         ["booley", "session", "down", "--project", "C:\\Projects\\A&B's $work"]
     ) == ("& 'booley' 'session' 'down' '--project' 'C:\\Projects\\A&B''s $work'")
+
+
+@pytest.mark.parametrize("vscode", [False, True])
+@pytest.mark.parametrize("shell", ["posix", "nt"])
+def test_capacity_refusal_names_owner_recovery(tmp_path, monkeypatch, vscode, shell):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        session_admission, "os", SimpleNamespace(name=shell, path=session_admission.os.path)
+    )
+    item = session_admission.Sandbox(
+        "id",
+        "sandbox",
+        str(tmp_path),
+        "project",
+        datetime.now(UTC),
+        datetime.now(UTC),
+        True,
+        vscode,
+    )
+    message = session_admission._refusal(
+        session_admission.SandboxHostPolicy(max_sessions=1), (item,), (), datetime.now(UTC)
+    )
+    assert ("Dev Containers" in message) is vscode
+    down = "& 'booley' 'session' 'down'" if shell == "nt" else "booley session down"
+    assert (down in message) is not vscode
+
+
+def test_project_root_identity_preserves_posix_case_and_symlinks(tmp_path):
+    upper, lower = tmp_path / "Project", tmp_path / "project"
+    upper.mkdir()
+    lower.mkdir(exist_ok=True)
+    if upper.samefile(lower):
+        pytest.skip("case-insensitive filesystem")
+    assert not session_admission._same_project_root(str(upper), str(lower))
+    alias = tmp_path / "alias"
+    alias.symlink_to(upper, target_is_directory=True)
+    assert session_admission._canonical_root(alias) == str(upper)
+    assert session_admission._same_project_root(str(alias), str(upper))
+
+
+def test_same_file_identity_can_prove_case_alias(monkeypatch):
+    monkeypatch.setattr(
+        Path, "samefile", lambda self, other: {str(self), str(other)} == {"/Project", "/project"}
+    )
+    assert session_admission._same_project_root("/Project", "/project")
+
+
+def test_windows_root_identity_normalizes_drive_case(monkeypatch):
+    import ntpath
+
+    monkeypatch.setattr(session_admission.os.path, "normcase", ntpath.normcase)
+    assert session_admission._same_project_root("C:/Users/Project", "c:/users/project")

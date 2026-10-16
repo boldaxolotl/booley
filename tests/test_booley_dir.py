@@ -458,3 +458,34 @@ def test_containment_final_authority_internal_symlink(tmp_path, monkeypatch):
         Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
     )
     assert contains(alias / "input", booley_dir=root) == root / "real"
+
+
+@pytest.mark.parametrize("selection", ["environment", "toml", "directory"])
+def test_observational_resolution_does_not_warm_cache(tmp_path, monkeypatch, selection):
+    from booley.core import booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    selected = tmp_path / "selected"
+    directory = selected / ("custom" if selection == "toml" else ".booley")
+    directory.mkdir(parents=True)
+    if selection == "environment":
+        monkeypatch.setenv("BOOLEY_DIR", str(directory))
+    elif selection == "toml":
+        (selected / "booley.toml").write_text("[project]\ndir='custom'\n")
+    assert resolve_booley_dir(selected, cache_result=False) == directory
+    assert booley_dir._cache is None
+    assert resolve_booley_dir(selected) == directory
+    assert booley_dir._cache == directory
+
+
+def test_observational_resolution_preserves_existing_selection(tmp_path, monkeypatch):
+    from booley.core import booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root in (first, second):
+        (root / ".booley").mkdir(parents=True)
+    expected = resolve_booley_dir(first)
+    assert resolve_booley_dir(second, cache_result=False) == expected
+    assert booley_dir._cache == expected
