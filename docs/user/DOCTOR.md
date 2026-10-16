@@ -70,6 +70,15 @@ Missing required configuration, unavailable execution, absent probe evidence,
 omitted agent checks, and missing self-test execution prevent qualification.
 Waiving a warning does not execute the missing check.
 
+ASIC Synthesis smoke evidence is mode-aware for every selected synthesis Target,
+including existing Projects and port setups. Logical mode requires completed
+synthesis (`termination: completed`), `ppa_complete: true`, and Yosys mapped-area
+evidence (`area_source: yosys_mapped`); it makes no constrained-timing claim.
+Physical mode still requires complete PPA and constrained-clock timing with
+nonempty per-clock results. Legacy reports with absent or empty mode follow
+that physical timing policy; an unknown mode is invalid evidence. This proves
+the Flow wiring, not that the design meets its PPA goals.
+
 Checks must run under one verified, stable artifact identity and matching Booley
 version. Core resolution runs in the same Sandbox as the Flow checks. Local
 FuseSoC resolution inside that Sandbox does not require Docker on its PATH.

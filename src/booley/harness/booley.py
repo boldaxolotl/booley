@@ -579,7 +579,12 @@ def _add_init_scaffold_arguments(init_p) -> None:
         "--asic",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Scaffold: ASIC synthesis Target + SDC (default on)",
+        help="Scaffold: ASIC synthesis Target (default on; physical mode adds SDC)",
+    )
+    init_p.add_argument(
+        "--synth-mode",
+        choices=("logical", "physical"),
+        help="Scaffold: synthesis mode (default physical; logical uses Yosys without SDC)",
     )
     init_p.add_argument(
         "--fpga-part",

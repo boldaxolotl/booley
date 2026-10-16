@@ -3,7 +3,7 @@
 > Part of the `booley-setup` skill. This path runs when `$ARGUMENTS` is `new`
 > (or `greenfield`): a project **born with Booley** (`booley init --scaffold`),
 > not a port of existing RTL. It replaces the plan phase (Steps 0–1) with a
-> lightweight grill; the shared Steps 3–4 still run at the end.
+> lightweight grill; the shared Steps 3–4 and report-writing Step 6 run at the end.
 
 In the initial scaffold, every flow is green by construction, including
 conventional simulation and lint fail-path fixtures that let deep Doctor prove known-bad inputs fail, so there is
@@ -29,6 +29,9 @@ and a plain-English reason. Use the same format for every question:
 The grill covers:
 
 - which flows to enable (ASIC synthesis? FPGA, and the part?);
+- when ASIC synthesis is enabled, synthesis mode: `physical` (recommended default,
+  Yosys + OpenROAD with constrained timing and SDC) or `logical` (Yosys mapped
+  area only, no SDC). Ask this dependent choice after ASIC enablement is settled;
 - simulator (Verilator / Icarus) and testbench style (SystemVerilog / cocotb);
 - lint EDA tool (Verilator / Verible);
 - whether they want `AGENTS.md`;
@@ -52,10 +55,14 @@ only):
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
   `booley init --scaffold <name>` on the host with the flags matching the
   answers (`--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
-  `--fpga-part`).
+  `--synth-mode logical|physical`, `--fpga-part`). Omit `--synth-mode` when
+  ASIC is disabled: an explicit mode with `--no-asic` is rejected.
 - **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
-  confirm them in the grill message, and record them.
+  confirm them in the grill message as `pre-set`, and record them in SETUP-PLAN.
+  Read `flow_options.synth_mode`; missing mode means the physical default.
+  A request that differs from existing choices needs the existing plan/confirmation
+  and Target-edit process: record the deviation, never destructively re-scaffold.
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run
   the normal plan phase instead of guessing.
 
@@ -75,3 +82,37 @@ When replacing the scaffold RTL/interface or testbench, refresh the simulation
 bad overlay under the resolved Booley Directory's `selftest/sim/bad-overlay/`
 to match the current interface while retaining one deliberate behavioral defect
 that builds and fails the selected smoke Test.
+
+
+## Additional recipe requests
+
+The scaffold is a runnable counter starter, with the established `balanced` PPA
+recipe. It adds no mandatory PPA question or profile flag. If the user volunteers
+`compact` or `max_frequency`, record the request in SETUP-PLAN and use existing
+Target configuration/full setup; until applied, report it as a deviation.
+Audit other volunteered recipe requests against the supported starter:
+
+- `frontend` and `flatten` keep their established defaults; expert changes belong
+  in the existing Target recipe, confirmed through full setup.
+- Backend expert settings, technology/physical-library choices and custom EDA
+  tools require design/environment evidence and full setup provisioning. Record
+  the request and anything unsupported; never claim a tool or library was used
+  just because it was requested. Logical synthesis cannot consume OpenROAD settings.
+- Starter constraints describe only the counter: physical uses a 10 ns SDC,
+  logical emits no SDC, and FPGA XDC is independent. Design-specific clocks,
+  board pins, sources, interfaces and parameters follow Step 0/2 authority;
+  never invent real-project constraints.
+- Sandbox images, provider/auth and EDA provisioning remain owned by existing
+  initialization and full setup. Record unmet requests there.
+- Project-specific verification intent (tests, seeds, variants, tracing, coverage,
+  timeout and resources) follows full setup. The starter's two deterministic
+  Tests and known-bad Doctor fixtures do not prove an unexecuted requested check.
+- IP name, simulator, TB style, linter, ASIC/FPGA enablement and part, optional
+  AGENTS.md and history/stealth remain covered by the existing choices above.
+
+For every extra request, record what will be applied or why it is excluded and
+obtain the existing setup confirmation for a deviation. Never silently drop it.
+
+After Doctor, run the report-writing portion of **Step 6** and follow the shared
+**Delivered Flow results** contract in SKILL.md. The final summary reuses those
+rows, including unverified checks and requested-versus-delivered deviations.
