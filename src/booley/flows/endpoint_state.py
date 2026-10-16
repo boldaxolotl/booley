@@ -150,6 +150,8 @@ class EndpointState(ABC):
         """Start resolved EDA identity afresh for every invocation."""
         self._eda_tool = None
         self._eda_tools = {}
+        if self._args is None:
+            return
         target = self._selected_target
         targets = target.split(",") if isinstance(target, str) else target
         self.set_report_targets([item.strip() for item in targets if item.strip()])
