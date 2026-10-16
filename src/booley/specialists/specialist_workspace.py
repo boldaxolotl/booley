@@ -23,14 +23,13 @@ WorkspaceAccess = Literal["read_only", "read_write"]
 
 
 def _run_git(args: list[str], cwd: Path, *, text: bool = True) -> str | bytes:
-    """Run a bounded git plumbing command or fail with its diagnostic."""
+    """Run a snapshot Git command or fail with its diagnostic."""
     result = run_guarded(
         ["git", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
         text=text,
-        timeout=30,
     )
     return result.stdout
 

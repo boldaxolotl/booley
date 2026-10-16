@@ -330,3 +330,134 @@ def test_rejected_inherited_group_clears_proven_unstarted_handoff(
         assert tw._validated_marker(Path(raw))[0]["launches"] == {}
         tw.launch_finished(launch)
     assert not Path(raw).exists()
+
+
+_STARTUP_FAILURE = """import json,sys
+from pathlib import Path
+from booley.core import lease_exec, temporary_workspace as tw
+mode, payload, started = sys.argv[1:]
+fired = False
+write_marker = tw._write_marker
+def fail(*args, **kwargs):
+    raise OSError('synthetic startup failure')
+def publish(root, data):
+    global fired
+    write_marker(root, data)
+    target = json.loads(payload)['roots'][int(mode[-1])]
+    if not fired and str(root) == target and any(
+        value.get('state') == 'running' for value in data['launches'].values()
+    ):
+        fired = True
+        fail()
+if mode == 'prepare':
+    lease_exec._subreaper = fail
+elif mode == 'create':
+    lease_exec.ShutdownGroup.create = fail
+elif mode == 'register':
+    lease_exec.ShutdownGroup.register = fail
+else:
+    tw._write_marker = publish
+lease_exec.supervise(payload, [sys.executable, '-c',
+    'from pathlib import Path; Path(' + repr(started) + ').touch()'])
+"""
+
+
+@pytest.mark.parametrize("stage", ["prepare", "create", "register", "publish0", "publish1"])
+def test_pre_spawn_failure_clears_pending_and_partially_running_roots(
+    tmp_path, monkeypatch, stage
+):
+    monkeypatch.delenv(shutdown.ENV, raising=False)
+    started = tmp_path / "native-started"
+    with tw.temporary_workspace() as outer, tw.temporary_workspace() as inner:
+        roots = [Path(outer), Path(inner)]
+        launch = tw.prepare_launch([sys.executable, "-c", "pass"])
+        result = subprocess.run(
+            [sys.executable, "-c", _STARTUP_FAILURE, stage, launch.command[2], str(started)],
+            pass_fds=launch.kwargs["pass_fds"],
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+        assert result.returncode != 0
+        assert b"synthetic startup failure" in result.stderr
+        assert not started.exists()
+        assert all(tw._validated_marker(root)[0]["launches"] == {} for root in roots)
+    assert all(not root.exists() for root in roots)
+
+
+def test_full_uncertain_group_refuses_launch_without_stranding_new_scratch(tmp_path, monkeypatch):
+    group = shutdown.ShutdownGroup.create(tmp_path)
+    with group.locked() as data:
+        for offset in range(shutdown.MAX_MEMBERS):
+            identity = {**tw.process_identity(os.getpid()), "pid": 2000000000 + offset}
+            data["members"][str(identity["pid"])] = {
+                "identity": identity,
+                "ancestors": [identity],
+                "terminal": False,
+                "roots": [],
+                "token": f"{offset:032x}",
+            }
+    monkeypatch.setenv(shutdown.ENV, str(group.path))
+    started = tmp_path / "native-started"
+    with tw.temporary_workspace() as raw:
+        process, _launch = tw.guarded_popen(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(started)!r}).touch()"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode != 0
+        assert b"concurrency limit exceeded" in stderr
+        assert not started.exists()
+        assert tw._validated_marker(Path(raw))[0]["launches"] == {}
+    assert not Path(raw).exists()
+    assert group.active(), "dead guardians alone do not prove their descendants terminal"
+
+
+def test_unavailable_pidfd_retains_scratch_without_overriding_provider_result(monkeypatch, caplog):
+    import time
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError(38, "synthetic unavailable pidfd")
+
+    with tw.temporary_workspace() as raw:
+        root = Path(raw)
+        launch = tw.prepare_launch([sys.executable, "-c", "pass"])
+        descriptors = tw.register_launch(launch.roots, launch.token)
+        try:
+            with monkeypatch.context() as patch:
+                ticks = iter([0, 17])
+                patch.setattr(time, "monotonic", lambda: next(ticks, 17))
+                patch.setattr(shutdown, "signal_identity", unavailable)
+                tw._settle_launch(launch)
+            assert "retaining uncertain scratch" in caplog.text
+            assert tw._validated_marker(root)[0]["launches"][launch.token]["state"] == "running"
+            tw.complete_launch(launch.roots, launch.token)
+        finally:
+            for fd in descriptors:
+                os.close(fd)
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("later_output", [None, "later output"])
+def test_cleanup_timeout_preserves_original_command_and_captured_output(monkeypatch, later_output):
+    calls = 0
+
+    def communicate(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise subprocess.TimeoutExpired(
+                "native", 7, output="native output", stderr="native error"
+            )
+        raise subprocess.TimeoutExpired("guardian", 1, output=later_output)
+
+    process = SimpleNamespace(communicate=communicate)
+    monkeypatch.setattr(tw, "launch_result", lambda _: None)
+    monkeypatch.setattr(tw, "stop_guarded_process", lambda _: None)
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        tw._communicate_supervised(process, object(), ["original", "command"], None, 7)
+    assert error.value.cmd == ["original", "command"]
+    assert error.value.timeout == 7
+    assert error.value.output == ("native output" if later_output is None else later_output)
+    assert error.value.stderr == "native error"

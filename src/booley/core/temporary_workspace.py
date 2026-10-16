@@ -721,6 +721,26 @@ def launch_failed(launch: LeaseLaunch) -> None:
     _clear_launch(launch.roots, launch.token, pending_only=True)
 
 
+def abort_launch_registration(launch: LeaseLaunch) -> None:
+    """Roll back this guardian's handoff after proving no native spawn was attempted."""
+    identity = process_identity(os.getpid())
+    for root in launch.roots:
+        try:
+            with _exclusion(root.parent):
+                data, _marker = _validated_marker(root)
+                state = data["launches"].get(launch.token)
+                if state == {"state": "pending"} or (
+                    isinstance(state, dict)
+                    and state.get("state") == "running"
+                    and identity is not None
+                    and state.get("supervisor") == identity
+                ):
+                    del data["launches"][launch.token]
+                    _write_marker(root, data)
+        except (OSError, ValueError) as error:
+            logger.warning("Pre-spawn scratch rollback unavailable for %s: %s", root, error)
+
+
 def launch_finished(launch: LeaseLaunch) -> None:
     """Acknowledge only supervisor-proven completion; lost guardians remain marked."""
     for root in launch.roots:
@@ -980,8 +1000,13 @@ def _communicate_supervised(process, launch, original, input_value, timeout):
     try:
         return _communicate_native(process, launch, input_value, timeout)
     except subprocess.TimeoutExpired as exc:
-        stop_guarded_process(process)
-        stdout, stderr = process.communicate(timeout=1)
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            stop_guarded_process(process)
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired as cleanup:
+            stdout = cleanup.output if cleanup.output is not None else exc.output
+            stderr = cleanup.stderr if cleanup.stderr is not None else exc.stderr
         raise subprocess.TimeoutExpired(original, timeout, output=stdout, stderr=stderr) from exc
     except BaseException:
         with contextlib.suppress(subprocess.TimeoutExpired, OSError):
@@ -1022,7 +1047,12 @@ def _settle_launch(launch: LeaseLaunch) -> None:
         if owner_alive(identity) is True:
             from booley.core.lease_shutdown import signal_identity
 
-            signal_identity(identity, signal.SIGTERM)
+            try:
+                signal_identity(identity, signal.SIGTERM)
+            except OSError as error:
+                logger.warning(
+                    "Guardian signal unavailable; retaining uncertain scratch: %s", error
+                )
     deadline = time.monotonic() + 16
     while supervisors and time.monotonic() < deadline:
         supervisors = {

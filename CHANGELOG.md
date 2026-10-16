@@ -65,7 +65,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   Specialist launch. Unsupported or uncertain native ownership and old unmarked
   leftovers remain for verified operator cleanup. Sharing auth removes credential
   replicas; concurrent native credential writes remain unserialized and can
-  require signing in again.
+  require signing in again. If shared shutdown metadata becomes unusable while
+  a command is running, supervision stops that command through bounded local
+  cleanup. Uncertain dead guardians count toward the 64-member admission limit
+  until the enclosing execution ends; new launches fail safely at the limit.
+  Identity-bound graceful signaling requires Linux pidfd support and permission;
+  unavailable signaling retains uncertain scratch.
 
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.

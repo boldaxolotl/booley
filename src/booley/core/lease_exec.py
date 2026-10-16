@@ -20,8 +20,8 @@ from booley.core.lease_shutdown import ENV, SETTLE_SECONDS, ShutdownGroup
 from booley.core.process_spawn import new_session_kwargs
 from booley.core.temporary_workspace import (
     LeaseLaunch,
+    abort_launch_registration,
     complete_launch,
-    launch_failed,
     process_identity,
     register_launch,
 )
@@ -136,7 +136,6 @@ def supervise(payload: str, command: list[str]) -> int:
         raise ValueError("invalid scratch launch bounds")
     roots = tuple(Path(root) for root in data["roots"])
     pending = _Signals()
-    _prepare_supervisor(pending, data.get("parent", os.getppid()))
     inherited = data.get("fds", [])
     if (
         not isinstance(inherited, list)
@@ -144,20 +143,18 @@ def supervise(payload: str, command: list[str]) -> int:
         or any(type(fd) is not int or fd < 0 for fd in inherited)
     ):
         raise ValueError("invalid inherited scratch descriptors")
-    inherited_group = _inherited_group(roots, data["token"])
-    group = inherited_group or ShutdownGroup.create(roots[0])
-    group.register(roots, data["token"])
-    descriptors = register_launch(roots, data["token"], tuple(inherited), group=group)
+    group, owned, descriptors = _register_supervisor(roots, data, pending, inherited)
     try:
         if pending.requested is not None:
-            group.finish(owner=inherited_group is None)
+            group.finish(owner=owned)
             complete_launch(roots, data["token"])
             return -pending.requested
         try:
             leader = subprocess.Popen(
                 command, env={**os.environ, ENV: str(group.path)}, **new_session_kwargs()
             )
-        except OSError:
+        except (OSError, ValueError):
+            group.finish(owner=owned)
             complete_launch(roots, data["token"])
             raise
         terminal = _wait_tree(leader, pending, group, roots, data["token"])
@@ -166,7 +163,7 @@ def supervise(payload: str, command: list[str]) -> int:
                 "Scratch descendants remain unproven; preserving their workspace", file=sys.stderr
             )
             return 125
-        group.finish(owner=inherited_group is None)
+        group.finish(owner=owned)
         complete_launch(roots, data["token"])
         return leader.returncode or 0
     finally:
@@ -174,12 +171,22 @@ def supervise(payload: str, command: list[str]) -> int:
             os.close(fd)
 
 
-def _inherited_group(roots: tuple[Path, ...], token: str) -> ShutdownGroup | None:
+def _register_supervisor(roots, data, pending, inherited):
+    group = None
+    owned = False
     try:
-        return ShutdownGroup.inherited()
-    except (OSError, ValueError, RuntimeError):
-        # No native command or launch registration has started yet.
-        launch_failed(LeaseLaunch([], {}, roots, token))
+        _prepare_supervisor(pending, data.get("parent", os.getppid()))
+        group = ShutdownGroup.inherited()
+        owned = group is None
+        group = group or ShutdownGroup.create(roots[0])
+        group.register(roots, data["token"])
+        descriptors = register_launch(roots, data["token"], tuple(inherited), group=group)
+        return group, owned, descriptors
+    except BaseException:
+        # No native spawn has been attempted, including after partial publication.
+        abort_launch_registration(LeaseLaunch([], {}, roots, data["token"]))
+        if group is not None:
+            group.finish(owner=owned)
         raise
 
 
