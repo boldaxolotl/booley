@@ -1570,6 +1570,11 @@ A few conventions worth calling out in that example:
   configured `run_cwd`; the temporary entry is removed after the run. An identical
   file already present there is preserved, while a different file at the same path
   is an input-setup error rather than being overwritten.
+  Doctor warns about differing declared inputs at the Project Root or a literal
+  `run_cwd`, naming the Target, source and destination. Rename the `copyto`
+  destination, remove the checked-in copy, or choose a literal `run_cwd` without
+  the collision. Identical files and templated `run_cwd` produce no collision
+  warning.
   A missing declared `$readmemh` destination is a staging/infrastructure error;
   an undeclared path is a `missing_input` design failure with a fileset hint.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley

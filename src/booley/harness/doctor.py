@@ -4267,6 +4267,51 @@ def _check_target_sources(
     )
     _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
     _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_sim_copyto_collisions(audit.root, refs, inputs, audit.warn)
+
+
+def _check_sim_copyto_collisions(
+    root: Path, refs: dict[str, TargetHandle], inputs: _CoreAuditInputs, warn: Check
+) -> None:
+    """Warn about declared inputs that would conflict at a usable literal run cwd."""
+    from booley.flows.sim.runtime_inputs import (
+        RuntimeInputError,
+        inspect_runtime_destination,
+        iter_runtime_inputs,
+        runtime_input_conflicts,
+    )
+
+    configured = resolve_run_cwd(root)
+    try:
+        if parse_run_cwd_template(configured) or "{" in configured or "}" in configured:
+            return
+        run = (root / configured).absolute()
+        if literal_run_cwd_error(run) is not None:
+            return
+    except (ValueError, OSError):
+        return  # Configuration and cwd audits own unusable run directories.
+    for name, ref in sorted(refs.items()):
+        if not flow_can_drive("sim", ref):
+            continue
+        try:
+            declarations = inputs.inspection_for(name).inputs
+        except (fusesoc_registry.FuseSocError, OSError):
+            continue  # Source diagnostics own unavailable inspections.
+        for item, copyto in iter_runtime_inputs(declarations):
+            source = root / item.path
+            try:
+                destination = inspect_runtime_destination(run, copyto)
+                if destination is None or not source.is_file():
+                    continue
+                if not runtime_input_conflicts(source, destination):
+                    continue
+            except (RuntimeInputError, OSError):
+                continue  # Missing/generated/unreadable inputs cannot be compared.
+            _warning_sink(warn, "sim.runtime-input-collision", subject=f"{name}:{destination}")(
+                f"sim Target {name!r}: copyto source {source} conflicts with {destination}",
+                "Rename the copyto destination, remove the checked-in copy, or choose a "
+                "literal run_cwd without the collision.",
+            )
 
 
 def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
