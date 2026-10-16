@@ -102,12 +102,11 @@ for its throwaway clone. That writes the root report instead of an inner copy;
 on a real project, never pass the flag.
 
 After the renderer finishes, follow SKILL.md's **Delivered Flow results** contract:
-add or replace that single section at the actual returned path, including the
-root report when the enclosing dogfood flow selected it. Keep existing Feedback
-content intact. Quote numbered invocation identities and delivered fields, compare
-requests, and snapshot the reports plus required linked artifacts with original
-paths and digests before scratch cleanup. Repeat this after any setup-owned
-render; later independent Feedback renders have their existing contract.
+add or replace that single section at the actual returned path (the root report
+when the enclosing dogfood flow selected it), keeping existing Feedback content
+intact. The contract owns the evidence rows and the pre-cleanup snapshot. Repeat
+after any setup-owned render; later independent Feedback renders keep their
+existing contract.
 
 This step stays non-blocking. A missing/ambiguous report produces an unverified
 row, never a success inferred from the requested configuration. The walkthrough

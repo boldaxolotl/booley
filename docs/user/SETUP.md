@@ -208,9 +208,8 @@ later; it doesn't affect the happy-path install, so it's spelled out under
 ### What `--scaffold` adds
 
 On top of everything above, `--scaffold` writes a starter project. On a terminal
-it asks the choices below, including synthesis mode when ASIC is enabled; each
-answer is also a flag, for non-interactive runs that
-otherwise take the defaults:
+it asks the choices below (synthesis mode only when ASIC is enabled); each
+answer is also a flag, for non-interactive runs that otherwise take the defaults:
 
 | Choice | Options | Flag |
 | --- | --- | --- |
@@ -330,16 +329,15 @@ Booley Flows, it skips config authoring and runs:
   warnings are never merely ignored. For a scaffolded project the
   sim, lint, and synthesis smoke checks should pass before you've written a
   line. Logical synthesis qualifies with completed mapped-area evidence; physical
-  synthesis also requires constrained timing. That's what proves the wiring. By hand it's the same two commands in a
-  container terminal: read every `FAIL`, `WARN`, and `fix:` hint, and don't stop
+  synthesis also requires constrained timing. That proves the wiring. By hand
+  it's the same two commands in a container terminal: read every `FAIL`, `WARN`, and `fix:` hint, and don't stop
   at a green plain `doctor`. The deep smokes are the point.
 - **AGENTS.md (Step 3), optional.** The Project-level guidance file from the
   sequence above. A scaffolded project typically wants only this beyond the
   gate.
-
-- **Setup report (Step 6).** The report and final summary cite delivered facts
-  from each Flow's numbered `report.json` (Target, EDA tool, applicable mode and
-  verdict), compare them with the request, and mark missing evidence unverified.
+- **Setup report (Step 6).** The report and final summary compare each Flow's
+  delivered facts (from its numbered `report.json`) with the request and mark
+  missing evidence unverified, per the skill's Delivered Flow results contract.
   Existing scaffold choices are confirmed as pre-set; a missing synthesis mode
   means physical. A changed request follows the approved Target-edit plan.
 

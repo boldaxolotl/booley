@@ -83,39 +83,38 @@ bad overlay under the resolved Booley Directory's `selftest/sim/bad-overlay/`
 to match the current interface while retaining one deliberate behavioral defect
 that builds and fails the selected smoke Test.
 
-
 ## Additional recipe requests
 
-The scaffold is a runnable counter starter, with the established `balanced` PPA
-recipe. It adds no mandatory PPA question or profile flag. If the user volunteers
-`compact` or `max_frequency`, record the request in SETUP-PLAN and use existing
-Target configuration/full setup; until applied, report it as a deviation.
-Audit other volunteered recipe requests against the supported starter:
+The scaffold is a runnable counter starter with the established `balanced` PPA
+recipe; it adds no mandatory PPA question or profile flag. Record a volunteered
+`compact` or `max_frequency` request in SETUP-PLAN and apply it through existing
+Target configuration/full setup; report it as a deviation until applied. Audit
+other volunteered recipe requests against the starter:
 
-- `frontend` and `flatten` keep their established defaults; expert changes belong
-  in the existing Target recipe, confirmed through full setup.
+- `frontend` and `flatten` keep their defaults; expert changes go in the existing
+  Target recipe, confirmed through full setup.
 - Backend expert settings, technology/physical-library choices and custom EDA
-  tools require design/environment evidence and full setup provisioning. Record
-  the request and anything unsupported; never claim a tool or library was used
-  just because it was requested. Logical synthesis cannot consume OpenROAD settings.
+  tools need design/environment evidence and full setup provisioning. Record the
+  request and anything unsupported; never claim a tool or library was used because
+  it was requested. Logical synthesis cannot consume OpenROAD settings.
 - Starter constraints describe only the counter: physical uses a 10 ns SDC,
-  logical emits no SDC, and FPGA XDC is independent. Design-specific clocks,
-  board pins, sources, interfaces and parameters follow Step 0/2 authority;
-  never invent real-project constraints.
-- Sandbox images, provider/auth and EDA provisioning remain owned by existing
-  initialization and full setup. Record unmet requests there.
+  logical emits no SDC, FPGA XDC is independent. Design-specific clocks, board
+  pins, sources, interfaces and parameters follow Step 0/2 authority; never invent
+  real-project constraints.
+- Sandbox images, provider/auth and EDA provisioning stay with existing
+  initialization and full setup; record unmet requests there.
 - Project-specific verification intent (tests, seeds, variants, tracing, coverage,
-  timeout and resources) follows full setup. The starter's two deterministic
-  Tests and known-bad Doctor fixtures do not prove an unexecuted requested check.
+  timeout, resources) follows full setup. The starter's two deterministic Tests and
+  known-bad Doctor fixtures do not prove an unexecuted requested check.
 - IP name, simulator, TB style, linter, ASIC/FPGA enablement and part, optional
-  AGENTS.md and history/stealth remain covered by the existing choices above.
+  AGENTS.md and history/stealth stay with the existing choices above.
 
-For every extra request, record what will be applied or why it is excluded and
-obtain the existing setup confirmation for a deviation. Never silently drop it.
+For each extra request, record what will be applied or why it is excluded, and
+obtain the existing setup confirmation for a deviation; never silently drop one.
 
 After Doctor, run **Step 6 §2 (write the report), §3 (walk through it), and §5
-(close out)** and follow the shared **Delivered Flow results** contract in
-SKILL.md. Triage and export retain Step 6's existing consent requirements.
-Then run **Step 7** for bounded cleanup using the run manifest and retained report
-evidence. The final summary reuses the report's evidence rows, including unverified
-checks and requested-versus-delivered deviations.
+(close out)** per the shared **Delivered Flow results** contract in SKILL.md;
+triage and export keep Step 6's existing consent requirements. Then run **Step 7**
+for bounded cleanup using the run manifest and retained report evidence. The final
+summary reuses the report's evidence rows, including unverified checks and
+deviations.
