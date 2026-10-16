@@ -16,16 +16,16 @@ from booley.config.editor import ResolvedEditor, resolve_editor
 OPEN_ACTION = "app.open_path"
 
 
-def linked_text(detail: str, paths: Iterable[str]) -> Text:
+def linked_text(detail: str | Text, paths: Iterable[str]) -> Text:
     """Make each whole line that is a published path clickable; other text stays inert.
 
     A path is only linked on a line of its own, which also keeps it unwrapped
     for a terminal's own link detector.
     """
-    text = Text(detail)
+    text = detail.copy() if isinstance(detail, Text) else Text(detail)
     published = set(paths)
     offset = 0
-    for line in detail.split("\n"):
+    for line in text.plain.split("\n"):
         if line in published:
             text.stylize(
                 Style(underline=True, meta={"@click": f"{OPEN_ACTION}({line!r})"}),

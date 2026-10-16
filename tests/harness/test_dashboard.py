@@ -976,3 +976,69 @@ def test_dashboard_palette_imports_have_no_copied_codes():
                 assert node.value not in codes if isinstance(node.value, int) else True
                 if isinstance(node.value, str):
                     assert not any(f"color({code})" in node.value for code in codes)
+
+
+def _compact_result_job(report, code=0):
+    return JobView(
+        Path("/jobs"),
+        JobRecord("compact", "sim", STAMP, 60, status="done", exit_code=code, ended_at=STAMP),
+        "completed",
+        report=report,
+        report_path=Path("/reports/one.json") if report else None,
+        artifacts=("/reports/sim.log",) if report else (),
+    )
+
+
+async def _result_pilot(report, expected, code=0, compact=False):
+    from textual.containers import VerticalScroll
+
+    from tests.harness.test_dashboard_results import campaign
+
+    if report == "passing":
+        report = {"flow": "sim", "detail": {"campaigns": {"top": campaign()}}}
+    item = _compact_result_job(report, code)
+    current = replace(snapshot(1), jobs=JobSnapshot((item,)))
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.press("r")
+        await pilot.pause()
+        widget = app.query_one("#detail", Static)
+        text = str(widget.content)
+        assert "Flow result:" in text, "Pilot must show the new Flow result in the selected pane"
+        assert expected in text
+        if compact:
+            aside = app.query_one("#aside", VerticalScroll)
+            assert aside.virtual_size.height <= aside.size.height
+            assert text.splitlines()[0] == "Flow result: PASSED · 2/2 tests passed · grade pass"
+            assert len(text.splitlines()[0]) <= widget.size.width
+            content = widget.content
+            links = [
+                span for span in content.spans if getattr(span.style, "meta", {}).get("@click")
+            ]
+            assert content.plain[links[-1].start : links[-1].end] == "/reports/one.json"
+            assert (
+                widget.region.y + text.splitlines().index("/reports/one.json")
+                < aside.region.bottom
+            )
+        if report is None:
+            assert text.count("Summary unavailable") == 1
+            assert "Execution:" in text
+
+
+@pytest.mark.asyncio
+async def test_pilot_compact_passing_result():
+    await _result_pilot("passing", "Flow result: PASSED", compact=True)
+
+
+@pytest.mark.asyncio
+async def test_pilot_failing_result_names():
+    from tests.harness.test_dashboard_results import campaign
+
+    await _result_pilot(
+        {"flow": "sim", "detail": {"campaigns": {"top": campaign(1, 1)}}}, "test_bad", 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_pilot_no_report_result():
+    await _result_pilot(None, "Summary unavailable")
