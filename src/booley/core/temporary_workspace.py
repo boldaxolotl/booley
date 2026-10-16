@@ -280,7 +280,7 @@ def _settled_launches(data: dict[str, Any]) -> bool:
 def _delete_owned(root: Path, *, require_dead: bool) -> bool:
     from booley.core.file_lock import acquire_descriptor_lock
 
-    with _exclusion(root.parent, blocking=False):
+    with _exclusion(root.parent):
         data, marker_id = _validated_marker(root)
         if not _settled_launches(data):
             return False
@@ -319,7 +319,7 @@ def _cleanup_registered_baseline(root: Path, data: dict[str, Any], fd: int) -> b
 
 
 def _claim_and_remove(root: Path, data: dict[str, Any], marker_id: tuple[int, int]) -> bool:
-    with _exclusion(root.parent, blocking=False):
+    with _exclusion(root.parent):
         current, current_id = _validated_marker(root)
         if current != data or current_id != marker_id:
             return False
@@ -718,17 +718,17 @@ def _guard_root(fd: int) -> Path:
 
 
 def _clear_launch(roots: tuple[Path, ...], token: str, *, pending_only: bool) -> None:
-    from booley.core.file_lock import LockContentionError
+    from booley.core.file_lock import LockTimeoutError
 
     for root in roots:
         try:
-            with _exclusion(root.parent, blocking=False):
+            with _exclusion(root.parent):
                 data, _identity = _validated_marker(root)
                 launch = data["launches"].get(token)
                 if launch is not None and (not pending_only or launch == {"state": "pending"}):
                     del data["launches"][token]
                     _write_marker(root, data)
-        except LockContentionError:
+        except LockTimeoutError:
             logger.warning("Scratch handoff rollback deferred for busy registry: %s", root)
 
 
@@ -742,7 +742,7 @@ def abort_launch_registration(launch: LeaseLaunch) -> None:
     identity = process_identity(os.getpid())
     for root in launch.roots:
         try:
-            with _exclusion(root.parent, blocking=False):
+            with _exclusion(root.parent):
                 data, _marker = _validated_marker(root)
                 state = data["launches"].get(launch.token)
                 if state == {"state": "pending"} or (
@@ -759,17 +759,17 @@ def abort_launch_registration(launch: LeaseLaunch) -> None:
 
 def launch_finished(launch: LeaseLaunch) -> None:
     """Acknowledge only supervisor-proven completion; lost guardians remain marked."""
-    from booley.core.file_lock import LockContentionError
+    from booley.core.file_lock import LockTimeoutError
 
     for root in launch.roots:
         try:
-            with _exclusion(root.parent, blocking=False):
+            with _exclusion(root.parent):
                 data, _identity = _validated_marker(root)
                 state = data["launches"].get(launch.token)
                 if isinstance(state, dict) and state.get("state") == "complete":
                     del data["launches"][launch.token]
                     _write_marker(root, data)
-        except LockContentionError:
+        except LockTimeoutError:
             logger.warning(
                 "Scratch completion acknowledgment deferred for busy registry: %s", root
             )
@@ -1087,18 +1087,18 @@ def _settle_launch(launch: LeaseLaunch) -> None:
 
 
 def _launch_supervisors(launch: LeaseLaunch) -> dict[int, dict[str, Any]]:
-    from booley.core.file_lock import LockContentionError
+    from booley.core.file_lock import LockTimeoutError
 
     supervisors: dict[int, dict[str, Any]] = {}
     for root in launch.roots:
         try:
-            with _exclusion(root.parent, blocking=False):
+            with _exclusion(root.parent):
                 data, _marker = _validated_marker(root)
                 state = data["launches"].get(launch.token)
                 if isinstance(state, dict) and state.get("state") == "running":
                     identity = state.get("supervisor")
                     if isinstance(identity, dict) and owner_alive(identity) is True:
                         supervisors[identity["pid"]] = identity
-        except LockContentionError:
+        except LockTimeoutError:
             logger.warning("Guardian lookup deferred for busy scratch registry: %s", root)
     return supervisors

@@ -365,7 +365,7 @@ class ShutdownGroup:
 
     def complete(self, *, owner: bool = False) -> None:
         members = []
-        with self.locked(blocking=False) as data:
+        with self.locked() as data:
             if owner:
                 if data["owner"] != _identity(os.getpid()):
                     raise ValueError("scratch terminal publication requires its owner")

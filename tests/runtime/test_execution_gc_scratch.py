@@ -303,7 +303,7 @@ def test_actual_supervisor_publishes_terminal_result_with_busy_proof_lock(tmp_pa
             process.communicate(timeout=5)
 
 
-def test_terminal_publication_does_not_wait_for_busy_group_lock(completed_execution):
+def test_terminal_publication_times_out_on_busy_group_lock(completed_execution):
     from concurrent.futures import ThreadPoolExecutor
 
     _, paths, root, group_path = completed_execution
@@ -312,7 +312,7 @@ def test_terminal_publication_does_not_wait_for_busy_group_lock(completed_execut
         data["owner"] = tw.process_identity(os.getpid())
     before = (group_path / "state.json").read_bytes(), (root / tw._MARKER).read_bytes()
     with ThreadPoolExecutor(max_workers=1) as workers, group.locked():
-        assert workers.submit(group.finish, owner=True).result(timeout=1) is False
+        assert workers.submit(group.finish, owner=True).result(timeout=2) is False
         assert before == (
             (group_path / "state.json").read_bytes(),
             (root / tw._MARKER).read_bytes(),
@@ -396,6 +396,48 @@ def test_public_guarded_call_and_workspace_exit_defer_busy_registry(tmp_path):
         finally:
             release.touch()
     assert tw._delete_owned(root, require_dead=False)
+
+
+@pytest.mark.parametrize("operation", ["rollback", "normal-exit"])
+def test_brief_contention_does_not_strand_proven_cleanup(tmp_path, monkeypatch, operation):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from booley.core import file_lock
+
+    ready, proceed, contended = Event(), Event(), Event()
+    acquire = file_lock.acquire_descriptor_lock
+    roots = []
+
+    def observe_contention(fd, **kwargs):
+        try:
+            acquire(fd, **kwargs)
+        except file_lock.LockContentionError:
+            contended.set()
+            raise
+
+    def invoke():
+        with tw.temporary_workspace(parent=tmp_path) as raw:
+            roots.append(Path(raw))
+            launch = (
+                tw.prepare_launch([sys.executable, "-c", "pass"])
+                if operation == "rollback"
+                else None
+            )
+            ready.set()
+            assert proceed.wait(timeout=5)
+            if launch is not None:
+                tw.launch_failed(launch)
+
+    monkeypatch.setattr(file_lock, "acquire_descriptor_lock", observe_contention)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        result = workers.submit(invoke)
+        assert ready.wait(timeout=5)
+        with tw._exclusion(tmp_path):
+            proceed.set()
+            assert contended.wait(timeout=5)
+        result.result(timeout=5)
+    assert not roots[0].exists()
 
 
 def _start_exit_after_native(state, execution_id, registry, ready, release, receipt):
