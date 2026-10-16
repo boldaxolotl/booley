@@ -4,135 +4,275 @@ slug: harness-matters
 draft: true
 ---
 
-# Investigating a tough bug in a large SoC: why an agent harness matters
+# Why AI agents need good tools for hardware debugging
 
-I use AI agents in my chip-design frontend work daily. Modern LLMs are quite capable: they can implement complex features and find tricky bugs in large codebases. But the model is only half of it. The other half is the harness: the environment the agent works in and the tools it gets. Since early 2026 I have been experimenting with different parts of the harness, trying to make agents perform better. In this post I want to show what I was able to achieve: how a harness helps an agent investigate, reproduce and fix a hard bug in a large, real SoC.
+Modern AI agents are very good at reasoning about code and finding bugs, including in hardware designs. But even smart models need good tools to work efficiently.
+
+I use AI agents in my chip-design work daily, and I'm building [Booley](https://github.com/boldaxolotl/booley), an open-source development environment for AI-assisted FPGA and ASIC work.
+
+To see how much those tools matter, I gave the same agent the same hardware bug, with and without Booley. Both setups produced a fix and a reproducing test in every trial. With Booley, the agent finished in **21 minutes on average**; without it, **56 minutes**.
+
+Most of the difference came from the work around the fix: building a test that exposed the bug, inspecting what happened inside the processor, and getting results back promptly.
 
 <!-- more -->
 
-## Setup
+The environment and interfaces around an agent are often called its *harness*. For hardware development, they let the agent build the design, run simulations, inspect internal signals, and act on the results.
 
-I didn't want a toy. I wanted a large, real RTL codebase, so I picked [Caliptra](https://github.com/chipsalliance/caliptra-rtl), the open-source hardware root of trust. It's big, well written, and backed by serious companies.
+## A real bug in a real processor
 
-For the agent I used Anthropic's mid-tier model, Sonnet 5.5. It's a good balance of cost and brains, which is why a lot of people actually run it.
+I first tried bug-fixing tasks from a subset of the CVDP benchmark. That subset was already too easy for the agents I tested. I needed harder problems to learn whether better debugging tools would make a difference.
 
-Then I needed a bug. Finding one hard enough took longer than I expected. I screened about 16 candidates: historical upstream fixes reverted back into the tree, plus a few still-open issues. An agent found every one of them just by reading the code, usually within a few minutes, without running a single simulation. Good news for agents, useless for an experiment.
+So I looked for the largest, high-quality open-source hardware description, or RTL, codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware.
 
-The bug that survived is a real historical fix in the VeeR EL2 core (the RISC-V CPU inside Caliptra) that I put back into the tree. Upstream fixed it in the [VeeR EL2 1.4 release](https://github.com/chipsalliance/Cores-VeeR-EL2/commit/fb3354352be70781450ea70963c44d4b8f88ae9b) in 2021; the [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) list it as "Store data collision with DCCM DMA error when address is 0x0".
+Even in Caliptra, finding a suitable bug took longer than I expected. I screened about 16 candidates, including historical fixes reverted back into the code and still-open issues. An agent identified each bug by reading the code, usually within a few minutes. I wanted a task that also required simulation and debugging.
 
-## The bug
+I settled on a historical bug in VeeR EL2, the RISC-V processor inside Caliptra, and reintroduced it by reverting an upstream fix from the [VeeR EL2 1.4 release](https://github.com/chipsalliance/Cores-VeeR-EL2/commit/fb3354352be70781450ea70963c44d4b8f88ae9b).
 
-The agent got an issue-style bug report. The short version:
+During startup, the processor checks the contents of its read-only program memory, or ROM. Under a particular sequence of reads and writes, that check fails even though the stored program is correct. The first word read from ROM has the wrong value.
+
+The agent's task was to find and fix the cause in the RTL, then add a test that fails before the fix and passes afterward.
+
+<details markdown="1">
+<summary>The bug report and exact RTL fault</summary>
+
+The agent received an issue-style report describing this behavior:
 
 > Early in boot, the firmware recomputes a digest over its own ROM image and compares it with a constant fixed at build time. Normally the check passes. In one case the digest comes out wrong, even though the ROM is unchanged and the constant is correct. No fault, no exception, no ECC event, fully deterministic. The trigger is a coding pattern: the failing routine reads ROM word by word and, in the same tight loop, writes partial results to a scratch buffer in DCCM. Keep the accumulator in registers, or move the buffer out of DCCM, and the digest is correct. Only the first word of the ROM input looks corrupted.
 >
 > Find and fix the RTL root cause. Add a test that reproduces the problem and passes after the fix.
 
-What's actually going on: the core's load/store unit has store-to-load forwarding, and one guard condition is missing (`el2_lsu_bus_intf.sv`, the `& lsu_busreq_r` term). Without it, a store to DCCM wrongly forwards into a following load from ROM address 0. The load returns `0x0` instead of the ROM word.
+DCCM is the processor's tightly coupled data memory. In `el2_lsu_bus_intf.sv`, a missing `& lsu_busreq_r` guard allows a store to DCCM to forward into a subsequent load from ROM address zero. The load returns `0x0` instead of the ROM word. The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
 
-Finding the fix isn't the hard part. Both arms of the experiment usually pointed at the right line of RTL within 5 minutes, just by reading. The hard part is the second half of the request: writing a test that fails on the buggy design. Two traps make that harder than it sounds:
+</details>
 
-- The test template marks ROM as a side-effect region, and that disables forwarding. Write the obvious test and the bug never fires.
-- Code fetched from uncached ROM is slow, so the store and the load never meet in the pipeline.
+## Why reproducing it was harder than finding it
 
-So most of each run goes into getting a test to *fail*: build, simulate, look inside, change the test, repeat. That loop is where tools matter.
+The processor uses *store-to-load forwarding*: a read can take its value directly from a recent write instead of waiting for that write to reach memory. A missing condition lets it select unrelated write data for a read from ROM.
 
-## The experiment
+In both setups, the agent usually identified the faulty line within five minutes. It then had to write a test that failed on the original design and passed after the fix. That would demonstrate the fault and help catch it if it returned later.
 
-Two arms, identical except for the harness:
+Two details made that test difficult to write:
+
+- The test template marked ROM as a region where accesses may have side effects. That setting disables forwarding and hides the bug.
+- Fetching instructions from uncached ROM was so slow that the write and read didn't overlap inside the processor's pipeline. The test had to create that overlap to expose the fault.
+
+Most of the work went into building a test, simulating it, inspecting what happened, and adjusting it until it failed for the right reason.
+
+## What I compared
+
+I ran ten trials with **Claude Code alone**, using a shell and Caliptra's existing Makefiles and test scripts, and ten with **Claude Code plus Booley**. The charts label these setups "without harness" and "with harness" respectively; both used Claude Code as the agent environment.
+
+The Booley project was configured before the trials. The timings cover debugging, excluding the initial work of adapting Caliptra to Booley.
+
+<details markdown="1">
+<summary>Experiment settings and versions</summary>
 
 - **Agent:** Claude Code 2.1.289, Sonnet 5.5, medium effort.
-- **Same everything else:** same prompt, same container image, 8 CPUs, 10 GB RAM, a 90-minute wall-clock limit, no access to the internet. Caliptra at commit `e379800c`.
-- **Without harness:** the agent gets the repo and a shell. Caliptra's own Makefiles and test scripts are all there.
-- **With harness:** the same repo plus the harness, described next.
+- **Booley:** published release 0.3.0.
+- **Design:** Caliptra at commit `e379800c`, with the historical VeeR fix reverted.
+- **Environment:** the same container image, 8 CPUs, 10 GB RAM, no internet access.
+- **Task:** the same prompt and a 90-minute elapsed-time limit for every trial.
+- **Trials:** ten per setup, numbered b1 through b10. Matching numbers identify the pairs shown in the charts.
 
-I ran 10 trials in each arm, numbered b1 to b10; trials with the same number form a pair.
+</details>
 
-## The harness
+Booley supplied the simulation interface, waveform queries, and build configuration:
 
-The harness in this post is [Booley](https://github.com/boldaxolotl/booley), an open-source Python framework I'm building for agentic FPGA and ASIC work. The runs used the published 0.3.0 release.
+- The `sim` Flow builds and runs a simulation, then reports its result. Its interface stays the same across projects, so the agent doesn't have to learn each project's shell commands.
+- B-Wave lets the agent query waveforms: recordings of how internal signals change during a simulation. The agent can search a recording and read signal values at particular cycles.
+- FuseSoC, Booley's build system, organizes the source files, simulator settings, and firmware build steps. The Caliptra setup described these in FuseSoC core files and a test list.
 
-What the agent gets on top of a plain shell:
+## The result: 21 minutes versus 56
 
-- **A `sim` tool.** It's a universal interface between the agent and the simulator. It works with different simulators (Verilator and Icarus Verilog today, commercial ones in progress), and it manages build reuse, trace creation and coverage. The interface stays the same in every project. What mattered most in this experiment is how it waits: the call blocks until the job finishes and returns pass or fail. If the job runs longer than four minutes, the agent gets a run ID and calls `booley_poll`, which blocks again and returns the moment the job exits. No guessing how long to wait.
-- **B-Wave**, a custom binary written in Rust that lets agents query waveforms directly. A simulation run with tracing on records a waveform, and the agent asks it questions: list signals, find the first cycle where a condition holds, print a few signals over a window of cycles as a text table, etc.
-- **The build system is part of the harness.** Caliptra's sources, simulator flags and firmware build are described once, in FuseSoC core files and a test list. The agent never touches Caliptra's Makefiles or the environment variables they expect. The no-harness agent has a build system too: those Makefiles, which it has to figure out on its own.
+![Mean completion time: 21.3 minutes with Booley and 55.8 minutes with Claude Code alone, split by activity](harness-matters/time-split.png)
 
-The Caliptra project setup used in this experiment: [booley-prj-caliptra](https://github.com/boldaxolotl/booley-prj-caliptra). Its README walks through the setup. Use it to play with Booley on Caliptra, or to rerun this experiment: revert the VeeR fix linked above and give your agent the bug report from "The bug".
+Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone**. The medians were 21.4 and 53.3 minutes respectively.
 
-## Results
+The chart separates builds and simulations, signal observation, waits after jobs had finished, and other work. The three sources of delay below recurred across the trials. I examined them in the run histories; I didn't run separate experiments to isolate each feature's contribution.
 
-![Mean time per bug fix, with and without harness](harness-matters/time-split.png)
+## Seeing why a test keeps passing
 
-Both arms fixed the bug 10 times out of 10. With the harness the mean was **21.3 minutes**. Without it, **55.8 minutes**. Medians: 21.4 versus 53.3.
+![Trial pair b3: repeated debug-print builds compared with waveform queries](harness-matters/factor-waveform.png)
 
-Three harness features account for most of the difference. Here they are, one by one.
+When a test passes despite a suspected bug, you need to see what happened inside the design. In pair b3, Claude Code alone added debug prints with `$display`, rebuilt the simulator, reran the test, and searched the output. It repeated that loop seven times, spending 37.8 minutes on signal observation.
 
-## Factor 1: seeing inside the design
+With Booley, the agent built once with waveform recording enabled and asked B-Wave 16 questions about the recorded signals. That work took 9.8 minutes.
 
-![Pair b3: debug prints versus waveform queries](harness-matters/factor-waveform.png)
+In trial b1, the agent searched the waveform to find whether the faulty address comparison ever fired. Here are equivalent command lines, with output trimmed:
 
-When a test doesn't fail the way you expect, you need to see what the pipeline is doing. Without the harness, the agent does what we all did before we knew better: add `$display`, rebuild, rerun, grep. In pair b3 it went around that loop seven times, at about 6.5 minutes per rebuild. That's 37.8 minutes spent looking at signals.
+```text
+$ bwave find trace.fst '*bus_intf.ld_addr_rhit_lo_lo' 1
+cycle 4687 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
+cycle 4696 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
+...
+# 32 matches found
+```
 
-With the harness, the agent built once with tracing on and asked the waveform 16 questions: 9.8 minutes in total.
+The comparison fired 32 times, yet the test still passed. The agent then asked for the surrounding signal values at the first match:
 
-Here's what those questions look like, from trial b1 (equivalent command lines, output trimmed). The agent's test kept passing on the buggy design, so it asked when the suspicious address match fires:
+```text
+$ bwave value trace.fst --at 4687 -s '*bus_intf.ld_*' -s '*bus_intf.lsu_busreq*' -s '*bus_intf.is_sideeffects_m' ...
+# Snapshot at cycle 4687
+lsu_busreq_m                             = 1
+is_sideeffects_m                         = 1
+lsu_busreq_r                             = 0
+ld_addr_rhit_lo_lo                       = 1
+ld_full_hit_m                            = 0
+```
 
-    $ bwave find trace.fst '*bus_intf.ld_addr_rhit_lo_lo' 1
-    cycle 4687 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
-    cycle 4696 caliptra_top_tb.caliptra_top_dut.rvtop.veer.lsu.bus_intf.ld_addr_rhit_lo_lo 1
-    ...
-    # 32 matches found
+The read matched a write that should not have been eligible for forwarding. But the test's memory setting (`is_sideeffects_m = 1`) blocked forwarding (`ld_full_hit_m = 0`) and hid the bug.
 
-32 times. So why does the test pass? It took a snapshot of the first hit:
+The agent changed that setting in the test. Half a minute later, the test failed on the buggy design.
 
-    $ bwave value trace.fst --at 4687 -s '*bus_intf.ld_*' -s '*bus_intf.lsu_busreq*' -s '*bus_intf.is_sideeffects_m' ...
-    # Snapshot at cycle 4687
-    lsu_busreq_m                             = 1
-    is_sideeffects_m                         = 1
-    lsu_busreq_r                             = 0
-    ld_addr_rhit_lo_lo                       = 1
-    ld_full_hit_m                            = 0
+The agent could ask follow-up questions of the same recording without rebuilding. Across all ten pairs, it spent **9.4 minutes less on average** observing signals with Booley.
 
-A ROM load matches a store that isn't even on the bus: that's the bug. But the load is flagged as side-effect, so the forward is cancelled and the test passes anyway. The agent changed the test's memory-attribute setting, and half a minute later the test failed on the buggy design.
+*The b3 chart's final segment, roughly 47 to 85 minutes, is a sequence of final tests. That time isn't counted as signal observation.*
 
-(The long orange tail of the no-harness run, from 47 to 85 minutes, is its final tests running one after another. It has nothing to do with waveforms.)
+## Making the build repeatable
 
-Over all ten pairs the waveform saving averages 9.4 minutes.
+![Trial pair b1: build configuration errors and simulation timeouts](harness-matters/factor-setup.png)
 
-## Factor 2: getting the build to work at all
+Caliptra's simulation Makefiles need environment variables that point to dependencies. All ten runs with Claude Code alone hit missing configuration; most recovered within a few minutes.
 
-![Pair b1: setup churn](harness-matters/factor-setup.png)
+In b1, the agent worked out which variables to set and exported them in a shell call. Those values didn't carry over to later calls in this run. The firmware build then failed to produce `program.hex`, and the simulation started without a program. It waited until its timeout. This happened three times before the agent put the configuration in a single `run.sh` script.
 
-Caliptra's simulation Makefiles expect environment variables that aren't documented anywhere obvious (`CALIPTRA_AXI4PC_DIR`, `CALIPTRA_PRIM_ROOT` and friends). All 10 no-harness runs hit them. Most recovered within a few minutes.
+The run spent about 36 minutes dealing with setup, or 30 minutes under a stricter count of directly attributable time.
 
-Pair b1 shows how badly it can go. From 3.9 to 10.3 minutes the build failed three times while the agent hunted down variables. Then it exported them, but exports don't survive between the agent's shell calls. The next step quietly failed to build `program.hex`, and the simulation, with no program to run, hung until its timeout. That happened three times: 17.6 to 37.0, 60.8 to 65.9 and 66.4 to 71.5 minutes. At 71.5 the agent finally wrote a `run.sh` that set everything in one place. Total spent on setup: 36 minutes (30 minutes counting strictly).
+The Booley project's FuseSoC core files already held the dependency paths, so the agent didn't have to rediscover the Makefile variables. Each simulation invocation supplied its build configuration and firmware build step, without relying on exports from a previous shell call. If the firmware build failed, Booley stopped the run and reported the build error before starting a simulation without its program.
 
-With the harness, none of this can happen, because the build is part of Booley rather than something the agent assembles in a shell:
+The Booley run in pair b1 spent no time repairing setup. Across all ten pairs, the average setup saving was **3.6 minutes**; b1 was the unusually costly case. Configuring the project once avoided repeating that work during debugging.
 
-- **No Makefile variables to hunt.** Booley drives the build through FuseSoC. The paths those variables point to were resolved once, when Caliptra was set up for Booley, and written into its FuseSoC core files. The agent never sees them.
-- **No shell state to lose.** Every `sim` call is self-contained. The per-test firmware build (`program.hex` and friends) is a declared step that Booley runs right before each simulation, with everything it needs.
-- **No silent hangs on a missing program.** If that firmware build fails, Booley reports the test as failed, with the build error, instead of starting a simulation with nothing to run.
+## Getting the result when the job finishes
 
-The b1 harness run spent zero minutes on setup. Averaged over all ten pairs it's only 3.6 minutes, because nine of them recovered quickly. b1 is what the tenth looks like.
+![Trial pair b10: time spent sleeping after build jobs had already finished](harness-matters/factor-oversleep.png)
 
-## Factor 3: waiting on jobs that are already done
+The agent also needs to know when a build finishes. In several runs with Claude Code alone, it started work in the background and used a fixed sleep before checking the result. In b10, a build started at 4.3 minutes and failed one second later. The agent had already requested `sleep 540`, a nine-minute wait, and didn't check the result until 13.4 minutes.
 
-![Pair b10: sleeping on finished jobs](harness-matters/factor-oversleep.png)
+It made similar waits four times in that run, spending 30.7 of its 60 minutes asleep after jobs had finished.
 
-This one is a bit embarrassing for Anthropic, but I am going to report it anyway. Without a harness, the agent starts a build in the background and then guesses how long to wait. In b10, at 4.3 minutes, a build failed after one second. The agent had already run `sleep 540` and didn't look again until 13.4 minutes. It did this four times in that run, sleeping through 30.7 of its 60 minutes.
+Booley's simulation interface waits for completion and returns the result. In the release used here, a job lasting more than four minutes returned a run ID. The agent could then call `booley_poll`, which waited again and returned when the job ended, without an arbitrary sleep.
 
-With the harness, the tool call returns when the job is done. The b10 harness run took 13 minutes in total.
+The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound.
 
-Across all ten pairs this is the largest factor: 11.2 minutes on average, and it mattered in 6 pairs. It's also a lower bound, because I counted only sleeps I could pin to a job that had demonstrably finished.
+## What this experiment shows
 
-## Summary
+The agent found the likely RTL fault quickly in either setup. Most of its work went into reproducing the failure and testing the fix. Booley shortened that work with waveform queries, a repeatable build, and job results that arrived when the job finished.
 
-Same model, same bug, same prompt. With the harness, Sonnet 5.5 fixed it in 21 minutes on average; without it, in 56. The difference was in everything around that: seeing inside the design without a rebuild per question, a build that works on the first call, and getting the result the moment the job ends. On a hard hardware bug, most of the work is getting a test to fail, and that work runs on tools.
+This was one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other tasks or models, or tell us which capability would help most on its own. I also built Booley and ran the experiment myself.
 
-## Disclaimers
+## Try it on a design
 
-1. **The harness helps most on hard bugs**
-2. **Smarter models benefit less**
-3. **The sample is small:** 10 trials per arm, one model, one bug, one SoC.
-4. **I built the harness,** so weigh my enthusiasm accordingly.
+Start with the smaller [PicoRV32 demo](../../demos.md#picorv32). The processor project is already configured for Booley: give the agent a change to make, then inspect its work.
+
+For the design used here, see the [Caliptra project](https://github.com/boldaxolotl/booley-prj-caliptra). Its README explains the setup. The [reproduction details below](#reproduce) contain the recorded versions, original prompt, and patches.
+
+<details id="reproduce" markdown="1">
+<summary>How to reproduce (spoilers)</summary>
+
+These are the inputs used in the experiment. Prepare the bug before starting the agent, and give it only the prompt below. The patch and the rest of this article reveal the answer.
+
+**Pinned versions**
+
+- Caliptra: `e379800c5467379386f96a9a51a539bd662b608a` in [chipsalliance/caliptra-rtl](https://github.com/chipsalliance/caliptra-rtl).
+- Adams Bridge, at `submodules/adams-bridge`: `2f15ffb1a2e9bd99652fa04d434a48ffcdc23f42` in [chipsalliance/adams-bridge](https://github.com/chipsalliance/adams-bridge).
+- Booley: published package `booley-rtl==0.3.0`, source commit `f9ec6d5602f3fcf47f48b678a3ba821fb82c859c` in [boldaxolotl/booley](https://github.com/boldaxolotl/booley).
+- Booley Caliptra project: recorded commit `e9dd79e7a31067c438d821b7e54efe397f019015`, mounted at `.booley_project`. This historical commit is absent from the current public [booley-prj-caliptra](https://github.com/boldaxolotl/booley-prj-caliptra) history. Recreating the exact Booley environment requires the archived project snapshot; using the current public project is a different setup.
+- Agent: Claude Code `2.1.289`, model ID `claude-sonnet-5-5`, effort `medium`.
+- Per trial: 8 CPUs, 10 GB RAM, a 4,096-process limit, and a 5,400-second time limit. Network access was restricted to the model API; web search, web fetching, and subagents were disabled.
+
+**Prepare the source**
+
+Check out the Caliptra revision above and initialize its submodules, then pin Adams Bridge to the recorded revision:
+
+```sh
+git clone https://github.com/chipsalliance/caliptra-rtl.git caliptra-source
+cd caliptra-source
+git checkout --detach e379800c5467379386f96a9a51a539bd662b608a
+git submodule update --init --recursive
+git -C submodules/adams-bridge checkout --detach 2f15ffb1a2e9bd99652fa04d434a48ffcdc23f42
+```
+
+Both setups also received the same [tracing patch](harness-matters/trace-harness.patch). It makes waveform recording opt-in with `+trace` and changes the trace depth from 24 to 4. This is a testbench adjustment, separate from the RTL bug below. Download it and the [bug mutation](harness-matters/seed.patch) outside the source directory, then apply them from the Caliptra root:
+
+```sh
+patch --dry-run --fuzz=0 -p1 < ../trace-harness.patch
+patch --fuzz=0 -p1 < ../trace-harness.patch
+patch --dry-run --fuzz=0 -p1 < ../seed.patch
+patch --fuzz=0 -p1 < ../seed.patch
+```
+
+The agent received a source snapshot without Git history or the saved patches. The Booley setup also contained the pinned `.booley_project`, with root-level `AGENTS.md` and `CLAUDE.md` symlinked to `.booley_project/AGENTS.md`. The other setup contained Caliptra's native build scripts without that project directory or guidance. Start each attempt from a fresh copy of the prepared snapshot.
+
+These steps recreate the source mutation and task. The reported timing comparison also used frozen container images and the archived Booley project, so a run with a different toolchain or project revision is not an exact repeat of that environment.
+
+**Exact code mutation**
+
+The mutation removes `& lsu_busreq_r` from all four address-match expressions in `src/riscv_core/veer_el2/rtl/lsu/el2_lsu_bus_intf.sv`. Restoring the removed guards fixes the bug. This diff shows the four changed lines; the downloadable patch also includes the surrounding context.
+
+```diff
+--- a/src/riscv_core/veer_el2/rtl/lsu/el2_lsu_bus_intf.sv
++++ b/src/riscv_core/veer_el2/rtl/lsu/el2_lsu_bus_intf.sv
+@@ -241,4 +241,4 @@
+-   assign ld_addr_rhit_lo_lo = (lsu_addr_m[31:2] == lsu_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m & lsu_busreq_r;
+-   assign ld_addr_rhit_lo_hi = (end_addr_m[31:2] == lsu_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m & lsu_busreq_r;
+-   assign ld_addr_rhit_hi_lo = (lsu_addr_m[31:2] == end_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m & lsu_busreq_r;
+-   assign ld_addr_rhit_hi_hi = (end_addr_m[31:2] == end_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m & lsu_busreq_r;
++   assign ld_addr_rhit_lo_lo = (lsu_addr_m[31:2] == lsu_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m;
++   assign ld_addr_rhit_lo_hi = (end_addr_m[31:2] == lsu_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m;
++   assign ld_addr_rhit_hi_lo = (lsu_addr_m[31:2] == end_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m;
++   assign ld_addr_rhit_hi_hi = (end_addr_m[31:2] == end_addr_r[31:2]) & lsu_pkt_r.valid & lsu_pkt_r.store & lsu_busreq_m;
+```
+
+The downloadable `seed.patch` has SHA-256:
+
+```text
+247a8a96d300af8c5b243a9fffaef2ce2762df317d477f547c94fc98d0aea0b0
+```
+
+**Exact agent prompt**
+
+Both setups received this text unchanged. [Download the prompt](harness-matters/agent-prompt.txt) to preserve the original line breaks.
+
+```text
+Bug report against this Caliptra RTL snapshot.
+
+Runtime ROM self-integrity digest is wrong, but only when the digest loop uses a DCCM scratch buffer
+
+Early in the boot flow the runtime firmware recomputes a digest over its own
+ROM image (a self-integrity check) and compares it against a constant that was
+fixed at build time. The check normally passes.
+
+We hit a case where the computed digest is wrong even though the ROM image on
+the part is byte-for-byte unchanged and the compare constant is correct. No
+error, fault, or status bit is set anywhere; the core reports no exception and
+the memories report no ECC or parity events. The wrong digest is fully
+deterministic across resets.
+
+While bisecting the firmware we found the trigger is a coding pattern, not the
+data: the digest routine that fails reads the ROM image word by word and, in
+the same tight loop, writes each partially-accumulated result to a small
+scratch buffer that the linker placed in DCCM. A functionally identical
+version of the routine that keeps the accumulator only in registers (no scratch
+writes in the loop), or that moves the scratch buffer out of DCCM, produces the
+correct digest every time. The failing and passing routines compute the same
+math and touch the same ROM bytes; only the placement/interleaving of the
+scratch writes differs.
+
+The corruption is confined to the very start of the digested region: the
+recomputed digest diverges from the expected one as if one word of the ROM
+input had been replaced, and everything after that point is consistent with the
+true ROM contents.
+
+No existing test reproduces the problem.
+
+Find and correct the RTL root cause. Add a test that reproduces the problem
+and passes after your fix, then run the relevant verification checks.
+```
+
+The downloadable `agent-prompt.txt` has SHA-256:
+
+```text
+55fc823860c02e841b3c7b1ee46d81a014220b8244304dd5d7d04148ed731ea7
+```
+
+</details>
