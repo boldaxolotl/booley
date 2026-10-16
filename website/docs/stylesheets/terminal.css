@@ -1,0 +1,380 @@
+/*
+ * Booley site theme: an amber-phosphor terminal on top of Material's slate
+ * scheme. The landing page is laid out as a man page (`man booley`).
+ *
+ * Palette (amber P3 phosphor on a warm CRT tube):
+ *   --tube       page background, the dark glass of the tube
+ *   --tube-lift  code blocks and inputs, one step up from the glass
+ *   --phosphor   body text and headings
+ *   --afterglow  secondary text, rules, prompts
+ *   --bloom      emphasis and the wordmark core
+ *
+ * Fonts are self-hosted (SIL OFL, licenses next to the files), so the site
+ * makes no third-party font requests.
+ */
+
+@font-face {
+  font-family: "VT323";
+  src: url("../assets/fonts/vt323-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../assets/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../assets/fonts/ibm-plex-mono-latin-400-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../assets/fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------- Tokens: mapped onto Material's custom properties ---------- */
+
+[data-md-color-scheme="slate"] {
+  --tube: #140f07;
+  --tube-lift: #1f170b;
+  --phosphor: #ffb000;
+  --afterglow: #b98428;
+  --bloom: #ffe2a8;
+
+  --font-display: "VT323", ui-monospace, monospace;
+  --md-text-font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo,
+    Consolas, monospace;
+  --md-code-font-family: var(--md-text-font-family);
+
+  --md-default-bg-color: var(--tube);
+  --md-default-fg-color: var(--phosphor);
+  --md-default-fg-color--light: var(--afterglow);
+  --md-default-fg-color--lighter: rgb(185 132 40 / 55%);
+  --md-default-fg-color--lightest: rgb(185 132 40 / 22%);
+
+  --md-primary-fg-color: var(--tube);
+  --md-primary-fg-color--light: var(--tube-lift);
+  --md-primary-fg-color--dark: var(--tube);
+  --md-primary-bg-color: var(--phosphor);
+  --md-primary-bg-color--light: var(--afterglow);
+  --md-accent-fg-color: var(--bloom);
+  --md-accent-fg-color--transparent: rgb(255 176 0 / 12%);
+
+  --md-typeset-color: var(--phosphor);
+  --md-typeset-a-color: var(--phosphor);
+
+  --md-code-bg-color: var(--tube-lift);
+  --md-code-fg-color: var(--phosphor);
+
+  /* Monochrome highlighting: a phosphor tube has one colour. Weight and
+     brightness carry the distinctions instead of hue. */
+  --md-code-hl-color: rgb(255 176 0 / 15%);
+  --md-code-hl-number-color: var(--bloom);
+  --md-code-hl-special-color: var(--bloom);
+  --md-code-hl-function-color: var(--bloom);
+  --md-code-hl-constant-color: var(--bloom);
+  --md-code-hl-keyword-color: var(--bloom);
+  --md-code-hl-string-color: var(--phosphor);
+  --md-code-hl-name-color: var(--phosphor);
+  --md-code-hl-operator-color: var(--phosphor);
+  --md-code-hl-punctuation-color: var(--afterglow);
+  --md-code-hl-comment-color: var(--afterglow);
+  --md-code-hl-generic-color: var(--phosphor);
+  --md-code-hl-variable-color: var(--phosphor);
+
+  --md-footer-bg-color: var(--tube);
+  --md-footer-bg-color--dark: var(--tube);
+  --md-footer-fg-color: var(--phosphor);
+  --md-footer-fg-color--light: var(--afterglow);
+  --md-footer-fg-color--lighter: var(--afterglow);
+}
+
+::selection {
+  background: var(--phosphor);
+  color: var(--tube);
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+.md-typeset {
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+
+/* ---------- Links: underlined; hover and focus invert, like a cursor ---------- */
+
+.md-typeset a {
+  text-decoration: underline;
+  text-decoration-color: var(--afterglow);
+  text-underline-offset: 0.2em;
+}
+
+.md-typeset a:hover,
+.md-typeset a:focus-visible {
+  background: var(--phosphor);
+  color: var(--tube);
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--bloom);
+  outline-offset: 2px;
+}
+
+/* ---------- Header and tabs: a plain status line ---------- */
+
+.md-header,
+.md-tabs {
+  background: var(--tube);
+  color: var(--phosphor);
+  box-shadow: none;
+}
+
+.md-header {
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+/* The wordmark is the logo; Material's icon slot stays empty. */
+.md-header__button.md-logo {
+  display: none;
+}
+
+.md-header__topic:first-child {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+/* Keep the site name in the header; Material would swap in the page title
+   on scroll, which the tabs already show. */
+.md-header__title--active .md-header__topic:first-child {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  z-index: 0;
+}
+
+.md-header__topic + .md-header__topic {
+  display: none;
+}
+
+.md-tabs__link {
+  font-size: 0.75rem;
+  text-transform: lowercase;
+  opacity: 1;
+  color: var(--afterglow);
+  margin-top: 0.6rem;
+}
+
+/* Menu entries read like a terminal menu: [home] [blog] [github]. */
+.md-tabs__link::before {
+  content: "[";
+}
+
+.md-tabs__link::after {
+  content: "]";
+}
+
+.md-tabs__link:hover,
+.md-tabs__item--active .md-tabs__link {
+  color: var(--phosphor);
+}
+
+.md-tabs__item--active .md-tabs__link {
+  background: var(--phosphor);
+  color: var(--tube);
+}
+
+.md-search__form {
+  background: var(--tube-lift);
+  border-radius: 0;
+}
+
+/* ---------- Headings ---------- */
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  color: var(--phosphor);
+  letter-spacing: 0.01em;
+}
+
+.md-typeset h1 {
+  font-size: 2.6rem;
+  line-height: 1.05;
+}
+
+.md-typeset h2 {
+  font-size: 1.7rem;
+  line-height: 1.1;
+}
+
+.md-typeset h3 {
+  font-size: 1.35rem;
+}
+
+/* ---------- Code ---------- */
+
+.md-typeset pre > code,
+.md-typeset code {
+  border-radius: 0;
+}
+
+.md-typeset pre > code {
+  border-left: 2px solid var(--afterglow);
+}
+
+.md-typeset .highlight .gp {
+  color: var(--afterglow);
+}
+
+.md-typeset .highlight .go {
+  color: var(--phosphor);
+}
+
+/* ---------- Blog ---------- */
+
+.md-typeset img {
+  border: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-post__header,
+.md-post__meta {
+  color: var(--afterglow);
+}
+
+/* ---------- Landing page: man booley ---------- */
+
+.manpage {
+  max-width: 78ch;
+}
+
+/* Man page running header and footer: name, title, name. */
+.man-head,
+.man-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 1ch;
+  color: var(--afterglow);
+  font-size: 0.75rem;
+}
+
+.md-typeset .man-head {
+  margin-top: 0;
+}
+
+.md-typeset .man-foot {
+  margin-top: 3rem;
+}
+
+/* The one loud thing on the page: the wordmark with a live cursor. */
+.md-typeset h1.wordmark {
+  font-size: clamp(5.5rem, 22vw, 11rem);
+  line-height: 0.85;
+  margin: 1.5rem 0 1rem;
+  color: var(--bloom);
+  text-shadow:
+    0 0 0.04em var(--phosphor),
+    0 0 0.35em rgb(255 176 0 / 35%);
+}
+
+.wordmark .cursor {
+  display: inline-block;
+  width: 0.45em;
+  height: 0.72em;
+  margin-left: 0.06em;
+  background: var(--phosphor);
+  box-shadow: 0 0 0.3em rgb(255 176 0 / 45%);
+  animation: cursor-blink 1.06s steps(1) infinite;
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wordmark .cursor {
+    animation: none;
+  }
+}
+
+/* Section names sit at the margin; their bodies are indented, as in man(1). */
+.manpage h2 {
+  font-size: 1.5rem;
+  margin: 2.2rem 0 0.4rem;
+}
+
+.manpage > :is(p, ul, dl, div, pre, figure):not(.man-head, .man-foot) {
+  margin-left: 7ch;
+}
+
+.manpage dl.man-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 3ch;
+}
+
+.manpage dl.man-dl dt {
+  font-weight: 600;
+  color: var(--bloom);
+}
+
+.manpage dl.man-dl dd {
+  margin: 0;
+}
+
+/* Stand-in until a real screenshot exists. */
+.screenshot-pending {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 2 / 1;
+  padding: 2ch;
+  border: 1px dashed var(--afterglow);
+  color: var(--afterglow);
+  text-align: center;
+}
+
+.md-typeset .screenshot-pending p {
+  margin: 0;
+  max-width: 44ch;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .manpage > :is(p, ul, dl, div, pre, figure):not(.man-head, .man-foot) {
+    margin-left: 2ch;
+  }
+
+  .manpage dl.man-dl {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .manpage dl.man-dl dd {
+    margin-bottom: 0.6rem;
+  }
+
+  .man-head span:nth-child(2),
+  .man-foot span:nth-child(2) {
+    display: none;
+  }
+}
