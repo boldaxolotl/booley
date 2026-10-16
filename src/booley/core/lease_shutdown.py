@@ -29,6 +29,7 @@ ENV = "BOOLEY_SCRATCH_SHUTDOWN"
 GRACE_SECONDS = 10.0
 SETTLE_SECONDS = 5.0
 MAX_MEMBERS = 64
+_LOCK_WAIT_SECONDS = 1.0
 # Linux UAPI numbers shared by x86-64 and asm-generic (including AArch64).
 _SYS_PIDFD_OPEN = 434
 _SYS_PIDFD_SEND_SIGNAL = 424
@@ -225,7 +226,7 @@ class ShutdownGroup:
 
     @contextlib.contextmanager
     def locked(self, *, initial: bool = False, blocking: bool = True) -> Iterator[dict[str, Any]]:
-        from booley.core.file_lock import acquire_descriptor_lock
+        from booley.core.file_lock import acquire_descriptor_lock, wait_for_file_lock
         from booley.core.temporary_workspace import _open_regular, _publish_json
 
         info = self.path.lstat()
@@ -235,7 +236,12 @@ class ShutdownGroup:
             raise ValueError("scratch shutdown directory is not private")
         fd = _open_regular(self.path / "lock", os.O_CREAT | os.O_RDWR)
         try:
-            acquire_descriptor_lock(fd, blocking=blocking)
+            if blocking:
+                # Brief writers may finish; a stopped holder cannot stall supervision.
+                with os.fdopen(fd, "rb", closefd=False) as handle:
+                    wait_for_file_lock(handle, timeout_s=_LOCK_WAIT_SECONDS)
+            else:
+                acquire_descriptor_lock(fd)
             data = {} if initial else self._read()
             self._known_guards = {
                 value["identity"]["pid"]: value["identity"]

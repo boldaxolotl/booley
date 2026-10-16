@@ -794,18 +794,23 @@ def register_launch(
 
 def complete_launch(roots: tuple[Path, ...], token: str) -> None:
     """Publish terminal ownership only after the subreaper has no children left."""
+    from booley.core.file_lock import LockContentionError
+
     for root in roots:
-        with _exclusion(root.parent):
-            data, _identity = _validated_marker(root)
-            state = data["launches"].get(token)
-            if state == {"state": "complete"}:
-                continue
-            if not isinstance(state, dict) or state.get("supervisor") != process_identity(
-                os.getpid()
-            ):
-                raise ValueError("scratch supervisor identity changed")
-            data["launches"][token] = {"state": "complete"}
-            _write_marker(root, data)
+        try:
+            with _exclusion(root.parent, blocking=False):
+                data, _identity = _validated_marker(root)
+                state = data["launches"].get(token)
+                if state == {"state": "complete"}:
+                    continue
+                if not isinstance(state, dict) or state.get("supervisor") != process_identity(
+                    os.getpid()
+                ):
+                    raise ValueError("scratch supervisor identity changed")
+                data["launches"][token] = {"state": "complete"}
+                _write_marker(root, data)
+        except LockContentionError:
+            logger.warning("Terminal scratch publication deferred for busy registry: %s", root)
 
 
 def run_guarded(

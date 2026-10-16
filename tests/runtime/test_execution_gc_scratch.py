@@ -261,7 +261,8 @@ def test_owner_retirement_refuses_unproven_or_busy_proof(completed_execution, co
     assert (root / tw._MARKER).read_bytes() == before
 
 
-def test_actual_supervisor_publishes_terminal_result_with_busy_scratch_lock(tmp_path):
+@pytest.mark.parametrize("lock_kind", ["scratch", "group"])
+def test_actual_supervisor_publishes_terminal_result_with_busy_proof_lock(tmp_path, lock_kind):
     state, registry = tmp_path / "state", tmp_path / "scratch"
     state.mkdir()
     registry.mkdir()
@@ -277,7 +278,13 @@ def test_actual_supervisor_publishes_terminal_result_with_busy_scratch_lock(tmp_
         )
         root = Path(receipt.read_text())
         before = (root / tw._MARKER).read_bytes()
-        with tw._exclusion(registry):
+        group_path = next(paths.root.glob(".booley-shutdown-*"))
+        lock = (
+            tw._exclusion(registry)
+            if lock_kind == "scratch"
+            else ShutdownGroup(group_path).locked()
+        )
+        with lock:
             release.touch()
             stdout, stderr = process.communicate(timeout=3)
             assert process.returncode == 0, (stdout, stderr)
@@ -285,7 +292,7 @@ def test_actual_supervisor_publishes_terminal_result_with_busy_scratch_lock(tmp_
             assert (root / tw._MARKER).read_bytes() == before
             assert list(paths.root.glob(".booley-shutdown-*"))
         assert gc_terminal_executions(state) == []
-        assert not list(paths.root.glob(".booley-shutdown-*"))
+        assert group_path.exists() is (lock_kind == "group")
         assert tw._delete_owned(root, require_dead=True)
     finally:
         release.touch()
@@ -314,6 +321,44 @@ def test_terminal_publication_does_not_wait_for_busy_group_lock(completed_execut
     assert group.finish(owner=True)
     assert group.remove_terminal(owner=True)
     assert tw._delete_owned(root, require_dead=True)
+
+
+def test_actual_guardian_returns_native_status_with_busy_scratch_lock(tmp_path):
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    native = (
+        "import sys,time\nfrom pathlib import Path\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "deadline = time.monotonic() + 30\n"
+        f"while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(.01)\n"
+        "print('native complete')\nsys.exit(17)\n"
+    )
+    with tw.temporary_workspace(parent=tmp_path) as raw:
+        root = Path(raw)
+        process, launch = tw.guarded_popen(
+            [sys.executable, "-c", native],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            wait_for(ready.exists, failure="Native did not become ready", timeout_s=15)
+            before = (root / tw._MARKER).read_bytes()
+            with tw._exclusion(tmp_path):
+                release.touch()
+                stdout, stderr = process.communicate(timeout=3)
+                assert process.returncode == 17, (stdout, stderr)
+                assert stdout.strip() == "native complete"
+                assert (root / tw._MARKER).read_bytes() == before
+        finally:
+            release.touch()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+        tw.launch_finished(launch)
+    assert not root.exists()
 
 
 def _start_exit_after_native(state, execution_id, registry, ready, release, receipt):
