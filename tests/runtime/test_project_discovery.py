@@ -479,3 +479,70 @@ def test_external_data_attachment_records_use_owner_authority(tmp_path, monkeypa
         root, "immutable-id", ["pwd"], tty=False, cwd="/work/.booley/worktrees/goal"
     )
     assert captured == [external]
+
+
+def test_separate_admin_sibling_data_does_not_prove_owner(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import (
+        ProjectRootDiscoveryError,
+        discover_session_context,
+    )
+
+    root, linked = _linked_project(tmp_path, monkeypatch, external=True)
+    sibling = tmp_path / "sibling"
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "add", "--detach", str(sibling)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    (sibling / ".booley").mkdir()
+    subprocess.run(
+        ["git", "init", "--separate-git-dir", str(tmp_path / "administration"), str(root)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "worktree", "repair", str(linked), str(sibling)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    observed = None
+    try:
+        discover_session_context(linked)
+    except ProjectRootDiscoveryError as exc:
+        observed = str(exc)
+    assert observed and "run from the Project Root" in observed, (
+        "sibling data must not establish separate-admin ownership"
+    )
+
+
+@pytest.mark.parametrize("pointer", ["selected-backpointer", "sandbox-sibling"])
+def test_undecodable_session_pointer_refuses_cleanly(tmp_path, monkeypatch, pointer):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import (
+        ProjectRootDiscoveryError,
+        discover_session_context,
+    )
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    admin = Path((linked / ".git").read_text().removeprefix("gitdir:").strip())
+    if pointer == "selected-backpointer":
+        (admin / "gitdir").write_bytes(b"\xff\n")
+    else:
+        sibling = root / ".git" / "worktrees" / "invalid-sibling"
+        sibling.mkdir()
+        (sibling / "gitdir").write_bytes(b"\xff\n")
+        (linked / ".git").write_text("gitdir: /work/.git/worktrees/goal\n")
+    observed = None
+    try:
+        discover_session_context(linked)
+    except (ProjectRootDiscoveryError, UnicodeError) as exc:
+        observed = exc
+    assert isinstance(observed, ProjectRootDiscoveryError) and "Project Root" in str(observed), (
+        "undecodable ownership evidence must produce Project Root refusal"
+    )

@@ -206,7 +206,7 @@ def _linked_git_owner(checkout: Path) -> Path | None:
         back_pointer = (directories.git_dir / "gitdir").read_text().strip()
         if Path(back_pointer).resolve() != checkout / ".git":
             raise _session_error()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise _session_error() from exc
     registered = _owner_candidates(checkout, directories.common_dir, registered)
     for candidate in registered:
@@ -218,6 +218,12 @@ def _linked_git_owner(checkout: Path) -> Path | None:
                 return candidate
         except GitDirectoryInspectionError:
             continue
+    from booley.runtime.project_repositories import run_git
+
+    # Query the shared administration: linked checkouts themselves are never bare.
+    bare = run_git(directories.common_dir, "rev-parse", "--is-bare-repository")
+    if bare.returncode or bare.stdout.strip() != "true":
+        raise _session_error()
     owners = [
         candidate
         for candidate in registered
@@ -248,7 +254,7 @@ def _sandbox_git_pointer(checkout: Path, owner: Path) -> bool:
                     Path(target) / admin.relative_to(source)
                 ):
                     return True
-    except (OSError, GitDirectoryInspectionError):
+    except (OSError, UnicodeError, GitDirectoryInspectionError):
         return False
     return False
 
@@ -282,32 +288,39 @@ def discover_session_context(
     selected: Path, *, invocation_cwd: Path | None = None
 ) -> SessionContext:
     """Resolve host session ownership without changing general design discovery."""
-    checkout = _session_checkout(selected)
-    require_project_checkout(checkout)
-    linked = (checkout / ".git").is_file()
-    creator = _creator_owner(checkout) if linked else None
-    git_owner = _linked_git_owner(checkout) if linked else None
-    if creator is not None and git_owner is not None and creator != git_owner:
-        raise _session_error()
-    if creator is not None and git_owner is None and not _sandbox_git_pointer(checkout, creator):
-        raise _session_error()
-    owner = creator or git_owner or checkout
-    require_project_checkout(owner)
-    if linked and creator is None and git_owner is None:
-        raise _session_error()
-    data = resolve_authoritative_booley_dir(owner)
-    if not data.is_dir():
-        raise _session_error()
-    cwd = None
-    if owner != checkout:
-        location = checkout
-        if invocation_cwd is not None and invocation_cwd.resolve().is_relative_to(checkout):
-            location = invocation_cwd.resolve()
-        for source, target in ((owner, WORK_DIR), (data.resolve(), BOOLEY_DIR_TARGET)):
-            if location.is_relative_to(source):
-                cwd = str(Path(target) / location.relative_to(source))
-                break
-    return SessionContext(owner, checkout, data, cwd)
+    try:
+        checkout = _session_checkout(selected)
+        require_project_checkout(checkout)
+        linked = (checkout / ".git").is_file()
+        creator = _creator_owner(checkout) if linked else None
+        git_owner = _linked_git_owner(checkout) if linked else None
+        if creator is not None and git_owner is not None and creator != git_owner:
+            raise _session_error()
+        if (
+            creator is not None
+            and git_owner is None
+            and not _sandbox_git_pointer(checkout, creator)
+        ):
+            raise _session_error()
+        owner = creator or git_owner or checkout
+        require_project_checkout(owner)
+        if linked and creator is None and git_owner is None:
+            raise _session_error()
+        data = resolve_authoritative_booley_dir(owner)
+        if not data.is_dir():
+            raise _session_error()
+        cwd = None
+        if owner != checkout:
+            location = checkout
+            if invocation_cwd is not None and invocation_cwd.resolve().is_relative_to(checkout):
+                location = invocation_cwd.resolve()
+            for source, target in ((owner, WORK_DIR), (data.resolve(), BOOLEY_DIR_TARGET)):
+                if location.is_relative_to(source):
+                    cwd = str(Path(target) / location.relative_to(source))
+                    break
+        return SessionContext(owner, checkout, data, cwd)
+    except UnicodeError as exc:
+        raise _session_error() from exc
 
 
 def linked_auth_error(selected: Path) -> str | None:

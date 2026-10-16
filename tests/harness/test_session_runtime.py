@@ -5074,13 +5074,21 @@ def test_worktree_enter_supervisor_ignores_cwd_imports(tmp_path, monkeypatch):
 def test_external_worktree_enter_refuses_before_runtime(tmp_path, monkeypatch, capsys, mode):
     _linked_project(tmp_path, monkeypatch, external=True)
     calls = _linked_attachment(monkeypatch)
+    selected = []
+    monkeypatch.setattr(
+        sr, "_select_or_start_project_runtime", lambda root: selected.append(root) or ("id", {})
+    )
     result = _linked_cli(
         monkeypatch, ["session", "enter", *(["--", "pwd"] if mode == "command" else [])]
     )
     text = capsys.readouterr().err
-    assert result == 2 and not calls and "run from the Project Root" in text and "mount" in text, (
-        "unmounted linked enter must refuse before runtime selection"
-    )
+    assert (
+        result == 2
+        and not calls
+        and not selected
+        and "run from the Project Root" in text
+        and "mount" in text
+    ), "unmounted linked enter must refuse before runtime selection"
 
 
 @pytest.mark.parametrize("selection", ["implicit", "explicit"])
