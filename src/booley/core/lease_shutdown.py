@@ -359,7 +359,7 @@ class ShutdownGroup:
 
     def complete(self, *, owner: bool = False) -> None:
         members = []
-        with self.locked() as data:
+        with self.locked(blocking=False) as data:
             if owner:
                 if data["owner"] != _identity(os.getpid()):
                     raise ValueError("scratch terminal publication requires its owner")
@@ -369,7 +369,7 @@ class ShutdownGroup:
             if member is not None:
                 member["terminal"] = True
         for member in members:
-            self._complete_roots(member)
+            self._complete_roots(member, blocking=False)
 
     def _complete_roots(self, member: dict[str, Any], *, blocking: bool = True) -> bool:
         complete = True

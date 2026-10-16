@@ -10,7 +10,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
-from tests.execution_test_support import runtime_env
+from tests.execution_test_support import runtime_env, wait_for
 from tests.runtime.scratch_support import scratch_process_ownership_supported
 
 from booley.core import temporary_workspace as tw
@@ -259,3 +259,94 @@ def test_owner_retirement_refuses_unproven_or_busy_proof(completed_execution, co
         assert group.remove_terminal(owner=True) is False
     assert paths.record.exists() and group_path.exists()
     assert (root / tw._MARKER).read_bytes() == before
+
+
+def test_actual_supervisor_publishes_terminal_result_with_busy_scratch_lock(tmp_path):
+    state, registry = tmp_path / "state", tmp_path / "scratch"
+    state.mkdir()
+    registry.mkdir()
+    paths = execution_paths(ExecutionId("c" * 32), booley_dir=state)
+    write_attachment_heartbeat(paths, generation=1)
+    ready, release, receipt = (tmp_path / name for name in ("ready", "release", "root"))
+    process = _start_exit_after_native(state, paths.root.name, registry, ready, release, receipt)
+    try:
+        wait_for(
+            ready.exists,
+            failure="Native did not complete before terminal-lock probe",
+            timeout_s=15,
+        )
+        root = Path(receipt.read_text())
+        before = (root / tw._MARKER).read_bytes()
+        with tw._exclusion(registry):
+            release.touch()
+            stdout, stderr = process.communicate(timeout=3)
+            assert process.returncode == 0, (stdout, stderr)
+            assert read_json(paths.record)["tree_terminal"] is True
+            assert (root / tw._MARKER).read_bytes() == before
+            assert list(paths.root.glob(".booley-shutdown-*"))
+        assert gc_terminal_executions(state) == []
+        assert not list(paths.root.glob(".booley-shutdown-*"))
+        assert tw._delete_owned(root, require_dead=True)
+    finally:
+        release.touch()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=5)
+
+
+def test_terminal_publication_does_not_wait_for_busy_group_lock(completed_execution):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, paths, root, group_path = completed_execution
+    group = ShutdownGroup(group_path)
+    with group.locked() as data:
+        data["owner"] = tw.process_identity(os.getpid())
+    before = (group_path / "state.json").read_bytes(), (root / tw._MARKER).read_bytes()
+    with ThreadPoolExecutor(max_workers=1) as workers, group.locked():
+        assert workers.submit(group.finish, owner=True).result(timeout=1) is False
+        assert before == (
+            (group_path / "state.json").read_bytes(),
+            (root / tw._MARKER).read_bytes(),
+        )
+    assert paths.record.exists() and group_path.exists()
+    assert group.finish(owner=True)
+    assert group.remove_terminal(owner=True)
+    assert tw._delete_owned(root, require_dead=True)
+
+
+def _start_exit_after_native(state, execution_id, registry, ready, release, receipt):
+    endpoint = (
+        "import os,sys,time\nfrom pathlib import Path\n"
+        "from booley.core import temporary_workspace as tw\n"
+        f"with tw.temporary_workspace(parent=Path({str(registry)!r})) as raw:\n"
+        f"    Path({str(receipt)!r}).write_text(raw)\n"
+        "    tw.run_guarded([sys.executable, '-c', 'pass'], timeout=10)\n"
+        f"    Path({str(ready)!r}).touch()\n"
+        "    deadline = time.monotonic() + 30\n"
+        f"    while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
+        "        time.sleep(.01)\n"
+        f"    assert Path({str(release)!r}).exists()\n"
+        "    os._exit(0)\n"
+    )
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "booley.runtime.execution_supervisor",
+            "run",
+            "--execution-id",
+            execution_id,
+            "--attachment-timeout-seconds",
+            "60",
+            "--",
+            sys.executable,
+            "-c",
+            endpoint,
+        ],
+        env=runtime_env(state),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
