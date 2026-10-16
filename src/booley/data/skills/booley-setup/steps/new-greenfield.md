@@ -113,6 +113,9 @@ Audit other volunteered recipe requests against the supported starter:
 For every extra request, record what will be applied or why it is excluded and
 obtain the existing setup confirmation for a deviation. Never silently drop it.
 
-After Doctor, run the report-writing portion of **Step 6** and follow the shared
-**Delivered Flow results** contract in SKILL.md. The final summary reuses those
-rows, including unverified checks and requested-versus-delivered deviations.
+After Doctor, run **Step 6 §2 (write the report), §3 (walk through it), and §5
+(close out)** and follow the shared **Delivered Flow results** contract in
+SKILL.md. Triage and export retain Step 6's existing consent requirements.
+Then run **Step 7** for bounded cleanup using the run manifest and retained report
+evidence. The final summary reuses the report's evidence rows, including unverified
+checks and requested-versus-delivered deviations.

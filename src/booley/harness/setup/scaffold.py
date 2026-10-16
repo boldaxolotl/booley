@@ -480,7 +480,7 @@ module tb_{c.name} #(
     parameter int unsigned WIDTH = 8
 );
 
-  // 10 ns period = 100 MHz; keep in sync with constraints/{c.name}.sdc.
+  // 10 ns period = 100 MHz scaffold stimulus clock.
   localparam int unsigned CLK_HALF_NS = 5;
 
   logic             clk;

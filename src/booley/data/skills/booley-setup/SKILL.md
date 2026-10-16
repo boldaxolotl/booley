@@ -287,8 +287,11 @@ missing delivered field from the request or config. A missing report limits the
 claim without blocking the post-gate reporting step.
 
 Before scratch cleanup, snapshot the cited numbered reports and required linked
-artifacts under the resolved Booley Directory, recording original path and digest
-for each. Preserve those snapshots as report evidence through Step 7's existing
+artifacts in a run-owned evidence subtree under the resolved Booley Directory,
+recording original path, source digest and cited field paths for each. Cite the
+retained copies in the report and final summary; keep original invocation paths
+as provenance. Record the snapshots as retained report evidence in the run manifest
+before Step 7's cleanup preview. Preserve them through Step 7's existing
 retention rules; do not delete evidence needed by a retained report. Step 6 adds
 or replaces one Delivered Flow results section after each setup-owned Feedback
 render, at its returned path. The final summary quotes the same evidence rows.
