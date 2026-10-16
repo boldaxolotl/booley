@@ -18,8 +18,10 @@ record, a held record lock, or a Git directory that cannot be examined. A
 record is deleted under its record lock: it is read and checked again, its
 directory is renamed to a hidden ``.deleting-<goal-id>`` sibling (so no reader
 sees half a record), and the renamed directory is removed after the lock is
-released. A directory a crash left under the hidden name is removed by the
-next sweep. The sweep never raises into its caller.
+released. The hidden record stays until its worktree lock is either removed
+or confirmed shared, so the next sweep can retry interrupted lock cleanup.
+Branch probes share a one-second budget; exhaustion keeps remaining records.
+The sweep never raises into its caller.
 
 Windows refuses to rename or delete a path while a file under it is open, so
 there the rename (and a worktree lock's removal) follows the lock release: a
@@ -29,11 +31,13 @@ record or lock is kept.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 
 from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
@@ -55,6 +59,8 @@ ENDED_STATES = frozenset({GoalState.FINISHED, GoalState.ABANDONED, GoalState.FAI
 DELETING_PREFIX = ".deleting-"
 # Whether the destructive step follows the lock release (see the module docstring).
 _AFTER_RELEASE = sys.platform == "win32"
+# Cleanup must not inherit the lifecycle's generous per-command Git timeout.
+_BRANCH_CHECK_BUDGET_S = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,25 +137,27 @@ class _Repository:
     id: str
     common_dir: Path
     checkout: GoalCheckout
+    deadline: float
 
 
 def _sweep(store: GoalStore, repo_dir: Path) -> tuple[str, ...]:
-    _remove_leftovers(goals_root(store.booley_dir))
+    quick = GoalStore(store.booley_dir, lock_timeout_s=0.0)
+    _remove_leftovers(quick)
     identity = resolve_worktree_identity(repo_dir)
     if identity is None:
         return ()  # the repository has no id yet, so no record can be bound to it
     repository = _Repository(
-        identity.repository, git_directories(repo_dir).common_dir, GoalCheckout(repo_dir)
+        identity.repository,
+        git_directories(repo_dir).common_dir,
+        GoalCheckout(repo_dir),
+        monotonic() + _BRANCH_CHECK_BUDGET_S,
     )
     # Lock waits of zero: a busy lock means someone is using the record or worktree.
-    quick = GoalStore(store.booley_dir, lock_timeout_s=0.0)
     deleted = [
         record
         for record in quick.list_records().records
-        if _deletable(record, repository) and _delete(quick, record.id, repository)
+        if record.state in ENDED_STATES and _delete(quick, record.id, repository)
     ]
-    for worktree in {record.worktree for record in deleted}:
-        _remove_worktree_lock(quick, worktree)
     return tuple(record.id for record in deleted)
 
 
@@ -159,8 +167,11 @@ def _deletable(record: GoalRecord, repository: _Repository) -> bool:
         return False
     if not _worktree_gone(record.worktree, repository.common_dir):
         return False
+    remaining = repository.deadline - monotonic()
+    if remaining <= 0:
+        return False
     try:
-        return not repository.checkout.has_branch(record.branch)
+        return not repository.checkout.has_branch(record.branch, timeout_s=remaining)
     except CheckoutError as exc:
         logger.warning("Kept ended Goal Record %s: %s", record.id, exc)
         return False
@@ -186,7 +197,8 @@ def _delete(store: GoalStore, goal_id: str, repository: _Repository) -> bool:
     hidden = root.with_name(f"{DELETING_PREFIX}{goal_id}")
     try:
         with store.record_lock(goal_id):
-            if not _deletable(store.load(goal_id), repository):
+            record = store.load(goal_id)
+            if not _deletable(record, repository):
                 return False
             if not _AFTER_RELEASE:
                 root.rename(hidden)
@@ -195,33 +207,48 @@ def _delete(store: GoalStore, goal_id: str, repository: _Repository) -> bool:
     except (GoalStoreError, OSError) as exc:
         logger.debug("Kept ended Goal Record %s: %s", goal_id, exc)
         return False
-    shutil.rmtree(hidden, ignore_errors=True)
+    if _remove_worktree_lock(store, record.worktree):
+        shutil.rmtree(hidden, ignore_errors=True)
     return True
 
 
-def _remove_worktree_lock(store: GoalStore, identity: WorktreeIdentity) -> None:
-    """Remove *identity*'s worktree lock unless a remaining record may still bind it."""
+def _remove_worktree_lock(store: GoalStore, identity: WorktreeIdentity) -> bool:
+    """Remove an unused lock; return false when uncertain cleanup needs a later retry."""
     path = worktree_lock_file(store.booley_dir, identity)
-    if not path.exists():
-        return
     try:
+        if not path.exists():
+            return True
         # Records are created only under this lock, so none can appear meanwhile.
         with store.worktree_lock(identity):
             scan = store.list_records()
-            if scan.corrupt or any(record.worktree == identity for record in scan.records):
-                return
+            if scan.corrupt:
+                return False
+            if any(record.worktree == identity for record in scan.records):
+                return True  # deliberately retained for another record
             if not _AFTER_RELEASE:
                 path.unlink()
         if _AFTER_RELEASE:
             path.unlink()
+        return True
     except (GoalStoreError, OSError) as exc:
         logger.debug("Kept Goal worktree lock %s: %s", path, exc)
+        return False
 
 
-def _remove_leftovers(root: Path) -> None:
-    """Remove record directories an interrupted deletion left under the hidden prefix."""
+def _remove_leftovers(store: GoalStore) -> None:
+    """Resume lock cleanup before removing an interrupted deletion's hidden record."""
+    root = goals_root(store.booley_dir)
     if not root.is_dir():
         return
     for entry in root.iterdir():
-        if entry.name.startswith(DELETING_PREFIX):
+        if not entry.name.startswith(DELETING_PREFIX):
+            continue
+        try:
+            record = GoalRecord.from_json(json.loads((entry / "record.json").read_bytes()))
+        except (OSError, ValueError) as exc:
+            logger.debug("Kept interrupted Goal deletion %s: %s", entry, exc)
+            continue
+        if entry.name == f"{DELETING_PREFIX}{record.id}" and _remove_worktree_lock(
+            store, record.worktree
+        ):
             shutil.rmtree(entry, ignore_errors=True)

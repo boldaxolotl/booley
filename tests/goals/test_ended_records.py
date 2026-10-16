@@ -215,7 +215,7 @@ def test_entry_deletes_a_record_whose_worktree_and_branch_are_gone(goal_mode, mo
     assert worktree_lock_file(goal_mode.control, entered.worktree).is_file()
 
 
-def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout):
+def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout, monkeypatch, capsys):
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     git(layout.main, "config", "user.name", "Goal Test")
@@ -227,6 +227,17 @@ def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout):
     assert finish_goal(request, finish_environment(layout))["status"] == "finished"
     assert not exists(layout, stale.id)
     assert exists(layout, layout.record.id)
+    text = cli_status(layout.worktree, layout.main, monkeypatch, capsys)
+    paths = record_paths(layout.control, layout.record.id)
+    assert f"{layout.record.id} (finished)" in text
+    ended_at = GoalStore(layout.control).load(layout.record.id).ended_at
+    from booley.runtime.timefmt import format_human_datetime_safe
+
+    assert ended_at is not None
+    assert f"Ended: {format_human_datetime_safe(ended_at)}" in text
+    assert f"Session Summary: {paths.summary_file}" in text
+    assert f"Review Package: {paths.review_package_file}" in text
+    assert mcp_status(layout.worktree, layout.control) + "\n" == text
 
 
 def test_abandon_deletes_a_record_whose_worktree_and_branch_are_gone(goal_mode):
@@ -267,7 +278,7 @@ def test_sweep_keeps_records_that_may_still_matter(goal_mode, monkeypatch, case)
         options["branch"] = "work"
     else:
 
-        def unknown(_self, branch):
+        def unknown(_self, branch, **_kwargs):
             raise CheckoutError(f"cannot tell whether branch {branch} exists")
 
         monkeypatch.setattr(GoalCheckout, "has_branch", unknown)
@@ -350,8 +361,10 @@ def test_sweep_leaves_history_and_other_files_and_removes_leftovers(goal_mode):
     history.write_text("committed summary\n", encoding="utf-8")
     other_lock = locks_dir(goal_mode.control) / "unrelated.lock"
     other_lock.touch()
-    leftover = goals_root(goal_mode.control) / f"{DELETING_PREFIX}x-20200101T000000Z"
-    (leftover / "logs").mkdir(parents=True)
+    interrupted = ended_copy(goal_mode, "interrupted-20200101T000000Z")
+    root = record_paths(goal_mode.control, interrupted.id).root
+    leftover = root.with_name(f"{DELETING_PREFIX}{interrupted.id}")
+    root.rename(leftover)
     ended_copy(goal_mode, "old-20200101T000000Z")
     sweep_ended_records(GoalStore(goal_mode.control), goal_mode.worktree)
     assert history.is_file() and other_lock.is_file()
@@ -387,3 +400,46 @@ def test_has_branch_tells_present_absent_and_unknown(goal_mode, tmp_path):
     assert checkout.has_branch("goal/missing") is False
     with pytest.raises(CheckoutError, match="cannot tell"):
         GoalCheckout(tmp_path).has_branch("work")
+
+
+@pytest.mark.parametrize("interruption", ["crash", "busy lock"])
+def test_sweep_retries_interrupted_worktree_lock_cleanup(goal_mode, monkeypatch, interruption):
+    stale = ended_copy(goal_mode, "old-20200101T000000Z")
+    store = GoalStore(goal_mode.control)
+    lock = worktree_lock_file(goal_mode.control, stale.worktree)
+    lock.touch()
+    hidden = goals_root(goal_mode.control) / f"{DELETING_PREFIX}{stale.id}"
+    if interruption == "crash":
+
+        def interrupted(*_args):
+            raise RuntimeError("interrupted after rename")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ended_records, "_remove_worktree_lock", interrupted)
+            sweep_ended_records(store, goal_mode.worktree)
+    else:
+        with store.worktree_lock(stale.worktree):
+            sweep_ended_records(store, goal_mode.worktree)
+    assert lock.exists() and hidden.is_dir()
+    assert not exists(goal_mode, stale.id)
+    sweep_ended_records(store, goal_mode.worktree)
+    assert not lock.exists() and not hidden.exists()
+
+
+def test_sweep_bounds_git_waits_across_records(goal_mode, monkeypatch):
+    first = ended_copy(goal_mode, "first-20200101T000000Z")
+    second = ended_copy(goal_mode, "second-20200101T000000Z")
+    elapsed = 0.0
+    waits = []
+
+    def stalled_git(_self, *_args, timeout_s, **_kwargs):
+        nonlocal elapsed
+        waits.append(timeout_s)
+        elapsed += timeout_s
+        raise CheckoutError("git timed out")
+
+    monkeypatch.setattr(ended_records, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(GoalCheckout, "_git", stalled_git)
+    assert sweep_ended_records(GoalStore(goal_mode.control), goal_mode.worktree) == ()
+    assert len(waits) == 1 and 0 < sum(waits) <= 1.0
+    assert exists(goal_mode, first.id) and exists(goal_mode, second.id)
