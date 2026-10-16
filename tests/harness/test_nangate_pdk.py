@@ -151,7 +151,6 @@ def test_cache_inspection_keeps_access_failures_separate(tmp_path, monkeypatch, 
     assert result.errors and not result.pending
     assert str(target) in result.errors[0]
     assert "restore read access" in result.errors[0]
-    assert nangate_pdk.validation_errors(tmp_path) == result.errors
 
 
 def test_cache_inspection_missing_and_checksum_are_pending(tmp_path, monkeypatch):
@@ -160,3 +159,22 @@ def test_cache_inspection_missing_and_checksum_are_pending(tmp_path, monkeypatch
     assert not nangate_pdk.inspect_cache(tmp_path).errors
     (tmp_path / "member").write_bytes(b"wrong")
     assert "checksum mismatch for member" in nangate_pdk.inspect_cache(tmp_path).pending
+
+
+def test_legacy_cache_validation_keeps_read_error_text(tmp_path, monkeypatch):
+    member = _item("member", "member", b"ok")
+    monkeypatch.setattr(nangate_pdk, "FILES", (member,))
+    path = tmp_path / "member"
+    path.write_bytes(b"ok")
+    (tmp_path / nangate_pdk.LICENSE_FILENAME).write_bytes(nangate_pdk._license_bytes())
+    original = Path.open
+
+    def denied(path_to_open, *args, **kwargs):
+        if path_to_open == path:
+            raise PermissionError("denied")
+        return original(path_to_open, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    assert nangate_pdk.validation_errors(tmp_path) == ("cannot read member: denied",), (
+        "preserve legacy cache diagnostics"
+    )

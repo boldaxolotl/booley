@@ -2109,3 +2109,97 @@ def test_complete_inspection_all_current_and_warning_only(monkeypatch, tmp_path)
         ),
     )
     assert bootstrap.inspect_bootstrap(include_images=False).exit_status == 0
+
+
+def test_check_only_cache_directory_collision_is_error(monkeypatch, tmp_path, capsys):
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    (environment.cache / "member").mkdir()
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    assert "[XX] nangate45:" in output, "cache directory collision must be ERROR"
+    assert status == 2
+    _assert_complete(output)
+    assert str(environment.cache / "member") in output
+    assert "remove or rename" in output
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_check_only_invalid_utf8_policy_preserves_independent_findings(
+    monkeypatch, tmp_path, capsys
+):
+    from booley.config import host_config
+
+    _inspection_environment(monkeypatch, tmp_path)
+    path = host_config.host_config_path()
+    path.write_bytes(b"\xff")
+    monkeypatch.setattr(
+        bootstrap,
+        "load_host_policy",
+        lambda **kwargs: host_config.load_host_policy(path, **kwargs),
+    )
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert "[XX] host-config:" in output
+    assert status == 2
+    assert str(path) in output
+    assert "UTF-8" in output
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_check_only_preserves_pending_cache_license_notice(monkeypatch, tmp_path, capsys):
+    _inspection_environment(monkeypatch, tmp_path)
+    _status, output = _run_inspection(capsys)
+    assert "non-commercial use" in output, "pending cache must preserve license notice"
+    assert "Terms: LicenseRef-Nangate-OCL-1.0" in output
+
+
+def test_check_only_ineligible_install_names_canonical_command(monkeypatch, tmp_path, capsys):
+    from booley.runtime import host_install
+
+    _inspection_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: "source checkout")
+    status, output = _run_inspection(capsys)
+    line = next(line for line in output.splitlines() if " host-install:" in line)
+    assert "run the canonical host `booley bootstrap`" in line, "use the canonical host remedy"
+    assert "reinstall" not in line
+    assert status == 2
+    assert "[XX] skills:" in output
+
+
+def test_check_only_policy_blocker_has_only_its_applicable_remedy(monkeypatch, tmp_path, capsys):
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def invalid(**_kwargs):
+        raise HostConfigError(tmp_path / "config.toml", "", "invalid value")
+
+    monkeypatch.setattr(bootstrap, "load_host_policy", invalid)
+    _status, output = _run_inspection(capsys)
+    line = next(line for line in output.splitlines() if " proxy:" in line)
+    assert "foreign Docker resource" not in line, (
+        "policy blocker must not recommend Docker removal"
+    )
+    assert "repair host config" in line
+
+
+def test_check_only_unsearchable_policy_preserves_independent_findings(
+    monkeypatch, tmp_path, capsys
+):
+    from booley.config import host_config
+
+    _inspection_environment(monkeypatch, tmp_path)
+    path = host_config.host_config_path()
+    original = Path.exists
+
+    def denied(candidate):
+        if candidate == path:
+            raise PermissionError("policy directory is not searchable")
+        return original(candidate)
+
+    monkeypatch.setattr(Path, "exists", denied)
+    monkeypatch.setattr(bootstrap, "load_host_policy", host_config.load_host_policy)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert str(path) in output
+    assert "policy directory is not searchable" in output

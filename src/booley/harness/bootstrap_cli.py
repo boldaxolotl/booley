@@ -204,6 +204,8 @@ def _inspection_detail(finding: BootstrapFinding) -> str:
         return finding.detail + suffix
     if finding.state is not BootstrapState.ERROR:
         return finding.detail
+    if finding.remedy is not None:
+        return finding.detail + (f"; {finding.remedy}" if finding.remedy else "")
     remedies = {
         "host-config": "repair the host config at the path above and retry",
         "host-install": "restore read access to the recorded identity or reinstall a valid canonical wheel",

@@ -243,14 +243,18 @@ def host_install_error(
 def inspect_host_installation(package_resource: Path) -> HostInstallationInspection:
     """Distinguish an eligible unregistered wheel from invalid host state."""
     if error := _eligibility_error(package_resource):
-        return HostInstallationInspection(error=error)
+        return HostInstallationInspection(
+            error=error + "; run the canonical host `booley bootstrap`"
+        )
     try:
         candidate = _validated_candidate(package_resource)
         recorded = load_host_installation()
     except MissingHostInstallationError:
         return HostInstallationInspection(pending=True)
     except HostInstallationError as exc:
-        return HostInstallationInspection(error=str(exc))
+        return HostInstallationInspection(
+            error=f"{exc}; restore the recorded identity or reinstall a valid installed build"
+        )
     except OSError as exc:
         return HostInstallationInspection(
             error=f"cannot inspect installed Booley resources at {package_resource}: {exc}; "

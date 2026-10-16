@@ -129,7 +129,9 @@ def _inspect_member(root: Path, item: PinnedFile) -> CacheInspection:
     path = root / item.destination
     try:
         if not stat.S_ISREG(path.stat().st_mode):
-            return CacheInspection((f"missing {item.destination}",), ())
+            return CacheInspection(
+                (), (f"cache file conflicts with nonregular path {path}; remove or rename {path}",)
+            )
         actual = _sha256(path)
     except FileNotFoundError:
         return CacheInspection((f"missing {item.destination}",), ())
@@ -169,8 +171,27 @@ def inspect_cache(root: Path | None = None) -> CacheInspection:
 
 def validation_errors(root: Path | None = None) -> tuple[str, ...]:
     """Return every missing, checksum-mismatched, or unreadable cache member."""
-    result = inspect_cache(root)
-    return (*result.pending, *result.errors)
+    root = root or cache_root()
+    errors: list[str] = []
+    for item in FILES:
+        path = root / item.destination
+        if not path.is_file():
+            errors.append(f"missing {item.destination}")
+            continue
+        try:
+            actual = _sha256(path)
+        except OSError as exc:
+            errors.append(f"cannot read {item.destination}: {exc}")
+            continue
+        if actual != item.sha256:
+            errors.append(f"checksum mismatch for {item.destination}")
+    license_path = root / LICENSE_FILENAME
+    try:
+        if license_path.read_bytes() != _license_bytes():
+            errors.append(f"missing or changed {LICENSE_FILENAME}")
+    except OSError:
+        errors.append(f"missing or changed {LICENSE_FILENAME}")
+    return tuple(errors)
 
 
 def is_ready(root: Path | None = None) -> bool:
