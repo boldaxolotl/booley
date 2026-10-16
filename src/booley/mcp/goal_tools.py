@@ -12,6 +12,7 @@ recoverable application; finish freezes evidence and publishes pinned history.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,16 @@ GOAL_ENTER = "goal_enter"
 GOAL_STATUS = "goal_status"
 GOAL_PROPOSE_CHANGE = "goal_propose_change"
 GOAL_FINISH = "goal_finish"
-GOAL_TOOL_NAMES: tuple[str, ...] = (GOAL_ENTER, GOAL_STATUS, GOAL_PROPOSE_CHANGE, GOAL_FINISH)
+GOAL_LIST = "goal_list"
+GOAL_SHOW = "goal_show"
+GOAL_TOOL_NAMES: tuple[str, ...] = (
+    GOAL_ENTER,
+    GOAL_STATUS,
+    GOAL_PROPOSE_CHANGE,
+    GOAL_FINISH,
+    GOAL_LIST,
+    GOAL_SHOW,
+)
 
 _WORK_DIR = {
     "type": "string",
@@ -58,6 +68,10 @@ _WORK_DIR = {
         "Absolute root of the linked worktree this Goal Mode belongs to (create one with "
         "`booley worktree new <name>`). Required on every Goal call."
     ),
+}
+_READER_WORK_DIR = {
+    **_WORK_DIR,
+    "description": "Absolute Project checkout, including the surviving main checkout. Required while any Goal Record occupies the Project.",
 }
 _ENTER_DESCRIPTION = (
     "Enter Goal Mode in one linked worktree: create the Goal Branch goal/<slug>-<date> at "
@@ -72,8 +86,28 @@ _ENTER_DESCRIPTION = (
 
 
 def goal_tool_defs() -> list[dict[str, Any]]:
-    """The four Goal tool definitions, in the MCP server's catalog shape."""
+    """The six Goal tool definitions, in the MCP server's catalog shape."""
     return [
+        {
+            "name": GOAL_LIST,
+            "description": "List every retained Goal Record without refreshing evidence.",
+            "schema": {
+                "type": "object",
+                "properties": {"work_dir": _READER_WORK_DIR},
+            },
+        },
+        {
+            "name": GOAL_SHOW,
+            "description": "Inspect one exact retained Goal Record without asserting current checkout freshness.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "work_dir": _READER_WORK_DIR,
+                    "record_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["record_id"],
+            },
+        },
         {"name": GOAL_ENTER, "description": _ENTER_DESCRIPTION, "schema": goal_enter_schema()},
         {
             "name": GOAL_STATUS,
@@ -94,6 +128,21 @@ def goal_tool_defs() -> list[dict[str, Any]]:
             "schema": finish_schema(_WORK_DIR),
         },
     ]
+
+
+async def _inspect_records(
+    name: str, arguments: Mapping[str, Any], store: GoalStore
+) -> McpDispatchResult:
+    from booley.goals.inventory import list_records, show_record
+
+    root = Path(str(arguments.get("work_dir") or Path.cwd()))
+    if name == GOAL_LIST:
+        value = await asyncio.to_thread(list_records, store, root)
+    else:
+        value = await asyncio.to_thread(
+            show_record, store, root, str(arguments.get("record_id", ""))
+        )
+    return _text(json.dumps(value, indent=2), is_error=False, structured=value)
 
 
 def goal_enter_schema() -> dict[str, Any]:
@@ -152,6 +201,8 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     store = GoalStore(booley_dir)
     try:
         require_goal_work_dir(arguments, store)
+        if name in {GOAL_LIST, GOAL_SHOW}:
+            return await _inspect_records(name, arguments, store)
         if name == GOAL_FINISH:
             return await _finish(arguments, booley_dir, request_context)
         if name == GOAL_PROPOSE_CHANGE:

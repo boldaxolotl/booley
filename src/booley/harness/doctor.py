@@ -999,12 +999,52 @@ def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporte
     result = inspect_presence(
         root, booley_dir, inside_sandbox=runtime_context.inside_session_runtime()
     )
+    _check_retained_goal_records(root, booley_dir, reporter)
     if result.unavailable:
         reporter.skip_(result.unavailable)
     for finding in result.warnings:
         reporter.warn_(
             finding, "inspect the Goal worktree and resume its work, or explicitly abandon it"
         )
+
+
+def _check_retained_goal_records(root: Path, booley_dir: Path, reporter: _Reporter) -> None:
+    from booley.goals.inventory import list_records
+    from booley.goals.store import GoalStore, GoalStoreError
+
+    if not runtime_context.inside_session_runtime():
+        reporter.skip_(
+            "Retained Goal Record presence unavailable on host; run booley session enter -- booley doctor"
+        )
+        return
+    try:
+        inventory = list_records(GoalStore(booley_dir), root)
+        orphans = [
+            row
+            for row in inventory["records"]
+            if row["state"] in {"finished", "abandoned", "failed"}
+            and row["worktree_presence"] == row["branch_presence"] == "missing"
+        ]
+        total = sum(row["size_bytes"] for row in orphans if row["size_bytes"] is not None)
+        for row in orphans:
+            reporter.note_(
+                f"Terminal orphan Goal Record {row['record_id']}: {row['size_bytes'] if row['size_bytes'] is not None else 'unavailable/incomplete'} logical bytes",
+                f"Preview evidence loss with booley goal prune {row['record_id']}",
+            )
+        if orphans:
+            unknown = [row["record_id"] for row in orphans if row["size_bytes"] is None]
+            reporter.note_(
+                f"Terminal orphan known-byte total: {total} logical bytes; unknown sizes: {', '.join(unknown) or 'none'}"
+            )
+        for diagnostic in inventory["diagnostics"]:
+            reporter.note_(diagnostic)
+        for row in inventory["records"]:
+            if "unavailable" in (row["worktree_presence"], row["branch_presence"]):
+                reporter.note_(
+                    f"Goal Record {row['record_id']}: presence unavailable; orphanhood is not established"
+                )
+    except (GoalStoreError, OSError, ValueError) as exc:
+        reporter.note_(f"Retained Goal Record inventory unavailable: {exc}")
 
 
 def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:

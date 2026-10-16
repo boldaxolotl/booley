@@ -15,6 +15,7 @@ It imports no concrete Flow, MCP, harness, or Specialist code
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,12 @@ class GoalFlowExecution:
         """Neutral Specialist paths selected from the validated admission binding."""
         paths = record_paths(self._binding.booley_dir, self._binding.record_id)
         return self._binding.record_id, paths.runtime_dir / "flow-reports", paths.root
+
+    def candidate_mutation_context(self, destination: Path) -> AbstractContextManager[object]:
+        """Advisory publication shares the original record's admission fence."""
+        from booley.goals.record_mutation import bound_record_mutation
+
+        return bound_record_mutation(self._binding, destination, active=True)
 
     @property
     def binding(self) -> GoalRunBinding:

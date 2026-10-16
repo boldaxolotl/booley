@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -166,23 +167,13 @@ async def _run_subprocess(
     on_first_active: Callable[[], None] | None = None,
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
     cancel_grace: float = _CANCEL_GRACE_SECONDS,
+    spawn_context: Callable[[], AbstractContextManager[object]] | None = None,
 ) -> tuple[int, str, str, bool]:
     """Run a grouped child with bounded tails and wall-clock or active-time budget."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            **_async_process_group_kwargs(),
-        )
+        proc, group = await _spawn_endpoint(cmd, env, on_spawn, spawn_context)
     except OSError as exc:
         return 2, "", f"Subprocess launch failed for {cmd[0]!r}: {exc}", False
-    group = capture_process_group(proc)
-    if on_spawn is not None:
-        # PID publication remains best-effort, as in the historical supervisor.
-        with contextlib.suppress(Exception):
-            on_spawn(proc.pid)
     assert proc.stdout is not None and proc.stderr is not None
     child = _RunningProcess(
         proc,
@@ -198,6 +189,64 @@ async def _run_subprocess(
         watchdog_tick=watchdog_tick,
         cancel_grace=cancel_grace,
     )
+
+
+async def _spawn_endpoint(
+    cmd: list[str],
+    env: dict[str, str] | None,
+    on_spawn: Callable[[int], None] | None,
+    spawn_context: Callable[[], AbstractContextManager[object]] | None,
+) -> tuple[asyncio.subprocess.Process, ProcessGroup]:
+    """Bounded creation/publication transaction, with cleanup after releasing ownership."""
+    proc = None
+    group = None
+    creation = None
+    try:
+        with spawn_context() if spawn_context else nullcontext():
+            creation = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    **_async_process_group_kwargs(),
+                )
+            )
+            proc = await asyncio.wait_for(
+                asyncio.shield(creation),
+                timeout=5 if spawn_context else None,
+            )
+            group = capture_process_group(proc)
+            if on_spawn is not None:
+                if spawn_context:
+                    on_spawn(proc.pid)
+                else:
+                    with contextlib.suppress(Exception):
+                        on_spawn(proc.pid)
+    except BaseException:
+        # Release ownership before completing a cancelled spawn or reaping.
+        # Fresh admission remains prune-visible throughout bounded cleanup.
+        await _reap_failed_spawn(creation, proc, group)
+        raise
+    assert group is not None
+    return proc, group
+
+
+async def _reap_failed_spawn(
+    creation: asyncio.Task[asyncio.subprocess.Process] | None,
+    proc: asyncio.subprocess.Process | None,
+    group: ProcessGroup | None,
+) -> None:
+    if proc is None and creation is not None:
+        try:
+            proc = await asyncio.wait_for(asyncio.shield(creation), timeout=5)
+            group = capture_process_group(proc)
+        except (OSError, ValueError, RuntimeError, TimeoutError, asyncio.CancelledError):
+            creation.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await asyncio.wait_for(creation, timeout=5)
+    if proc is not None and group is not None:
+        await asyncio.shield(_kill_async_process_tree(proc, group))
 
 
 async def _supervise_output(
@@ -389,6 +438,7 @@ def _write_synthetic_endpoint_end(
     *,
     identity: DisplayIdentity,
     outcome: str = "timed_out",
+    runtime_dir: Path | None = None,
 ) -> None:
     """Close presentation state when a killed child cannot publish its own end."""
     exit_code = 130 if outcome == "cancelled" else 2
@@ -405,7 +455,10 @@ def _write_synthetic_endpoint_end(
         "report_text": report_text,
         "timestamp": utc_now_rfc3339(),
     }
-    _write_display_event(identity.apply(event))
+    if runtime_dir is None:
+        _write_display_event(identity.apply(event))
+    else:
+        _write_display_event(identity.apply(event), runtime_dir=runtime_dir)
 
 
 async def _cancel_adopted_process_group(

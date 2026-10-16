@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+# ruff: noqa: F811 — pytest fixture imports intentionally share parameter names.
 import asyncio
 import json
 import os
@@ -542,3 +543,317 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
     assert attempts == [5, 5, 5, 5, 2]
     assert active == [20]
     assert clock.elapsed == 22
+
+
+# Reuse the real Goal Project fixture across the adapter boundary.
+from tests.goals.conftest import layout  # noqa: F401 — shared fixture
+
+
+@pytest.mark.asyncio
+async def test_bound_job_admission_refuses_pruning_or_removed_record(layout, monkeypatch):
+    from dataclasses import replace
+
+    from booley.goals.store import GoalStoreError
+    from tests.goals.test_record_mutation import bound_context, fence, tree_bytes
+
+    context = bound_context(layout)
+    starts = []
+
+    async def executor(*args, **kwargs):
+        starts.append(True)
+        return 0, "", "", False
+
+    for stage in ("intent", "removed"):
+        fence(context, stage)
+        for synchronous in (False, True):
+            activity = Activity()
+            jobs = JobLifecycle(activity)
+            monkeypatch.setattr(jobs, "_run_process", executor)
+            before = tree_bytes(layout.control / "goals")
+            refused = False
+            try:
+                if synchronous:
+                    await jobs.run_synchronous("lint", command("pass"), 30, context=context)
+                else:
+                    jobs.submit("lint", command("pass"), 30, context=context)
+                    await asyncio.sleep(0)
+            except GoalStoreError:
+                refused = True
+            finally:
+                await stop_jobs(jobs)
+            assert refused and not starts and tree_bytes(layout.control / "goals") == before, (
+                "bound Job admission crossed pruning fence"
+            )
+            assert activity.starts == activity.ends == 0
+    # A valid owner whose durable write fails must never reach the executor.
+    # Rebuild its existing captured root without changing its immutable identity.
+    from booley.goals.paths import record_paths
+
+    paths = record_paths(layout.control, context.binding.record_id)
+    paths.root.mkdir()
+    paths.lock_file.touch()
+    paths.record_file.write_text(
+        json.dumps(replace(layout.record, revision=layout.record.revision).to_json())
+    )
+    monkeypatch.setattr(job_records, "write_record", lambda *a, **kw: False)
+    for synchronous in (False, True):
+        jobs = JobLifecycle()
+        monkeypatch.setattr(jobs, "_run_process", executor)
+        with pytest.raises(GoalStoreError, match="persist"):
+            if synchronous:
+                await jobs.run_synchronous("lint", command("pass"), 30, context=context)
+            else:
+                jobs.submit("lint", command("pass"), 30, context=context)
+        assert not jobs._tasks and not starts
+
+
+def test_late_bound_job_writers_cannot_resurrect_pruned_record(layout, monkeypatch):
+    import shutil
+    from functools import partial
+
+    from booley.goals.paths import record_paths
+    from booley.mcp.job_results import LocatedJob
+    from tests.goals.test_record_mutation import bound_context, fence, tree_bytes
+
+    context = bound_context(layout)
+    paths = record_paths(layout.control, context.binding.record_id)
+    original = tree_bytes(paths.root)
+    owners = ("pid", "started", "terminal", "cancel", "abort", "forget", "restart")
+    for stage in ("intent", "quarantine", "removed"):
+        for owner in owners:
+            if paths.root.exists():
+                shutil.rmtree(paths.root)
+            quarantine = paths.root.parent / f".pruning-{context.binding.record_id}"
+            if quarantine.exists():
+                shutil.rmtree(quarantine)
+            (paths.root.parent / f".pruning-{context.binding.record_id}.json").unlink(
+                missing_ok=True
+            )
+            for name, data in original.items():
+                p = paths.root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(data)
+            rec = job_records.JobRecord(
+                context.binding.invocation_id,
+                "lint",
+                "2000-01-01T00:00:00Z",
+                1,
+                binding=context.binding.to_json(),
+            )
+            job_records.write_record(rec, paths.jobs_dir)
+            jobs = JobLifecycle()
+            jobs._job_roots[rec.run_id] = paths.jobs_dir
+            monkeypatch.setattr(jobs, "_report", lambda _: (None, False))
+            fence(context, stage)
+            before = tree_bytes(layout.control / "goals")
+            actions = {
+                "pid": partial(jobs._stamp_pid, rec, os.getpid()),
+                "started": partial(jobs._stamp_run_started, rec),
+                "terminal": partial(jobs._record_terminal, rec, 0, timed_out=False),
+                "cancel": partial(jobs._record_user_cancellation, rec),
+                "abort": partial(jobs._abort_synchronous, rec),
+                "forget": partial(jobs._forget_synchronous, rec),
+                "restart": partial(jobs._reconcile_one, LocatedJob(rec, paths.jobs_dir)),
+            }
+            actions[owner]()
+            assert tree_bytes(layout.control / "goals") == before, (
+                "late bound Job writer recreated or mutated pruned record"
+            )
+
+    _waiting_late_pid_writer(layout, monkeypatch, paths, original, rec)
+
+
+def _waiting_late_pid_writer(layout, monkeypatch, paths, original, rec):
+    # A real callback already waiting on the original lock must reject its inode
+    # once cleanup retires it, even when the external marker is already gone.
+    import shutil
+    import threading
+
+    from booley.goals import store as store_module
+    from tests.goals.test_record_mutation import tree_bytes
+
+    for name, data in original.items():
+        p = paths.root / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+    jobs = JobLifecycle()
+    jobs._job_roots[rec.run_id] = paths.jobs_dir
+    opened, release = threading.Event(), threading.Event()
+    original_wait = store_module.wait_for_file_lock
+
+    def wait(handle, **kwargs):
+        if threading.current_thread().name == "late-pid-writer":
+            opened.set()
+            assert release.wait(5)
+        return original_wait(handle, **kwargs)
+
+    monkeypatch.setattr(store_module, "wait_for_file_lock", wait)
+    thread = threading.Thread(
+        target=lambda: jobs._stamp_pid(rec, os.getpid()), name="late-pid-writer"
+    )
+    thread.start()
+    try:
+        assert opened.wait(5)
+        shutil.rmtree(paths.root)
+        before = tree_bytes(layout.control / "goals")
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert tree_bytes(layout.control / "goals") == before, (
+        "late bound Job writer recreated or mutated pruned record"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bound_job_admission_and_prune_are_serialized(layout, monkeypatch):
+    from booley.goals.paths import record_paths
+    from booley.goals.prune import prune_record
+    from booley.goals.store import GoalStore, GoalStoreError
+    from tests.goals.conftest import git
+    from tests.goals.test_record_mutation import bound_context, fence
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    # Admission wins first; its fresh PID-less lease is visible to prune.
+    started = layout.main / "delayed-child-started"
+    run_id = jobs.submit(
+        "lint",
+        command(f"from pathlib import Path; Path({str(started)!r}).touch()"),
+        30,
+        context=context,
+    )
+    fence(context, "terminal")
+    git(layout.main, "worktree", "remove", "--force", str(layout.worktree))
+    git(layout.main, "branch", "-D", context.binding.goal_branch)
+    store = GoalStore(layout.control)
+    with pytest.raises(GoalStoreError, match="active record-owned Jobs"):
+        prune_record(store, layout.main, context.binding.record_id, confirm=True)
+    # Delayed scheduling past grace still cannot spawn after cleanup wins.
+    path = record_paths(layout.control, context.binding.record_id).jobs_dir / f"{run_id}.json"
+    data = json.loads(path.read_text())
+    data["started_at"] = "2000-01-01T00:00:00Z"
+    path.write_text(json.dumps(data))
+    prune_record(store, layout.main, context.binding.record_id, confirm=True)
+    try:
+        await asyncio.sleep(0)
+        await asyncio.gather(*jobs._tasks.values(), return_exceptions=True)
+        assert not record_paths(layout.control, context.binding.record_id).root.exists()
+        assert jobs._results.get(run_id, (None,))[0] != 0
+        assert not started.exists()
+    finally:
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_bound_spawn_failure_reaps_process_before_admission_failure(layout, monkeypatch):
+    from booley.goals.store import GoalStoreError
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    pids = []
+
+    def fail_publication(rec, pid, **kwargs):
+        pids.append(pid)
+        raise GoalStoreError("cannot persist spawned Goal Job PID")
+
+    monkeypatch.setattr(jobs, "_stamp_pid", fail_publication)
+    with pytest.raises(GoalStoreError, match="persist spawned"):
+        await jobs.run_synchronous(
+            "lint", command("import time; time.sleep(30)"), 30, context=context
+        )
+    assert pids and not is_pid_alive(pids[0])
+
+
+@pytest.mark.asyncio
+async def test_bound_spawn_cancellation_releases_record_lock_and_stops_child(layout, monkeypatch):
+    from booley.goals.store import GoalStore
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    jobs = FastSupervisor()
+    run_id = jobs.submit("lint", gated_command(context), 30, context=context)
+    try:
+        await wait_until((context.work_dir / "ready").exists)
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert rec.pid and is_pid_alive(rec.pid)
+        # The producer's lifetime does not retain a record lock.
+        with GoalStore(layout.control, lock_timeout_s=0.1).record_lock(context.binding.record_id):
+            pass
+        assert await jobs.cancel(run_id) == "running"
+        assert not is_pid_alive(rec.pid)
+    finally:
+        await stop_jobs(jobs)
+
+
+def test_bound_terminal_bookkeeping_and_pinned_synthetic_end(layout, monkeypatch):
+    from tests.goals.test_record_mutation import bound_context, fence
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+    rec = jobs._new_record(context.binding.invocation_id, "lint", command("pass"), 30)
+    jobs._stamp_context(rec, context)
+    jobs._job_roots[rec.run_id] = context.jobs_root
+    jobs._persist(rec, active=True)
+    paths = fence(context, "terminal")
+    jobs._record_terminal(rec, 0, timed_out=False)
+    assert job_records.read_record(rec.run_id, context.jobs_root).status == "done"
+    foreign = layout.main / "foreign-runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(foreign))
+    jobs._close_display(rec, 0, outcome="aborted")
+    assert (paths.runtime_dir / "display.jsonl").exists()
+    assert not foreign.exists()
+
+
+@pytest.mark.asyncio
+async def test_bound_cancel_during_creation_reaps_unpublished_child(layout, monkeypatch):
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    jobs = FastSupervisor()
+    created, release = asyncio.Event(), asyncio.Event()
+    original = asyncio.create_subprocess_exec
+    pids = []
+
+    async def delayed(*args, **kwargs):
+        proc = await original(*args, **kwargs)
+        pids.append(proc.pid)
+        created.set()
+        await asyncio.wait_for(release.wait(), timeout=3)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed)
+    task = asyncio.create_task(
+        jobs.run_synchronous("lint", command("import time; time.sleep(30)"), 30, context=context)
+    )
+    try:
+        await asyncio.wait_for(created.wait(), timeout=5)
+        task.cancel()
+        asyncio.get_running_loop().call_later(0.01, release.set)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=10)
+        assert pids and not is_pid_alive(pids[0])
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        for pid in pids:
+            if is_pid_alive(pid):
+                await jobs._cancel_process(pid)
+
+
+def test_bound_job_temporary_link_cannot_write_outside_record(layout, tmp_path):
+    from booley.goals.store import GoalStoreError
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    context.jobs_root.mkdir(parents=True)
+    outside = tmp_path / "outside-temporary"
+    outside.write_bytes(b"preserved")
+    temporary = context.jobs_root / f"{context.binding.invocation_id}.json.{os.getpid()}.tmp"
+    temporary.symlink_to(outside)
+    with pytest.raises(GoalStoreError, match="linked"):
+        JobLifecycle().submit("lint", command("pass"), 30, context=context)
+    assert outside.read_bytes() == b"preserved"

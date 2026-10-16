@@ -55,6 +55,8 @@ from booley.goals.paths import (
     RECORD_FILE,
     STAGING_PREFIX,
     goals_root,
+    prune_lock_file,
+    pruning_intent,
     record_paths,
     validate_goal_id,
     worktree_lock_file,
@@ -88,6 +90,7 @@ LockFileKey = tuple[object, ...]
 
 # Record locks held in this process, keyed by (lock file identity, owner).
 _HELD_RECORD_LOCKS: dict[tuple[LockFileKey, LockOwner], RecordLock] = {}
+_HELD_PRUNE_GUARDS: dict[int, _PruneGuard] = {}
 # Lowercase on purpose: a forked child rebinds it (see below).
 _held_record_locks_guard = threading.Lock()
 
@@ -102,6 +105,7 @@ def _reset_held_locks_after_fork() -> None:
     global _held_record_locks_guard
     _held_record_locks_guard = threading.Lock()
     _HELD_RECORD_LOCKS.clear()
+    _HELD_PRUNE_GUARDS.clear()
 
 
 if hasattr(os, "register_at_fork"):
@@ -322,6 +326,78 @@ def _flock(path: Path, timeout_s: float) -> Generator[None]:
             _release_if_acquirer(handle, acquirer_pid)
 
 
+@dataclass
+class _PruneGuard:
+    booley_dir: Path
+    owner: LockOwner
+    held: bool = True
+
+
+@contextmanager
+def shared_prune_lock(store: GoalStore) -> Generator[_PruneGuard]:
+    """Internal cleanup capability, held across release/rename/delete/retry."""
+    path = prune_lock_file(store.booley_dir)
+    if path.is_symlink() or path.parent.is_symlink():
+        raise GoalStoreError("linked pruning lock storage")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _flock(path, store.lock_timeout_s):
+        guard = _PruneGuard(store.booley_dir, current_lock_owner())
+        with _held_record_locks_guard:
+            _HELD_PRUNE_GUARDS[id(guard)] = guard
+        try:
+            yield guard
+        finally:
+            guard.held = False
+            with _held_record_locks_guard:
+                _HELD_PRUNE_GUARDS.pop(id(guard), None)
+
+
+def _check_pruning(booley_dir: Path, goal_id: str, guard: _PruneGuard | None) -> None:
+    marker = pruning_intent(booley_dir, goal_id)
+    if not marker.exists() and not marker.is_symlink():
+        return
+    if (
+        guard is None
+        or _HELD_PRUNE_GUARDS.get(id(guard)) is not guard
+        or not guard.held
+        or guard.owner != current_lock_owner()
+        or guard.booley_dir != booley_dir
+    ):
+        raise GoalStoreError(
+            f"Goal Record {goal_id} has pending cleanup; use booley goal prune {goal_id} --confirm"
+        )
+    try:
+        if marker.is_symlink():
+            raise ValueError("linked intent")
+        saved = json.loads(marker.read_bytes())
+        root = record_paths(booley_dir, goal_id).root
+        identity = root.stat()
+        if (
+            saved["original"] != str(root)
+            or saved["record_id"] != goal_id
+            or saved["root_identity"] != [identity.st_dev, identity.st_ino]
+        ):
+            raise ValueError("intent identity differs from original record")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise GoalStoreError(f"cannot acquire pruning record lock: {exc}") from exc
+
+
+def _validate_locked_path(handle: IO[Any], path: Path, original: os.stat_result) -> None:
+    try:
+        now = path.parent.stat()
+        if (
+            path.is_symlink()
+            or path.parent.is_symlink()
+            or (now.st_dev, now.st_ino) != (original.st_dev, original.st_ino)
+            or _lock_file_key(handle, path) != _file_key(path.stat(), path)
+        ):
+            raise GoalStoreError("locked Goal Record path/inode changed")
+    except FileNotFoundError as exc:
+        raise GoalRecordNotFoundError(
+            "locked Goal Record disappeared; refusing stale writer"
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # The store
 # ---------------------------------------------------------------------------
@@ -402,7 +478,9 @@ class GoalStore:
                 lock.held = False
 
     @contextmanager
-    def record_lock(self, goal_id: str, *, existing_only: bool = False) -> Generator[RecordLock]:
+    def record_lock(
+        self, goal_id: str, *, existing_only: bool = False, _prune: _PruneGuard | None = None
+    ) -> Generator[RecordLock]:
         """Hold the record lock of an existing Goal Record; re-entrant for its owner.
 
         A nested ``record_lock`` by the same process, thread, and asyncio task
@@ -416,25 +494,39 @@ class GoalStore:
 
         validate_selection(self.booley_dir)
         paths = record_paths(self.booley_dir, goal_id)
-        if not paths.root.is_dir():
-            raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
+        _check_pruning(self.booley_dir, goal_id, _prune)
+        if paths.root.is_symlink() or not paths.root.is_dir():
+            raise GoalRecordNotFoundError(
+                f"no unlinked Goal Record {goal_id} in {self.booley_dir}"
+            )
+        root_identity = paths.root.stat()
         try:
+            if paths.lock_file.is_symlink():
+                raise GoalStoreError("Goal lock is a symlink")
             if existing_only and paths.lock_file.is_symlink():
                 raise GoalStoreError("observational Goal lock is a symlink")
             handle = paths.lock_file.open("r+" if existing_only else "a+", encoding="utf-8")
         except FileNotFoundError as exc:
             raise GoalRecordNotFoundError(f"Goal Record {goal_id} disappeared") from exc
         with handle:
+            _check_pruning(self.booley_dir, goal_id, _prune)
             owner = current_lock_owner()
             key = (_lock_file_key(handle, paths.lock_file), owner)
             with _held_record_locks_guard:
                 held = _HELD_RECORD_LOCKS.get(key)
             if held is not None and held.held:
+                _validate_locked_path(handle, paths.lock_file, root_identity)
                 handle.close()  # re-entry: this open file must not hold a second flock
                 yield held
                 return
             yield from self._hold_record_lock(
-                handle, paths.lock_file, goal_id, key, existing_only=existing_only
+                handle,
+                paths.lock_file,
+                goal_id,
+                key,
+                existing_only=existing_only,
+                root_identity=root_identity,
+                prune=_prune,
             )
 
     def _hold_record_lock(
@@ -445,6 +537,8 @@ class GoalStore:
         key: tuple[LockFileKey, LockOwner],
         *,
         existing_only: bool = False,
+        root_identity: os.stat_result,
+        prune: _PruneGuard | None = None,
     ) -> Generator[RecordLock]:
         try:
             wait_for_file_lock(
@@ -452,6 +546,12 @@ class GoalStore:
             )
         except LockTimeoutError as exc:
             raise GoalLockTimeoutError(f"Goal lock {path} stayed busy: {exc}") from exc
+        try:
+            _check_pruning(self.booley_dir, goal_id, prune)
+            _validate_locked_path(handle, path, root_identity)
+        except BaseException:
+            _release_if_acquirer(handle, key[1][0])
+            raise
         lock = RecordLock(self.booley_dir, goal_id, key[0], key[1])
         with _held_record_locks_guard:
             _HELD_RECORD_LOCKS[key] = lock
@@ -536,6 +636,13 @@ class GoalStore:
     def load(self, goal_id: str) -> GoalRecord:
         """Read Goal Record *goal_id*; corrupt content raises, never returns ``None``."""
         paths = record_paths(self.booley_dir, goal_id)
+        if any(
+            path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+            for path in (paths.root, paths.record_file, paths.root / "goal-names.json")
+        ):
+            raise GoalRecordCorruptError(
+                [CorruptRecord(paths.record_file, "linked Goal metadata is unavailable")]
+            )
         if not paths.root.is_dir():
             raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
         try:

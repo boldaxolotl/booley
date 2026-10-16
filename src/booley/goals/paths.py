@@ -158,3 +158,18 @@ class GoalRecordPaths:
 def record_paths(booley_dir: Path, goal_id: str) -> GoalRecordPaths:
     """The files of Goal Record *goal_id* in *booley_dir*."""
     return GoalRecordPaths(goals_root(booley_dir) / validate_goal_id(goal_id))
+
+
+def pruning_intent(booley_dir: Path, goal_id: str) -> Path:
+    """External durable fence that survives deleting the quarantined payload."""
+    return goals_root(booley_dir) / f".pruning-{validate_goal_id(goal_id)}.json"
+
+
+def pruning_root(booley_dir: Path, goal_id: str) -> Path:
+    """The selected record's same-filesystem quarantine directory."""
+    return goals_root(booley_dir) / f".pruning-{validate_goal_id(goal_id)}"
+
+
+def prune_lock_file(booley_dir: Path) -> Path:
+    """Serialize confirmed cleanup; readers/previews never create this file."""
+    return locks_dir(booley_dir) / "prune.lock"

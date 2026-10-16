@@ -397,3 +397,20 @@ def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
         jobrec.read_record("bad-envelope", root)
     with pytest.raises(jobrec.JobRecordError, match=field):
         jobrec.strict_records(root)
+
+
+def test_write_failure_reports_false_and_removes_temporary(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from booley.runtime import job_records
+    from booley.runtime.timefmt import utc_now_rfc3339
+
+    rec = job_records.JobRecord("failed-write", "lint", utc_now_rfc3339(), 30)
+    assert job_records.write_record(rec, None) is False
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", fail)
+    assert job_records.write_record(rec, tmp_path) is False
+    assert list(tmp_path.iterdir()) == []

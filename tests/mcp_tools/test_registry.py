@@ -566,7 +566,7 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
     assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))
 
 
-def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
+def test_interactive_catalog_includes_exactly_six_goal_tools(monkeypatch):
     from booley.mcp import server as mcp_server
 
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
@@ -575,10 +575,12 @@ def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
     monkeypatch.setattr(mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
     builtins = [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}]
     names = {definition["name"] for definition in mcp_server._all_mcp_tool_defs(builtins)}
-    assert len(names) == 10
+    assert len(names) == 12
     assert {name for name in names if name.startswith("goal_")} == {
         "goal_enter",
         "goal_status",
         "goal_propose_change",
         "goal_finish",
+        "goal_list",
+        "goal_show",
     }

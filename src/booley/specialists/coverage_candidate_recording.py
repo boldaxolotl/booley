@@ -11,7 +11,8 @@ the advisory analysis itself succeeded.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,10 @@ from booley.flows.sim.coverage_provisional import (
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 
+def _unbound_mutation(_destination: Path) -> AbstractContextManager[object]:
+    return nullcontext()
+
+
 @dataclass(frozen=True)
 class GoalCandidateContext:
     """Where one Goal Record's candidates live and how Campaign paths are anchored."""
@@ -39,12 +44,13 @@ class GoalCandidateContext:
     slug: str
     flow_reports_root: Path
     record_dir: Path
+    mutation_context: Callable[[Path], AbstractContextManager[object]] = _unbound_mutation
 
     @classmethod
     def from_recorder(cls, recorder: AcceptanceRecorder) -> GoalCandidateContext | None:
         """Receive paths from the admission owner, never reinterpret environment roots."""
         if isinstance(recorder, CandidateStoreProvider):
-            return cls(*recorder.candidate_store_paths())
+            return cls(*recorder.candidate_store_paths(), recorder.candidate_mutation_context)
         return None
 
 
@@ -139,18 +145,27 @@ def record_goal_candidates(
     """Record screened candidates and return the report's candidate section."""
     try:
         binding = _binding(campaign, summary, campaign_path, context.flow_reports_root)
-        outcome = store.record_proposals(
-            context.record_dir,
-            context.slug,
-            binding,
-            _proposals(screened, campaign),
-            invocation_id=invocation_id,
-            now=now or datetime.now(UTC),
-        )
-        record = store.load(context.record_dir, context.slug)
-        verdicts = _provisional_block(campaign, binding, record)
+        with (
+            context.mutation_context(
+                store.waiver_candidates_path(context.record_dir, context.slug)
+            ),
+            context.mutation_context(
+                store.waiver_candidates_lock_path(context.record_dir, context.slug)
+            ),
+        ):
+            outcome = store.record_proposals(
+                context.record_dir,
+                context.slug,
+                binding,
+                _proposals(screened, campaign),
+                invocation_id=invocation_id,
+                now=now or datetime.now(UTC),
+            )
+            record = store.load(context.record_dir, context.slug)
+            verdicts = _provisional_block(campaign, binding, record)
     except (
         OSError,
+        RuntimeError,
         ValueError,
         BoundaryError,
         ProvisionalCoverageError,

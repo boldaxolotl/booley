@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+# ruff: noqa: F811 — pytest fixture imports intentionally share parameter names.
 import asyncio
 import json
 import os
@@ -1209,7 +1210,9 @@ class TestBooleyStatus:
             "booley_targets",
             "goal_enter",
             "goal_finish",
+            "goal_list",
             "goal_propose_change",
+            "goal_show",
             "goal_status",
             "sim",
         ]
@@ -1365,7 +1368,9 @@ class TestBooleySleep:
             "booley_targets",
             "goal_enter",
             "goal_finish",
+            "goal_list",
             "goal_propose_change",
+            "goal_show",
             "goal_status",
             "sim",
         ]
@@ -2365,3 +2370,52 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
     assert checkpoint["complete"] is False and checkpoint["partial"] is True
     assert "passed" not in payload and "exit_code" not in checkpoint
     assert server._payload_size(payload) <= server._MAX_STRUCTURED_REPORT_BYTES
+
+
+from tests.goals.conftest import layout  # noqa: F401 — shared fixture
+
+
+def test_bound_transcript_allocation_obeys_pruning_fence(layout):
+    from collections import defaultdict
+
+    from booley.goals.store import GoalStoreError
+    from booley.mcp.server import _resolve_transcript_dir
+    from tests.goals.test_record_mutation import bound_context, fence, tree_bytes
+
+    context = bound_context(layout)
+    counts = defaultdict(int)
+    for stage in ("intent", "removed"):
+        fence(context, stage)
+        before = tree_bytes(layout.control / "goals")
+        refused = False
+        try:
+            _resolve_transcript_dir("coverage_analyst", counts, context=context)
+        except GoalStoreError:
+            refused = True
+        assert refused and tree_bytes(layout.control / "goals") == before, (
+            "bound transcript allocation crossed pruning fence"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bound_non_flow_inline_execution_publishes_writer_lease(layout, monkeypatch):
+    from booley.mcp.job_lifecycle import JobLifecycle
+    from booley.mcp.server import _run_inline_endpoint
+    from booley.runtime import job_records
+    from tests.goals.test_record_mutation import bound_context
+
+    context = bound_context(layout)
+    jobs = JobLifecycle()
+
+    async def execute(cmd, **kwargs):
+        records = job_records.strict_records(context.jobs_root)
+        assert len(records) == 1 and records[0].binding == context.binding.to_json()
+        return 0, "ok", "", False
+
+    monkeypatch.setattr(jobs, "_run_process", execute)
+    assert (
+        await _run_inline_endpoint(
+            "custom", ["unused"], 30, jobs, context=context, publish_activity=False
+        )
+    )[0] == 0
+    assert not job_records.strict_records(context.jobs_root)

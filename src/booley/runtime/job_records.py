@@ -160,8 +160,8 @@ def _record_path(run_id: str, root: Path | None) -> Path | None:
     return (root / f"{run_id}.json") if root is not None else None
 
 
-def write_record(rec: JobRecord, root: Path | None) -> None:
-    """Persist (or overwrite) a job record. Best-effort — never raises.
+def write_record(rec: JobRecord, root: Path | None) -> bool:
+    """Persist a job record, returning success. Best-effort — never raises.
 
     Atomic (tmp + rename): the reader may be a *different* process — a
     restarted server resolving a poll across the host/sandbox boundary — and a
@@ -171,16 +171,18 @@ def write_record(rec: JobRecord, root: Path | None) -> None:
     """
     path = _record_path(rec.run_id, root)
     if path is None:
-        return
+        return False
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(rec.to_dict()) + "\n", encoding="utf-8")
         tmp.replace(path)
+        return True
     except OSError:
         logger.debug("Failed to write job record %s", rec.run_id, exc_info=True)
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)  # don't leave a stray tmp behind
+        return False
 
 
 def read_record(run_id: str, root: Path | None) -> JobRecord | None:

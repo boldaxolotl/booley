@@ -523,7 +523,7 @@ Built-in MCP worktree routing:
 | --- | --- |
 | `sim`, `lint`, `synth`, `fpga` | `booley_status` |
 | `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
-| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
+| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish`, `goal_list`, `goal_show` | `booley_sleep`, `coverage_evidence` |
 | `booley_targets`, `booley_report` | `bwave` |
 
 `booley_sleep` appears only when diagnostic tools are enabled, and
@@ -678,6 +678,50 @@ producer registers them. The Dashboard itself never allocates handles.
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none.
+
+### Inspecting and cleaning retained Goal Records
+
+Inside the Sandbox, `booley goal list` lists all retained Goal States, including
+finished, abandoned and failed records, with ID, entry/end timestamps, recorded
+branch/worktree, verified presence (present, missing or unavailable), and logical
+file bytes. `booley goal show <goal-id>` shows that exact record's Goals, retained
+outcomes, lifecycle operation, logs, raw/rendered transcript roots and successful
+Finish Review Package. These are recorded outcomes; current checkout freshness
+is not asserted. Use `booley goal status` for live Goal status. Corrupt records
+are named separately; incomplete or unreadable size scans say unavailable.
+Reader scans stop at 20,000 entries or two seconds; confirmed cleanup preflight
+uses a larger finite limit of 200,000 entries or twenty seconds. Neither follows
+child links or treats a partial byte count as a total.
+
+Interactive MCP tools `goal_list` and `goal_show` provide the same observational
+facts as text and structured results. Both accept `work_dir`; it is required
+while any record occupies the Project, and may select the surviving main
+checkout after a Goal worktree is deleted. `goal_show` requires `record_id`.
+Nested Specialists do not see these tools. Reads do not recover operations,
+publish evidence or schedule baseline Jobs.
+
+Doctor emits an informational NOTE for terminal orphans whose worktree **and**
+local Goal Branch are positively missing, with per-record and total logical
+bytes. Host presence is unavailable; run `booley session enter -- booley doctor`.
+Unknown presence never proves orphanhood.
+
+`booley goal prune <goal-id>` previews deletion of exactly one terminal orphan,
+its bytes and permanent evidence loss. Add `--confirm` to delete that record's
+logs, transcripts, outcomes and operation/retry evidence. Both invocations warn
+when a validated incomplete terminal operation has a missing sealed result;
+confirmation also authorizes permanent loss of that incomplete-operation
+and retry evidence. Corrupt, partial or unknown authority refuses cleanup.
+Active/entering/finishing records, either surviving branch/worktree, uncertain
+identity and active or unreadable record-owned Jobs also refuse. There is no
+batch or force mode. Project history, shared locks and other records survive.
+
+Interrupted cleanup remains visible as pending cleanup, including the retained
+`.pruning-<goal-id>` path and remaining bytes. Repeat the exact prune command
+with `--confirm` to resume the authorized quarantine removal. Before the first
+rename, lost eligibility instead restores original record access without
+removing evidence; conflicting paths or unknown identity refuse. Preview never
+changes records or cleanup state. Branches and worktrees are never removed by
+this command.
 
 ### Entering the Sandbox without VS Code
 

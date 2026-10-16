@@ -146,6 +146,17 @@ The **Project checks** section validates Project Git state, configuration,
 custom endpoints, and Goal presence. Goal warnings distinguish active records
 from quiet attributable session presence; quiet does not prove abandonment.
 
+Retained terminal Goal Records whose registered worktree and exact local Goal
+Branch are both missing produce an informational **NOTE**, with record IDs,
+per-record logical bytes and a known-byte total. Unknown sizes are named;
+unavailable presence never proves orphanhood. Host Doctor reports this check
+unavailable and suggests `booley session enter -- booley doctor`. Existing active
+presence warnings remain independent. Pending cleanup includes its retained
+quarantine path, remaining bytes and exact resume command. The NOTE does not
+authorize deletion: follow the [retained record preview and confirmation
+instructions](USAGE.md#inspecting-and-cleaning-retained-goal-records) before
+permanently removing evidence.
+
 - `tests.toml`: one line says whether the file loads (section keys, Test and
   Test Variant names, `select` and `seed` templates). A failure names the
   Target and the key. For each sim Target, one more line says how its Test

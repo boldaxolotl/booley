@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+# ruff: noqa: F811 — pytest fixture imports intentionally share parameter names.
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -286,3 +287,112 @@ def test_image_alias_reports_root_records_canonical_campaign(
         next(iter(record.candidates.values())).binding.campaign_path
         == "sim/12/targets/sim_counter/coverage.json"
     )
+
+
+from tests.goals.conftest import layout  # noqa: F401 — shared fixture
+
+
+def test_goal_candidate_writer_obeys_pruning_fence(layout, record_context):
+    from booley.goals.flow_execution import GoalFlowExecution
+    from tests.goals.test_record_mutation import bound_context, fence, tree_bytes
+
+    admitted = bound_context(layout)
+    context = GoalCandidateContext.from_recorder(GoalFlowExecution(admitted.binding))
+    _unused, loaded, campaign, path, sha = record_context
+    # Anchor the existing Campaign under the actual owner; only its relative path matters.
+    path = context.flow_reports_root / "sim/12/targets/sim_counter/coverage.json"
+    section = record_goal_candidates(
+        context,
+        campaign,
+        loaded.summary,
+        path,
+        _screened(campaign.points[0].id, sha),
+        invocation_id="7",
+    )
+    assert section["status"] == "recorded", section
+    for stage in ("intent", "removed"):
+        fence(admitted, stage)
+        before = tree_bytes(layout.control / "goals")
+        section = record_goal_candidates(
+            context,
+            campaign,
+            loaded.summary,
+            path,
+            _screened(campaign.points[0].id, sha),
+            invocation_id="8",
+        )
+        assert section["status"] == "failed" and tree_bytes(layout.control / "goals") == before, (
+            "Goal candidate writer crossed pruning fence"
+        )
+        assert section["reason"]
+
+
+def test_waiting_goal_candidate_writer_cannot_recreate_record(layout, record_context, monkeypatch):
+    import threading
+
+    from booley.goals import store as store_module
+    from booley.goals.flow_execution import GoalFlowExecution
+    from tests.goals.test_record_mutation import bound_context, fence, tree_bytes
+
+    admitted = bound_context(layout)
+    context = GoalCandidateContext.from_recorder(GoalFlowExecution(admitted.binding))
+    _unused, loaded, campaign, _path, sha = record_context
+    path = context.flow_reports_root / "coverage.json"
+    opened, release = threading.Event(), threading.Event()
+    sections = []
+    original = store_module.wait_for_file_lock
+
+    def wait(handle, **kwargs):
+        if threading.current_thread().name == "candidate-writer":
+            opened.set()
+            assert release.wait(5)
+        return original(handle, **kwargs)
+
+    monkeypatch.setattr(store_module, "wait_for_file_lock", wait)
+
+    def writer():
+        sections.append(
+            record_goal_candidates(
+                context,
+                campaign,
+                loaded.summary,
+                path,
+                _screened(campaign.points[0].id, sha),
+                invocation_id="8",
+            )
+        )
+
+    thread = threading.Thread(target=writer, name="candidate-writer")
+    thread.start()
+    try:
+        assert opened.wait(5)
+        fence(admitted, "removed")
+        before = tree_bytes(layout.control / "goals")
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert sections[0]["status"] == "failed"
+    assert tree_bytes(layout.control / "goals") == before
+
+
+def test_goal_candidate_lock_link_cannot_write_outside_record(layout, record_context, tmp_path):
+    from booley.goals.flow_execution import GoalFlowExecution
+    from tests.goals.test_record_mutation import bound_context
+
+    admitted = bound_context(layout)
+    context = GoalCandidateContext.from_recorder(GoalFlowExecution(admitted.binding))
+    _unused, loaded, campaign, _path, sha = record_context
+    outside = tmp_path / "outside-lock"
+    outside.write_bytes(b"preserved")
+    store.waiver_candidates_lock_path(context.record_dir, context.slug).symlink_to(outside)
+    section = record_goal_candidates(
+        context,
+        campaign,
+        loaded.summary,
+        context.flow_reports_root / "coverage.json",
+        _screened(campaign.points[0].id, sha),
+        invocation_id="7",
+    )
+    assert section["status"] == "failed"
+    assert outside.read_bytes() == b"preserved"

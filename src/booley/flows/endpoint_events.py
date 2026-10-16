@@ -151,12 +151,12 @@ def _serialize_display_event(event: dict[str, Any]) -> str:
     return '{"type":"display_event_dropped","truncated":true}\n'
 
 
-def _write_display_event(event: dict) -> None:
+def _write_display_event(event: dict, *, runtime_dir: Path | None = None) -> None:
     """Append a JSON event to $BOOLEY_RUNTIME_DIR/display.jsonl.
 
     No-op when composition did not supply BOOLEY_RUNTIME_DIR (human mode).
     """
-    runtime_dir = os.environ.get("BOOLEY_RUNTIME_DIR")
+    runtime_dir = runtime_dir or os.environ.get("BOOLEY_RUNTIME_DIR")
     if not runtime_dir:
         return
     try:

@@ -966,7 +966,13 @@ def _resolve_transcript_dir(
     call_counts[mcp_tool_name] += 1
     seq = call_counts[mcp_tool_name]
     transcript_dir = runtime_dir / "transcripts" / mcp_tool_name / str(seq)
-    transcript_dir.mkdir(parents=True, exist_ok=True)
+    if context is not None and context.binding is not None:
+        from booley.goals.record_mutation import bound_record_mutation
+
+        with bound_record_mutation(context.binding, transcript_dir, active=True):
+            transcript_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        transcript_dir.mkdir(parents=True, exist_ok=True)
     return transcript_dir
 
 
@@ -1973,7 +1979,7 @@ async def _dispatch_async_job(
         submission = await jobs.submit_and_wait(
             name, cmd, mcp_tool_timeout, context=context, wait_seconds=_job_inline_wait_seconds()
         )
-    except jobrec.JobRecordError as exc:
+    except (jobrec.JobRecordError, GoalStoreError) as exc:
         return _error_result(str(exc))
     state = submission.poll
     if state.status != "running" or (submission.attached and not state.tracked):
@@ -2088,6 +2094,10 @@ async def _run_inline_endpoint(
     """Run inline work, recording only user-visible endpoint activity."""
     if publish_activity:
         return await jobs.run_synchronous(name, cmd, timeout, context=context)
+    if context.binding is not None:
+        return await jobs.run_synchronous(
+            name, cmd, timeout, context=context, publish_display_identity=False
+        )
     identity = DisplayIdentity.current(invocation_id or uuid.uuid4().hex)
     try:
         result = await _run_subprocess(
@@ -2129,10 +2139,6 @@ async def _dispatch_booley_mcp_tool(
         context = resolve_call_context(arguments)
         if request_context is not None and request_context.session_key() is not None:
             context = replace(context, session_key=request_context.session_key())
-    except (GoalBindingError, GoalStoreError) as exc:
-        return _error_result(f"ERROR: {exc}")
-
-    try:
         cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts, context)
     except (GoalStoreError, GoalBindingError) as exc:
         return _error_result(f"ERROR: {exc}")
@@ -2149,14 +2155,19 @@ async def _dispatch_booley_mcp_tool(
         result = await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs, context=context)
         return _goal_warning_result(result, context.binding, context.session_key)
 
-    exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
-        name,
-        cmd,
-        mcp_tool_timeout,
-        jobs,
-        context=context,
-        publish_activity=bool(mcp_tool_def.get("is_flow") or mcp_tool_def.get("is_specialist")),
-    )
+    try:
+        exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
+            name,
+            cmd,
+            mcp_tool_timeout,
+            jobs,
+            context=context,
+            publish_activity=bool(
+                mcp_tool_def.get("is_flow") or mcp_tool_def.get("is_specialist")
+            ),
+        )
+    except (GoalStoreError, jobrec.JobRecordError) as exc:
+        return _error_result(str(exc))
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )

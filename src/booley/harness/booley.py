@@ -812,11 +812,21 @@ def _add_goal_subparser(sub) -> None:
         sub.add_parser(
             "goal",
             help="Inspect or abandon this worktree's Goal Mode; status shows every active Goal Mode in the Project when this worktree hosts none",
-            description="Inspect this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none. Abandon applies to this worktree's Goal Mode.",
+            description="Inspect this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none. Abandon applies to this worktree's Goal Mode. List/show inspect all retained records; prune previews exact-ID orphan cleanup.",
         ),
     )
     goal_sub = goal_p.add_subparsers(
-        dest="goal_command", metavar="{status,abandon}", required=True
+        dest="goal_command", metavar="{status,abandon,list,show,prune}", required=True
+    )
+    goal_sub.add_parser("list", help="List every retained Goal Record and its logical bytes")
+    show_p = goal_sub.add_parser("show", help="Inspect one retained Goal Record")
+    show_p.add_argument("record_id")
+    prune_p = goal_sub.add_parser("prune", help="Preview cleanup of one terminal orphan")
+    prune_p.add_argument("record_id")
+    prune_p.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Confirm permanent deletion of this record and its evidence",
     )
     status_help = (
         "Show this worktree's Goal Mode, or every active Goal Mode in the Project "
@@ -851,6 +861,10 @@ def _goal_checkout(args: argparse.Namespace, project_root: Path) -> Path:
 
 def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
     """Show Goal status using the Booley Directory discovered for this command."""
+    if args.goal_command in {"list", "show", "prune"}:
+        from booley.harness.goal_records import run
+
+        return run(args, _project_root)
     if args.goal_command == "status":
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic

@@ -11,16 +11,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from booley.flows.progress_lifecycle import repair_progress_after_reap
 from booley.goals.paths import record_paths
+from booley.goals.record_mutation import bound_record_mutation
+from booley.goals.store import GoalStoreError
 from booley.mcp.call_context import CallContext
 from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
@@ -119,11 +123,117 @@ class JobLifecycle:
         return None if located is None else located.root
 
     def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
-        """Use the admitted binding for every Goal write, including completion."""
+        """The immutable binding owns Goal destinations, beyond mutable manager caches."""
         binding = _job_binding(rec)
         if binding is not None:
             return record_paths(binding.booley_dir, binding.record_id).jobs_dir
         return self._record_root(rec.run_id)
+
+    def _admit_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
+        if context.binding is not None and context.jobs_root != self._write_root(rec):
+            raise GoalStoreError("Job root differs from admitted Goal binding")
+        self._job_roots[rec.run_id] = context.jobs_root
+        _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
+        self._persist(rec, active=True)
+
+    @contextmanager
+    def _mutation(
+        self, rec: jobrec.JobRecord, *, active: bool = False, root: Path | None = None
+    ) -> Iterator[Path | None]:
+        """Serialize bound disk transactions; keep generic Job storage neutral."""
+        binding = _job_binding(rec)
+        pinned = self._write_root(rec) if root is None else root
+        if binding is None:
+            yield pinned
+            return
+        expected = record_paths(binding.booley_dir, binding.record_id).jobs_dir
+        if pinned != expected or Path(rec.run_id).name != rec.run_id:
+            raise GoalStoreError("Job destination differs from admitted Goal binding")
+        destination = expected / f"{rec.run_id}.json"
+        temporary = destination.with_name(f"{destination.name}.{os.getpid()}.tmp")
+        with (
+            bound_record_mutation(binding, destination, active=active),
+            bound_record_mutation(binding, temporary, active=active),
+        ):
+            yield expected
+
+    def _persist(
+        self,
+        rec: jobrec.JobRecord,
+        *,
+        active: bool = False,
+        repair: bool = False,
+        root: Path | None = None,
+    ) -> bool:
+        try:
+            with self._mutation(rec, active=active, root=root) as destination:
+                if repair:
+                    self._repair_progress(rec)
+                written = jobrec.write_record(rec, root=destination)
+                if rec.binding is not None and not written:
+                    raise GoalStoreError("cannot persist admitted Goal Job")
+                return bool(written)
+        except (GoalStoreError, jobrec.JobRecordError) as exc:
+            if active:
+                raise GoalStoreError(f"Goal Job admission refused: {exc}") from exc
+            logger.info("Goal Job %s late write refused: %s", rec.run_id, exc)
+            return False
+
+    def _repair_progress(self, rec: jobrec.JobRecord) -> None:
+        binding = _job_binding(rec)
+        roots = (
+            (record_paths(binding.booley_dir, binding.record_id).runtime_dir / "flow-reports",)
+            if binding
+            else self._repository.report_dirs(self._repository.locate(rec.run_id))
+        )
+        repair_progress_after_reap(roots, rec.endpoint, rec.run_id)
+
+    def _close_display(
+        self, rec: jobrec.JobRecord, duration: int, *, outcome: str = "timed_out"
+    ) -> None:
+        try:
+            with self._mutation(rec):
+                binding = _job_binding(rec)
+                kwargs = (
+                    {
+                        "runtime_dir": record_paths(
+                            binding.booley_dir, binding.record_id
+                        ).runtime_dir
+                    }
+                    if binding
+                    else {}
+                )
+                if binding is not None:
+                    destination = (
+                        record_paths(binding.booley_dir, binding.record_id).runtime_dir
+                        / "display.jsonl"
+                    )
+                    with bound_record_mutation(binding, destination):
+                        self._write_end(
+                            rec.endpoint,
+                            duration,
+                            identity=self._display_identity(rec),
+                            outcome=outcome,
+                            **kwargs,
+                        )
+                    return
+                self._write_end(
+                    rec.endpoint,
+                    duration,
+                    identity=self._display_identity(rec),
+                    outcome=outcome,
+                    **kwargs,
+                )
+        except (GoalStoreError, jobrec.JobRecordError) as exc:
+            logger.info("Goal Job %s late display close refused: %s", rec.run_id, exc)
+
+    @contextmanager
+    def _spawn_context(self, rec: jobrec.JobRecord) -> Iterator[None]:
+        """Refresh the lease and retain ownership through bounded PID publication."""
+        with self._mutation(rec, active=True):
+            rec.started_at = utc_now_rfc3339()
+            self._persist(rec, active=True)
+            yield
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
         """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
@@ -172,14 +282,17 @@ class JobLifecycle:
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
 
-    def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
+    def _stamp_pid(self, rec: jobrec.JobRecord, pid: int, *, required: bool = False) -> None:
         rec.pid = pid
         from booley.runtime.pid import capture_process_identity
 
         # The Dashboard observes Linux /proc; optional identity must not block on host ps.
         identity = capture_process_identity(pid) if sys.platform == "linux" else None
         rec.process_identity = None if identity is None else identity.to_payload()
-        jobrec.write_record(rec, root=self._write_root(rec))
+        if rec.binding is None:
+            jobrec.write_record(rec, root=self._write_root(rec))
+        elif not self._persist(rec) and required:
+            raise GoalStoreError("cannot persist spawned Goal Job PID")
 
     def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
         if rec.pid is None:
@@ -195,7 +308,7 @@ class JobLifecycle:
 
     def _stamp_run_started(self, rec: jobrec.JobRecord) -> None:
         rec.run_started_at = utc_now_rfc3339()
-        jobrec.write_record(rec, root=self._write_root(rec))
+        self._persist(rec)
 
     def _record_terminal(
         self,
@@ -204,15 +317,10 @@ class JobLifecycle:
         *,
         timed_out: bool,
     ) -> None:
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
         rec.ended_at = utc_now_rfc3339()
-        jobrec.write_record(rec, root=self._write_root(rec))
+        self._persist(rec, repair=True)
 
     @staticmethod
     def _display_identity(rec: jobrec.JobRecord) -> DisplayIdentity:
@@ -220,17 +328,16 @@ class JobLifecycle:
 
     def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
         """Drop a finished inline run's record and its pinned root."""
-        jobrec.delete_record(rec.run_id, root=self._write_root(rec))
+        try:
+            with self._mutation(rec) as destination:
+                jobrec.delete_record(rec.run_id, root=destination)
+        except (GoalStoreError, jobrec.JobRecordError) as exc:
+            logger.info("Goal Job %s late forget refused: %s", rec.run_id, exc)
         self._job_roots.pop(rec.run_id, None)
 
     def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
         self._record_terminal(rec, 2, timed_out=False)
-        self._write_end(
-            rec.endpoint,
-            0,
-            identity=self._display_identity(rec),
-            outcome="aborted",
-        )
+        self._close_display(rec, 0, outcome="aborted")
         self._forget_synchronous(rec)
 
     def submit(
@@ -250,9 +357,7 @@ class JobLifecycle:
         run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
         self._stamp_context(rec, context)
-        self._job_roots[run_id] = context.jobs_root
-        _KNOWN_JOB_ROOTS[run_id] = context.jobs_root
-        jobrec.write_record(rec, root=self._write_root(rec))
+        self._admit_record(rec, context)
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
         # the lifetime busy independently or the server idle-exits mid-run.
         self._lifetime.mark_mcp_endpoint_start()
@@ -268,6 +373,7 @@ class JobLifecycle:
         timeout: int,
         *,
         context: CallContext,
+        publish_display_identity: bool = True,
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
         rec = self._new_record(
@@ -277,11 +383,11 @@ class JobLifecycle:
             timeout,
         )
         self._stamp_context(rec, context)
-        self._job_roots[rec.run_id] = context.jobs_root
-        _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
-        jobrec.write_record(rec, root=self._write_root(rec))
+        self._admit_record(rec, context)
         try:
-            result = await self._execute_record(rec, context, publish_display_identity=True)
+            result = await self._execute_record(
+                rec, context, publish_display_identity=publish_display_identity
+            )
         except asyncio.CancelledError:
             self._abort_synchronous(rec)
             raise
@@ -290,11 +396,7 @@ class JobLifecycle:
             raise
         exit_code, _stdout, _stderr, timed_out = result
         if timed_out:
-            self._write_end(
-                name,
-                timeout,
-                identity=self._display_identity(rec),
-            )
+            self._close_display(rec, timeout)
         self._record_terminal(rec, exit_code, timed_out=timed_out)
         self._forget_synchronous(rec)
         return result
@@ -310,13 +412,15 @@ class JobLifecycle:
         overrides = {"BOOLEY_RUN_ID": rec.run_id, "BOOLEY_SLOT_TIMEOUT_S": str(rec.timeout_s)}
         if publish_display_identity:
             overrides["BOOLEY_DISPLAY_INVOCATION_ID"] = rec.run_id
+        kwargs = {"spawn_context": lambda: self._spawn_context(rec)} if rec.binding else {}
         return await self._run_process(
             rec.argv,
             timeout=rec.timeout_s,
-            on_spawn=lambda pid: self._stamp_pid(rec, pid),
+            on_spawn=lambda pid: self._stamp_pid(rec, pid, required=True),
             env=_endpoint_subprocess_env(context, pytest_scope=rec.endpoint, **overrides),
             is_queued=lambda: self._child_is_queued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
+            **kwargs,
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -324,25 +428,21 @@ class JobLifecycle:
         try:
             exit_code, stdout, stderr, timed_out = await self._execute_record(rec, context)
             if timed_out:
-                self._write_end(rec.endpoint, rec.timeout_s, identity=self._display_identity(rec))
+                self._close_display(rec, rec.timeout_s)
             self._results[rec.run_id] = (exit_code, stdout, stderr, timed_out)
             self._record_terminal(rec, exit_code, timed_out=timed_out)
         except asyncio.CancelledError:
             if rec.run_id not in self._cancel_requested:
-                self._write_end(
-                    rec.endpoint, 0, identity=self._display_identity(rec), outcome="aborted"
-                )
+                self._close_display(rec, 0, outcome="aborted")
                 raise
             self._record_user_cancellation(rec)
+        except (GoalStoreError, jobrec.JobRecordError) as exc:
+            self._results[rec.run_id] = (2, "", str(exc), False)
+            self._record_terminal(rec, 2, timed_out=False)
         finally:
             self._lifetime.mark_mcp_endpoint_end()
 
     def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         rec.ended_at = utc_now_rfc3339()
@@ -352,13 +452,8 @@ class JobLifecycle:
             f"CANCELLED: job {rec.run_id} was stopped by request.",
             False,
         )
-        jobrec.write_record(rec, root=self._write_root(rec))
-        self._write_end(
-            rec.endpoint,
-            0,
-            identity=self._display_identity(rec),
-            outcome="cancelled",
-        )
+        self._persist(rec, repair=True)
+        self._close_display(rec, 0, outcome="cancelled")
 
     def _adopt_report_outcome(self, rec: jobrec.JobRecord) -> bool:
         report, report_fresh = self._report(rec)
@@ -535,6 +630,8 @@ class JobLifecycle:
 
     def _reconcile_one(self, located: LocatedJob) -> None:
         rec = located.record
+        if rec.binding is not None and located.root is None:
+            return
         if rec.status != jobrec.STATUS_RUNNING:
             return
         if jobrec.derive_status(rec, self._is_alive) == jobrec.STATUS_RUNNING:
@@ -548,12 +645,7 @@ class JobLifecycle:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
-        jobrec.write_record(rec, root=located.root)
+        self._persist(rec, repair=True, root=located.root)
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
 

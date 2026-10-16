@@ -14,8 +14,16 @@ from booley.goals.model import goal_arg_json_schema
 from booley.mcp import goal_tools
 from booley.mcp import server as mcp_server
 from booley.mcp.application import UnknownMcpToolError
+from tests.goals.test_store import repo as retained_repo  # noqa: F401 — shared fixture
 
-GOAL_TOOLS = {"goal_enter", "goal_finish", "goal_propose_change", "goal_status"}
+GOAL_TOOLS = {
+    "goal_enter",
+    "goal_finish",
+    "goal_propose_change",
+    "goal_status",
+    "goal_list",
+    "goal_show",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -159,3 +167,48 @@ def test_goal_enter_refusal_is_a_tool_error(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert payload.is_error is True
     assert payload.content[0].text.startswith("ERROR: Goal Mode was not entered:")
+
+
+def test_goal_record_readers_catalog_and_dispatch(monkeypatch, tmp_path, retained_repo):  # noqa: F811 — shared fixture
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    assert {"goal_list", "goal_show"} <= _listed(), "Goal record MCP readers are missing"
+    definitions = {row["name"]: row for row in goal_tools.goal_tool_defs()}
+    assert definitions["goal_show"]["schema"]["required"] == ["record_id"]
+    result = asyncio.run(goal_tools.dispatch_goal_tool("goal_list", {}, booley_dir=tmp_path))
+    assert result.goal_aware is False and result.is_error is False
+    assert result.value[1]["records"] == []
+    result = asyncio.run(
+        goal_tools.dispatch_goal_tool("goal_show", {"record_id": "../bad"}, booley_dir=tmp_path)
+    )
+    assert result.is_error is True
+
+    from booley.goals.model import GoalState
+    from tests.goals.test_inventory import snapshot, terminal
+
+    record = terminal(retained_repo, GoalState.ACTIVE)
+    project = retained_repo["project"]
+    before = snapshot(project)
+    result = asyncio.run(goal_tools.dispatch_goal_tool("goal_list", {}, booley_dir=project))
+    assert result.is_error and "work_dir" in result.value[0].text
+    monkeypatch.setattr(
+        "booley.mcp.sim_baseline_jobs.schedule_sim_baselines",
+        lambda *_: pytest.fail("reader scheduled baseline"),
+    )
+    result = asyncio.run(
+        goal_tools.dispatch_goal_tool(
+            "goal_list", {"work_dir": str(retained_repo["main"])}, booley_dir=project
+        )
+    )
+    assert not result.is_error and not result.goal_aware
+    assert result.value[1]["records"][0]["record_id"] == record.id
+    assert record.id in result.value[0][0].text
+    result = asyncio.run(
+        goal_tools.dispatch_goal_tool(
+            "goal_show",
+            {"work_dir": str(retained_repo["main"]), "record_id": record.id},
+            booley_dir=project,
+        )
+    )
+    assert result.value[1]["record"]["record_id"] == record.id
+    assert not result.goal_aware and not result.is_error
+    assert snapshot(project) == before

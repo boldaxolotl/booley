@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -76,6 +77,8 @@ class CandidateStoreProvider(Protocol):
     """Optional neutral paths for recording advisory coverage candidates."""
 
     def candidate_store_paths(self) -> tuple[str, Path, Path]: ...
+
+    def candidate_mutation_context(self, destination: Path) -> AbstractContextManager[object]: ...
 
 
 def execution_presentation(
