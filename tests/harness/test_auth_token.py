@@ -1055,10 +1055,25 @@ class TestAuthStorePreflight:
         assert "lock" in capsys.readouterr().out
 
 
+def _auth_interactive_ports(monkeypatch):
+    from booley.harness.setup import interactive
+    from booley.runtime import dashboard_tasks
+
+    monkeypatch.setattr(interactive, "_unlicensed_relay_pending", lambda _: False)
+    monkeypatch.setattr(
+        session_runtime,
+        "plan_stopped_headless_runtime_reconciliation",
+        lambda *a: SimpleNamespace(pending=False),
+    )
+    monkeypatch.setattr(session_runtime, "reconcile_stopped_headless_runtime", lambda *a: False)
+    monkeypatch.setattr(interactive, "git_excludes_pending", lambda *a: False)
+    monkeypatch.setattr(interactive, "add_git_excludes", lambda *a: False)
+    monkeypatch.setattr(dashboard_tasks, "inspect", lambda *a: dashboard_tasks.TaskPlan())
+
+
 def _auth_reseed_boundaries(project, monkeypatch):
     from booley.harness import bootstrap, host_sidecars, image_lifecycle, init_cmd
-    from booley.harness.setup import interactive
-    from booley.runtime import dashboard_tasks, session_issuance
+    from booley.runtime import session_issuance
 
     bootstrap_calls = []
     captured = []
@@ -1101,16 +1116,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
         return issued
 
     monkeypatch.setattr(session_issuance, "issue_prepared", issue)
-    monkeypatch.setattr(interactive, "_unlicensed_relay_pending", lambda _: False)
-    monkeypatch.setattr(
-        session_runtime,
-        "plan_stopped_headless_runtime_reconciliation",
-        lambda *a: SimpleNamespace(pending=False),
-    )
-    monkeypatch.setattr(session_runtime, "reconcile_stopped_headless_runtime", lambda *a: False)
-    monkeypatch.setattr(interactive, "git_excludes_pending", lambda *a: False)
-    monkeypatch.setattr(interactive, "add_git_excludes", lambda *a: False)
-    monkeypatch.setattr(dashboard_tasks, "inspect", lambda *a: dashboard_tasks.TaskPlan())
+    _auth_interactive_ports(monkeypatch)
     return bootstrap_calls, captured
 
 
