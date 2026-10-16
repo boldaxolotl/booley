@@ -265,8 +265,10 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['test']
     name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    # Complete suites use the same bound as full-python-matrix.yml; shards retain 15m.
-    timeout-minutes: ${{ matrix.mode == 'full' && 20 || 15 }}
+    # Linux full suites exercise creation-bound guardians for native scratch.
+    # PR #1544 reached only 38–56% before the old 20m cap; retain every test.
+    # Keep this bound aligned with full-python-matrix.yml; Windows shards stay 15m.
+    timeout-minutes: ${{ matrix.mode == 'full' && matrix.os == 'ubuntu-latest' && 90 || matrix.mode == 'full' && 20 || 15 }}
     env:
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: 'not native_bwave'
@@ -339,7 +341,8 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['coverage-shards']
     name: coverage-shards / ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Durable native-scratch supervision reached 52–63% at the former 15m cap.
+    timeout-minutes: 45
     env:
       TEST_MARK_EXPRESSION: 'not native_bwave'
     strategy:

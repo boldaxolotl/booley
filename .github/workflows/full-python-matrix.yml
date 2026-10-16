@@ -17,7 +17,8 @@ jobs:
   test:
     name: full / ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Match regular CI's bounded Linux native-scratch supervision budget.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 90 || 20 }}
     strategy:
       fail-fast: false
       matrix:
