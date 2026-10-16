@@ -24,6 +24,7 @@ from booley.goals.completion_history import (
     retained_outputs,
     validate_canonical_ownership,
 )
+from booley.goals.ended_records import schedule_ended_cleanup
 from booley.goals.finish_presentation import freeze_presentation, frozen_response, html_bytes
 from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
 from booley.goals.generated_artifacts import (
@@ -130,6 +131,16 @@ class FinishEnvironment:
 
 
 def finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, Any]:
+    """Finish or abandon, then delete ended Goal Records nothing refers to any more.
+
+    The cleanup runs after every lock is released and never changes the result.
+    """
+    result = _finish_goal(request, env)
+    schedule_ended_cleanup(env.changes.store, request.work_dir)
+    return result
+
+
+def _finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, Any]:
     """Bind first, then resume the exact operation or freeze a new validated attempt."""
     store = env.changes.store
     from booley.goals.lifecycle import archived_result

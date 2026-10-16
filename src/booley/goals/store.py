@@ -604,8 +604,11 @@ class GoalStore:
         for goal_id in ids:
             try:
                 records.append(self.load(goal_id))
+            except GoalRecordNotFoundError:
+                continue  # deleted since the listing (an ended record's cleanup)
             except GoalRecordCorruptError as exc:
-                corrupt.extend(exc.entries)
+                if record_paths(self.booley_dir, goal_id).root.is_dir():
+                    corrupt.extend(exc.entries)
         return RecordScan(tuple(records), tuple(corrupt))
 
     def list_active(self) -> RecordScan:
