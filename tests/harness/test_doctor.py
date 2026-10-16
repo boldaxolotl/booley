@@ -7377,6 +7377,47 @@ class TestSubscriptionCredsHealth:
         assert rec.kinds() == {"pass"}
         assert "valid until" in rec.events[0][1]
 
+    def test_expiry_clock_preserves_finding_and_transcript(self, creds_home, monkeypatch, capsys):
+        from datetime import UTC, datetime
+
+        now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
+        monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+        monkeypatch.setattr(doctor.time, "time", lambda: now)
+        monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
+        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda _: "auto")
+        monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
+        monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
+        published = []
+        monkeypatch.setattr(
+            doctor.health, "publish_result", lambda _root, **kw: published.append(kw)
+        )
+        path = auth_token.subscription_creds_path(auth_token.APP_CLAUDE)
+        for hour, human in ((11, "15:00:00"), (10, "14:00:00")):
+            expiry = datetime(2026, 10, 8, hour, tzinfo=UTC).timestamp()
+            path.write_text(json.dumps({"claudeAiOauth": {"expiresAt": expiry * 1000}}))
+            reporter = doctor._Reporter.create()
+            doctor._run_agent_credential_checks(SimpleNamespace(), reporter)
+            result = reporter.result(0)
+            legacy = f"{hour + 4:02d}:00 · 08 OCT 2026"
+            expected = (
+                f"subscription login valid until {legacy}"
+                if hour == 11
+                else f"subscription login at {path} is expired ({legacy}) and refresh "
+                "fails once the host has rotated the shared refresh token — agents then crash at launch"
+            )
+            assert result.findings[0].message == expected, (
+                "doctor expiry display/record contract missing"
+            )
+            assert human in capsys.readouterr().out, (
+                "doctor expiry display/record contract missing"
+            )
+            doctor.record_manual_result(creds_home, result)
+            assert published[-1]["diagnostics"].findings[0].message == expected
+            assert (
+                published[-1]["transcript"]
+                == f"{result.findings[0].severity.value.upper()}: {expected}\n"
+            )
+
     def test_absent_or_unparseable_login_is_silent(self, creds_home):
         assert self._run().events == []  # absent
         (creds_home / ".claude" / ".credentials.json").write_text("not json")

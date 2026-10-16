@@ -188,3 +188,51 @@ def test_human_output_changes_without_machine_or_report_changes(tmp_path):
         "human output migration missing"
     )
     assert _protected_outputs(tmp_path) == PROTECTED_OUTPUTS
+
+
+def _completion_fixture(flow, elapsed):
+    if flow == "lint":
+        return _target_summary_line(LintConfigResult("top", duration_s=elapsed))
+    if flow == "synth":
+        return object.__new__(AsicSynthesizeFlow)._format_config_line(
+            "top", SynthMetrics(elapsed_s=elapsed), None, human=True
+        )
+    return FpgaImplFlow._format_config_line(
+        "top", FpgaMetrics(elapsed_s=elapsed), None, human=True
+    )
+
+
+def test_completion_records_preserve_legacy_stage_bytes(monkeypatch):
+    events = []
+    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
+    monkeypatch.setattr(terminal_progress, "utc_now_rfc3339", lambda: "2026-10-08T10:00:00Z")
+    prefixes = {
+        "lint": "[lint] top          [] 0 warnings (target total), ",
+        "synth": "[synth] top          -- KGe   -- ps    ",
+        "fpga": "[fpga] top             -- LUTs   -- FFs   ",
+    }
+    for flow, prefix in prefixes.items():
+        stream = io.StringIO()
+        progress = terminal_progress.TerminalProgress(
+            flow, "top", Path("/fixture"), stream=stream, clock=lambda: 1000
+        )
+        progress.started = 0
+        progress.log = io.BytesIO()
+        endpoint = SimpleNamespace(name=flow, terminal_progress=progress, _display_identity=None)
+        expected_records, expected_log = [], []
+        for elapsed in (61.1, 61.9):
+            line = _completion_fixture(flow, elapsed)
+            endpoint_reporting.emit_completion(endpoint, line)
+            legacy = prefix + f"{elapsed:.1f}s" + (" FAIL" if flow == "fpga" else "")
+            expected_records.append(
+                f"[booley-progress] 2026-10-08T10:00:00Z {flow} Target=top stage={legacy} elapsed=1000s \n"
+            )
+            progress._consume("stdout", b"", terminal_progress._Lines())
+            expected_log.append(f"\n[{flow} Target=top stage={legacy} source=stdout]\n")
+            assert "1m 01s" in events[-1]["line"], "completion display/record contract missing"
+        assert stream.getvalue() == "".join(expected_records), (
+            "completion display/record contract missing"
+        )
+        assert progress.log.getvalue() == "".join(expected_log).encode(), (
+            "completion display/record contract missing"
+        )

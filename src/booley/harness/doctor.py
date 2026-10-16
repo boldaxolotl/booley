@@ -22,7 +22,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -136,7 +136,7 @@ from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
-from booley.runtime.timefmt import format_clock, format_duration
+from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -440,6 +440,7 @@ class _Reporter:
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
     findings: list[DiagnosticFinding] | None = None
     agent_calls: list[_AgentCallRecord] | None = None
+    display_overrides: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -506,7 +507,7 @@ class _Reporter:
             )
         )
         if not self.concise:
-            ok(f"PASS  {msg}")
+            ok(f"PASS  {self.display_overrides.get(str(msg), str(msg))}")
         self.counts["pass"] += 1
 
     def note_(self, msg: str, fix: str = "") -> None:
@@ -538,7 +539,7 @@ class _Reporter:
         self.findings.append(
             DiagnosticFinding(Severity.WARN, str(msg), fix, msg.check_id, msg.subject)
         )
-        warn(f"WARN  {msg} {suffix}")
+        warn(f"WARN  {self.display_overrides.get(str(msg), str(msg))} {suffix}")
         if fix:
             info(f"  fix: {fix}")
         self.counts["warn"] += 1
@@ -547,7 +548,9 @@ class _Reporter:
         """Render an already-waived observation without making it active again."""
         assert self.findings is not None
         self.findings.append(finding)
-        note(f"WAIVED  {finding.message} {_warning_identity(finding)}")
+        note(
+            f"WAIVED  {self.display_overrides.get(finding.message, finding.message)} {_warning_identity(finding)}"
+        )
         info(f"  reason: {finding.fix}")
         self.counts["waived"] += 1
 
@@ -2444,7 +2447,12 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         plan=plan,
     )
     _check_subscription_creds_health(
-        provider, reporter.pass_, reporter.warn_, policy=auth_policy, plan=plan
+        provider,
+        reporter.pass_,
+        reporter.warn_,
+        policy=auth_policy,
+        plan=plan,
+        display_overrides=reporter.display_overrides,
     )
 
 
@@ -2779,6 +2787,27 @@ def _claude_creds_expiry(path: Path) -> float | None:
         return None
 
 
+def _subscription_expiry_message(
+    expiry: float,
+    now: float,
+    prefix: str,
+    suffix: str = "",
+    *,
+    display_overrides: dict[str, str] | None = None,
+) -> str:
+    """Keep a frozen diagnostic message and an independent console clock."""
+    legacy = (
+        format_human_datetime(datetime.fromtimestamp(expiry).astimezone())
+        if expiry > 0
+        else "epoch 0"
+    )
+    recorded = f"{prefix}{legacy}{suffix}"
+    if display_overrides is not None:
+        shown = format_clock(expiry, now=now) if expiry > 0 else "epoch 0"
+        display_overrides[recorded] = f"{prefix}{shown}{suffix}"
+    return recorded
+
+
 def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
@@ -2786,6 +2815,7 @@ def _check_subscription_creds_health(
     policy: str = "auto",
     *,
     plan: auth_token.CredentialPlan | None = None,
+    display_overrides: dict[str, str] | None = None,
 ) -> None:
     """A PRESENT subscription login can still be DEAD — check what's checkable.
 
@@ -2821,21 +2851,33 @@ def _check_subscription_creds_health(
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:
-        when = format_clock(expiry, now=now) if expiry > 0 else "epoch 0"
         if rotation_free:
             _pass(
-                f"subscription login at {creds_path} is expired ({when}) — harmless: "
-                "agents run on the rotation-free credential"
+                _subscription_expiry_message(
+                    expiry,
+                    now,
+                    f"subscription login at {creds_path} is expired (",
+                    ") — harmless: agents run on the rotation-free credential",
+                    display_overrides=display_overrides,
+                )
             )
         else:
             _warn(
-                f"subscription login at {creds_path} is expired ({when}) and refresh "
-                "fails once the host has rotated the shared refresh token — "
-                "agents then crash at launch",
+                _subscription_expiry_message(
+                    expiry,
+                    now,
+                    f"subscription login at {creds_path} is expired (",
+                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    display_overrides=display_overrides,
+                ),
                 f"booley auth --app {app}  (or refresh the host login and recreate the container)",
             )
     elif expiry is not None:
-        _pass(f"subscription login valid until {format_clock(expiry, now=now)}")
+        _pass(
+            _subscription_expiry_message(
+                expiry, now, "subscription login valid until ", display_overrides=display_overrides
+            )
+        )
 
     if not runtime_context.inside_session_runtime():
         return

@@ -57,6 +57,7 @@ from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
+from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -2728,16 +2729,23 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 _worst_critical_path_ps(cur),
                 _worst_critical_path_ps(base),
             )
-            return (
+            line = (
                 f"[synth] {tgt:<10}"
                 f"{area_str} {self._fmt_delta(area_delta):>20}   "
                 f"{timing_str} {self._fmt_delta(timing_delta):>20}   "
                 f" {elapsed_str}{self._format_status_suffix(cur)}"
             )
+        else:
+            line = (
+                f"[synth] {tgt:<10}"
+                f"{area_str}   {timing_str}    {elapsed_str}"
+                f"{self._format_status_suffix(cur)}"
+            )
+
         return (
-            f"[synth] {tgt:<10}"
-            f"{area_str}   {timing_str}    {elapsed_str}"
-            f"{self._format_status_suffix(cur)}"
+            ProgressText(line, record_text=self._format_config_line(tgt, cur, base))
+            if human
+            else line
         )
 
     @staticmethod

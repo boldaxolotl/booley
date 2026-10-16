@@ -170,9 +170,10 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
         outcome = f"exit {job.record.exit_code} · design verdict {(job.report or {}).get('passed', 'unavailable')}"
     else:
         outcome = "resources unavailable"
+    elapsed = job_elapsed_seconds(job, now)
     return (
         f"{_job_label(job)} · {job.record.endpoint} · {DashboardApp._target(job)} · {owner} · "
-        f"{job.state} · {format_duration(job_elapsed_seconds(job, now))} · {job.stage or 'stage —'} · {outcome}"
+        f"{job.state} · {format_duration(elapsed) if elapsed is not None else 'unavailable'} · {job.stage or 'stage —'} · {outcome}"
     )
 
 
@@ -208,7 +209,8 @@ def job_paths(job: JobView) -> tuple[str, ...]:
 
 def _job_summary(job: JobView, now: float) -> str:
     """Compact overview form: Flow, Target and elapsed time."""
-    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {format_duration(job_elapsed_seconds(job, now))}"
+    elapsed = job_elapsed_seconds(job, now)
+    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
 
 
 def _reported_metrics(report: dict[str, Any]) -> str:
@@ -228,9 +230,11 @@ def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
     if goal.evidence is None:
         return frozen + "Last check: unavailable · Evidence unavailable"
     facts = goal.evidence
+    recorded = facts.get("recorded_at")
+    checked = format_clock(recorded, now=now) if recorded is not None else "unavailable"
     return (
         frozen
-        + f"Last check: {format_clock(facts.get('recorded_at'), now=now)}\n"
+        + f"Last check: {checked}\n"
         + "Observations: "
         + json.dumps(observation_facts(facts).get("observations", {}), indent=2)[:8000]
         + "\nImmutable derivation provenance: "

@@ -335,12 +335,12 @@ def _argv_label(argv: list[str]) -> str:
 
 
 def _describe_holder(tok: SlotToken, now: float) -> str:
-    """Render one holder as ``pid 123 (sim), held 10m12s``."""
+    """Render one holder as ``pid 123 (sim), held 10m 12s``."""
     label = _argv_label(tok.argv) or tok.role
     started = parse_stamp(tok.promoted_at) or parse_stamp(tok.created_at)
     if started is None:
         return f"pid {tok.pid} ({label})"
-    held = max(0, int(now - started))
+    held = now - started
     return f"pid {tok.pid} ({label}), held {format_duration(held)}"
 
 

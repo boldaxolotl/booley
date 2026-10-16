@@ -843,3 +843,25 @@ async def _capture_time_pilot(monkeypatch, current, completed, orientation, size
         if output:
             (root / f"dashboard-{size[0]}x{size[1]}.svg").write_text(app.export_screenshot())
             (root / f"dashboard-{size[0]}x{size[1]}.txt").write_text(orientation + "\n" + shown)
+
+
+def test_absent_time_fields_keep_unavailable_markers():
+    from booley.harness.dashboard.app import _evidence_detail, _job_row, _job_summary, job_detail
+
+    current = snapshot(1)
+    missing = replace(current.jobs.jobs[0], state="completed", report=None)
+    assert "completed · unavailable" in _job_row(missing, current.observed_at, "S1"), (
+        "absent time marker changed"
+    )
+    assert "unavailable" in _job_summary(missing, current.observed_at), (
+        "absent time marker changed"
+    )
+    assert "Elapsed: unavailable" in job_detail(missing, now=current.observed_at)
+    evidence = model.GoalDetail(
+        "clock", "passing", CriterionPresentation("Lint top", "", "", "", ""), {}
+    )
+    assert "Last check: unavailable" in _evidence_detail(evidence, now=current.observed_at), (
+        "absent time marker changed"
+    )
+    invalid = replace(evidence, evidence={"recorded_at": "bad"})
+    assert "Last check: unknown" in _evidence_detail(invalid, now=current.observed_at)

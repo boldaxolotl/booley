@@ -59,6 +59,7 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.target_parameters import vlogparam_specs
+from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -1514,7 +1515,12 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             suffix = " ERROR"
         elif not cur.passed:
             suffix = " FAIL"
-        return f"[fpga] {cfg:<16}" + "   ".join(parts) + suffix
+        line = f"[fpga] {cfg:<16}" + "   ".join(parts) + suffix
+        return (
+            ProgressText(line, record_text=FpgaImplFlow._format_config_line(cfg, cur, base))
+            if human
+            else line
+        )
 
     @staticmethod
     def _format_critical_line(cfg: str, cur: FpgaMetrics) -> str:

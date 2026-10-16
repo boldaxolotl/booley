@@ -43,6 +43,21 @@ _STAGE_LINES = re.compile(r"(?m)^BOOLEY_STAGE:[^\n]*$")
 _STAGE = re.compile(r"^BOOLEY_STAGE:\s*([\w.-]+)\s*$")
 
 
+class ProgressText(str):
+    """Human completion text with the unchanged representation for records."""
+
+    record_text: str
+
+    def __new__(cls, text: str, *, record_text: str) -> ProgressText:
+        result = super().__new__(cls, text)
+        result.record_text = record_text
+        return result
+
+
+def _record_text(text: str) -> str:
+    return text.record_text if isinstance(text, ProgressText) else text
+
+
 def current_progress() -> TerminalProgress | None:
     """Return the explicitly installed CLI observer, including direct hooks."""
     return _CURRENT.get()
@@ -244,7 +259,7 @@ class TerminalProgress:
         self._clear()
         self._write(
             f"[booley-progress] {utc_now_rfc3339()} {self.flow} Target={sanitize(self.target)} "
-            f"stage={sanitize(self.stage)} elapsed={int(self.clock() - self.started)}s "
+            f"stage={sanitize(_record_text(self.stage))} elapsed={int(self.clock() - self.started)}s "
             f"{sanitize(text)}\n"
         )
 
@@ -252,8 +267,12 @@ class TerminalProgress:
         if self.abandoned:
             return
         with self.lock:
-            new_stage = sanitize(stage)
-            if new_stage == self.stage and (target is None or target == self.target):
+            new_stage = ProgressText(sanitize(stage), record_text=sanitize(_record_text(stage)))
+            if (
+                new_stage == self.stage
+                and _record_text(new_stage) == _record_text(self.stage)
+                and (target is None or target == self.target)
+            ):
                 return
             if target is not None:
                 self.target = target
@@ -329,9 +348,7 @@ class TerminalProgress:
     def _consume(self, source: str, chunk: bytes, lines: _Lines) -> None:
         if self.log is not None and not self.log_failed:
             try:
-                label = (
-                    f"\n[{self.flow} Target={self.target} stage={self.stage} source={source}]\n"
-                )
+                label = f"\n[{self.flow} Target={self.target} stage={_record_text(self.stage)} source={source}]\n"
                 self.log.write(label.encode("utf-8") + chunk)
             except OSError:
                 self._log_failure()

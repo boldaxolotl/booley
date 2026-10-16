@@ -43,6 +43,7 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.run_log import write_run_log
+from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -394,9 +395,12 @@ def _target_summary_line(result: LintConfigResult) -> str:
     if result.error:
         return f"[lint] {result.target:<12} ERROR: {result.error}"
     files = f", {result.files_linted} files" if result.files_linted >= 0 else ""
-    return (
-        f"[lint] {result.target:<12} [{result.eda_tool}] {wcount} {label} "
-        f"(target total){files}, {format_duration(result.duration_s)}"
+    prefix = (
+        f"[lint] {result.target:<12} [{result.eda_tool}] {wcount} {label} (target total){files}, "
+    )
+    return ProgressText(
+        prefix + format_duration(result.duration_s),
+        record_text=prefix + f"{result.duration_s:.1f}s",
     )
 
 
