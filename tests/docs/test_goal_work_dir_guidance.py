@@ -112,7 +112,7 @@ def test_concise_guidance_names_supported_utilities_and_exceptions(
     "path", ["docs/user/USAGE.md", "src/booley/data/skills/booley-goal/SKILL.md"]
 )
 def test_goal_evidence_instructions_exclude_cli(path):
-    text = (REPO_ROOT / path).read_text()
+    text = (REPO_ROOT / path).read_text(encoding="utf-8")
     assert "CLI runs never record Goal evidence" in text
     assert "Goal-bound" in text and "MCP" in text and "`work_dir`" in text
 
@@ -245,7 +245,9 @@ def test_agent_facing_guidance_names_only_interactive_tools(monkeypatch, capsys)
     with pytest.raises(GoalBindingError) as refusal:
         require_goal_work_dir({}, store)
     sources = {"Goal rules": goal_mode_rules(), "warning": warning, "refusal": str(refusal.value)}
-    sources.update({path: (REPO_ROOT / path).read_text() for path in ROUTING_DOCUMENTS})
+    sources.update(
+        {path: (REPO_ROOT / path).read_text(encoding="utf-8") for path in ROUTING_DOCUMENTS}
+    )
     for flag in ("--goals", "--all"):
         assert cli._cmd_cheat(cli._build_parser().parse_args(["cheat", flag]), None) == 0
         sources[f"booley cheat {flag}"] = capsys.readouterr().out
@@ -341,7 +343,7 @@ GUIDANCE_REGIONS = (
 
 
 def _region(path, start, end):
-    text = (REPO_ROOT / path).read_text()
+    text = (REPO_ROOT / path).read_text(encoding="utf-8")
     assert start in text, f"audit anchor disappeared: {path}: {start}"
     return text.split(start, 1)[1].split(end, 1)[0]
 
@@ -351,6 +353,16 @@ def test_audited_guidance_regions_match_their_actual_mode(monkeypatch):
         "interactive": set(_builtin_routing_catalog(monkeypatch)),
         "Analyst": set(_qualified_catalog(monkeypatch, "Analyst")),
     }
+    original_open = Path.open
+
+    def legacy_locale_open(path, *args, **kwargs):
+        # Windows can default to cp1252: only an explicit UTF-8 document read
+        # should override that locale when checking the real audited files.
+        if path.suffix == ".md" and kwargs.get("encoding") in (None, "locale"):
+            kwargs["encoding"] = "cp1252"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", legacy_locale_open)
     for path, start, end, mode in GUIDANCE_REGIONS:
         _assert_guidance_names(start + _region(path, start, end), modes[mode], f"{path}: {start}")
 
@@ -396,7 +408,7 @@ def test_exceptional_names_require_their_documented_mode(monkeypatch, mode, name
 def test_guidance_guard_rejects_unknown_actual_inventory_cell(name, rendered, monkeypatch):
     from booley.harness.render_md import render
 
-    text = (REPO_ROOT / "src/booley/data/cheatsheet.md").read_text()
+    text = (REPO_ROOT / "src/booley/data/cheatsheet.md").read_text(encoding="utf-8")
     available = set(_builtin_routing_catalog(monkeypatch))
     original = render(text) if rendered else text
     _assert_guidance_names(original, available, "original cheat inventory")
@@ -433,7 +445,7 @@ def test_guidance_guard_rejects_unknown_actual_inventory_cell(name, rendered, mo
     ],
 )
 def test_guidance_guard_rejects_unknown_actual_prose_tool(path, phrase, monkeypatch):
-    text = " ".join((REPO_ROOT / path).read_text().split())
+    text = " ".join((REPO_ROOT / path).read_text(encoding="utf-8").split())
     available = set(_builtin_routing_catalog(monkeypatch))
     _assert_guidance_names(text, available, "original prose")
     assert phrase in text
