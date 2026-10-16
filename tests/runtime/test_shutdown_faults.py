@@ -281,3 +281,52 @@ def test_reparented_process_cannot_join_a_reused_parent_identity(monkeypatch):
     )
     monkeypatch.setattr(shutdown, "_identity", lambda pid: child if pid == 10 else parent)
     assert shutdown._parent_identity(child) is None
+
+
+def test_ancestry_depth_failure_skips_signal_and_closes_pidfd(monkeypatch):
+    target = tw.process_identity(os.getpid())
+    descriptors, delivered = [], []
+
+    def pidfd(_libc, name, _number, *args):
+        if name == "pidfd_open":
+            fd = os.open(os.devnull, os.O_RDONLY)
+            descriptors.append(fd)
+            return fd
+        delivered.append(args)
+        return 0
+
+    def too_deep(_):
+        raise RuntimeError("synthetic ancestry depth exceeded")
+
+    monkeypatch.setattr(shutdown, "_pidfd_call", pidfd)
+    monkeypatch.setattr(shutdown, "ancestors", too_deep)
+    shutdown.signal_identity(target, signal.SIGTERM, ancestor=target)
+    assert not delivered
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+@pytest.mark.parametrize("inherited", ["missing", "malformed", "terminal"])
+def test_rejected_inherited_group_clears_proven_unstarted_handoff(
+    tmp_path, monkeypatch, inherited
+):
+    group = shutdown.ShutdownGroup.create(tmp_path)
+    if inherited == "terminal":
+        group.complete(owner=True)
+    elif inherited == "malformed":
+        (group.path / "state.json").write_text("{synthetic malformed state")
+    path = tmp_path / "missing" if inherited == "missing" else group.path
+    monkeypatch.setenv(shutdown.ENV, str(path))
+    started = tmp_path / "native-started"
+    with tw.temporary_workspace() as raw:
+        process, launch = tw.guarded_popen(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(started)!r}).touch()"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        process.communicate(timeout=5)
+        assert process.returncode != 0
+        assert not started.exists()
+        assert tw._validated_marker(Path(raw))[0]["launches"] == {}
+        tw.launch_finished(launch)
+    assert not Path(raw).exists()

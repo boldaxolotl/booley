@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import ctypes
 import json
 import os
@@ -20,13 +19,14 @@ if __package__ in {None, ""}:
 from booley.core.lease_shutdown import ENV, SETTLE_SECONDS, ShutdownGroup
 from booley.core.process_spawn import new_session_kwargs
 from booley.core.temporary_workspace import (
+    LeaseLaunch,
     complete_launch,
+    launch_failed,
     process_identity,
     register_launch,
 )
 
 _POLL_S = 0.02
-_STOP_S = 3.0
 _MAX_PROCESSES = 65536
 
 
@@ -68,17 +68,6 @@ def _reap(leader: subprocess.Popen) -> bool:
         if pid == leader.pid:
             leader.returncode = os.waitstatus_to_exitcode(status)
     raise RuntimeError("scratch supervisor reap bound exceeded")
-
-
-def _signal_children(signum: int) -> None:
-    for pid in _direct_children():
-        identity = process_identity(pid)
-        if identity is None:
-            raise RuntimeError("cannot prove scratch child creation identity")
-        # Recheck immediately before signalling; never act on a reused PID.
-        if process_identity(pid) == identity:
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signum)
 
 
 def _publish_result(roots: tuple[Path, ...], token: str, returncode: int) -> None:
@@ -155,7 +144,7 @@ def supervise(payload: str, command: list[str]) -> int:
         or any(type(fd) is not int or fd < 0 for fd in inherited)
     ):
         raise ValueError("invalid inherited scratch descriptors")
-    inherited_group = ShutdownGroup.inherited()
+    inherited_group = _inherited_group(roots, data["token"])
     group = inherited_group or ShutdownGroup.create(roots[0])
     group.register(roots, data["token"])
     descriptors = register_launch(roots, data["token"], tuple(inherited), group=group)
@@ -183,6 +172,15 @@ def supervise(payload: str, command: list[str]) -> int:
     finally:
         for fd in descriptors:
             os.close(fd)
+
+
+def _inherited_group(roots: tuple[Path, ...], token: str) -> ShutdownGroup | None:
+    try:
+        return ShutdownGroup.inherited()
+    except (OSError, ValueError, RuntimeError):
+        # No native command or launch registration has started yet.
+        launch_failed(LeaseLaunch([], {}, roots, token))
+        raise
 
 
 def main() -> None:

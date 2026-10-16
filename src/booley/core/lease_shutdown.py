@@ -106,9 +106,13 @@ def signal_identity(
             return
         raise OSError(error, os.strerror(error))
     try:
-        authorized = _identity(pid) == identity and (
-            ancestor is None or ancestor in ancestors(pid)
-        )
+        try:
+            authorized = _identity(pid) == identity and (
+                ancestor is None or ancestor in ancestors(pid)
+            )
+        except RuntimeError as error:
+            logger.debug("Skipping signal without bounded ancestry proof: %s", error)
+            return
         if (
             authorized
             and _pidfd_call(
