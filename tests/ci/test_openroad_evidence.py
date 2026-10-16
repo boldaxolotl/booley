@@ -254,6 +254,7 @@ def test_slim_fanout_runtime_uses_scalar_native_limit(tmp_path, monkeypatch, fan
         ("rsz", "native fanout arm failed"),
         ("buffers", "inserted no structural buffers"),
         ("status", "native fanout arm failed"),
+        ("nan", "native exact limit differs"),
     ],
 )
 def test_native_fanout_checker_requires_complete_evidence(
@@ -277,7 +278,8 @@ def test_native_fanout_checker_requires_complete_evidence(
             for stage in stages
             if failure != "stage" or stage != "sta_report"
         )
-        text += f"\nREPAIR_ELAPSED_MS: {15001 if failure == 'slow' else 10}\nOPENROAD_FANOUT_LIMIT: 50\n"
+        limit = "NaN" if failure == "nan" else "50"
+        text += f"\nREPAIR_ELAPSED_MS: {15001 if failure == 'slow' else 10}\nOPENROAD_FANOUT_LIMIT: {limit}\n"
         if failure == "rsz":
             text += "RSZ-0035\n"
         kwargs["stdout"].write(text)

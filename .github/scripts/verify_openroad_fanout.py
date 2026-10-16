@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from booley.core.boundary import as_float
 from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
 from booley.flows.synth.timing import StaTimingConfig
 
@@ -92,7 +93,7 @@ def run_case(script: Path, executable: str, expected: float, buffering: bool) ->
     if len(elapsed) != 1 or int(elapsed[0]) > 15000:
         raise RuntimeError(f"repair exceeded 15s or missing measurement: {log}")
     limits = re.findall(r"^OPENROAD_FANOUT_LIMIT: (\S+)$", text, re.MULTILINE)
-    if len(limits) != 1 or abs(float(limits[0]) / expected - 1) > 1e-6:
+    if len(limits) != 1 or abs(as_float(limits[0], 0) / expected - 1) > 1e-6:
         raise RuntimeError(f"native exact limit differs from {expected}: {log}")
     netlist = (script.parent / "openroad_dut.v").read_text(encoding="utf-8")
     if buffering and not re.search(r"\bBUF_X\d+\s", netlist):
@@ -116,26 +117,13 @@ def main() -> None:
     ):
         if not (args.pdk_root / name).is_file():
             raise RuntimeError(f"required managed PDK input missing: {name}")
+    scoped = "set_max_fanout {} [sta::Instance_cell [get_cells driver]]\n"
     for name, count, setting, rule, library, limit in (
         ("default", 10000, None, "", False, 1e20),
         ("setting50", 200, 50, "", False, 50),
         ("design100", 200, 50, "set_max_fanout 100 [current_design]\n", False, 100),
-        (
-            "scoped25",
-            200,
-            50,
-            "set_max_fanout 25 [sta::Instance_cell [get_cells driver]]\n",
-            False,
-            25,
-        ),
-        (
-            "scoped100",
-            200,
-            50,
-            "set_max_fanout 100 [sta::Instance_cell [get_cells driver]]\n",
-            False,
-            50,
-        ),
+        ("scoped25", 200, 50, scoped.format(25), False, 25),
+        ("scoped100", 200, 50, scoped.format(100), False, 50),
         ("library25", 200, 50, "", True, 25),
     ):
         script = generate(
