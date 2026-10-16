@@ -56,8 +56,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   checkout and commit its managed ignore backfill for Specialist reports and state.
 
 
-- Nested Codex calls link the canonical Sandbox credential file and keep private
-  per-call configuration. On Linux, supervised cleanup removes completed calls'
+- Booley Codex calls link the canonical credential file and use a private HOME
+  and generated per-call configuration, including host Doctor calls. Host profiles,
+  custom providers, trust settings, SSH/global Git configuration and ordinary
+  session history are not inherited; only Mutation Tester retains its lock-owned
+  native sessions. On Linux, supervised cleanup removes completed calls'
   private homes and recovers proven-dead marked scratch at MCP startup and
   Specialist launch. Unsupported or uncertain native ownership and old unmarked
   leftovers remain for verified operator cleanup. Sharing auth removes credential

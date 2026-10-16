@@ -675,8 +675,8 @@ def prepare_launch(command: list[str], guard_fds: tuple[int, ...] = ()) -> Lease
                 if len(data["launches"]) >= 64:
                     raise RuntimeError("scratch launch concurrency limit exceeded")
                 data["launches"][token] = {"state": "pending"}
-                _write_marker(root, data)
                 changed.append(root)
+                _write_marker(root, data)
     except BaseException:
         _clear_launch(tuple(changed), token, pending_only=True)
         raise
@@ -853,10 +853,40 @@ def stop_guarded_process(process: subprocess.Popen[Any]) -> bool:
     if process not in _PROCESSES:
         return False
     if process.poll() is None:
-        process.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired, ProcessLookupError):
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+        try:
             process.wait(timeout=16)
+        except subprocess.TimeoutExpired:
+            force_guarded_descendants(process.pid)
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=1)
     return True
+
+
+def force_guarded_descendants(process_id: int) -> None:
+    """Force descendants of an owned, unreaped child without reusing PID authority."""
+    import signal
+
+    from booley.core.lease_shutdown import descendants, signal_identity
+
+    try:
+        pids = descendants(process_id)
+    except (OSError, RuntimeError) as error:
+        logger.warning("Unable to enumerate guarded descendants; retaining scratch: %s", error)
+        return
+    for pid in pids:
+        identity = process_identity(pid)
+        if identity is not None:
+            try:
+                signal_identity(identity, signal.SIGKILL)
+            except OSError as error:
+                logger.warning("Unable to force guarded descendant %s: %s", pid, error)
 
 
 def launch_result(launch: LeaseLaunch) -> int | None:
@@ -927,10 +957,8 @@ def _run_supervised(
 
 def _communicate_supervised(process, launch, original, input_value, timeout):
     try:
-        return process.communicate(input_value, timeout=timeout)
+        return _communicate_native(process, launch, input_value, timeout)
     except subprocess.TimeoutExpired as exc:
-        if launch_result(launch) is not None:
-            return process.communicate(timeout=16)
         stop_guarded_process(process)
         stdout, stderr = process.communicate(timeout=1)
         raise subprocess.TimeoutExpired(original, timeout, output=stdout, stderr=stderr) from exc
@@ -938,6 +966,15 @@ def _communicate_supervised(process, launch, original, input_value, timeout):
         with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             stop_guarded_process(process)
         raise
+
+
+def _communicate_native(process, launch, input_value, timeout):
+    try:
+        return process.communicate(input_value, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if launch_result(launch) is None:
+            raise
+        return process.communicate(timeout=16)
 
 
 async def settle_launch(launch: LeaseLaunch) -> None:

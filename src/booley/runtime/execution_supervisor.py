@@ -145,7 +145,7 @@ def _execution_record(
 def _signal_processes(pids: set[int], signum: int) -> None:
     group = _GROUP.get()
     if group is not None and group.active() and signum != signal.SIGKILL:
-        group.tick()
+        group.advance()
         return
     for pid in pids:
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
@@ -156,7 +156,7 @@ def _signal_owned_tree(signum: int) -> set[int]:
     pids = set(descendant_pids(os.getpid()))
     group = _GROUP.get()
     if group is not None and group.active() and signum != signal.SIGKILL:
-        group.stop(signum)
+        group.advance(signum)
     _signal_processes(pids, signum)
     return pids
 
@@ -210,19 +210,7 @@ def _terminate_tree(
     initial_signal: int,
     force: bool = False,
 ) -> bool:
-    group = _GROUP.get()
-    if group is not None and group.active() and not force:
-        grace_seconds = GRACE_SECONDS + SETTLE_SECONDS
-    stages = (
-        [(signal.SIGKILL, _FORCE_REAP_SECONDS)]
-        if force
-        else [
-            (initial_signal, grace_seconds),
-            (signal.SIGTERM, grace_seconds),
-            (signal.SIGKILL, _FORCE_REAP_SECONDS),
-        ]
-    )
-    for signum, timeout_s in stages:
+    for signum, timeout_s in _termination_stages(force, initial_signal, grace_seconds):
         signaled = _signal_owned_tree(signum)
         terminal, force_requested = _wait_for_tree_exit(
             child,
@@ -246,6 +234,22 @@ def _terminate_tree(
             )
             return terminal
     return False
+
+
+def _termination_stages(force: bool, initial_signal: int, grace_seconds: float):
+    if force:
+        return [(signal.SIGKILL, _FORCE_REAP_SECONDS)]
+    group = _GROUP.get()
+    if group is not None and group.active():
+        return [
+            (initial_signal, GRACE_SECONDS + SETTLE_SECONDS),
+            (signal.SIGKILL, _FORCE_REAP_SECONDS),
+        ]
+    return [
+        (initial_signal, grace_seconds),
+        (signal.SIGTERM, grace_seconds),
+        (signal.SIGKILL, _FORCE_REAP_SECONDS),
+    ]
 
 
 def _normal_exit_code(returncode: int) -> int:
@@ -364,7 +368,7 @@ def _finish_owned_tree(
         force=force,
     )
     if tree_terminal and _GROUP.get() is not None:
-        _GROUP.get().complete(owner=True)
+        _GROUP.get().finish(owner=True)
     child.poll()
     root_returncode = child.returncode if root_returncode is None else root_returncode
     late_cancellation = _cancellation_request(paths) if not cancelled else None

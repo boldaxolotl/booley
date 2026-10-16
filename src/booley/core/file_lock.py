@@ -48,7 +48,7 @@ class LockTimeoutError(TimeoutError):
 
 def acquire_descriptor_lock(fd: int, *, shared: bool = False, blocking: bool = False) -> None:
     """Lock a POSIX descriptor; its owner retains descriptor and lock lifetime."""
-    if sys.platform == "win32":
+    if os.name == "nt":
         raise NotImplementedError("inherited shared descriptor leases require POSIX flock")
     import fcntl
 

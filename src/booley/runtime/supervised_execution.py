@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -63,8 +64,9 @@ class SupervisedProcessSet:
     def terminate_all(self) -> None:
         with self._gate:
             processes = tuple(self._processes)
-        for process in processes:
-            kill_process_tree(process)
+        if processes:
+            with ThreadPoolExecutor(max_workers=min(len(processes), 64)) as executor:
+                list(executor.map(kill_process_tree, processes))
 
     def _write_record(self, state: str, leader, *, tree_terminal: bool) -> None:
         paths = execution_paths(self._execution_id, booley_dir=self._project_data)

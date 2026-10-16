@@ -108,14 +108,12 @@ def _wait_tree(
             _publish_result(roots, token, leader.returncode)
             published = True
             if not terminal:
-                group.stop(signal.SIGTERM)
+                group.advance(signal.SIGTERM)
         if terminal:
             if not published:
                 _publish_result(roots, token, leader.returncode or 0)
             return True
-        if pending.requested is not None:
-            group.stop(pending.requested)
-        deadline = group.tick()
+        deadline = group.advance(pending.requested)
         if deadline is not None and time.monotonic() >= deadline + SETTLE_SECONDS:
             return _reap(leader)
         time.sleep(_POLL_S)
@@ -163,7 +161,7 @@ def supervise(payload: str, command: list[str]) -> int:
     descriptors = register_launch(roots, data["token"], tuple(inherited), group=group)
     try:
         if pending.requested is not None:
-            group.complete(owner=inherited_group is None)
+            group.finish(owner=inherited_group is None)
             complete_launch(roots, data["token"])
             return -pending.requested
         try:
@@ -179,7 +177,7 @@ def supervise(payload: str, command: list[str]) -> int:
                 "Scratch descendants remain unproven; preserving their workspace", file=sys.stderr
             )
             return 125
-        group.complete(owner=inherited_group is None)
+        group.finish(owner=inherited_group is None)
         complete_launch(roots, data["token"])
         return leader.returncode or 0
     finally:

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import errno
 import json
 import logging
 import math
 import os
+import platform
 import signal
 import stat
 import time
@@ -26,6 +28,9 @@ ENV = "BOOLEY_SCRATCH_SHUTDOWN"
 GRACE_SECONDS = 10.0
 SETTLE_SECONDS = 5.0
 MAX_MEMBERS = 64
+# Linux UAPI numbers shared by x86-64 and asm-generic (including AArch64).
+_SYS_PIDFD_OPEN = 434
+_SYS_PIDFD_SEND_SIGNAL = 424
 
 
 def _identity(pid: int) -> dict[str, Any] | None:
@@ -80,21 +85,34 @@ def signal_identity(identity: dict[str, Any], signum: int) -> None:
     """Bind signal delivery to the observed process rather than a reusable PID."""
     pid = identity["pid"]
     libc = ctypes.CDLL(None, use_errno=True)
-    libc.pidfd_open.argtypes = [ctypes.c_int, ctypes.c_uint]
-    libc.pidfd_send_signal.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
-    fd = libc.pidfd_open(pid, 0)
+    fd = _pidfd_call(libc, "pidfd_open", _SYS_PIDFD_OPEN, pid, 0)
     if fd < 0:
         error = ctypes.get_errno()
-        if error == 3:
+        if error == errno.ESRCH:
             return
         raise OSError(error, os.strerror(error))
     try:
-        if _identity(pid) == identity and libc.pidfd_send_signal(fd, signum, None, 0) != 0:
+        if (
+            _identity(pid) == identity
+            and _pidfd_call(
+                libc, "pidfd_send_signal", _SYS_PIDFD_SEND_SIGNAL, fd, signum, ctypes.c_void_p(), 0
+            )
+            != 0
+        ):
             error = ctypes.get_errno()
-            if error != 3:
+            if error != errno.ESRCH:
                 raise OSError(error, os.strerror(error))
     finally:
         os.close(fd)
+
+
+def _pidfd_call(libc: Any, name: str, number: int, *args: Any) -> int:
+    function = getattr(libc, name, None)
+    if function is not None:
+        return function(*args)
+    if platform.machine() not in {"x86_64", "aarch64"}:
+        raise OSError(errno.ENOSYS, "pidfd binding unavailable for this architecture")
+    return libc.syscall(ctypes.c_long(number), *args)
 
 
 def _valid_member(value: Any) -> bool:
@@ -157,6 +175,11 @@ class ShutdownGroup:
 
     def __init__(self, path: Path) -> None:
         self.path: Path = path
+        self._degraded = False
+        self._local_deadline: float | None = None
+        self._local_signal = signal.SIGTERM
+        self._local_signaled: dict[int, int] = {}
+        self._known_guards: dict[int, dict[str, Any]] = {}
 
     @classmethod
     def create(cls, parent: Path) -> ShutdownGroup:
@@ -192,6 +215,10 @@ class ShutdownGroup:
         try:
             acquire_descriptor_lock(fd, blocking=True)
             data = {} if initial else self._read()
+            self._known_guards = {
+                value["identity"]["pid"]: value["identity"]
+                for value in data.get("members", {}).values()
+            }
             before = json.dumps(data, sort_keys=True)
             yield data
             if initial or json.dumps(data, sort_keys=True) != before:
@@ -341,5 +368,63 @@ class ShutdownGroup:
                 )
 
     def active(self) -> bool:
-        with self.locked() as data:
-            return any(not member["terminal"] for member in data["members"].values())
+        if self._degraded:
+            return True
+        try:
+            with self.locked() as data:
+                return any(not member["terminal"] for member in data["members"].values())
+        except (OSError, ValueError, RuntimeError) as error:
+            self._degrade(error)
+            return True
+
+    def _degrade(self, error: Exception) -> None:
+        if not self._degraded:
+            logger.warning("Shared shutdown unavailable; using bounded local cleanup: %s", error)
+        self._degraded = True
+
+    def advance(self, signum: int | None = None) -> float | None:
+        """Keep supervision alive if shared metadata or one signal operation fails."""
+        if not self._degraded:
+            try:
+                if signum is not None:
+                    self.stop(signum)
+                return self.tick()
+            except (OSError, ValueError, RuntimeError) as error:
+                self._degrade(error)
+        return self._advance_local(signum)
+
+    def _advance_local(self, signum: int | None) -> float:
+        if self._local_deadline is None:
+            self._local_deadline = time.monotonic() + GRACE_SECONDS
+            self._local_signal = signal.SIGTERM if signum is None else signum
+        try:
+            targets = descendants(os.getpid())
+        except (OSError, RuntimeError):
+            values = Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()
+            targets = {int(value) for value in values[:65536]}
+        expired = time.monotonic() >= self._local_deadline
+        self._local_signaled = {
+            pid: start for pid, start in self._local_signaled.items() if pid in targets
+        }
+        for pid in targets:
+            identity = _identity(pid)
+            if identity is None or self._known_guards.get(pid) == identity:
+                continue
+            if expired or self._local_signaled.get(pid) != identity["start"]:
+                try:
+                    signal_identity(identity, signal.SIGKILL if expired else self._local_signal)
+                except OSError as error:
+                    logger.debug("Unable to signal owned descendant %s: %s", pid, error)
+                self._local_signaled[pid] = identity["start"]
+        return self._local_deadline
+
+    def finish(self, *, owner: bool = False) -> bool:
+        """Publish shared completion best-effort after the caller proves its tree empty."""
+        try:
+            self.complete(owner=owner)
+            return True
+        except (OSError, ValueError, RuntimeError) as error:
+            logger.warning(
+                "Shared terminal proof unavailable; retaining uncertain roots: %s", error
+            )
+            return False

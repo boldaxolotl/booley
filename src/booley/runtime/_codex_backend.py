@@ -736,6 +736,10 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=16)
     except TimeoutError:
+        from booley.core.temporary_workspace import force_guarded_descendants
+        from booley.core.workspace_async import filesystem_call
+
+        await filesystem_call(force_guarded_descendants, proc.pid)
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         with contextlib.suppress(TimeoutError, ProcessLookupError):
