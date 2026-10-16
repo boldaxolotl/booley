@@ -1,6 +1,7 @@
 """Regression contracts for shipped workflow skills."""
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,22 @@ def _skill_text(name: str, relative: str = "SKILL.md") -> str:
 
 def _compact_skill_text(name: str, relative: str = "SKILL.md") -> str:
     return " ".join(_skill_text(name, relative).split())
+
+
+def test_project_guidance_header_explains_editing_and_staging():
+    template = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+    rendered = template.split("```markdown\n", 1)[1].split("```", 1)[0]
+    header = rendered.split("## Project-Specific Instructions", 1)[0]
+    assert "git add .booley/AGENTS.md" in header, (
+        "generated guidance must explain staging the canonical instructions"
+    )
+    usage = (Path(__file__).resolve().parents[2] / "docs/user/USAGE.md").read_text()
+    for text in (header, usage):
+        assert "AGENTS.md` and `CLAUDE.md" in text
+        assert "non-Stealth" in text and "separate Booley repository" in text
+        assert "hybrid" in text and "tracked" in text
+        assert "git add .booley/AGENTS.md" in text
+    assert "#editing-project-instructions" in usage
 
 
 def test_feedback_routes_private_project_bugs_through_verified_synthetic_reproducer():

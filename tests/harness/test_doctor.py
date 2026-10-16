@@ -299,6 +299,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+        if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:3] == ["git", "rev-parse", "--git-dir"]:
@@ -313,7 +315,10 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             # Live Sandbox inventory must see an empty container list.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            binary = not kwargs.get("text")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=b"" if binary else "", stderr=b"" if binary else ""
+            )
         if cmd[0] == "git" and "config" in cmd and "gc.worktreePruneExpire" in cmd:
             # Healthy default: the ADR 0028 worktree prune guard is set.
             return subprocess.CompletedProcess(cmd, 0, stdout="never\n", stderr="")
@@ -364,7 +369,10 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
                 cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{verdicts}\n", stderr=""
             )
         if cmd[0:2] == ["git", "check-ignore"]:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            binary = not kwargs.get("text")
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout=b"" if binary else "", stderr=b"" if binary else ""
+            )
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -8251,6 +8259,51 @@ def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_pat
     assert exclude.read_bytes() == before
 
 
+def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypatch):
+    _history_git(tmp_path, "init", "-q")
+    project = tmp_path / ".booley"
+    project.mkdir()
+    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    excludes = tmp_path / "global ignores"
+    excludes.write_text("# local policy\n.booley/booley.toml\n")
+    _history_git(tmp_path, "config", "core.excludesFile", str(excludes))
+    for name in (
+        "_check_ticket_leftovers",
+        "_check_project_gitignore",
+        "_check_git_state",
+        "_check_repo_footprint",
+        "_check_custom_endpoints_and_criteria",
+        "_check_agent_backend_health",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+    reporter = doctor._Reporter.create()
+    audit = doctor.ProjectAudit(tmp_path, project, {}, {}, None)
+    doctor._run_project_checks(audit, reporter)
+    warnings = [f for f in reporter.findings or [] if f.severity == "warn"]
+    assert any(".booley/booley.toml" in f.message for f in warnings), (
+        "Doctor must report excluded durable configuration"
+    )
+    assert any(str(excludes) + ":2" in f.message for f in warnings)
+    assert all(f.check_id != "goals.history-ignored" for f in warnings)
+    assert any("edit the reported" in f.fix for f in warnings)
+    assert excludes.read_text() == "# local policy\n.booley/booley.toml\n"
+
+
+def test_goal_history_negation_is_not_ignored(tmp_path):
+    _history_git(tmp_path, "init", "-q")
+    project = tmp_path / ".booley"
+    project.mkdir()
+    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    (tmp_path / ".gitignore").write_text(
+        "/.booley/goals/history/doctor-probe.md\n!/.booley/goals/history/doctor-probe.md\n"
+    )
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(tmp_path, project, reporter.pass_, reporter.warn_)
+    assert not any(f.severity == "warn" for f in reporter.findings or []), (
+        "Goal history negation must not produce an ignored warning"
+    )
+
+
 def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path):
     root = tmp_path / "rtl"
     root.mkdir()
@@ -8357,6 +8410,47 @@ def _versioned_history_layout(tmp_path, *, linked, ignored):
     exclude = root / ".git/info/exclude"
     exclude.write_bytes(b".booley/\n" if ignored else b"")
     return root, project, exclude
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize(
+    "hidden", [None, "booley.toml", "goals/history/a.md", "tickets/history/a.md"]
+)
+def test_independent_history_waiver_does_not_hide_owner_inputs(
+    tmp_path, monkeypatch, linked, hidden
+):
+    root, project, _ = _versioned_history_layout(tmp_path, linked=linked, ignored=True)
+    (project / "doctor-waivers.toml").write_text(
+        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
+        'subject = "independent-booley-history"\n'
+        'reason = "Preserve independent history."\npermanent = true\n'
+    )
+    if hidden:
+        path = project / hidden
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("summary")
+        (project / ".gitignore").write_text(hidden + "\n")
+    for name in (
+        "_check_ticket_leftovers",
+        "_check_project_gitignore",
+        "_check_git_state",
+        "_check_repo_footprint",
+        "_check_custom_endpoints_and_criteria",
+        "_check_agent_backend_health",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(project))
+    doctor._run_project_checks(doctor.ProjectAudit(root, project, {}, {}, None), reporter)
+    findings = reporter.findings or []
+    assert any(
+        f.severity == "waived" and f.subject == "independent-booley-history" for f in findings
+    )
+    warnings = [f for f in findings if f.severity == "warn"]
+    assert len(warnings) == (1 if hidden else 0)
+    if hidden:
+        assert warnings[0].check_id == "project.inputs-ignored"
+        assert hidden in warnings[0].message
 
 
 @pytest.mark.parametrize("linked", [False, True])
