@@ -1,6 +1,6 @@
 /*
  * Booley site theme: an amber-phosphor terminal on top of Material's slate
- * scheme. The landing page is laid out as a man page (`man booley`).
+ * scheme. The landing page borrows the layout of a man page.
  *
  * Palette (amber P3 phosphor on a warm CRT tube):
  *   --tube       page background, the dark glass of the tube
@@ -267,53 +267,85 @@ body {
   max-width: 78ch;
 }
 
-/* Man page running header and footer: name, title, name. */
-.man-head,
-.man-foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 1ch;
-  color: var(--afterglow);
-  font-size: 0.75rem;
-}
-
-.md-typeset .man-head {
-  margin-top: 0;
-}
-
-.md-typeset .man-foot {
-  margin-top: 3rem;
-}
-
-/* The one loud thing on the page: the wordmark with a live cursor. */
+/* The one loud thing on the page. On load the name types itself out once,
+   the cursor blinks twice and goes away; nothing keeps moving after that. */
 .md-typeset h1.wordmark {
   font-size: clamp(5.5rem, 22vw, 11rem);
   line-height: 0.85;
-  margin: 1.5rem 0 1rem;
+  letter-spacing: 0;
+  margin: 1rem 0 1.5rem;
   color: var(--bloom);
   text-shadow:
     0 0 0.04em var(--phosphor),
     0 0 0.35em rgb(255 176 0 / 35%);
 }
 
-.wordmark .cursor {
-  display: inline-block;
-  width: 0.45em;
-  height: 0.72em;
-  margin-left: 0.06em;
-  background: var(--phosphor);
-  box-shadow: 0 0 0.3em rgb(255 176 0 / 45%);
-  animation: cursor-blink 1.06s steps(1) infinite;
+/* VT323 is monospaced, so 1ch is exactly one letter: six steps reveal
+   "booley" one character at a time. */
+.wordmark__text {
+  animation: wordmark-type 0.9s steps(6, end) 0.25s backwards;
 }
 
-@keyframes cursor-blink {
-  50% {
+@keyframes wordmark-type {
+  from {
+    clip-path: inset(-0.5em 100% -0.5em -0.5em);
+  }
+
+  to {
+    clip-path: inset(-0.5em 0 -0.5em -0.5em);
+  }
+}
+
+.wordmark__cursor {
+  display: inline-block;
+  width: 1ch;
+  height: 0.72em;
+  margin-left: 0.04em;
+  background: var(--phosphor);
+  box-shadow: 0 0 0.3em rgb(255 176 0 / 45%);
+  opacity: 0;
+  animation:
+    wordmark-cursor-follow 0.9s steps(6, end) 0.25s backwards,
+    wordmark-cursor-out 1.5s steps(1, end) 0s forwards;
+}
+
+/* Rides along behind the letters while they appear. */
+@keyframes wordmark-cursor-follow {
+  from {
+    transform: translateX(-6ch);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* Visible while typing, then two blinks, then gone for good. */
+@keyframes wordmark-cursor-out {
+  0% {
+    opacity: 1;
+  }
+
+  76% {
+    opacity: 0;
+  }
+
+  84% {
+    opacity: 1;
+  }
+
+  92% {
+    opacity: 0;
+  }
+
+  100% {
     opacity: 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wordmark .cursor {
+  .wordmark__text,
+  .wordmark__cursor {
     animation: none;
   }
 }
@@ -324,7 +356,7 @@ body {
   margin: 2.2rem 0 0.4rem;
 }
 
-.manpage > :is(p, ul, dl, div, pre, figure):not(.man-head, .man-foot) {
+.manpage > :is(p, ul, dl, div, pre) {
   margin-left: 7ch;
 }
 
@@ -343,24 +375,61 @@ body {
   margin: 0;
 }
 
-/* Stand-in until a real screenshot exists. */
-.screenshot-pending {
-  display: grid;
-  place-items: center;
-  aspect-ratio: 2 / 1;
-  padding: 2ch;
-  border: 1px dashed var(--afterglow);
-  color: var(--afterglow);
-  text-align: center;
+/* ---------- Videos page ---------- */
+
+.video {
+  max-width: 78ch;
+  margin: 1.5rem 0;
 }
 
-.md-typeset .screenshot-pending p {
-  margin: 0;
-  max-width: 44ch;
+/* Before a click the player is a single wide button: what it is, how long
+   it runs, and where it plays from. */
+.video__play {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 2ch;
+  align-items: baseline;
+  width: 100%;
+  padding: 1.4rem 2ch;
+  border: 1px solid var(--afterglow);
+  background: var(--tube-lift);
+  color: var(--phosphor);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.video__play:hover,
+.video__play:focus-visible {
+  background: var(--phosphor);
+  color: var(--tube);
+}
+
+.video__glyph {
+  grid-row: span 2;
+  font-size: 1.4rem;
+}
+
+.video__title {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  line-height: 1.1;
+}
+
+.video__meta {
+  font-size: 0.7rem;
+  opacity: 0.8;
+}
+
+.video--playing iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--afterglow);
 }
 
 @media screen and (max-width: 44.9375em) {
-  .manpage > :is(p, ul, dl, div, pre, figure):not(.man-head, .man-foot) {
+  .manpage > :is(p, ul, dl, div, pre) {
     margin-left: 2ch;
   }
 
@@ -371,10 +440,5 @@ body {
 
   .manpage dl.man-dl dd {
     margin-bottom: 0.6rem;
-  }
-
-  .man-head span:nth-child(2),
-  .man-foot span:nth-child(2) {
-    display: none;
   }
 }

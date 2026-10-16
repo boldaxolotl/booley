@@ -44,6 +44,9 @@ extra:
 extra_css:
   - stylesheets/terminal.css
 
+extra_javascript:
+  - javascripts/video.js
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -53,5 +56,6 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Videos: videos.md
   - Blog: blog/index.md
   - GitHub: https://github.com/boldaxolotl/booley
