@@ -301,3 +301,84 @@ def test_policy_retained_parent_sets_exit_one(tmp_path, capsys, retention, as_js
     output = capsys.readouterr().out
     assert "retained or unmanifested" in output
     assert source.exists()
+
+
+@pytest.mark.parametrize("state", [None, {"quarantine": 123}, {"status": []}])
+def test_malformed_journal_returns_invalid_request(tmp_path, capsys, state):
+    scratch = _setup(tmp_path)
+    entry = _record(tmp_path, scratch / "capture")
+    manifest = scratch / "manifest.json"
+    payload = json.loads(manifest.read_text())
+    payload["journal"][entry.path] = state
+    manifest.write_text(json.dumps(payload))
+    before = _snapshot(tmp_path)
+    try:
+        status = _run(tmp_path, "preview")
+    except (AttributeError, TypeError):
+        status = -1
+    assert status == 2, "malformed recovery journal must return invalid-request exit two"
+    assert "journal" in capsys.readouterr().err
+    assert _snapshot(tmp_path) == before
+
+
+def test_refused_symlink_replacement_stales_plan_before_mutation(tmp_path, capsys):
+    scratch = _setup(tmp_path)
+    candidate = tmp_path / ".booley" / "candidate"
+    _record(tmp_path, candidate)
+    safe = scratch / "safe"
+    _record(tmp_path, safe)
+    first = tmp_path / ".booley" / "first"
+    second = tmp_path / ".booley" / "second"
+    first.write_text("first")
+    second.write_text("second")
+    candidate.unlink()
+    candidate.symlink_to(first)
+    plan = preview_cleanup(tmp_path, run_id="check")
+    candidate.rename(tmp_path / ".booley" / "old-link")
+    candidate.symlink_to(second)
+    before = _snapshot(tmp_path)
+    assert _run(tmp_path, "apply", plan.digest) == 2, (
+        "refused identity replacement must stale the whole plan"
+    )
+    assert "preview" in capsys.readouterr().err
+    assert _snapshot(tmp_path) == before
+    assert safe.exists() and candidate.is_symlink()
+
+
+@pytest.mark.parametrize("deny_at", [0, 1, 2, 3])
+def test_manifest_write_denial_reports_every_unresolved_path(
+    tmp_path, monkeypatch, capsys, deny_at
+):
+    scratch = _setup(tmp_path)
+    entry = _record(tmp_path, scratch / "capture")
+    if deny_at == 0:
+        monkeypatch.setattr(cleanup_module.os, "access", lambda *args: False)
+    plan = preview_cleanup(tmp_path, run_id="check")
+    before = _snapshot(tmp_path)
+
+    original = cleanup_module._atomic_write
+    calls = 0
+
+    def denied(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls >= deny_at:
+            raise PermissionError("journal write denied")
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(cleanup_module, "_atomic_write", denied)
+    try:
+        status = _run(tmp_path, "apply", plan.digest)
+    except OSError:
+        status = -1
+    assert status == 1, "journal write failure must report unresolved exit one"
+    output = capsys.readouterr().out
+    assert entry.path in output and str(scratch.relative_to(tmp_path)) in output
+    assert ("not writable or searchable" if deny_at == 0 else "journal write denied") in output
+    if deny_at == 0:
+        assert calls == 0
+    if deny_at < 3:
+        after = _snapshot(tmp_path)
+        assert all(after.get(name) == content for name, content in before.items())
+    else:
+        assert not (scratch / "capture").exists() and scratch.exists()

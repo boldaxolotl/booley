@@ -16,6 +16,7 @@ import stat
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -300,7 +301,7 @@ def _load_manifest(path: Path, root: Path) -> dict[str, Any]:
         raise CleanupError("manifest is not beneath its recorded setup run root")
     try:
         raw_entries = require_list(payload.get("entries", []), field="manifest entries")
-        journal = require_dict(payload.get("journal", {}), field="manifest journal")
+        journal = _validated_journal(payload.get("journal", {}))
     except (TypeError, ValueError) as exc:
         raise CleanupError(f"invalid cleanup manifest structure: {exc}") from exc
     entries = []
@@ -315,6 +316,34 @@ def _load_manifest(path: Path, root: Path) -> dict[str, Any]:
     payload["entries"] = [entry.as_dict() for entry in entries]
     payload["journal"] = journal
     return payload
+
+
+def _validated_journal(raw: Any) -> dict[str, Any]:
+    """Validate persisted recovery records before any assessment or mutation."""
+    journal = require_dict(raw, field="manifest journal")
+    for value in journal.values():
+        state = require_dict(value, field="manifest journal record")
+        if "status" in state and not isinstance(state["status"], str):
+            raise ValueError("manifest journal status must be a string")
+        if "quarantine" in state and (
+            not isinstance(state["quarantine"], str) or not state["quarantine"]
+        ):
+            raise ValueError("manifest journal quarantine must be a nonempty path string")
+    return journal
+
+
+def _observed_candidate_identity(root: Path, entry: ManifestEntry) -> FileIdentity | None:
+    """Observe a refused final component without following a symlinked parent."""
+    path = root / entry.path
+    for parent in path.parents:
+        if parent == root / SETUP_ROOT:
+            break
+        if parent.is_symlink():
+            raise CleanupBlockedError(f"candidate has a symlinked parent: {entry.path}")
+    try:
+        return FileIdentity.from_path(path)
+    except FileNotFoundError:
+        return None
 
 
 def _entry_path(root: Path, entry: ManifestEntry) -> Path:
@@ -718,6 +747,9 @@ def _assess_item(
     if entry.identity.kind == "directory":
         observation["children"] = []
     try:
+        observed = _observed_candidate_identity(root, entry)
+        if observed is not None:
+            observation["identity"] = asdict(observed)
         path = _recovery_path(root, entry, payload["journal"])
         state = payload["journal"].get(entry.path, {})
         if state.get("status") == "done":
@@ -1024,7 +1056,7 @@ def _materialize_for_candidates(
         blocked = _dependency_blockers(
             root,
             dependency_entries,
-            (explicit | referenced) - changed,
+            referenced - changed,
             "attachment was not materialized",
         )
     except (
@@ -1107,6 +1139,25 @@ def _apply_candidate(  # noqa: PLR0911 -- each disposition boundary fails closed
     return _apply_entry(root, entry, journal, checkpoint)
 
 
+def _checkpoint_or_block_remaining(
+    manifest_path: Path,
+    payload: dict[str, Any],
+    pending: list[CleanupItem],
+    unresolved: list[str],
+) -> bool:
+    """Stop further mutation if recovery progress cannot be persisted."""
+    try:
+        _atomic_write(manifest_path, payload)
+    except OSError as exc:
+        unresolved.extend(
+            f"{item.path}: cannot persist cleanup journal: {exc}"
+            for item in pending
+            if not any(row.startswith(item.path + ":") for row in unresolved)
+        )
+        return False
+    return True
+
+
 def _apply_candidates(
     root: Path,
     manifest_path: Path,
@@ -1118,18 +1169,14 @@ def _apply_candidates(
 ) -> CleanupResult:
     """Apply candidates deepest-first and persist the recovery journal."""
     journal = payload["journal"]
-
-    def checkpoint() -> None:
-        """Persist the quarantine intent before the filesystem rename."""
-        _atomic_write(manifest_path, payload)
-
+    checkpoint = partial(_atomic_write, manifest_path, payload)
     removed: list[str] = []
     absent: list[str] = []
     evicted: list[str] = []
     unresolved: list[str] = [f"{path}: {reason}" for path, reason in blocked.items()]
     bytes_removed = 0
     ordered = sorted(candidates, key=lambda item: item.path.count("/"), reverse=True)
-    for item in ordered:
+    for index, item in enumerate(ordered):
         if item.path in blocked:
             continue
         entry = entries.get(item.path)
@@ -1140,8 +1187,6 @@ def _apply_candidates(
         except (CleanupError, OSError) as exc:
             outcome, size, reason = "unresolved", 0, str(exc)
         payload["journal"] = journal
-        if entry is not None:
-            _atomic_write(manifest_path, payload)
         if outcome == "removed":
             removed.append(item.path)
             bytes_removed += size
@@ -1151,6 +1196,10 @@ def _apply_candidates(
             evicted.append(item.path)
         else:
             unresolved.append(f"{item.path}: {reason or 'unsafe'}")
+        if entry is not None and not _checkpoint_or_block_remaining(
+            manifest_path, payload, ordered[index:], unresolved
+        ):
+            break
     return CleanupResult(
         "",
         tuple(removed),
@@ -1177,7 +1226,21 @@ def apply_cleanup(
     payload.setdefault("journal", {})
     candidates = [item for item in plan.items if item.category in {"remove", "evict-cache"}]
     blocked = {item.path: item.reason for item in plan.items if item.category == "unresolved"}
-    blocked.update(_materialize_for_candidates(root, manifest_path, payload, entries, candidates))
+    if not candidates:
+        return CleanupResult(
+            plan.digest, unresolved=tuple(f"{p}: {r}" for p, r in blocked.items())
+        )
+    try:
+        blocked.update(
+            _materialize_for_candidates(root, manifest_path, payload, entries, candidates)
+        )
+    except OSError as exc:
+        blocked.update(
+            {item.path: f"cannot persist cleanup journal: {exc}" for item in candidates}
+        )
+        return CleanupResult(
+            plan.digest, unresolved=tuple(f"{p}: {r}" for p, r in blocked.items())
+        )
     result = _apply_candidates(
         root,
         manifest_path,

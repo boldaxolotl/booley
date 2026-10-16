@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -978,3 +979,32 @@ def test_bounded_manifest_named_child_is_not_a_control_file(tmp_path):
     result = apply_cleanup(plan)
     assert len(result.unresolved) == 2
     assert unknown.read_text() == "unmanifested data"
+
+
+@pytest.mark.parametrize("referenced", [False, True])
+def test_explicit_dependency_allows_original_digest_retry(tmp_path, monkeypatch, referenced):
+    root = _project(tmp_path)
+    scratch = prepare_run(root, "dependency-retry")
+    dependency = root / ".booley" / "evidence"
+    dependency.write_text("durable evidence")
+    candidate = scratch / "capture"
+    _owned(root, "dependency-retry", candidate, dependencies=[dependency])
+    if referenced:
+        append(Finding(title="dependency", attachments=[str(dependency)]), root / ".booley")
+    plan = preview_cleanup(root, run_id="dependency-retry")
+    original = cleanup_module._delete_quarantine
+
+    def interrupt(path):
+        raise KeyboardInterrupt("checkpointed dependency")
+
+    monkeypatch.setattr(cleanup_module, "_delete_quarantine", interrupt)
+    with suppress(KeyboardInterrupt):
+        apply_cleanup(plan)
+    monkeypatch.setattr(cleanup_module, "_delete_quarantine", original)
+    result = apply_cleanup(plan)
+    assert not result.unresolved, "satisfied explicit dependency must not block cleanup retry"
+    assert not scratch.exists() and dependency.read_text() == "durable evidence"
+    if referenced:
+        log = read_log(root / ".booley")
+        assert log.entries[0].attachments != [str(dependency)]
+        assert "durable evidence" in Path(log.entries[0].attachments[0]).read_text()
