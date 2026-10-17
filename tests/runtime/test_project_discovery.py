@@ -4,20 +4,6 @@ import subprocess
 
 import pytest
 
-from booley.harness.booley import find_project_root
-
-
-def test_nested_data_repository_selects_checkout(tmp_path, monkeypatch):
-    outer = tmp_path / "checkout"
-    data = outer / ".booley"
-    data.mkdir(parents=True)
-    for root in (outer, data):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
-    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.chdir(data)
-    assert find_project_root() == outer
-
 
 @pytest.mark.parametrize("name", [".booley", "custom-data"])
 def test_all_checkout_local_data_selections(tmp_path, monkeypatch, name):
@@ -35,6 +21,8 @@ def test_all_checkout_local_data_selections(tmp_path, monkeypatch, name):
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(child) == outer
+    monkeypatch.chdir(data)
+    assert discover_project_root() == outer
 
 
 def test_unrelated_nested_checkout_keeps_identity(tmp_path, monkeypatch):
@@ -213,6 +201,7 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     root, alias, unrelated = (tmp_path / name for name in ("selected", "alias", "unrelated"))
     for directory in (root, alias, unrelated):
         directory.mkdir()
+    resolve = project_discovery.resolve_authoritative_booley_dir
     original = Path.samefile
     calls = []
 
@@ -224,11 +213,11 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "samefile", samefile)
     monkeypatch.setenv("BOOLEY_DIR", str(root))
-    assert project_discovery._data_root(alias / "new", []) == root
+    assert project_discovery._data_root(alias / "new", [], resolve) == root
     assert calls
     nested = alias / "embedded"
     nested.mkdir()
-    assert project_discovery._data_root(nested, [nested]) is None
+    assert project_discovery._data_root(nested, [nested], resolve) is None
     (nested / ".git").mkdir()
     (nested / ".git" / "HEAD").write_text("ref: refs/heads/main")
     (nested / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
@@ -242,10 +231,10 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
 
     reset_cache()
     assert resolve_booley_dir() == unrelated
-    assert project_discovery._data_root(alias / "new", [owner]) == root
-    assert project_discovery._owning_checkouts([owner], root) == {owner}
+    assert project_discovery._data_root(alias / "new", [owner], resolve) == root
+    assert project_discovery._owning_checkouts([owner], root, resolve) == {owner}
     reset_cache()
-    assert project_discovery._owning_checkouts([nested], root) == set()
+    assert project_discovery._owning_checkouts([nested], root, resolve) == set()
 
 
 @pytest.mark.parametrize("owned", [True, False])
@@ -269,3 +258,58 @@ def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned)
     else:
         with pytest.raises(discovery.ProjectRootDiscoveryError):
             discovery.discover_project_root(data)
+
+
+def test_ambiguous_ownership_refuses(tmp_path, monkeypatch):
+    from booley.runtime import project_discovery as discovery
+
+    owner, other, data = (tmp_path / name for name in ("owner", "other", "data"))
+    data.mkdir()
+    for root in (owner, other):
+        root.mkdir()
+        (root / ".git").write_text("gitdir: /unused/metadata\n")
+        (root / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
+    (owner / "custom-data").symlink_to(data, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setattr(discovery, "WORK_DIR", str(other))
+    monkeypatch.setattr(discovery, "BOOLEY_DIR_TARGET", str(data))
+    with pytest.raises(
+        discovery.ProjectRootDiscoveryError,
+        match="run from the Project Root or set RTL_PROJECT_ROOT",
+    ):
+        discovery.discover_project_root(owner / "custom-data")
+
+
+def test_authoritative_directory_resolved_once_per_invocation(tmp_path, monkeypatch):
+    from collections import Counter
+
+    from booley.runtime import project_discovery as discovery
+
+    owner, data, replacement = (tmp_path / name for name in ("owner", "data", "replacement"))
+    for root in (owner, data, replacement):
+        root.mkdir()
+        (root / ".git").write_text("gitdir: /unused/metadata\n")
+    config = owner / "booley.toml"
+    config.write_text(f'[project]\ndir = "{data.as_posix()}"\n')
+    alias = owner / "custom-data"
+    alias.symlink_to(data, target_is_directory=True)
+    for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    resolve = discovery.resolve_authoritative_booley_dir
+    calls = Counter()
+
+    def counted(root):
+        calls[root.resolve()] += 1
+        return resolve(root)
+
+    monkeypatch.setattr(discovery, "resolve_authoritative_booley_dir", counted)
+    assert discovery.discover_project_root(alias) == owner
+    assert calls == {data: 1, owner: 1}, "authoritative resolution repeated within invocation"
+    calls.clear()
+    config.write_text(f'[project]\ndir = "{replacement.as_posix()}"\n')
+    assert discovery.discover_project_root(alias) == data
+    assert calls == {data: 1, owner: 1}
