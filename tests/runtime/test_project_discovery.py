@@ -129,7 +129,11 @@ def test_linked_git_marker_and_symlink_data(tmp_path, monkeypatch):
     assert discover_project_root(alias) == outer
 
 
-def test_source_stale_data_refuses_goal_but_feedback_routes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("stale_data", [False, True])
+def test_source_stale_data_refuses_goal_but_feedback_routes(
+    tmp_path, monkeypatch, stale_data, retired
+):
     from booley.harness.booley import _command_project_root
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
@@ -137,11 +141,16 @@ def test_source_stale_data_refuses_goal_but_feedback_routes(tmp_path, monkeypatc
     data.mkdir()
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
-    monkeypatch.chdir(data)
-    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    with pytest.raises(ProjectRootDiscoveryError):
-        _command_project_root("goal")
+    monkeypatch.chdir(data if stale_data else tmp_path)
+    for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", "BOOLEY_CONTAINER", "BOOLEY_PROJECT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    if retired:
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
+    if stale_data:
+        with pytest.raises(ProjectRootDiscoveryError):
+            _command_project_root("goal")
+    else:
+        assert _command_project_root("goal") == tmp_path
     assert _command_project_root("feedback") == tmp_path
 
 

@@ -8,7 +8,7 @@ from itertools import chain
 from pathlib import Path
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_authoritative_booley_dir
-from booley.core.checkout_role import SourceCheckoutProjectError
+from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
 from booley.runtime.booley_dir import contains
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 
@@ -106,7 +106,7 @@ def discover_project_root(
     @cache
     def checkout_data(root):
         try:
-            return resolve_authoritative_booley_dir(root)
+            return resolve_authoritative_booley_dir(require_project_checkout(root))
         except SourceCheckoutProjectError:
             return None
 
