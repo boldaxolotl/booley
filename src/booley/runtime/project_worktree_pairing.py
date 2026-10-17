@@ -282,11 +282,13 @@ def worktree_removal_instructions(
 
     kind = "Paired Checkout" if paired else "Snapshot"
     steps = [
-        f"{kind} removal instructions (run in the same Sandbox):",
+        f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "WARNING: usable host removal commands are unavailable; "
         "these absolute paths are Sandbox paths.",
         "Before removal, preserve needed worktree-local evidence and other "
         "ignored/untracked files outside this worktree; see docs/user/USAGE.md.",
+        "After preservation, clean dirty/untracked files (including the Snapshot copy) "
+        "before removal; inspect locks before unlocking or forcing removal.",
     ]
     if paired:
         steps.append(

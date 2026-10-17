@@ -1038,9 +1038,9 @@ the created worktree path on stdout. It currently has no reliable host-path
 mapping, so creation succeeds with a warning and explicitly labeled commands
 using quoted absolute **Sandbox paths**. Run them in the **same Sandbox** from
 outside the worktree being removed; do not paste them into a host terminal.
-Preserve needed work before cleaning a dirty checkout or considering force;
-inspect locks before intentionally unlocking a worktree or forcing removal.
-
+After preservation, clean dirty/untracked files before removal, including a
+Snapshot's copied Booley Directory files if Git reports them as untracked.
+Inspect locks before intentionally unlocking a worktree or forcing removal.
 
 Outside Goal Mode, `--baseline` uses the Paired Checkout branch's recorded
 creation base ahead of its upstream. Pushing, merging or rebasing newer Project
