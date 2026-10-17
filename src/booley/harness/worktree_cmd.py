@@ -157,8 +157,10 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> int:
             )
         return 1
     print(worktree)
-    if paired:
-        print(worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr)
+    print(
+        worktree_removal_instructions(project_root, worktree, args.name, paired=paired),
+        file=sys.stderr,
+    )
     return 0
 
 
