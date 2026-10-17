@@ -176,121 +176,61 @@ def publication_tree(repository: Path, parent: str, path: str, blob: str) -> str
         return raw_git(repository, "write-tree", env=env).strip().decode("ascii")
 
 
-def publication_tree_oid(repository: Path, publication: PinnedPublication) -> str:
-    """Compute the literal expected tree without creating any object or private index."""
-    _validate_path(publication.path)
-    tree = raw_git(repository, "rev-parse", publication.pin + "^{tree}").strip().decode("ascii")
-    return _insert_tree_oid(
-        repository, tree, tuple(os.fsencode(publication.path).split(b"/")), publication.blob
+def publication_pack(repository: Path, publication: PinnedPublication) -> bytes:
+    """Retain Git's exact publication objects, excluding the already pinned history."""
+    return raw_git(
+        repository,
+        "pack-objects",
+        "--stdout",
+        "--revs",
+        input_bytes=f"{publication.intended_commit}\n^{publication.pin}\n".encode(),
     )
-
-
-def _insert_tree_oid(
-    repository: Path, tree: str | None, parts: tuple[bytes, ...], blob: str
-) -> str:
-    rows: dict[bytes, tuple[bytes, bytes, str]] = {}
-    if tree is not None:
-        for row in raw_git(repository, "ls-tree", "-z", tree).split(b"\0"):
-            if row:
-                metadata, name = row.split(b"\t", 1)
-                mode, kind, oid = metadata.split()
-                rows[name] = (mode.lstrip(b"0"), kind, oid.decode("ascii"))
-    name = parts[0]
-    existing = rows.get(name)
-    if len(parts) == 1:
-        if existing is not None:
-            raise FileCommitError("publication path is already committed")
-        rows[name] = (b"100644", b"blob", blob)
-    else:
-        if existing is not None and existing[1] != b"tree":
-            raise FileCommitError("publication ancestor is not a pinned tree")
-        subtree = _insert_tree_oid(
-            repository, None if existing is None else existing[2], parts[1:], blob
-        )
-        rows[name] = (b"40000", b"tree", subtree)
-    content = b"".join(
-        mode + b" " + name + b"\0" + bytes.fromhex(oid)
-        for name, (mode, _kind, oid) in sorted(
-            rows.items(), key=lambda row: row[0] + (b"/" if row[1][1] == b"tree" else b"")
-        )
-    )
-    return (
-        raw_git(repository, "hash-object", "-t", "tree", "--stdin", input_bytes=content)
-        .strip()
-        .decode("ascii")
-    )
-
-
-def restore_publication_blob(repository: Path, blob: str, content: bytes) -> None:
-    """Restore only an exact immutable summary blob after the caller proves authority."""
-    actual = (
-        raw_git(repository, "hash-object", "--no-filters", "--stdin", input_bytes=content)
-        .strip()
-        .decode("ascii")
-    )
-    if actual != blob:
-        raise FileCommitError("saved publication summary differs from its original blob OID")
-    raw_git(repository, "hash-object", "-w", "--no-filters", "--stdin", input_bytes=content)
 
 
 def restore_publication_objects(
-    repository: Path, publication: PinnedPublication, content: bytes, raw_commit: bytes
+    repository: Path, publication: PinnedPublication, content: bytes, pack: bytes
 ) -> None:
-    """Restore the exact journaled objects; caller must first prove physical authority."""
-    validate_pin(repository, publication.pin)
-    commit = publication.intended_commit
-    if (
-        commit is None
-        or raw_git(repository, "hash-object", "-t", "commit", "--stdin", input_bytes=raw_commit)
-        .strip()
-        .decode("ascii")
-        != commit
-    ):
-        raise FileCommitError("saved publication commit bytes differ from their original OID")
-    blob = (
-        raw_git(repository, "hash-object", "--no-filters", "--stdin", input_bytes=content)
-        .strip()
-        .decode("ascii")
-    )
-    if blob != publication.blob:
-        raise FileCommitError("saved publication summary differs from its original blob OID")
-    expected_tree = _recipe_tree(repository, publication, raw_commit)
-    raw_git(repository, "hash-object", "-w", "--no-filters", "--stdin", input_bytes=content)
-    tree = publication_tree(repository, publication.pin, publication.path, publication.blob)
-    if tree != expected_tree:
-        raise FileCommitError(
-            "saved publication tree differs from the exact pinned single-path tree"
+    """Prove saved objects privately before importing only the exact publication."""
+    with tempfile.TemporaryDirectory(prefix="booley-publication-") as scratch:
+        private = Path(scratch) / "repository"
+        raw_git(
+            repository,
+            "clone",
+            "--shared",
+            "--bare",
+            "--quiet",
+            "--",
+            str(repository),
+            str(private),
         )
-    restored = (
-        raw_git(repository, "hash-object", "-t", "commit", "-w", "--stdin", input_bytes=raw_commit)
-        .strip()
-        .decode("ascii")
-    )
-    if restored != commit or not proves_publication(repository, restored, publication):
-        raise FileCommitError("restored publication differs from its immutable intent")
-
-
-def _recipe_tree(repository: Path, publication: PinnedPublication, raw_commit: bytes) -> str:
-    headers = raw_commit.split(b"\n\n", 1)[0].split(b"\n")
-    parents = [row[7:] for row in headers if row.startswith(b"parent ")]
-    trees = [row[5:] for row in headers if row.startswith(b"tree ")]
-    if parents != [publication.pin.encode("ascii")] or len(trees) != 1:
-        raise FileCommitError("saved publication commit is not the exact one-parent recipe")
-    expected_tree = publication_tree_oid(repository, publication)
-    if trees != [expected_tree.encode("ascii")]:
-        raise FileCommitError(
-            "saved publication tree differs from the exact pinned single-path tree"
+        raw_git(private, "unpack-objects", "-r", input_bytes=pack)
+        commit = publication.intended_commit
+        if commit is None or not proves_publication(private, commit, publication):
+            raise FileCommitError("saved publication differs from its immutable intent")
+        if raw_git(private, "cat-file", "blob", publication.blob) != content:
+            raise FileCommitError("saved publication summary differs from its original blob OID")
+        headers = raw_git(private, "cat-file", "commit", commit).split(b"\n\n", 1)[0].split(b"\n")
+        expected = publication_tree(private, publication.pin, publication.path, publication.blob)
+        changes = raw_git(
+            private, "diff-tree", "--name-only", "-r", "-t", "-z", publication.pin, commit
+        ).split(b"\0")
+        path = os.fsencode(publication.path)
+        if headers[0] != b"tree " + expected.encode() or any(
+            name and name != path and not path.startswith(name + b"/") for name in changes
+        ):
+            raise FileCommitError("saved publication tree differs from the exact pinned tree")
+        if (
+            len(headers) not in {4, 5}
+            or not headers[0].startswith(b"tree ")
+            or not headers[1].startswith(b"parent ")
+            or not headers[2].startswith(b"author ")
+            or not headers[3].startswith(b"committer ")
+            or (len(headers) == 5 and not headers[4].startswith(b"encoding "))
+        ):
+            raise FileCommitError("saved publication commit has unsupported raw headers")
+        raw_git(
+            repository, "unpack-objects", "-r", input_bytes=publication_pack(private, publication)
         )
-    if (
-        len(headers) not in {4, 5}
-        or not headers[0].startswith(b"tree ")
-        or not headers[1].startswith(b"parent ")
-        or not headers[2].startswith(b"author ")
-        or not headers[3].startswith(b"committer ")
-        or (len(headers) == 5 and not headers[4].startswith(b"encoding "))
-    ):
-        raise FileCommitError("saved publication commit has unsupported raw headers")
-    return expected_tree
 
 
 def compare_and_swap(repository: Path, branch: str, commit: str, expected: str) -> bool:
