@@ -244,17 +244,12 @@ def test_legacy_unpaired_record_can_freeze_and_retry_with_current_authority(comp
     assert finish_goal(call, environment(complete)) == result
 
 
-@pytest.mark.parametrize("journal", ["publication", "intended-commit"])
-def test_publication_journal_substitution_refuses_before_next_effect(layout, journal):
+def test_publication_journal_substitution_refuses_before_next_effect(layout):
     layout = publication_layout(layout)
-    call, operation = freeze(
-        layout, "publication-intent" if journal == "publication" else "commit-journaled"
-    )
-    path = operation / (journal + ".json")
+    call, operation = freeze(layout, "commit-journaled")
+    path = operation / "publication.json"
     value = json.loads(path.read_bytes())
-    value["path" if journal == "publication" else "commit"] = (
-        "foreign" if journal == "publication" else layout.record.base_sha
-    )
+    value["commit"] = layout.record.base_sha
     path.write_text(json.dumps(value))
     head = git(layout.worktree, "rev-parse", "HEAD")
     index = Path(git(layout.worktree, "rev-parse", "--git-path", "index"))

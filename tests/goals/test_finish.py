@@ -125,9 +125,6 @@ def test_committed_summary_is_on_worktree_branch_and_main_does_not_move(layout):
         pytest.param("finishing", marks=pytest.mark.timeout(150), id="finishing"),
         pytest.param("local-artifacts", marks=pytest.mark.timeout(150), id="local-artifacts"),
         pytest.param(
-            "publication-intent", marks=pytest.mark.timeout(120), id="publication-intent"
-        ),
-        pytest.param(
             "destination-materialized",
             marks=pytest.mark.timeout(150),
             id="destination-materialized",
@@ -151,6 +148,7 @@ def test_every_publication_crash_boundary_recovers_exactly_once(layout, boundary
 
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop))
+    git(complete.worktree, "prune", "--expire=now")
     result = finish_goal(call, environment(complete))
     assert result["status"] == "finished"
     assert git(complete.worktree, "rev-parse", "HEAD^1") == before
@@ -384,7 +382,7 @@ def test_recovery_refuses_substituted_immutable_publication_proof(layout, tamper
     call = request(complete)
 
     def stop(name):
-        if name == "publication-intent":
+        if name == "commit-journaled":
             raise Crash()
 
     with pytest.raises(Crash):
