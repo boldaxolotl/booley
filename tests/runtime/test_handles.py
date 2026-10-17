@@ -456,6 +456,7 @@ def run_workers(tmp_path, target):
 
 def test_shape_valid_maps_remain_usable(tmp_path_factory, caplog):
     for counter in [-1, 1, 99]:
+        caplog.clear()
         tmp_path = tmp_path_factory.mktemp(str(counter))
         store = handles.HandleStore(tmp_path)
         entries = {"old": "S7", "duplicate": "S7", "unusual": "display", "collision": "S3"}
@@ -479,7 +480,7 @@ def test_shape_valid_maps_remain_usable(tmp_path_factory, caplog):
         assert registry.snapshot().rows[0].attribution.key == "dangling", counter
         assert handles.HandleStore(tmp_path, jobs=True).load().entries["job"] == "J-SIM1", counter
         assert store.path.read_bytes() == before, counter
-        assert "Session handle unavailable" in caplog.text, counter
+        assert "for dangling" in caplog.text and "for Job job" in caplog.text, counter
 
 
 def test_maintenance_prunes_without_allocating_historical_handles(tmp_path_factory, monkeypatch):
