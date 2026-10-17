@@ -263,6 +263,9 @@ def test_exact_object_recipe_refuses_substitution_before_any_git_write(repo, pub
     pack = publication_pack(repo, replace(publication, intended_commit=commit))
     if attack == "recipe":
         pack = pack[:-1]
+    _git(repo, "prune", "--expire=now")
+    with pytest.raises(FileCommitError):
+        raw_git(repo, "cat-file", "-e", commit)
     before = (_git(repo, "count-objects", "-v"), _head(repo), (repo / ".git/index").read_bytes())
     with pytest.raises(FileCommitError):
         restore_publication_objects(

@@ -496,23 +496,15 @@ def recover_finish(operation: LifecycleOperation, env: FinishEnvironment) -> dic
     """Recognize exact own effects before generic dirtiness; retain every prior attempt."""
     frozen = _read_attempt(operation)
     record = operation.store.load(operation.request.record_id)
-    content = bytes.fromhex(frozen["summary_hex"])
     destination = operation.root / frozen["path"]
-    owned = _require_destination(destination, content)
+    owned = _require_destination(destination, bytes.fromhex(frozen["summary_hex"]))
     publication = _publication_intent(operation, frozen)
     head = require_branch(operation.root, frozen["branch"])
-    if legacy_materialization_buffers(frozen):
-        return _recover_identity_mismatch(
-            operation,
-            record,
-            frozen,
-            publication,
-            head,
-            owned,
-            env,
-            "legacy publication requires a fresh operation for unpublished materialization buffers",
-        )
     try:
+        if legacy_materialization_buffers(frozen):
+            raise InputSelectionError(
+                "legacy publication requires a fresh operation for unpublished materialization buffers"
+            )
         current = select_inputs(record, operation.root)
     except InputSelectionError as exc:
         return _recover_identity_mismatch(
