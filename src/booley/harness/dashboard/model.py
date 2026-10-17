@@ -310,8 +310,6 @@ class DashboardReader:
             self.booley_dir, quiet_after=quiet_after(self.booley_dir)
         ).visible_snapshot(now=now, scope=namespace())
         handles, handle_diagnostics = HandleStore(self.booley_dir).snapshot()
-        if any(row.attribution.key not in handles for row in sessions.rows):
-            handle_diagnostics += ("Session handles pending MCP registration/maintenance",)
         store = GoalStore(self.booley_dir, lock_timeout_s=0)
         scan = store.list_records()
         goals = []
@@ -324,7 +322,7 @@ class DashboardReader:
             GoalView(str(item), diagnostic="corrupt Goal Record") for item in scan.corrupt
         )
         resources = self.resources.sample(self.root, now=time.monotonic())
-        jobs = self.jobs.read(scan.records)
+        jobs = self.jobs.read(scan.records, session_handles=handles)
         measured = []
         for job in jobs.jobs:
             identity = ProcessIdentity.from_payload(job.record.process_identity)
