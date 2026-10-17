@@ -242,7 +242,16 @@ and enclosing Simulation Campaign together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
-has been written.
+has been written. A Target with an authenticated Coverage Campaign also has
+`coverage_metrics`, a map from native
+metric name to `{percent: number|null, threshold: number|null, met: bool|null}`,
+projected from the same evaluated Coverage Campaign as `coverage.json`.
+`met` compares the exact metric ratio to its floor, independently of the
+aggregate Criterion verdict (`criterion_key` / `criterion_met`). Without a
+floor, `threshold` and `met` are null. With no eligible points, `percent` is
+null and a configured floor has `met: false`. Unscored Campaigns have an empty
+map. `coverage_overall: number` is reserved for a producer-provided overall
+percentage; current producers supply none, so the field is absent.
 
 New coverage builds also publish `declarations/inventory.json`, registered as
 artifact kind `declaration_inventory` with `contract_version:
@@ -290,7 +299,26 @@ produce. An interrupted cleanup is safe to retry with the same arguments.
 
 ## `lint`
 
-`lint_report.json`:
+Job report `detail` keeps its existing fields and adds:
+
+| Field | Type and contents |
+|---|---|
+| `findings` | Array of at most 20 findings: ordered distinct in-scope warnings, then Target errors in report order. |
+| `findings_total` | Integer count of all distinct in-scope warnings plus each Target error, before truncation. |
+| `findings_truncated` | Boolean, true exactly when `findings_total > 20`. |
+| `findings_by_target` | Present for multiple Targets: map from every selected Target to `{warnings: int, errors: int}`, including zero counts. |
+
+Warning findings have `severity: "warning"`, `rule`, `file`, `message`, and
+`target` strings, plus `line: int`. Error findings have `severity: "error"`,
+`rule`, `file`, and `line` set to null, and `message` and `target` strings.
+`target` is included even for a single Target. A shared warning keeps its
+first reporting Target in the preview; per-Target counts include all its
+contributing Targets after deduplication and scope filtering. Those counts
+cover truncated findings too, and can sum to more than the distinct global
+warning count. Errors are counted once per Target without deduplication.
+
+`lint_report.json` remains the full record:
+
 
 | Field | Contents |
 |---|---|

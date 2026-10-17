@@ -1216,3 +1216,54 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert outcome.detail["collection"] == (
         "infrastructure_error" if boundary in {"point_store", "campaign"} else "complete"
     )
+
+
+def test_direct_coverage_outcome_includes_metrics(tmp_path):
+    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
+
+    context = project(tmp_path)
+    for number, (gated, invalid) in enumerate(((False, False), (True, False), (True, True)), 1):
+        plan, outcome = _run_with_waivers(
+            tmp_path,
+            CoverageWaiverConfig("rtl_repository", "../unsafe") if invalid else None,
+            invocation=str(number),
+            gated=gated,
+            prepare=lambda: context,
+        )
+        assert "coverage_metrics" in outcome.detail
+        floor, met = (100, True) if gated else (None, None)
+        expected = {"line": {"percent": 100.0, "threshold": floor, "met": met}}
+        assert outcome.detail["coverage_metrics"] == expected
+        document = json.loads(outcome.campaign_path.read_text())
+        assert document["evaluation"]["thresholds"] == ({"line": 100} if gated else {})
+        assert outcome.detail["evaluation"] == (
+            "blocked" if invalid else "pass" if gated else "not_requested"
+        )
+        assert outcome.exit_code == (2 if invalid else 0)
+        if invalid:
+            assert document["evaluation"]["metrics"] == []
+        retained_plan = replace(plan, invocation_dir=tmp_path / "reports/sim" / str(number + 3))
+
+        def checkpoint(boundary):
+            if boundary == "after:coverage_campaign":
+                raise OSError("publication interrupted")
+
+        retained = run_coverage_target(
+            retained_plan, NativeExecution(), Progress(), publication_checkpoint=checkpoint
+        )
+        assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
+    from booley.flows.sim.coverage_report import coverage_metrics
+
+    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+    for covered, eligible, percent, met in ((2, 3, 66.67, False), (0, 0, None, False)):
+        rollup = replace(
+            campaign.rollups[0], covered_points=covered, eligible_points=eligible, percent=percent
+        )
+        edge = replace(
+            campaign,
+            rollups=(rollup,),
+            evaluation=freeze_coverage_mapping({"thresholds": {"line": 66.67}}),
+        )
+        assert coverage_metrics(edge) == {
+            "line": {"percent": percent, "threshold": 66.67, "met": met}
+        }
