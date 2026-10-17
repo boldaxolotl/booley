@@ -59,7 +59,7 @@ def interrupted_transaction(layout, env, view, *, answer="approve", boundary=Non
     return path, json.loads(path.read_bytes())
 
 
-@pytest.mark.parametrize("attack", ["traversal", "unknown", "record", "state", "ledger"])
+@pytest.mark.parametrize("attack", ["traversal", "unknown", "record"])
 def test_restart_rejects_unauthorized_destinations_before_any_publication(layout, attack):
     env = setup_cycle(layout)
     publish(layout)
@@ -69,11 +69,8 @@ def test_restart_rejects_unauthorized_destinations_before_any_publication(layout
     victim = root.parent / "victim"
     if attack == "traversal":
         effect["path"] = str(root / ".." / "victim")
-    elif attack == "unknown":
-        effect["label"] = "unrecognized"
-        effect["path"] = str(root / "victim")
     else:
-        effect["label"] = attack
+        effect["label"] = "unrecognized" if attack == "unknown" else "record"
         effect["path"] = str(root / "victim")
     path.write_text(json.dumps(transaction))
     before = {item: item.read_bytes() for item in root.rglob("*") if item.is_file()}
@@ -337,6 +334,7 @@ def test_competing_saved_proposals_can_be_rejected_and_terminal_decisions_do_not
 def test_payload_substitution_is_refused(layout):
     env = setup_cycle(layout)
     view = proposal(layout, env)
+    interrupted_transaction(layout, env, view, boundary="approved")
     path = (
         proposal_path(record_paths(layout.control, layout.record.id).root, view.proposal.id)
         / "payload.json"

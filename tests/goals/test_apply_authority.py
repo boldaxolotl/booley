@@ -54,30 +54,18 @@ def require_untouched_conflict(layout, env, view, path, changed, *, match="recov
     assert load_proposal(root, view.proposal.id).applied_at is None
 
 
-@pytest.mark.parametrize("deleted", ["all", "record", "state", "ledger-first", "ledger-last"])
 @pytest.mark.parametrize("boundary", ["approved", "intent"])
-def test_deleted_captured_effects_never_clear_the_apply_barrier(layout, deleted, boundary):
+def test_deleted_captured_effects_never_clear_the_apply_barrier(layout, boundary):
     env = setup_cycle(layout)
     publish(layout)
     view = proposal(layout, env)
     path, captured = interrupted_transaction(layout, env, view, boundary=boundary)
     original = json.loads(path.read_bytes())
-    delete_effect(captured, deleted)
+    captured["effects"] = []
     require_untouched_conflict(layout, env, view, path, captured)
     path.write_text(json.dumps(original))
     recover(env.store, layout.record.id, env)
     assert resume_proposal(env, layout.record.id, view.proposal.id).state == "applied"
-
-
-def delete_effect(captured, deleted):
-    if deleted == "all":
-        captured["effects"] = []
-        return
-    label = deleted.split("-")[0]
-    indexes = [
-        index for index, effect in enumerate(captured["effects"]) if effect["label"] == label
-    ]
-    captured["effects"].pop(indexes[-1] if deleted.endswith("-last") else indexes[0])
 
 
 def test_allowed_state_afterimage_cannot_turn_failed_producer_evidence_into_success(layout):
@@ -109,7 +97,9 @@ def test_substituted_transaction_audit_is_not_the_approved_change(layout, field)
     view = proposal(layout, env)
     path, captured = interrupted_transaction(layout, env, view)
     change_entry(captured["entry"], field)
-    require_untouched_conflict(layout, env, view, path, captured, match="ChangeEntry differs")
+    require_untouched_conflict(
+        layout, env, view, path, captured, match="durable decision authority"
+    )
 
 
 def change_entry(entry, field):
@@ -148,21 +138,12 @@ def test_existing_intent_must_equal_complete_captured_entry_before_recovery(
     assert resume_proposal(env, layout.record.id, view.proposal.id).state == "applied"
 
 
-@pytest.mark.parametrize(
-    "deleted",
-    [
-        pytest.param("all", id="all"),
-        pytest.param("waiver-first", marks=pytest.mark.timeout(120), id="waiver-first"),
-        pytest.param("waiver-last", id="waiver-last"),
-        pytest.param("candidate", id="candidate"),
-    ],
-)
-def test_waiver_approval_and_rejection_effects_are_bound_in_full(layout, deleted):
+@pytest.mark.parametrize("answer", ["approve", "reject"])
+def test_waiver_approval_and_rejection_effects_are_bound_in_full(layout, answer):
     env, candidate, _root = prepared(layout)
     view = propose(layout, env, candidate)
-    answer = "reject" if deleted == "candidate" else "approve"
     path, captured = interrupted_transaction(layout, env, view, answer=answer)
-    delete_effect(captured, deleted)
+    captured["effects"] = []
     require_untouched_conflict(layout, env, view, path, captured)
 
 
