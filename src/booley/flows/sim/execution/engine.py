@@ -30,7 +30,7 @@ from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.run_log import begin_run_log, write_run_log
+from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -73,7 +73,7 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
-from booley.flows.sim.live_progress import attempt_scope, observe_stage
+from booley.flows.sim.live_progress import attempt_scope, observe_stage, prepare_attempt_log
 from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
@@ -247,12 +247,31 @@ class _Attempt:
     workload_inputs: tuple[Mapping[str, Any], ...]
     configured_run_cwd: Path
     setup_s: float
+    log: RunLogIdentity | None = None
     build_inputs: Mapping[str, str] = field(default_factory=dict)
     cache_key: str | None = None
     reused: bool = False
     cache_decision: str = ""
     #: Concrete Test Runs the caller resolved; ``None`` means the defaults.
     test_runs: tuple[TestRun, ...] | None = None
+
+
+def _require_attempt_log(handle: TargetHandle, attempt: _Attempt) -> None:
+    if attempt.log is None:
+        log = prepare_attempt_log(
+            attempt.prepared.build_root,
+            handle.selector,
+            attempt.identity.attempt_token,
+            handle.project_root,
+            required=True,
+        )
+        observe_stage(
+            handle.selector,
+            "preparing",
+            evidence_root=attempt.prepared.build_root,
+            attempt_token=attempt.identity.attempt_token,
+            log=log,
+        )
 
 
 def _export_line(name: str, value: str) -> str:
@@ -658,12 +677,15 @@ class PreparedOrdinaryGroup:
             work_dir=str(evidence_root),
             adapter_result_path=str(identity.result_path),
         )
+        log = prepare_attempt_log(
+            evidence_root, self._handle.selector, identity.attempt_token, self._handle.project_root
+        )
         observe_stage(
             self._handle.selector,
             "preparing",
             evidence_root=evidence_root,
             attempt_token=identity.attempt_token,
-            initialize_log=True,
+            log=log,
         )
         prepared = replace(self._attempt.prepared, build_root=evidence_root)
         return replace(
@@ -671,6 +693,7 @@ class PreparedOrdinaryGroup:
             prepared=prepared,
             identity=identity,
             work=work,
+            log=log,
         )
 
     def _launch(
@@ -803,7 +826,7 @@ class SimulationExecution:
             group: PreparedOrdinaryGroup | None = None
             try:
                 attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
-                begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
+                _require_attempt_log(handle, attempt)
                 group = PreparedOrdinaryGroup(
                     self,
                     handle,
@@ -1017,7 +1040,7 @@ class SimulationExecution:
     ) -> SimulationTargetOutcome:
         """Run one prepared attempt while its Doctor view is owned."""
         try:
-            begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
+            _require_attempt_log(handle, attempt)
         except OSError as exc:
             detail = f"could not establish current run log: {exc}"
             return _artifact_failure(handle, attempt, None, None, detail, started)
@@ -1110,14 +1133,7 @@ class SimulationExecution:
         self._fresh_generation = None
         session.discard_candidate(candidate)
         try:
-            begin_run_log(selected.build_root, flow="sim", target=handle.selector)
-            observe_stage(
-                handle.selector,
-                "preparing",
-                evidence_root=selected.build_root,
-                attempt_token=reused.identity.attempt_token,
-                initialize_log=True,
-            )
+            _require_attempt_log(handle, reused)
         except OSError as exc:
             raise SimulationBuildSlotError(f"cannot open retained generation log: {exc}") from exc
         return replace(reused, cache_key=key, reused=True, cache_decision=decision)
@@ -1323,15 +1339,19 @@ class SimulationExecution:
             test_runs=test_runs,
         )
         _adapter_invocation(work)  # fail unsupported adapters before any build starts
+        log = prepare_attempt_log(
+            prepared.build_root, handle.selector, identity.attempt_token, handle.project_root
+        )
         observe_stage(
             handle.selector,
             "preparing",
             evidence_root=prepared.build_root,
             attempt_token=identity.attempt_token,
-            initialize_log=True,
+            log=log,
             tests=test_names,
         )
         return _Attempt(
+            log=log,
             prepared=prepared,
             identity=identity,
             test_names=test_names,
