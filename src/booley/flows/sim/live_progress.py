@@ -98,12 +98,9 @@ class LiveProgressSink:
             }
             if scope.revision:
                 value["revision"] = scope.revision
-            if (
-                root is not None
-                and scope.owner.log is not None
-                and scope.owner.log.target == scope.target
-            ):
-                pointer = scope.owner.log.pointer(root, token, self.project_root)
+            log = scope.owner.log
+            if root is not None and log is not None and log.target == scope.target:
+                pointer = log.pointer(root, token, self.project_root)
                 if pointer is not None:
                     value["log"] = pointer
             self._active[scope.key] = (scope, value)

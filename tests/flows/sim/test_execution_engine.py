@@ -3172,6 +3172,8 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
             outcome = group.launch_snapshot(snapshot, run_cwd)
 
     assert outcome.passed
+    if observed and log_failure:
+        assert sink.error == "OSError: full"
     assert timeouts == [7, 5]
     assert len(commands) == 2
     launch = commands[1][-1]

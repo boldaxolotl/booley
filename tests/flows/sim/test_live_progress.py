@@ -258,16 +258,19 @@ def test_active_pointer_requires_exact_owned_root_token_and_header(
             (root / "run.log").hardlink_to(protected)
         else:
             symlink_or_skip(root / "run.log", protected)
-        observe_stage(
-            "sim",
-            "executing",
-            evidence_root=root,
-            attempt_token="owned",
-            log=prepare_attempt_log(root, "sim", "owned", tmp_path),
-        )
-        assert protected.read_text() == "unchanged"
-        assert sink.error is not None
-        assert "log" not in json.loads(path.read_text())["active"][0]
+        with attempt_scope("sim", attempt_id="unsafe"):
+            observe_stage(
+                "sim",
+                "executing",
+                evidence_root=root,
+                attempt_token="owned",
+                log=prepare_attempt_log(root, "sim", "owned", tmp_path),
+            )
+            active = json.loads(path.read_text())["active"][-1]
+            assert active["stage"] == "executing"
+            assert protected.read_text() == "unchanged"
+            assert sink.error is not None
+            assert "log" not in active
 
 
 def test_ephemeral_baseline_is_removed_before_cleanup_and_never_completes_candidate(
@@ -649,3 +652,52 @@ def test_unchanged_log_is_not_reopened_on_stage_update(tmp_path, monkeypatch):
         observe_stage("sim", "executing", evidence_root=root, attempt_token=token)
         assert json.loads(path.read_text())["active"][0]["log"]["live"] is True
         assert reads == []
+
+
+def test_scope_exit_during_log_observation_preserves_progress(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    from threading import Event
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    path = tmp_path / "progress.json"
+    root = tmp_path / "evidence"
+    root.mkdir()
+    sink = LiveProgressSink(path, tmp_path, "current-run")
+    reading, released = Event(), Event()
+    retire = sink.retire
+
+    def retiring(key):
+        released.set()
+        retire(key)
+
+    monkeypatch.setattr(sink, "retire", retiring)
+    identity = prepare_attempt_log(root, "sim", "owned", tmp_path)
+
+    class DelayedLog:
+        @property
+        def target(self):
+            reading.set()
+            assert released.wait(5)
+            return identity.target
+
+        def pointer(self, *args):
+            return identity.pointer(*args)
+
+    with ThreadPoolExecutor(max_workers=1) as pool, install_progress(sink):
+        _checkpoint(path)
+        with attempt_scope("sim"):
+            observed = pool.submit(
+                copy_context().run,
+                observe_stage,
+                "sim",
+                "executing",
+                evidence_root=root,
+                attempt_token="owned",
+                log=DelayedLog(),
+            )
+            assert reading.wait(5)
+        observed.result(timeout=5)
+        assert "active" not in json.loads(path.read_text())
