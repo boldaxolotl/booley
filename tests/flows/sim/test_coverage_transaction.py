@@ -1231,13 +1231,8 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
             prepare=lambda: context,
         )
         assert "coverage_metrics" in outcome.detail
-        expected = {
-            "line": {
-                "percent": 100.0,
-                "threshold": 100 if gated else None,
-                "met": True if gated else None,
-            }
-        }
+        floor, met = (100, True) if gated else (None, None)
+        expected = {"line": {"percent": 100.0, "threshold": floor, "met": met}}
         assert outcome.detail["coverage_metrics"] == expected
         document = json.loads(outcome.campaign_path.read_text())
         assert document["evaluation"]["thresholds"] == ({"line": 100} if gated else {})
