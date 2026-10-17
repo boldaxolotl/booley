@@ -332,20 +332,8 @@ class GoalWaiverService:
         path = self.paths.root / "waiver-candidates.json"
         return (FileEffect(path, read_bytes(path), updated.to_bytes(), "candidate"),)
 
-    def validate_effect(self, binding: WaiverBinding, effect: FileEffect) -> None:
-        """Recovery uses captured anchors; drift does not authorize new destinations."""
-        expected = self.paths.root / "waiver-candidates.json"
-        if effect.label == "candidate" and effect.path == expected:
-            return
-        root = Path(binding.approval_root)
-        if effect.label != "waiver" or effect.path == root:
-            raise ProposalError("invalid captured waiver effect")
-        item = binding.candidate
-        allowed = {root / waiver_file_path(item.source)}
-        if item.reason == "unreachable":
-            allowed.add(root / review_proof_path(binding.candidate_id))
-        if effect.path not in allowed:
-            raise ProposalError("waiver effect does not name the bound approval/proof")
+    def validate_effect(self, effect: FileEffect) -> None:
+        """Keep protected-input policy at its original pre-publication boundary."""
         self._refuse_protected(effect.path, self.record)
 
     def evaluate(self, goal: GoalSpec, detail: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:

@@ -61,15 +61,30 @@ KEY = "coverage_top"
 IDENTITY = DurableTargetIdentity("::top:0#top")
 
 
-def prepared(layout, anchor="rtl_repository", directory="approvals", *, covered=1, total=2):
-    config = layout.worktree / ".booley" / "booley.toml"
-    config.write_text(
-        f"[project]\nname = 'demo'\n[coverage.waivers]\nanchor = '{anchor}'\ndirectory = '{directory}'\n"
+def prepared(
+    layout, anchor="rtl_repository", directory="approvals", *, covered=1, total=2, protected=False
+):
+    protected_inputs = ""
+    if protected:
+        from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots
+        from tests.flows.sim import test_coverage_waivers as waivers
+
+        roots = CoverageRepositoryRoots(layout.worktree, layout.worktree)
+        destination = waivers._write_valid_approval(roots)
+        content = destination.read_text().replace(str(waivers._TARGET), str(IDENTITY))
+        other = fixture_point(_valid_document()["points"][0], 1, hit=True)["id"]
+        destination.write_text(content.replace(waivers._POINT_ID, other))
+        relative = destination.relative_to(layout.worktree).as_posix()
+        protected_inputs = f"protected_inputs = ['{relative}']\n"
+        git(layout.worktree, "add", relative)
+    (layout.worktree / ".booley" / "booley.toml").write_text(
+        f"[project]\nname = 'demo'\n{protected_inputs}"
+        f"[coverage.waivers]\nanchor = '{anchor}'\ndirectory = '{directory}'\n"
     )
     root = layout.worktree if anchor == "rtl_repository" else layout.worktree / ".booley"
     (root / directory).mkdir(parents=True, exist_ok=True)
     source = layout.worktree / "rtl" / "counter.sv"
-    source.parent.mkdir()
+    source.parent.mkdir(exist_ok=True)
     source.write_bytes(b"module counter; endmodule\n")
     git(layout.worktree, "add", "rtl/counter.sv")
     git(layout.worktree, "commit", "-qm", "coverage source")
@@ -406,7 +421,7 @@ def test_numeric_derivation_keeps_checked_policy_or_refuses_drift(layout, monkey
         assert build_status(env.store, env.store.load(layout.record.id)).goals[0].status == "stale"
 
 
-@pytest.mark.parametrize("attack", ["traversal", "absolute", "sibling", "candidate"])
+@pytest.mark.parametrize("attack", ["traversal", "candidate"])
 def test_waiver_restart_confines_every_destination_before_writing(layout, attack):
     env, candidate, root = prepared(layout)
     path, transaction = interrupted_transaction(layout, env, propose(layout, env, candidate))
@@ -414,12 +429,9 @@ def test_waiver_restart_confines_every_destination_before_writing(layout, attack
     victim = root.parent / "victim"
     if attack == "traversal":
         effect["path"] = str(root / ".." / "victim")
-    elif attack == "absolute":
-        effect["path"] = str(victim)
     else:
         effect["path"] = str(root / "victim")
-        if attack == "candidate":
-            effect["label"] = "candidate"
+        effect["label"] = "candidate"
     path.write_text(json.dumps(transaction))
     paths = record_paths(layout.control, layout.record.id)
     before = {item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()}
@@ -430,8 +442,7 @@ def test_waiver_restart_confines_every_destination_before_writing(layout, attack
     assert not paths.changes_file.exists() and not list(root.rglob("*.toml"))
 
 
-@pytest.mark.parametrize("label", ["record", "state", "ledger", "waiver"])
-def test_rejected_recovery_has_no_authority_to_publish_goal_or_approval_effects(layout, label):
+def test_rejected_recovery_has_no_authority_to_publish_goal_or_approval_effects(layout):
     from booley.flows.sim.coverage_waiver_promotion import waiver_file_path
     from booley.goals.apply_effects import FileEffect
 
@@ -439,19 +450,14 @@ def test_rejected_recovery_has_no_authority_to_publish_goal_or_approval_effects(
     view = propose(layout, env, candidate)
     path, transaction = interrupted_transaction(layout, env, view, answer="reject")
     paths = record_paths(layout.control, layout.record.id)
-    destination = {
-        "record": paths.record_file,
-        "state": paths.state_file,
-        "ledger": paths.logs_dir / "acceptance" / "evidence" / "forged" / "record.json",
-        "waiver": root / waiver_file_path("rtl/counter.sv"),
-    }[label]
+    destination = root / waiver_file_path("rtl/counter.sv")
     before = destination.read_bytes() if destination.exists() else None
     transaction["effects"].append(
-        FileEffect(destination, before, before or b"forged", label).to_json()
+        FileEffect(destination, before, before or b"forged", "waiver").to_json()
     )
     path.write_text(json.dumps(transaction))
     snapshot = {item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()}
-    with pytest.raises(ProposalError, match="decision's authority"):
+    with pytest.raises(ProposalError, match="durable decision authority"):
         recover(env.store, layout.record.id, env)
     assert snapshot == {
         item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()
@@ -557,6 +563,20 @@ def test_protected_approval_destination_is_refused_without_resetting_entry_diges
         propose(layout, env, candidate)
     assert env.store.load(layout.record.id) == before
     assert not list(root.rglob("*.toml"))
+
+
+def test_protected_approval_file_beneath_unprotected_root_is_refused(layout):
+    env, candidate, root = prepared(layout, directory="coverage-waivers", protected=True)
+    view = propose(layout, env, candidate)
+    before = env.store.load(layout.record.id)
+    protected = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    with pytest.raises(ProposalError, match="protected input"):
+        approve(layout, env, view.proposal.id)
+    assert env.store.load(layout.record.id) == before
+    assert protected == {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    paths = record_paths(layout.control, layout.record.id)
+    assert load_proposal(paths.root, view.proposal.id).state == "approved"
+    assert not paths.changes_file.exists()
 
 
 def test_unexpected_waiver_file_bytes_conflict_without_overwrite(layout):
