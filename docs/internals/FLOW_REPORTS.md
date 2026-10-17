@@ -242,7 +242,8 @@ and enclosing Simulation Campaign together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
-has been written. Each Target also has `coverage_metrics`, a map from native
+has been written. A Target with an authenticated Coverage Campaign also has
+`coverage_metrics`, a map from native
 metric name to `{percent: number|null, threshold: number|null, met: bool|null}`,
 projected from the same evaluated Coverage Campaign as `coverage.json`.
 `met` compares the exact metric ratio to its floor, independently of the

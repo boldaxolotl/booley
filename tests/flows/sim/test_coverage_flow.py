@@ -1993,6 +1993,8 @@ def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
     assert detail["simulation"] == "pass"
     assert detail["collection"] == "complete"
     assert detail["evaluation"] == "not_requested"
+    assert "coverage_metrics" in detail
+    assert detail["coverage_metrics"]["line"] == {"percent": 100.0, "threshold": None, "met": None}
 
 
 def test_reference_authentication_failure_drops_only_reference(tmp_path, monkeypatch):
