@@ -37,7 +37,7 @@ from booley.runtime.timefmt import utc_now_rfc3339
 
 _STREAM_CAP_MULTIPLIER = 4
 _WATCHDOG_TICK_SECONDS = 5.0
-_CANCEL_GRACE_SECONDS = 5.0
+CANCEL_GRACE_SECONDS = 5.0
 
 
 def _stdout_cap_bytes() -> int:
@@ -165,7 +165,7 @@ async def _run_subprocess(
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
-    cancel_grace: float = _CANCEL_GRACE_SECONDS,
+    cancel_grace: float = CANCEL_GRACE_SECONDS,
 ) -> tuple[int, str, str, bool]:
     """Run a grouped child with bounded tails and wall-clock or active-time budget."""
     try:
@@ -377,13 +377,13 @@ async def _cancel_async_process_tree(
     proc: asyncio.subprocess.Process,
     group: ProcessGroup,
     *,
-    grace_seconds: float = _CANCEL_GRACE_SECONDS,
+    grace_seconds: float = CANCEL_GRACE_SECONDS,
 ) -> None:
     """SIGTERM a endpoint process group, then SIGKILL it after a bounded grace."""
     await terminate_async_process_group(proc, group, grace_seconds=grace_seconds)
 
 
-def _write_synthetic_endpoint_end(
+def write_synthetic_endpoint_end(
     mcp_tool_name: str,
     duration_s: int,
     *,
@@ -409,7 +409,7 @@ def _write_synthetic_endpoint_end(
 
 
 async def _cancel_adopted_process_group(
-    pid: int, *, grace_seconds: float = _CANCEL_GRACE_SECONDS
+    pid: int, *, grace_seconds: float = CANCEL_GRACE_SECONDS
 ) -> None:
     """Cancel a disk-only job by its session-leader PID."""
     await terminate_adopted_process_group(

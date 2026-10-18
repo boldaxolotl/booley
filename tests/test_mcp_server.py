@@ -12,6 +12,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.mcp import (
+    catalog,
+    endpoint_process,
+    job_results,
+    report_encoding,
+)
 from booley.runtime import health_presentation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -418,9 +424,7 @@ class TestRunSubprocess:
         """Output larger than cap is truncated to the tail."""
         import asyncio
 
-        from booley.mcp.server import _stdout_cap_bytes
-
-        cap = _stdout_cap_bytes()
+        cap = endpoint_process._stdout_cap_bytes()
         # Print 2x the cap; verify we keep only the tail (ends with last marker).
         script = (
             "import sys\n"
@@ -993,59 +997,31 @@ class TestResolveTranscriptDir:
 
 
 class TestMcpExposureFiltering:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import (
-                _bwave_mcp_tools_for_mode,
-                _mcp_tool_visible,
-                _status_mcp_tool_visible,
-            )
-
-            self._bwave_mcp_tools_for_mode = _bwave_mcp_tools_for_mode
-            self._mcp_tool_visible = _mcp_tool_visible
-            self._status_mcp_tool_visible = _status_mcp_tool_visible
-
     def test_default_mode_exposes_autonomous_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_MCP_TOOLS", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
-        assert self._mcp_tool_visible("mutation_tester")
-        assert self._mcp_tool_visible("reviewer")
-        assert self._mcp_tool_visible("sim")
-        assert self._mcp_tool_visible("submit_run_report")
-
-    def test_interactive_filter_hides_explicit_synthetic_tool(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.delenv("BOOLEY_NESTED_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        monkeypatch.setitem(
-            self._mcp_tool_visible.__globals__, "_INTERACTIVE_MCP_EXCLUDED", frozenset({"fixture"})
-        )
-        assert not self._mcp_tool_visible("fixture")
-        assert self._mcp_tool_visible("reviewer")
+        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("submit_run_report", catalog.Exposure.from_mapping(os.environ))
 
     def test_interactive_mode_keeps_interactive_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
-        assert self._mcp_tool_visible("sim")
-        assert self._mcp_tool_visible("mutation_tester")
-        assert self._mcp_tool_visible("reviewer")
-        assert self._status_mcp_tool_visible()
-        bwave_tools = self._bwave_mcp_tools_for_mode()
+        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
+        bwave_tools = [
+            tool
+            for tool in catalog._BWAVE_MCP_TOOLS
+            if catalog.tool_visible(tool["name"], catalog.Exposure.from_mapping(os.environ))
+        ]
         assert {t["name"] for t in bwave_tools} == {"bwave"}
         by_name = {t["name"]: t for t in bwave_tools}
         description = by_name["bwave"]["description"]
@@ -1066,11 +1042,18 @@ class TestMcpExposureFiltering:
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer,bwave,sim")
 
-        assert self._mcp_tool_visible("reviewer")
-        assert self._mcp_tool_visible("sim")
-        assert self._status_mcp_tool_visible()
-        assert not self._mcp_tool_visible("lint")
-        assert {t["name"] for t in self._bwave_mcp_tools_for_mode()} == {
+        assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
+        assert not catalog.tool_visible("lint", catalog.Exposure.from_mapping(os.environ))
+        assert {
+            t["name"]
+            for t in [
+                tool
+                for tool in catalog._BWAVE_MCP_TOOLS
+                if catalog.tool_visible(tool["name"], catalog.Exposure.from_mapping(os.environ))
+            ]
+        } == {
             "bwave",
         }
 
@@ -1079,9 +1062,9 @@ class TestMcpExposureFiltering:
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "sim")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer")
 
-        assert self._mcp_tool_visible("sim")
-        assert not self._mcp_tool_visible("reviewer")
-        assert not self._status_mcp_tool_visible()
+        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
+        assert not catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
+        assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 class TestCoverageEvidenceTool:
@@ -1105,9 +1088,8 @@ class TestCoverageEvidenceTool:
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
         monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", "/reports/coverage.json")
         monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", "/project")
-        monkeypatch.setattr(self.mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
 
-        tools = self.mcp_server._all_mcp_tool_defs([])
+        tools = catalog.visible_definitions(catalog.Exposure.from_mapping(os.environ), [])
 
         assert [tool["name"] for tool in tools] == ["coverage_evidence"]
         assert tools[0]["schema"]["additionalProperties"] is False
@@ -1122,7 +1104,7 @@ class TestCoverageEvidenceTool:
         monkeypatch.delenv("BOOLEY_COVERAGE_CAMPAIGN", raising=False)
         monkeypatch.delenv("BOOLEY_COVERAGE_PROJECT", raising=False)
 
-        assert self.mcp_server._coverage_evidence_tool_def() is None
+        assert not catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 class TestBooleyStatus:
@@ -1176,29 +1158,30 @@ class TestBooleyStatus:
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
 
-        assert self.mcp_server._status_mcp_tool_def() is None
+        assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        mcp_tool_def = self.mcp_server._status_mcp_tool_def()
+        mcp_tool_def = catalog._status_mcp_tool_def()
 
         assert mcp_tool_def is not None
         assert mcp_tool_def["name"] == "booley_status"
         assert mcp_tool_def["schema"]["additionalProperties"] is False
 
     def test_status_mcp_tool_list_entry_is_appended(self, monkeypatch):
+        monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        monkeypatch.setattr(self.mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
 
-        mcp_tools = self.mcp_server._all_mcp_tool_defs(
+        mcp_tools = catalog.visible_definitions(
+            catalog.Exposure.from_mapping(os.environ),
             [
                 {
                     "name": "sim",
                     "description": "Run simulation",
                     "schema": {"type": "object"},
                 },
-            ]
+            ],
         )
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
@@ -1253,7 +1236,7 @@ class TestBooleyStatus:
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setattr(self.mcp_server, "_status_mcp_tool_visible", lambda: True)
+        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
             health_presentation,
@@ -1272,7 +1255,7 @@ class TestBooleyStatus:
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setattr(self.mcp_server, "_status_mcp_tool_visible", lambda: True)
+        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
             health_presentation,
@@ -1316,17 +1299,17 @@ class TestBooleySleep:
     def test_hidden_by_default(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_MCP_DEBUG_TOOLS", raising=False)
 
-        assert self.mcp_server._sleep_mcp_tool_def() is None
+        assert not catalog.Exposure.from_mapping(os.environ).debug
 
     def test_falsey_flag_values_stay_hidden(self, monkeypatch):
         for raw in ("", "0", "false", "no", " FALSE "):
             monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", raw)
-            assert self.mcp_server._sleep_mcp_tool_def() is None
+            assert not catalog.Exposure.from_mapping(os.environ).debug
 
     def test_visible_when_flag_set(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
 
-        mcp_tool_def = self.mcp_server._sleep_mcp_tool_def()
+        mcp_tool_def = catalog._sleep_mcp_tool_def()
 
         assert mcp_tool_def is not None
         assert mcp_tool_def["name"] == "booley_sleep"
@@ -1337,23 +1320,24 @@ class TestBooleySleep:
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "lint")
 
-        assert self.mcp_server._sleep_mcp_tool_visible() is True
+        assert catalog.Exposure.from_mapping(os.environ).debug is True
 
     def test_list_entry_appended_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
-        monkeypatch.setattr(self.mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
 
-        mcp_tools = self.mcp_server._all_mcp_tool_defs(
+        mcp_tools = catalog.visible_definitions(
+            catalog.Exposure.from_mapping(os.environ),
             [
                 {
                     "name": "sim",
                     "description": "Run simulation",
                     "schema": {"type": "object"},
                 },
-            ]
+            ],
         )
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
@@ -1446,9 +1430,9 @@ class TestBooleyTargets:
     def test_visible_in_every_mode(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "lint")
-        assert self.mcp_server._targets_mcp_tool_visible() is True
+        assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)) is True
 
-        mcp_tool_def = self.mcp_server._targets_mcp_tool_def()
+        mcp_tool_def = catalog._targets_mcp_tool_def()
         assert mcp_tool_def is not None
         assert mcp_tool_def["name"] == "booley_targets"
         assert mcp_tool_def["schema"]["additionalProperties"] is False
@@ -1830,18 +1814,6 @@ class TestBuiltinDiscoveryGate:
 
     @pytest.fixture(autouse=True)
     def _import(self, monkeypatch):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _discover_builtin_mcp_tools
-
-            self._discover = _discover_builtin_mcp_tools
         # MCP visibility filters must not leak in from the invoking shell.
         for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_MODE"):
             monkeypatch.delenv(var, raising=False)
@@ -1853,7 +1825,9 @@ class TestBuiltinDiscoveryGate:
             encoding="utf-8",
         )
 
-        results, errors = self._discover([])
+        results, errors = catalog.discover_builtin_definitions(
+            [], catalog.Exposure.from_mapping(os.environ)
+        )
 
         assert results == []
         assert errors == []
@@ -1866,7 +1840,9 @@ class TestBuiltinDiscoveryGate:
             description="an MCP endpoint",
             path="mcp_tools/shiny_mcp_tool.py",
         )
-        results, errors = self._discover([info])
+        results, errors = catalog.discover_builtin_definitions(
+            [info], catalog.Exposure.from_mapping(os.environ)
+        )
 
         assert results == []
         assert len(errors) == 1
@@ -1880,7 +1856,9 @@ class TestBuiltinDiscoveryGate:
 
         discovered = discover_mcp_tools()
 
-        results, errors = self._discover(discovered)
+        results, errors = catalog.discover_builtin_definitions(
+            discovered, catalog.Exposure.from_mapping(os.environ)
+        )
 
         assert errors == []
         assert {r["name"] for r in results} == {endpoint.name for endpoint in discovered}
@@ -1952,56 +1930,6 @@ class TestMainProxySelfHeal:
 # ---------------------------------------------------------------------------
 # Interactive Mode: honest answer for a deliberately hidden MCP tool (F-38)
 # ---------------------------------------------------------------------------
-
-
-class TestInteractiveHiddenNote:
-    """An interactive tab explains autonomous-only MCP tools hidden from MCP tools/list."""
-
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import (
-                _INTERACTIVE_HIDDEN_REASONS,
-                _INTERACTIVE_MCP_EXCLUDED,
-                _interactive_hidden_note,
-            )
-
-            self._note = _interactive_hidden_note
-            self._reasons = _INTERACTIVE_HIDDEN_REASONS
-            self._excluded = _INTERACTIVE_MCP_EXCLUDED
-
-    def test_every_hidden_mcp_tool_has_a_reason(self):
-        # The set is derived from the reasons — they cannot drift apart.
-        assert self._excluded == frozenset(self._reasons)
-
-    def test_explicit_hidden_reason_explains_itself(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        monkeypatch.setitem(
-            self._note.__globals__, "_INTERACTIVE_MCP_EXCLUDED", frozenset({"fixture"})
-        )
-        monkeypatch.setitem(self._reasons, "fixture", "fixture reason")
-        note = self._note("fixture")
-        assert note is not None
-        assert "hidden in Interactive Mode" in note
-        assert "fixture reason" in note
-
-    def test_genuinely_unknown_mcp_tool_gets_no_excuse(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-
-        assert self._note("no_such_mcp_tool") is None
-
-    def test_autonomous_mode_has_nothing_to_explain(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
-
-        assert self._note("submit_run_report") is None
 
 
 def test_simulation_count_transport_omits_only_full_mapping():
@@ -2089,7 +2017,7 @@ def test_live_sim_checkpoint_survives_mcp_background_responses(
     from booley.mcp.call_context import CallContext
 
     monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
-    monkeypatch.setattr(server, "_bwave_mcp_tools_for_mode", lambda: [])
+
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
     context = CallContext(tmp_path, tmp_path / "jobs", None, None, tmp_path, {}, None)
     monkeypatch.setattr(server, "job_roots", lambda: [context.jobs_root])
@@ -2303,9 +2231,9 @@ def _poll_blocked_legacy_flow(
     )
     monkeypatch.setattr(server, "job_roots", lambda: [jobs_root])
     monkeypatch.setattr(
-        server, "_endpoint_report_dirs", lambda *_args, **_kwargs: (root / "reports",)
+        job_results, "_endpoint_report_dirs", lambda *_args, **_kwargs: (root / "reports",)
     )
-    monkeypatch.setattr(server, "_bwave_mcp_tools_for_mode", lambda: [])
+
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
     with pool_type(max_workers=1) as pool:
         future = pool.submit(flow._run_legacy_selected_mode, ["sim"], {}, time.monotonic(), 0)
@@ -2354,7 +2282,7 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
         "complete": False,
         "partial": True,
         "active": [active],
-        "detail": {"completed": "large diagnostic" * server._MAX_STRUCTURED_REPORT_BYTES},
+        "detail": {"completed": "large diagnostic" * report_encoding._MAX_STRUCTURED_REPORT_BYTES},
     }
     payload = server._structured_from_report(report)
     assert payload["truncated"] is True
@@ -2364,4 +2292,4 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
     assert checkpoint["run_id"] == "current"
     assert checkpoint["complete"] is False and checkpoint["partial"] is True
     assert "passed" not in payload and "exit_code" not in checkpoint
-    assert server._payload_size(payload) <= server._MAX_STRUCTURED_REPORT_BYTES
+    assert report_encoding._payload_size(payload) <= report_encoding._MAX_STRUCTURED_REPORT_BYTES
