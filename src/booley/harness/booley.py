@@ -104,7 +104,6 @@ class ProjectBinding(Enum):
     REQUIRED = "required"
     INDEPENDENT = "independent"
     OPTIONAL = "optional"
-    AUTH = "auth-status-conditional"
     FEEDBACK = "source-feedback"
 
 
@@ -119,7 +118,7 @@ COMMAND_PROJECT_BINDINGS = {
     "bootstrap": ProjectBinding.INDEPENDENT,
     "init": ProjectBinding.REQUIRED,
     "eda": ProjectBinding.INDEPENDENT,
-    "auth": ProjectBinding.AUTH,
+    "auth": ProjectBinding.OPTIONAL,
     "session": ProjectBinding.REQUIRED,
     "projects": ProjectBinding.INDEPENDENT,
     "upgrade": ProjectBinding.REQUIRED,
@@ -158,10 +157,7 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 
 
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
-    binding = command_project_bindings()[command]
-    if binding is ProjectBinding.AUTH:
-        return ProjectBinding.OPTIONAL if args.status else ProjectBinding.REQUIRED
-    return binding
+    return command_project_bindings()[command]
 
 
 class _RetiredEdaToolOptionAction(argparse.Action):
@@ -1894,6 +1890,27 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         return None
 
 
+def _auth_project_root(args: argparse.Namespace) -> Path | None:
+    """Keep optional auth authority within the selected checkout's own state."""
+    from booley.runtime.booley_dir import resolve_authoritative_booley_dir
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    root = _optional_project_root(args)
+    if root is None:
+        return None
+    for candidate in (root, *root.parents):
+        own_state = (candidate / ".booley").is_dir() or (candidate / "booley.toml").is_file()
+        if own_state and resolve_authoritative_booley_dir(candidate).is_dir():
+            return candidate
+        if (candidate / ".git").exists():
+            break
+    if hasattr(args, "_cli_selection") or getattr(args, "project_root", None):
+        raise ProjectRootDiscoveryError(
+            "not a Booley Project; cd into one or run `booley init` on the host."
+        )
+    return None
+
+
 def _selected_project_root(
     command: str, args: argparse.Namespace, binding: ProjectBinding
 ) -> Path | None:
@@ -1901,7 +1918,7 @@ def _selected_project_root(
     if binding is ProjectBinding.INDEPENDENT:
         return Path.cwd()
     if binding is ProjectBinding.OPTIONAL:
-        return _optional_project_root(args)
+        return _auth_project_root(args) if command == "auth" else _optional_project_root(args)
     if hasattr(args, "_cli_selection"):
         return _resolve_cli_selection(args)
     if getattr(args, "project_root", None):

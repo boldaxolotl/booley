@@ -122,21 +122,11 @@ def _safe_report_status(app: str | None, project_root: Path | None) -> int:
         return 1
 
 
-def _project_is_initialized(project_root: Path) -> bool:
-    """Whether *project_root* resolves to Project-owned state."""
-    from booley.runtime.booley_dir import resolve_checkout_booley_dir
-
-    try:
-        return resolve_checkout_booley_dir(project_root).is_dir()
-    except FileNotFoundError:
-        return False
-
-
-def _mint_claude_token(credential: AppCredential, project_root: Path) -> str | None:
+def _mint_claude_token(credential: AppCredential, project_root: Path | None) -> str | None:
     """Run ``claude setup-token`` and collect the token it prints."""
     assert credential.mint_cmd is not None
     command = list(credential.mint_cmd)
-    in_project = _project_is_initialized(project_root)
+    in_project = project_root is not None
     if not in_project and shutil.which(command[0]) is None:
         err(
             f"{command[0]} CLI not found on PATH — run this from an initialized Booley "
@@ -190,23 +180,20 @@ def _read_token_from_stdin(credential: AppCredential) -> str | None:
     return lines[0] if len(lines) == 1 else None
 
 
-def _reseed_spec(project_root: Path) -> bool:
-    """Refresh this folder's devcontainer spec so it references the credential.
+def _reseed_spec(project_root: Path | None) -> bool:
+    """Refresh only the selected initialized Project's Sandbox specification."""
+    from booley.harness.init_cmd import reseed_auth_spec
 
-    The devcontainer paths (VS Code, ``booley session``, and headless drivers) read
-    the credential through the spec's ``remoteEnv``, so a freshly stored one does
-    not reach them until the spec carries the reference.
-    """
-    from booley.harness.init_cmd import run_init
-
-    if not _project_is_initialized(project_root):
-        info(f"no Booley project at {project_root} — skipping devcontainer re-seed")
-        info("run `booley auth` (or `booley init --seed`) inside a project to wire it in")
+    if project_root is None:
+        info(
+            "Projects using this stored credential pick it up on `booley session up` "
+            "or `booley init --seed`."
+        )
         return True
-    return run_init(argparse.Namespace(seed=True), project_root) == 0
+    return reseed_auth_spec(project_root) == 0
 
 
-def _clear(app: str, project_root: Path) -> int:
+def _clear(app: str, project_root: Path | None) -> int:
     """Drop *app*'s stored credential, falling back to the refreshing one."""
     banner("Agent auth")
     if auth_token.clear_stored_token(app):
@@ -226,7 +213,7 @@ def _clear(app: str, project_root: Path) -> int:
     return 0
 
 
-def _acquire(credential: AppCredential, from_stdin: bool, project_root: Path) -> str | None:
+def _acquire(credential: AppCredential, from_stdin: bool, project_root: Path | None) -> str | None:
     """Get the credential: piped in, minted, or pasted."""
     if from_stdin:
         token = _read_token_from_stdin(credential)
@@ -249,26 +236,54 @@ def _resolve_app(args: argparse.Namespace) -> str | None:
     return app
 
 
-def _store_and_reseed(token: str, credential: AppCredential, project_root: Path) -> Path | None:
+def _store_and_reseed(
+    token: str, credential: AppCredential, project_root: Path | None
+) -> Path | None:
     """Store one credential and refresh the Project's Sandbox specification."""
     try:
         path = auth_token.store_token(token, credential.app)
-    except ValueError as exc:
+    except (ValueError, OSError, auth_token.CredentialStoreError) as exc:
         err(str(exc))
         return None
 
     ok(f"stored {credential.label} at {path} (mode 0600)")
     info("kept outside every repo; Sandboxes receive it only through a read-only mount")
+    if project_root is None:
+        policies = "auto/api_key" if credential.app == APP_CODEX else "auto/subscription"
+        info(f"{credential.app} Projects with auth={policies} use this stored credential.")
     if _reseed_spec(project_root):
         return path
     err(
         "credential was stored, but the Project Sandbox spec could not be re-seeded; "
-        "run `booley init --seed` and retry"
+        "resolve the condition reported above before retrying"
     )
     return None
 
 
-def run_auth(args: argparse.Namespace, project_root: Path) -> int:
+def _preflight(app: str, project_root: Path | None) -> bool:
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.harness.init_cmd import preflight_auth_reseed
+    from booley.runtime import issuance_invalidation, session_issuance, session_runtime
+
+    try:
+        auth_token.preflight_store_token(app)
+        if project_root is not None:
+            preflight_auth_reseed(project_root)
+        return True
+    except (
+        OSError,
+        ValueError,
+        auth_token.CredentialStoreError,
+        BooleyLayoutError,
+        issuance_invalidation.InvalidationError,
+        session_issuance.RuntimeSpecError,
+        session_runtime.SessionError,
+    ) as exc:
+        err(str(exc))
+        return False
+
+
+def run_auth(args: argparse.Namespace, project_root: Path | None) -> int:
     """Store and wire up an agent's rotation-free credential."""
     with contextlib.suppress(AttributeError, ValueError):
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
@@ -282,8 +297,16 @@ def run_auth(args: argparse.Namespace, project_root: Path) -> int:
     if getattr(args, "clear", False):
         return _clear(app, project_root)
 
+    return _run_store(args, app, project_root)
+
+
+def _run_store(args: argparse.Namespace, app: str, project_root: Path | None) -> int:
+    """Admit storage, acquire a credential, and propagate its reference."""
     credential = auth_token.CREDENTIALS[app]
     banner(f"Agent auth — {app} ({credential.label})")
+
+    if not _preflight(app, project_root):
+        return 2
 
     from booley.runtime import session_runtime
 
@@ -308,7 +331,7 @@ def run_auth(args: argparse.Namespace, project_root: Path) -> int:
 
     print()
     ok(
-        f"Done. Every {app} container picks this up automatically — "
+        f"Done. {app} Projects using the stored credential pick this up automatically — "
         "VS Code's 'Reopen in Container' included, no export needed."
     )
     info("It does not refresh, so a host-side login can no longer revoke a running agent.")
