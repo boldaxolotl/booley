@@ -7013,10 +7013,30 @@ def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return f"report is unreadable ({exc})"
+    return _synth_report_evidence_error(report)
+
+
+def _synth_report_evidence_error(report: object) -> str:
+    """Validate logical mapped area or physical/legacy constrained timing."""
+    if not isinstance(report, dict):
+        return "report is not a JSON object"
     if report.get("ppa_complete") is not True:
         return "ppa_complete is not true"
+    mode = report.get("synth_mode", "")
+    if mode == "logical":
+        return _logical_synth_evidence_error(report)
+    if mode not in ("", "physical"):
+        return f"unknown synthesis mode {mode!r}"
     if report.get("timing_complete") is not True or not report.get("per_clock"):
         return "no completed constrained-clock timing result"
+    return ""
+
+
+def _logical_synth_evidence_error(report: dict) -> str:
+    if report.get("termination") != "completed":
+        return "logical synthesis did not complete"
+    if report.get("area_source") != "yosys_mapped":
+        return "no completed Yosys mapped-area result"
     return ""
 
 

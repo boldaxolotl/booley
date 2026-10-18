@@ -441,6 +441,9 @@ edge. The usual real fix is re-pinning the cocotb ↔ simulator pair; see
 
 ### Sim working directory (`[flows.sim].run_cwd`)
 
+The [working-directory decision](../adr/0075-keep-project-root-as-default-simulation-cwd.md)
+records why Project Root remains the default and how `copyto:` inputs fit it.
+
 Some testbenches `$readmemh` vectors or firmware via paths relative to the
 process working directory (`data/…`, `../fw/…`). Booley runs the sim from the
 Project Root by default, so those reads miss. Point the run at the directory
