@@ -73,7 +73,6 @@ from booley.mcp import (
     endpoint_process,
     job_lifecycle,
     job_results,
-    report_encoding,
 )
 from booley.mcp.application import (
     McpApplication,
@@ -94,7 +93,6 @@ from booley.mcp.flow_execution_selection import select_flow_execution
 from booley.mcp.goal_tools import (
     GOAL_TOOL_NAMES,
     dispatch_goal_tool,
-    goal_tool_defs,
 )
 from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, _poll_status
 from booley.mcp.report_encoding import ReportEncoder
@@ -124,34 +122,6 @@ if TYPE_CHECKING:
 
 is_pid_alive = pid.is_pid_alive
 
-# Compatibility names delegate to the SDK-independent behavioral owners.
-_endpoint_subprocess_env = endpoint_process._endpoint_subprocess_env
-_read_tail = endpoint_process._read_tail
-_stderr_cap_bytes = endpoint_process._stderr_cap_bytes
-_stdout_cap_bytes = endpoint_process._stdout_cap_bytes
-_write_synthetic_endpoint_end = endpoint_process._write_synthetic_endpoint_end
-_KNOWN_JOB_ROOTS = job_results._KNOWN_JOB_ROOTS
-LocatedJob = job_results.LocatedJob
-_read_report_json = job_results._read_report_json
-container_jobs_root = call_context.container_jobs_root
-_attach_binding_key = job_results._attach_binding_key
-_endpoint_report_dirs = job_results._endpoint_report_dirs
-_gate_report_by_window = job_results._gate_report_by_window
-_job_binding = job_results._job_binding
-_strip_transcript_dir = job_results._strip_transcript_dir
-_DEFAULT_MAX_STDERR_BYTES = report_encoding._DEFAULT_MAX_STDERR_BYTES
-_DEFAULT_MAX_STDOUT_BYTES = report_encoding._DEFAULT_MAX_STDOUT_BYTES
-_MAX_STRUCTURED_REPORT_BYTES = report_encoding._MAX_STRUCTURED_REPORT_BYTES
-_compact_implementation = report_encoding._compact_implementation
-_compact_target_implementation = report_encoding._compact_target_implementation
-_max_stderr_bytes = report_encoding._max_stderr_bytes
-_max_stdout_bytes = report_encoding._max_stdout_bytes
-_payload_size = report_encoding._payload_size
-_report_artifacts = report_encoding._report_artifacts
-
-_minimum_target_implementation = report_encoding._minimum_target_implementation
-_fit_implementation_payload = report_encoding._fit_implementation_payload
-_enforce_structured_budget = report_encoding._enforce_structured_budget
 
 _REPORT_ENCODER = ReportEncoder()
 _structured_from_report = _REPORT_ENCODER.structured_report
@@ -165,27 +135,6 @@ logging.basicConfig(
     stream=sys.stderr,
     format="[mcp] %(levelname)s %(message)s",
 )
-
-# MCP tools used only by autonomous development. Interactive Mode is driven by
-# the outer client, so exposing these just adds noise and invites the wrong
-# workflow. Keeping the reason next to the name is not decoration: these MCP tools
-# are filtered from the outer client so discovery explains the available surface.
-_INTERACTIVE_HIDDEN_REASONS = catalog._INTERACTIVE_HIDDEN_REASONS
-_INTERACTIVE_MCP_EXCLUDED = catalog._INTERACTIVE_MCP_EXCLUDED
-_STATUS_MCP_TOOL_NAME = catalog._STATUS_MCP_TOOL_NAME
-_STATUS_MCP_TOOL_DESCRIPTION = catalog._STATUS_MCP_TOOL_DESCRIPTION
-_COVERAGE_EVIDENCE_TOOL_NAME = catalog._COVERAGE_EVIDENCE_TOOL_NAME
-_COVERAGE_EVIDENCE_TOOL_DESCRIPTION = catalog._COVERAGE_EVIDENCE_TOOL_DESCRIPTION
-_REPORT_MCP_TOOL_NAME = catalog._REPORT_MCP_TOOL_NAME
-_REPORT_MCP_TOOL_DESCRIPTION = catalog._REPORT_MCP_TOOL_DESCRIPTION
-_POLL_MCP_TOOL_NAME = catalog._POLL_MCP_TOOL_NAME
-_POLL_MCP_TOOL_DESCRIPTION = catalog._POLL_MCP_TOOL_DESCRIPTION
-_CANCEL_MCP_TOOL_NAME = catalog._CANCEL_MCP_TOOL_NAME
-_CANCEL_MCP_TOOL_DESCRIPTION = catalog._CANCEL_MCP_TOOL_DESCRIPTION
-_TARGETS_MCP_TOOL_NAME = catalog._TARGETS_MCP_TOOL_NAME
-_TARGETS_MCP_TOOL_DESCRIPTION = catalog._TARGETS_MCP_TOOL_DESCRIPTION
-_SLEEP_MCP_TOOL_NAME = catalog._SLEEP_MCP_TOOL_NAME
-_SLEEP_MCP_TOOL_DESCRIPTION = catalog._SLEEP_MCP_TOOL_DESCRIPTION
 
 # ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
 # detached background jobs (submit → poll) instead of holding the call open.
@@ -224,7 +173,6 @@ _ASYNC_JOB_MCP_TOOLS = frozenset(
 # ~300s no matter what the MCP-tool timeout is set to — see
 # _POLL_WAIT_SECONDS_MAX.
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
-_DEFAULT_JOB_POLL_WAIT_SECONDS = catalog._DEFAULT_JOB_POLL_WAIT_SECONDS
 
 # Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
 # Clients do not always tear them down promptly, so the server exits itself
@@ -236,6 +184,10 @@ _MCP_WATCHDOG_POLL_SECONDS = 30.0
 # HTTP transport (Interactive Mode, ADR 0023). Loopback only — the URL is
 # reachable from agent apps inside the same container, never from the host.
 _HTTP_HOST = "127.0.0.1"
+
+
+def _exposure() -> catalog.Exposure:
+    return catalog.Exposure.from_mapping(os.environ)
 
 
 def _env_timeout_seconds(name: str, default: float | None) -> float | None:
@@ -386,7 +338,9 @@ def _discover_booley_mcp_tools() -> tuple[list[dict[str, Any]], list[str]]:
     allowed_names = {t.name for t in filtered_endpoints}
 
     custom_mcp_tool_paths = _index_custom_mcp_tools(project_mcp_tools_dir, allowed_names)
-    builtin_results, builtin_errors = _discover_builtin_mcp_tools(filtered_endpoints)
+    builtin_results, builtin_errors = catalog.discover_builtin_definitions(
+        filtered_endpoints, _exposure()
+    )
     custom_results, custom_errors = _discover_custom_mcp_tools(custom_mcp_tool_paths)
     results = builtin_results + custom_results
     errors = builtin_errors + custom_errors
@@ -412,106 +366,6 @@ def _index_custom_mcp_tools(
     return custom_mcp_tool_paths
 
 
-def _nested_allowlist() -> set[str] | None:
-    nested = catalog.Exposure.from_mapping(os.environ).nested
-    return None if nested is None else set(nested)
-
-
-def _split_mcp_tool_csv(raw: str) -> set[str]:
-    """Parse a comma-separated MCP tool list from an env var."""
-    from booley.targets.flow_names import canonical_set
-
-    return canonical_set(t.strip() for t in raw.split(",") if t.strip())
-
-
-def _explicit_mcp_allowlist() -> set[str] | None:
-    explicit = catalog.Exposure.from_mapping(os.environ).explicit
-    return None if explicit is None else set(explicit)
-
-
-def _mcp_tool_visible(mcp_tool_name: str) -> bool:
-    return catalog.tool_visible(
-        mcp_tool_name,
-        catalog.Exposure.from_mapping(os.environ),
-        interactive_excluded=_INTERACTIVE_MCP_EXCLUDED,
-    )
-
-
-def _interactive_mcp_mode() -> bool:
-    return catalog.Exposure.from_mapping(os.environ).interactive
-
-
-def _interactive_hidden_note(mcp_tool_name: str) -> str | None:
-    """Explain an MCP tool this tab hides on purpose, or None if it is not one.
-
-    Explains intentional Interactive Mode hiding when somebody calls the
-    missing MCP tool.
-    """
-    if not _interactive_mcp_mode() or mcp_tool_name not in _INTERACTIVE_MCP_EXCLUDED:
-        return None
-    return (
-        f"{mcp_tool_name} is hidden in Interactive Mode: "
-        f"{_INTERACTIVE_HIDDEN_REASONS[mcp_tool_name]}."
-    )
-
-
-def _status_mcp_tool_visible() -> bool:
-    return catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
-
-
-def _report_mcp_tool_visible() -> bool:
-    return catalog.report_visible(catalog.Exposure.from_mapping(os.environ))
-
-
-def _poll_mcp_tool_visible() -> bool:
-    return catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ))
-
-
-def _targets_mcp_tool_visible() -> bool:
-    return catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ))
-
-
-def _goal_tools_visible() -> bool:
-    return catalog.goals_visible(catalog.Exposure.from_mapping(os.environ))
-
-
-def _coverage_evidence_mode() -> bool:
-    return catalog.Exposure.from_mapping(os.environ).campaign
-
-
-def _coverage_evidence_tool_visible() -> bool:
-    return catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ))
-
-
-def _sleep_mcp_tool_visible() -> bool:
-    return catalog.Exposure.from_mapping(os.environ).debug
-
-
-def _discover_builtin_mcp_tools(
-    discovered: list[Any],
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Import built-in endpoint modules and extract schemas.
-
-    Returns (results, errors).
-    """
-    results: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for info in discovered:
-        path = Path(info.path)
-        if path.is_absolute():
-            continue
-        package = path.parent.as_posix().replace("/", ".")
-        module_name = path.stem
-        mcp_tool_def, err = _import_and_extract(module_name, import_prefix=f"booley.{package}")
-        if err is not None:
-            errors.append(err)
-        if mcp_tool_def is not None:
-            if not _mcp_tool_visible(mcp_tool_def["name"]):
-                continue
-            results.append(mcp_tool_def)
-    return results, errors
-
-
 def _discover_custom_mcp_tools(
     custom_mcp_tool_paths: dict[str, Path],
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -526,7 +380,7 @@ def _discover_custom_mcp_tools(
         if err is not None:
             errors.append(err)
         if mcp_tool_def is not None:
-            if not _mcp_tool_visible(mcp_tool_def["name"]):
+            if not catalog.tool_visible(mcp_tool_def["name"], _exposure()):
                 continue
             results.append(mcp_tool_def)
     return results, errors
@@ -565,31 +419,6 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
     return get_endpoint_config()
 
 
-def _find_mcp_tool_class_in_module(
-    mod: object, source_label: str
-) -> tuple[type, object, dict] | None:
-    return catalog._find_mcp_tool_class_in_module(mod, source_label)
-
-
-def _mcp_tool_def_from_class(
-    cls: type, schema: dict, module_name: str, **extra: Any
-) -> dict[str, Any]:
-    return catalog._mcp_tool_def_from_class(cls, schema, module_name, **extra)
-
-
-def _import_module_safe(fqn: str) -> tuple[object | None, str | None]:
-    return catalog._import_module_safe(fqn)
-
-
-def _import_and_extract(
-    module_name: str,
-    *,
-    import_prefix: str = "booley.mcp",
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Extract a builtin definition through the shared schema owner."""
-    return catalog._import_and_extract(module_name, import_prefix=import_prefix)
-
-
 def _import_file_safe(
     py_path: Path,
 ) -> tuple[object | None, str | None]:
@@ -626,14 +455,14 @@ def _import_and_extract_file(
     if err is not None:
         return None, err
 
-    found = _find_mcp_tool_class_in_module(mod, str(py_path))
+    found = catalog._find_mcp_tool_class_in_module(mod, str(py_path))
     if found is None:
         msg = f"NO MCP ENDPOINT CLASS FOUND: custom MCP tool {py_path} has no recognized MCP endpoint subclass"
         logger.warning(msg)
         return None, msg
 
     cls, _instance, schema = found
-    return _mcp_tool_def_from_class(
+    return catalog._mcp_tool_def_from_class(
         cls,
         schema,
         py_path.stem,
@@ -645,8 +474,6 @@ def _import_and_extract_file(
 # ---------------------------------------------------------------------------
 # B-Wave MCP tool definitions (hand-authored)
 # ---------------------------------------------------------------------------
-
-_BWAVE_MCP_TOOLS = catalog._BWAVE_MCP_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -753,7 +580,6 @@ def _params_to_argv(params: dict[str, Any]) -> list[str]:
 # Watchdog sampling interval while a child may be queued for its class slot.
 # Queue-state reads are a handful of small file stats/reads per tick; 5s keeps
 # the budget accounting within one tick of the truth without measurable IO.
-_WATCHDOG_TICK_SECONDS = endpoint_process._WATCHDOG_TICK_SECONDS
 
 
 async def _wait_with_queue_credit(
@@ -764,7 +590,11 @@ async def _wait_with_queue_credit(
 ) -> bool:
     """Compatibility delegate to the queue-aware supervisor."""
     return await endpoint_process._wait_with_queue_credit(
-        proc, timeout, is_queued, on_first_active, tick_seconds=_WATCHDOG_TICK_SECONDS
+        proc,
+        timeout,
+        is_queued,
+        on_first_active,
+        tick_seconds=endpoint_process._WATCHDOG_TICK_SECONDS,
     )
 
 
@@ -785,12 +615,9 @@ async def _run_subprocess(
         env=env,
         is_queued=is_queued,
         on_first_active=on_first_active,
-        watchdog_tick=_WATCHDOG_TICK_SECONDS,
-        cancel_grace=_CANCEL_GRACE_SECONDS,
+        watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
+        cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
     )
-
-
-_CANCEL_GRACE_SECONDS = endpoint_process._CANCEL_GRACE_SECONDS
 
 
 # One MCP tool call's MCP payload: plain text blocks, or the SDK's combination
@@ -836,7 +663,7 @@ def _with_structured_report(
 def _latest_report(
     endpoint: str | None = None,
     *,
-    located: LocatedJob | None = None,
+    located: job_results.LocatedJob | None = None,
     context: CallContext | None = None,
 ) -> dict[str, Any] | None:
     return _MCP_JOB_REPOSITORY.latest_report(endpoint, located=located, context=context)
@@ -875,33 +702,6 @@ def _log_discovery_errors(
         print(f"[mcp]   - {err}", file=sys.stderr, flush=True)
 
 
-def _bwave_mcp_tools_for_mode() -> list[dict[str, Any]]:
-    """Return the B-Wave MCP tool definitions visible in this server's mode.
-
-    Uses the same exposure filter as Python-backed MCP tools so nested,
-    explicit-allowlist, and Interactive Mode behavior stays coherent.
-    """
-    return [t for t in _BWAVE_MCP_TOOLS if _mcp_tool_visible(t["name"])]
-
-
-def _status_mcp_tool_def() -> dict[str, Any] | None:
-    if not _status_mcp_tool_visible():
-        return None
-    return catalog._status_mcp_tool_def()
-
-
-def _report_mcp_tool_def() -> dict[str, Any] | None:
-    if not _report_mcp_tool_visible():
-        return None
-    return catalog._report_mcp_tool_def()
-
-
-def _poll_mcp_tool_def() -> dict[str, Any] | None:
-    if not _poll_mcp_tool_visible():
-        return None
-    return catalog._poll_mcp_tool_def()
-
-
 def _build_mcp_tool_index(
     mcp_tools: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -909,62 +709,13 @@ def _build_mcp_tool_index(
     index: dict[str, dict[str, Any]] = {}
     for t in mcp_tools:
         index[t["name"]] = t
-    for t in _bwave_mcp_tools_for_mode():
+    for t in [
+        tool
+        for tool in catalog._BWAVE_MCP_TOOLS
+        if catalog.tool_visible(tool["name"], _exposure())
+    ]:
         index[t["name"]] = t
     return index
-
-
-def _cancel_mcp_tool_def() -> dict[str, Any] | None:
-    if not _poll_mcp_tool_visible():
-        return None
-    return catalog._cancel_mcp_tool_def()
-
-
-def _targets_mcp_tool_def() -> dict[str, Any] | None:
-    if not _targets_mcp_tool_visible():
-        return None
-    return catalog._targets_mcp_tool_def()
-
-
-def _coverage_evidence_tool_def() -> dict[str, Any] | None:
-    if not _coverage_evidence_tool_visible():
-        return None
-    return catalog._coverage_evidence_tool_def()
-
-
-def _sleep_mcp_tool_def() -> dict[str, Any] | None:
-    if not _sleep_mcp_tool_visible():
-        return None
-    return catalog._sleep_mcp_tool_def()
-
-
-def _all_mcp_tool_defs(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collect every tool definition visible in the current server mode."""
-    mcp_tool_defs = [*_bwave_mcp_tools_for_mode()]
-    status_def = _status_mcp_tool_def()
-    if status_def is not None:
-        mcp_tool_defs.append(status_def)
-    report_def = _report_mcp_tool_def()
-    if report_def is not None:
-        mcp_tool_defs.append(report_def)
-    poll_def = _poll_mcp_tool_def()
-    if poll_def is not None:
-        mcp_tool_defs.append(poll_def)
-    cancel_def = _cancel_mcp_tool_def()
-    if cancel_def is not None:
-        mcp_tool_defs.append(cancel_def)
-    sleep_def = _sleep_mcp_tool_def()
-    if sleep_def is not None:
-        mcp_tool_defs.append(sleep_def)
-    targets_def = _targets_mcp_tool_def()
-    if targets_def is not None:
-        mcp_tool_defs.append(targets_def)
-    coverage_evidence_def = _coverage_evidence_tool_def()
-    if coverage_evidence_def is not None:
-        mcp_tool_defs.append(coverage_evidence_def)
-    if _goal_tools_visible():
-        mcp_tool_defs.extend(goal_tool_defs())
-    return catalog.assemble_tool_definitions(mcp_tools, mcp_tool_defs)
 
 
 def _format_status_card(mcp_tool_names: list[str]) -> str:
@@ -999,7 +750,7 @@ def _dispatch_status(mcp_tool_names: list[str]) -> list[TextContent]:
 
 def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
     """Prepend a changed automatic-health issue to the first interactive result."""
-    if not _status_mcp_tool_visible():
+    if not catalog.status_visible(_exposure()):
         return content
     try:
         from booley.runtime.health_presentation import consume_changed_summary
@@ -1132,7 +883,7 @@ async def _dispatch_bwave(
     builder = bwave_subcmds.get(name)
     if builder is None:
         return None
-    if not _mcp_tool_visible(name):
+    if not catalog.tool_visible(name, _exposure()):
         return None
     cmd = builder(arguments)
     extra_args = arguments.get("extra_args", [])
@@ -1182,7 +933,7 @@ def _job_poll_wait_seconds() -> float:
     """How long a single poll blocks waiting for the job (0 → return at once)."""
     val = _env_timeout_seconds(
         "BOOLEY_MCP_JOB_POLL_WAIT_SECONDS",
-        _DEFAULT_JOB_POLL_WAIT_SECONDS,
+        catalog._DEFAULT_JOB_POLL_WAIT_SECONDS,
     )
     return val if val is not None else 0.0
 
@@ -1217,10 +968,10 @@ def _requested_poll_wait_seconds(arguments: dict[str, Any]) -> float:
 
 def job_roots() -> tuple[Path, ...]:
     """Retained roots resolved by the durable Job owner."""
-    return job_results.job_roots(container_root=container_jobs_root)
+    return job_results.job_roots(container_root=call_context.container_jobs_root)
 
 
-def _locate_job(run_id: str) -> LocatedJob | None:
+def _locate_job(run_id: str) -> job_results.LocatedJob | None:
     return job_results._locate_job(run_id, roots=job_roots())
 
 
@@ -1239,7 +990,7 @@ def _format_job_attached(name: str, run_id: str) -> str:
         f"{_job_phase(run_id)}: an identical '{name}' run is already in "
         f"flight — attached to it instead of starting a duplicate "
         f"(run_id={run_id}). This is NOT the result. Call the "
-        f"'{_POLL_MCP_TOOL_NAME}' MCP tool with run_id={run_id} and keep polling "
+        f"'{catalog.POLL_MCP_TOOL_NAME}' MCP tool with run_id={run_id} and keep polling "
         f"until it returns an EXIT_CODE."
     )
 
@@ -1255,7 +1006,7 @@ def _format_job_running(name: str, run_id: str) -> str:
     return (
         f"{phase}: '{name}' {waiting} and is now "
         f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. Call the '{_POLL_MCP_TOOL_NAME}' MCP tool with "
+        f"— the run has not finished. Call the '{catalog.POLL_MCP_TOOL_NAME}' MCP tool with "
         f"run_id={run_id} to keep waiting, and keep polling until it returns "
         f"an EXIT_CODE. Pass/fail criteria are recorded only when the run "
         f"actually completes, so do not conclude the step until then."
@@ -1266,7 +1017,7 @@ def _format_job_running_poll(run_id: str) -> str:
     """Message for a poll whose job is still running (or queued for a slot)."""
     message = (
         f"{_job_phase(run_id)}: job {run_id} is still in progress. Call "
-        f"'{_POLL_MCP_TOOL_NAME}' again with the same run_id to keep waiting for "
+        f"'{catalog.POLL_MCP_TOOL_NAME}' again with the same run_id to keep waiting for "
         f"the result."
     )
     progress = _running_progress(run_id)
@@ -1292,7 +1043,7 @@ def _running_poll_content(run_id: str) -> McpToolContent:
     rec = _job_record(run_id)
     return _goal_warning_result(
         _with_structured_report(content, _running_progress(run_id)),
-        None if rec is None else _job_binding(rec),
+        None if rec is None else job_results.job_binding(rec),
         None if rec is None else rec.session_key,
     )
 
@@ -1307,16 +1058,16 @@ class _McpJobRepository(job_results.JobRepository):
     def roots(self) -> tuple[Path, ...]:
         return job_roots()
 
-    def locate(self, run_id: str) -> LocatedJob | None:
+    def locate(self, run_id: str) -> job_results.LocatedJob | None:
         return _locate_job(run_id)
 
     def record(self, run_id: str) -> jobrec.JobRecord | None:
         return _job_record(run_id)
 
     def report_dirs(
-        self, located: LocatedJob | None = None, *, context: CallContext | None = None
+        self, located: job_results.LocatedJob | None = None, *, context: CallContext | None = None
     ) -> tuple[Path, ...]:
-        return _endpoint_report_dirs(located, context=context)
+        return job_results._endpoint_report_dirs(located, context=context)
 
 
 _MCP_JOB_REPOSITORY = _McpJobRepository()
@@ -1337,7 +1088,7 @@ class _JobManager(JobLifecycle):
 
     @staticmethod
     def _write_end(name: str, duration_s: int, **kwargs: Any) -> None:
-        _write_synthetic_endpoint_end(name, duration_s, **kwargs)
+        endpoint_process.write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
     @staticmethod
     async def _cancel_process(pid: int) -> None:
@@ -1377,7 +1128,7 @@ class _JobManager(JobLifecycle):
         ]
         rendered = _with_structured_report(content, report if report_fresh else None)
         rec = self._read_run(run_id)
-        binding = None if rec is None else _job_binding(rec)
+        binding = None if rec is None else job_results.job_binding(rec)
         return _goal_warning_result(
             _dispatch_result(rendered, is_error=exit_code != 0),
             binding,
@@ -1387,7 +1138,6 @@ class _JobManager(JobLifecycle):
 
 # Re-check cadence while long-polling a disk-only (adopted) job. Each check
 # is a couple of small file reads; 5s keeps the answer prompt without churn.
-_DISK_POLL_TICK_SECONDS = job_lifecycle._DISK_POLL_TICK_SECONDS
 
 
 async def _poll_from_disk(
@@ -1396,7 +1146,9 @@ async def _poll_from_disk(
     wait_seconds: float = 0.0,
 ) -> McpToolContent:
     """Compose an adopted Job's SDK-independent poll outcome."""
-    state = await jobs.poll_from_disk(run_id, wait_seconds, disk_tick=_DISK_POLL_TICK_SECONDS)
+    state = await jobs.poll_from_disk(
+        run_id, wait_seconds, disk_tick=job_lifecycle._DISK_POLL_TICK_SECONDS
+    )
     return _render_job_poll(state, jobs)
 
 
@@ -1423,7 +1175,7 @@ async def _dispatch_poll_impl(arguments: dict[str, Any], jobs: _JobManager) -> M
         jobs.wait,
         _MCP_JOB_REPOSITORY,
         is_pid_alive,
-        disk_tick=_DISK_POLL_TICK_SECONDS,
+        disk_tick=job_lifecycle._DISK_POLL_TICK_SECONDS,
     )
     return _render_job_poll(state, jobs)
 
@@ -1497,7 +1249,9 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
 
 async def _cancel_adopted_process_group(pid: int) -> None:
     """Delegate disk-only process-group cancellation."""
-    await endpoint_process._cancel_adopted_process_group(pid, grace_seconds=_CANCEL_GRACE_SECONDS)
+    await endpoint_process._cancel_adopted_process_group(
+        pid, grace_seconds=endpoint_process.CANCEL_GRACE_SECONDS
+    )
 
 
 async def _dispatch_cancel_impl(
@@ -1517,7 +1271,7 @@ async def _dispatch_cancel_impl(
             TextContent(
                 type="text",
                 text=f"Job {run_id} already finished — nothing to cancel. "
-                f"Fetch its result with '{_POLL_MCP_TOOL_NAME}'.",
+                f"Fetch its result with '{catalog.POLL_MCP_TOOL_NAME}'.",
             )
         ]
     if phase == "finished":
@@ -1525,7 +1279,7 @@ async def _dispatch_cancel_impl(
             TextContent(
                 type="text",
                 text=f"Job {run_id} finished before cancellation took effect. "
-                f"Fetch its result with '{_POLL_MCP_TOOL_NAME}'.",
+                f"Fetch its result with '{catalog.POLL_MCP_TOOL_NAME}'.",
             )
         ]
     return [
@@ -1535,7 +1289,7 @@ async def _dispatch_cancel_impl(
                 f"CANCELLED: {phase} job {run_id} was withdrawn before it started."
                 if phase == "queued"
                 else f"CANCELLED: running job {run_id} received SIGTERM; any process "
-                f"still alive after {_CANCEL_GRACE_SECONDS:.0f}s was force-killed."
+                f"still alive after {endpoint_process.CANCEL_GRACE_SECONDS:.0f}s was force-killed."
             ),
         )
     ]
@@ -1577,7 +1331,9 @@ def _find_attachable_job(
 
 async def _attach_to_job(name: str, run_id: str, jobs: _JobManager) -> McpToolContent:
     """Compose an attached live Job after the lifecycle's inline wait."""
-    state = await jobs.poll(run_id, _job_inline_wait_seconds(), disk_tick=_DISK_POLL_TICK_SECONDS)
+    state = await jobs.poll(
+        run_id, _job_inline_wait_seconds(), disk_tick=job_lifecycle._DISK_POLL_TICK_SECONDS
+    )
     if state.status != "running" or not state.tracked:
         return _render_job_poll(state, jobs)
     return _with_structured_report(
@@ -1674,17 +1430,19 @@ async def _run_inline_endpoint(
         result = await _run_subprocess(
             cmd,
             timeout=timeout,
-            env=_endpoint_subprocess_env(
+            env=endpoint_process._endpoint_subprocess_env(
                 context,
                 pytest_scope=name,
                 BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id,
             ),
         )
     except asyncio.CancelledError:
-        _write_synthetic_endpoint_end(name, 0, identity=identity, outcome="aborted")
+        endpoint_process.write_synthetic_endpoint_end(
+            name, 0, identity=identity, outcome="aborted"
+        )
         raise
     if result[3]:
-        _write_synthetic_endpoint_end(name, timeout, identity=identity)
+        endpoint_process.write_synthetic_endpoint_end(name, timeout, identity=identity)
     return result
 
 
@@ -1973,14 +1731,20 @@ async def _dispatch_special_mcp_tool(
     # The synchronous meta MCP tools share one shape (visibility gate + handler);
     # a hidden-but-named MCP tool falls through to None like an unknown name.
     sync_meta: dict[str, tuple[Callable[[], bool], Callable[[], McpToolContent]]] = {
-        _STATUS_MCP_TOOL_NAME: (
-            _status_mcp_tool_visible,
+        catalog._STATUS_MCP_TOOL_NAME: (
+            lambda: catalog.status_visible(_exposure()),
             lambda: _dispatch_status(status_mcp_tool_names),
         ),
-        _REPORT_MCP_TOOL_NAME: (_report_mcp_tool_visible, lambda: _dispatch_report(arguments)),
-        _TARGETS_MCP_TOOL_NAME: (_targets_mcp_tool_visible, lambda: _dispatch_targets(arguments)),
-        _COVERAGE_EVIDENCE_TOOL_NAME: (
-            _coverage_evidence_tool_visible,
+        catalog._REPORT_MCP_TOOL_NAME: (
+            lambda: catalog.report_visible(_exposure()),
+            lambda: _dispatch_report(arguments),
+        ),
+        catalog._TARGETS_MCP_TOOL_NAME: (
+            lambda: catalog.utilities_visible(_exposure()),
+            lambda: _dispatch_targets(arguments),
+        ),
+        catalog._COVERAGE_EVIDENCE_TOOL_NAME: (
+            lambda: catalog.coverage_visible(_exposure()),
             lambda: _dispatch_coverage_evidence(arguments),
         ),
     }
@@ -1988,13 +1752,13 @@ async def _dispatch_special_mcp_tool(
     if entry is not None:
         visible, handler = entry
         return handler() if visible() else None
-    if name == _POLL_MCP_TOOL_NAME and _poll_mcp_tool_visible():
+    if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs)
-    if name == _CANCEL_MCP_TOOL_NAME and _poll_mcp_tool_visible():
+    if name == catalog._CANCEL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_cancel(arguments, jobs)
-    if name == _SLEEP_MCP_TOOL_NAME and _sleep_mcp_tool_visible():
+    if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
-    if name in GOAL_TOOL_NAMES and _goal_tools_visible():
+    if name in GOAL_TOOL_NAMES and catalog.goals_visible(_exposure()):
         return await dispatch_goal_tool(
             name, arguments, booley_dir=resolve_booley_dir(), request_context=request_context
         )
@@ -2078,7 +1842,7 @@ def _build_mcp_application(
         )
 
     application = McpApplication(
-        _all_mcp_tool_defs(mcp_tools),
+        catalog.visible_definitions(_exposure(), mcp_tools),
         dispatch=dispatch,
         canonicalize=canonical,
         on_discovery_error=discovery_errors.append,
@@ -2159,11 +1923,9 @@ async def _call_application_tool(
     except UnknownMcpToolError as exc:
         if observer is not None:
             await _record_presence(observer, request.attribution, params.name, "unknown-tool")
-        hidden = _interactive_hidden_note(exc.name)
-        message = hidden or f"Unknown MCP tool: {exc.name}"
         raise MCPError(
             INVALID_PARAMS,
-            message,
+            f"Unknown MCP tool: {exc.name}",
         ) from None
     except MCPError:
         raise
@@ -2555,7 +2317,6 @@ def _goal_warning_result(
             binding.booley_dir,
             work_dir=binding.worktree_root,
             session_key=session_key,
-            routing_guidance=catalog.work_dir_guidance(),
         )
     except GoalStoreError as exc:
         prefix = f"WARNING: Goal Record cannot be read: {exc}"

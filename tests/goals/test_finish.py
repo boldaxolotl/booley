@@ -166,7 +166,7 @@ def test_ignored_nonstealth_is_explicitly_local(complete):
         EntryRequest(
             complete.worktree, "again", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(complete.control),
+        EntryEnvironment(complete.control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(complete)
     result = finish_goal(request(complete), environment(complete))
@@ -257,7 +257,7 @@ def test_replacement_entry_does_not_receive_old_retry_or_abandon(complete):
         EntryRequest(
             complete.worktree, "new", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(complete.control),
+        EntryEnvironment(complete.control, routing_guidance="Explicit test routing guidance."),
     ).record
     before = record_paths(complete.control, next_record.id).record_file.read_bytes()
     assert finish_goal(call, environment(complete)) == result
@@ -643,7 +643,7 @@ def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_pat
         EntryRequest(
             layout.worktree, "next", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(layout.control),
+        EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(layout)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
