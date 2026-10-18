@@ -8,7 +8,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
       "diagnostic": {
         "type": "boolean",
@@ -31,9 +31,6 @@
         "default": ""
       }
     },
-    "required": [
-      "target"
-    ],
     "additionalProperties": false
   },
   "sim": {
@@ -45,7 +42,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets. For sim resume, the manifest owns selection."
       },
       "diagnostic": {
         "type": "boolean",
@@ -147,7 +144,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
       "diagnostic": {
         "type": "boolean",
@@ -240,9 +237,6 @@
         "description": "Expert OpenROAD violating-endpoint repair percentage"
       }
     },
-    "required": [
-      "target"
-    ],
     "additionalProperties": false
   },
   "fpga": {
@@ -254,7 +248,7 @@
       },
       "target": {
         "type": "string",
-        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`."
+        "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
       "diagnostic": {
         "type": "boolean",
@@ -290,9 +284,6 @@
         "description": "Override the Target's portable FPGA optimization profile for this call"
       }
     },
-    "required": [
-      "target"
-    ],
     "additionalProperties": false
   }
 }

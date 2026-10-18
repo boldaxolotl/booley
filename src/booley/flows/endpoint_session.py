@@ -118,18 +118,8 @@ def prepare_execution(
     endpoint.read_state()
     endpoint._default_target_args()
     flow = getattr(endpoint, "flow", None)
-    if endpoint.endpoint_kind == "flow":
-        binding_error = endpoint._criterion_binding_gate()
-        if binding_error is not None:
-            endpoint._publish_console_report(binding_error)
-            endpoint._report_criteria.project(binding_error)
-            return binding_error
-    if hasattr(endpoint, "prepare_target_endpoint"):
-        target_error = endpoint.prepare_target_endpoint()
-        if target_error is not None:
-            endpoint.write_report(target_error)
-            endpoint._publish_console_report(target_error)
-            return target_error
+    if (selection_error := _prepare_target_and_binding(endpoint)) is not None:
+        return selection_error
     simulation: object | None = None
     if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
         simulation = flow.prepare_simulation_endpoint()
@@ -140,6 +130,35 @@ def prepare_execution(
     if endpoint.endpoint_kind in {"flow", "specialist"}:
         freeze(endpoint, simulation)
     return _prepared_execution(endpoint, simulation)
+
+
+def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | None:
+    """Resolve omission before binding while preserving explicit rejection order."""
+    flow = getattr(endpoint, "flow", None)
+    implicit_target = (
+        flow is not None
+        and not endpoint.args.target
+        and not getattr(endpoint.args, "resume_from", None)
+    )
+    if implicit_target:
+        target_error = endpoint.prepare_target_endpoint()
+        if target_error is not None:
+            endpoint.write_report(target_error)
+            endpoint._publish_console_report(target_error)
+            return target_error
+    if endpoint.endpoint_kind == "flow":
+        binding_error = endpoint._criterion_binding_gate()
+        if binding_error is not None:
+            endpoint._publish_console_report(binding_error)
+            endpoint._report_criteria.project(binding_error)
+            return binding_error
+    if not implicit_target and hasattr(endpoint, "prepare_target_endpoint"):
+        target_error = endpoint.prepare_target_endpoint()
+        if target_error is not None:
+            endpoint.write_report(target_error)
+            endpoint._publish_console_report(target_error)
+            return target_error
+    return None
 
 
 def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> PreparedExecution:
