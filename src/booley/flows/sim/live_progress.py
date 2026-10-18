@@ -3,32 +3,25 @@
 from __future__ import annotations
 
 import copy
-import os
-import stat
 import threading
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
-from booley.flows.run_log import (
-    RUN_LOG_PENDING,
-    current_run_token,
-    format_run_log_header,
-    parse_run_log_header,
-)
-from booley.runtime.regular_file import open_regular_nofollow
+from booley.flows.run_log import RunLogIdentity, current_run_token
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _STAGES = frozenset({"preparing", "pre_sim", "building", "executing", "postprocessing"})
 
 
-def _absolute_nofollow(path: Path) -> Path:
-    # Normalize dot components while preserving links for explicit rejection.
-    return Path(os.path.abspath(path))  # noqa: PTH100 — resolve would hide symbolic links
+@dataclass
+class AttemptOwner:
+    closed: bool = False
+    log: RunLogIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -42,22 +35,7 @@ class AttemptScope:
     revision: str = ""
     ephemeral_root: Path | None = None
     operation: str = "simulation"
-
-
-@dataclass(frozen=True)
-class StageObservation:
-    """An immutable lifecycle event with its exact allocated evidence root."""
-
-    scope: AttemptScope
-    stage: str
-    evidence_root: Path | None = None
-    attempt_token: str = ""
-
-    def __post_init__(self) -> None:
-        if self.stage not in _STAGES:
-            raise ValueError(f"invalid Simulation observation stage: {self.stage}")
-        if self.scope.role not in {"candidate", "baseline"} or not self.scope.target:
-            raise ValueError("Simulation observations require a Target and valid attempt role")
+    owner: AttemptOwner = field(default_factory=AttemptOwner)
 
 
 _sink: ContextVar[LiveProgressSink | None] = ContextVar("simulation_live_progress", default=None)
@@ -74,8 +52,7 @@ class LiveProgressSink:
         self.run_token: str = current_run_token()
         self._lock = threading.RLock()
         self._base: dict[str, object] | None = None
-        self._active: dict[str, dict[str, object]] = {}
-        self._initialized: dict[Path, tuple[str, str, str]] = {}
+        self._active: dict[str, tuple[AttemptScope, dict[str, object]]] = {}
         self._closed = False
         self.error: str | None = None
 
@@ -95,12 +72,21 @@ class LiveProgressSink:
                 self._base = previous
                 raise
 
-    def observe(self, observation: StageObservation) -> None:
-        scope, stage = observation.scope, observation.stage
-        root, token = observation.evidence_root, observation.attempt_token
+    def observe(
+        self,
+        scope: AttemptScope,
+        stage: str,
+        root: Path | None,
+        token: str,
+        log: RunLogIdentity | None,
+    ) -> None:
         with self._lock:
-            if self._closed or current_run_token() != self.run_token:
+            if self._closed or scope.owner.closed or current_run_token() != self.run_token:
                 return
+            if scope.key in self._active:
+                scope = replace(scope, owner=self._active[scope.key][0].owner)
+            if log is not None:
+                scope.owner.log = log
             value: dict[str, object] = {
                 "target": scope.target,
                 "identity": scope.identity,
@@ -112,105 +98,20 @@ class LiveProgressSink:
             }
             if scope.revision:
                 value["revision"] = scope.revision
-            if root is not None:
-                pointer = self._pointer(root, scope, token)
+            log = scope.owner.log
+            if root is not None and log is not None and log.target == scope.target:
+                pointer = log.pointer(root, token, self.project_root)
                 if pointer is not None:
                     value["log"] = pointer
-            self._active[scope.key] = value
+            self._active[scope.key] = (scope, value)
             self._publish_active()
 
     def retire(self, key: str) -> None:
         with self._lock:
             if self._closed:
                 return
-            self._initialized = {
-                root: owned for root, owned in self._initialized.items() if owned[1] != key
-            }
             if self._active.pop(key, None) is not None:
                 self._publish_active()
-
-    def initialize_log(self, root: Path, target: str, scope: AttemptScope, token: str) -> None:
-        """Create an owned observation header without following planted links."""
-        with self._lock:
-            if self._closed:
-                return
-            root = _absolute_nofollow(root)
-            self._initialized.pop(root, None)
-            try:
-                path = root / "run.log"
-                self._validate_path(path, scope)
-                flags = (
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_NONBLOCK", 0)
-                )
-                descriptor = os.open(path, flags, 0o600)
-                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                        raise ValueError("active run log must be a singly linked regular file")
-                    stream.truncate(0)
-                    header = format_run_log_header(flow="sim", target=target, run=self.run_token)
-                    stream.write(f"{header}{RUN_LOG_PENDING}\n")
-                self._initialized[root.absolute()] = (target, scope.key, token)
-            except (OSError, ValueError) as error:
-                self._record_error(error)
-
-    def _validate_path(self, path: Path, scope: AttemptScope) -> None:
-        containing = self.project_root
-        if path.is_relative_to(self.path.parent.absolute()):
-            containing = self.path.parent.absolute()
-        if scope.ephemeral_root is not None and path.is_relative_to(
-            scope.ephemeral_root.absolute()
-        ):
-            containing = scope.ephemeral_root.absolute()
-        path.relative_to(containing)
-        current = path
-        while current != containing.parent:
-            try:
-                info = current.lstat()
-            except FileNotFoundError:
-                if current != path:
-                    raise
-            else:
-                if current == path and not stat.S_ISREG(info.st_mode):
-                    raise ValueError("active run log must be regular")
-                if stat.S_ISLNK(info.st_mode):
-                    raise ValueError("active evidence path contains a symbolic link")
-            current = current.parent
-
-    def _pointer(self, root: Path, scope: AttemptScope, token: str) -> dict[str, object] | None:
-        root = _absolute_nofollow(root)
-        owned = self._initialized.get(root)
-        if (
-            owned is None
-            or owned[:2] != (scope.target, scope.key)
-            or (token and token != owned[2])
-        ):
-            return None
-        target = owned[0]
-        path = root / "run.log"
-        try:
-            self._validate_path(path, scope)
-            with os.fdopen(open_regular_nofollow(path), "r", encoding="utf-8") as stream:
-                header = stream.readline(4096)
-            fields = parse_run_log_header(header)
-            if (
-                fields is None
-                or fields.get("run") != self.run_token
-                or fields.get("flow") != "sim"
-                or fields.get("target") != target
-            ):
-                return None
-            representation = (
-                str(path.relative_to(self.project_root))
-                if path.is_relative_to(self.project_root)
-                else str(path)
-            )
-            return {"path": representation, "live": True, "complete": False}
-        except (OSError, ValueError):
-            return None
 
     def _document(self) -> dict[str, object]:
         assert self._base is not None
@@ -218,8 +119,8 @@ class LiveProgressSink:
         document["timestamp"] = utc_now_rfc3339()
         document.pop("active", None)
         if self._active and not self._closed:
-            document["active"] = list(self._active.values())
-            candidate = [item for item in self._active.values() if item["role"] == "candidate"]
+            document["active"] = [value for _, value in self._active.values()]
+            candidate = [item for item in document["active"] if item["role"] == "candidate"]
             document["phase"] = (
                 "running"
                 if any(item["stage"] in {"executing", "postprocessing"} for item in candidate)
@@ -272,36 +173,34 @@ def attempt_scope(
     operation: str = "simulation",
 ) -> Iterator[None]:
     parent = _scope.get()
+    nested = (
+        parent is not None
+        and parent.target == target
+        and (not attempt_id or attempt_id == parent.attempt_id)
+    )
     scope = AttemptScope(
         target,
-        uuid.uuid4().hex,
+        parent.key if nested else uuid.uuid4().hex,
         identity,
         tests,
-        attempt_id,
-        role,
-        revision,
-        ephemeral_root.resolve() if ephemeral_root is not None else None,
+        attempt_id or (parent.attempt_id if parent else ""),
+        parent.role if parent else role,
+        parent.revision if parent else revision,
+        parent.ephemeral_root if parent else ephemeral_root.resolve() if ephemeral_root else None,
         operation,
+        parent.owner if nested else AttemptOwner(),
     )
-    if parent is not None:
-        scope = replace(
-            scope,
-            key=parent.key
-            if parent.target == target and (not attempt_id or attempt_id == parent.attempt_id)
-            else scope.key,
-            role=parent.role,
-            revision=parent.revision,
-            ephemeral_root=parent.ephemeral_root,
-            attempt_id=attempt_id or parent.attempt_id,
-        )
     token = _scope.set(scope)
     try:
         observe_stage(target, "preparing")
         yield
     finally:
         sink = _sink.get()
-        if sink is not None and (parent is None or scope.key != parent.key):
-            sink.retire(scope.key)
+        if parent is None or scope.key != parent.key:
+            scope.owner.closed = True
+            scope.owner.log = None
+            if sink is not None:
+                sink.retire(scope.key)
         _scope.reset(token)
 
 
@@ -311,7 +210,7 @@ def observe_stage(
     *,
     evidence_root: Path | None = None,
     attempt_token: str = "",
-    initialize_log: bool = False,
+    log: RunLogIdentity | None = None,
     tests: tuple[str, ...] = (),
 ) -> None:
     """Publish one real lifecycle transition, never infer a verdict."""
@@ -325,11 +224,31 @@ def observe_stage(
         scope = replace(scope, target=target, identity="", tests=tests)
     elif tests:
         scope = replace(scope, tests=tests)
-    if initialize_log and evidence_root is not None:
-        sink.initialize_log(evidence_root, target, scope, attempt_token)
-    sink.observe(StageObservation(scope, stage, evidence_root, attempt_token))
+    if scope.role not in {"candidate", "baseline"} or not scope.target:
+        raise ValueError("Simulation observations require a Target and valid attempt role")
+    sink.observe(scope, stage, evidence_root, attempt_token, log)
 
 
 def current_progress() -> LiveProgressSink | None:
     """Return the scoped invocation observer, when installed."""
     return _sink.get()
+
+
+def prepare_attempt_log(
+    root: Path, target: str, token: str, project: Path, *, required: bool = False
+) -> RunLogIdentity | None:
+    """Hand the writer its owned roots; preserve each caller's failure policy."""
+    sink, scope = _sink.get(), _scope.get()
+    allowed = [project.resolve()]
+    if sink is not None:
+        allowed.append(sink.path.parent.absolute())
+    if scope is not None and scope.ephemeral_root is not None:
+        allowed.append(scope.ephemeral_root)
+    try:
+        return RunLogIdentity.create(root, target, token, tuple(allowed))
+    except OSError as error:
+        if required:
+            raise
+        if sink is not None:
+            sink._record_error(error)
+        return None
