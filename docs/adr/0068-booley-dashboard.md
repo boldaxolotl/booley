@@ -254,15 +254,14 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   no allocation. If both already have allocations, preserve both. Dashboard
   ownership and scoped lists follow established aliases without rewriting Job
   records or changing execution routing.
-- **Observational Dashboard.** MCP maintenance backfills legacy presence before
-  pruning, then retained Jobs and disconnected owners, without rewriting Job
-  records. A pass examines at most 16384 Job files in known Goal and interactive
-  layouts; files beyond that bound stay unknown until producer registration.
-  The Dashboard only reads maps and shows `S?` / `J-TYPE?` with a diagnostic
-  until allocation succeeds. Handle-store failures are advisory and never
-  prevent session presence publication or Job execution. Invalid maps are
-  diagnosed rather than reset; a
-  16 MiB map bound fails allocation rather than recycling prior handles.
+- **Observational Dashboard.** Session registration and Job creation allocate
+  handles. Historical records without allocations keep `S?` / `J-TYPE?`.
+  The Dashboard only reads maps; each refresh shares its session-map snapshot.
+  Handle-store failures are advisory and never prevent session presence or Job
+  execution. Schema 1 and string mappings are checked at the boundary; counters
+  are repaired above existing numeric suffixes. Unreadable, unsupported,
+  redirected or oversized maps are diagnosed rather than reset. The 16 MiB
+  bound prevents allocation from recycling handles through a reset.
 
 ## Amendments (2026-10-15)
 
