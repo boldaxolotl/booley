@@ -90,16 +90,15 @@ def test_sweep_builds_one_exact_replacement_at_a_time(
         staged.write_bytes(source.read_bytes())
         name = str(staged.relative_to(build_dir))
         edam_path = build_dir / "dut.eda.yml"
+        entry = {"name": name, "core": "acme:test:dut:1", "file_type": "systemVerilogSource"}
         edam_path.write_text(
             yaml.safe_dump(
                 {
                     "cores": {"acme:test:dut:1": {"core_file": str(core_file)}},
-                    "files": [{"name": name, "core": "acme:test:dut:1"}],
+                    "files": [entry],
                 }
             )
         )
-        (build_dir / "Makefile").write_text("iverilog -c dut.scr\n")
-        (build_dir / "dut.scr").write_text(name)
         resolved = types.SimpleNamespace(build_root=build_dir, edam_path=edam_path)
         materialize_build_mutation(mutation[0], mutation[1], tmp_path, resolved)
         built_sources.append(staged.read_text(encoding="utf-8"))
