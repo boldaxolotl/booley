@@ -377,22 +377,10 @@ def store_token(token: str, app: str = APP_CLAUDE) -> Path:
     preflight_store_token(app)
     _token_store().ensure_directory()
     path = token_path(app)
-    # Docker binds this inode: tighten its mode before truncating, never replace it.
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        _validate_token_file(path, os.fstat(descriptor))
-        if os.name != "nt":
-            os.fchmod(descriptor, 0o600)
-        os.ftruncate(descriptor, 0)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            handle.write(f"{token}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(f"{token}\n")
+    path.chmod(0o600)
     return path
 
 

@@ -18,6 +18,7 @@ import pytest
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, session_runtime
+from booley.runtime.platform_paths import docker_mount_path
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -989,26 +990,21 @@ class TestAuthStorePreflight:
         assert "chmod 700" in capsys.readouterr().out
         reseed.assert_not_called()
 
-    def test_unsafe_booley_directory_stores_nothing(self, auth_project, monkeypatch, capsys):
+    @pytest.mark.parametrize("kind", ["mode", "foreign"])
+    def test_unsafe_booley_directory_stores_nothing(self, auth_project, monkeypatch, capsys, kind):
         token = auth_token.token_path()
         token.parent.mkdir(parents=True, mode=0o700)
-        token.parent.chmod(0o755)
+        if kind == "mode":
+            token.parent.chmod(0o755)
+        else:
+            _foreign_owner(monkeypatch, token.parent)
         monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
         rc = _auth_stdin(monkeypatch, auth_project)
         assert not token.exists(), "credential written into an unsafe directory"
         assert rc == 2
-        assert token.parent.stat().st_mode & 0o777 == 0o755
-        assert "chmod 700" in capsys.readouterr().out
-
-    def test_foreign_owned_directory_stores_nothing(self, auth_project, monkeypatch, capsys):
-        token = auth_token.token_path()
-        token.parent.mkdir(parents=True, mode=0o700)
-        _foreign_owner(monkeypatch, token.parent)
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
-        rc = _auth_stdin(monkeypatch, auth_project)
-        assert not token.exists(), "credential written into a foreign-owned directory"
-        assert rc == 2
-        assert "owned" in capsys.readouterr().out
+        if kind == "mode":
+            assert token.parent.stat().st_mode & 0o777 == 0o755
+        assert ("chmod 700" if kind == "mode" else "owned") in capsys.readouterr().out
 
     def test_foreign_project_data_preserves_credentials(self, auth_project, monkeypatch, capsys):
         token = auth_token.store_token(_TOKEN)
@@ -1021,38 +1017,6 @@ class TestAuthStorePreflight:
         )
         assert rc == 2
         assert "owned" in capsys.readouterr().out
-
-    def test_unsafe_eda_lock_preserves_credentials(self, auth_project, monkeypatch, capsys):
-        from booley.eda.provisioning import authority
-
-        data = auth_project / ".booley"
-        (data / "booley.toml").write_text(
-            '[agent]\nprovider="claude"\nauth="subscription"\n'
-            '[flows.fpga]\nenabled=true\n[eda.vivado]\nprovisioning="image"\n'
-        )
-        profile = authority.register_license(
-            "site",
-            server_ipv4="10.20.30.40",
-            server_hostid="synthetic.invalid",
-            lmgrd_port=2100,
-            vendor_port=2101,
-        )
-        authority._add_grant(auth_project, "vivado", license_profile=profile.name)
-        token = auth_token.store_token(_TOKEN)
-        previous = token.read_bytes()
-        lock = authority.state_dir() / "authority.lock"
-        lock.unlink()
-        target = lock.parent / "unchanged"
-        target.write_text("untouched")
-        lock.symlink_to(target)
-        before = lock.lstat()
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
-        rc = _auth_stdin(monkeypatch, auth_project)
-        assert token.read_bytes() == previous, "credential changed before EDA lock preflight"
-        assert rc == 2
-        assert lock.lstat() == before
-        assert target.read_text() == "untouched"
-        assert "lock" in capsys.readouterr().out
 
 
 def _auth_interactive_ports(monkeypatch):
@@ -1127,7 +1091,10 @@ class TestAuthReseed:
         assert not calls, "auth invoked full Host Bootstrap"
         assert rc == 0
         assert len(captured) == 1
-        assert any(str(auth_token.token_path()) in mount for mount in captured[0].spec["mounts"])
+        assert any(
+            docker_mount_path(auth_token.token_path()) in mount
+            for mount in captured[0].spec["mounts"]
+        )
         assert captured[0].spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
 
     def test_clear_never_runs_full_bootstrap(self, auth_project, monkeypatch, capsys):
@@ -1139,7 +1106,8 @@ class TestAuthReseed:
         assert not auth_token.token_path().exists()
         assert len(captured) == 1
         assert all(
-            str(auth_token.token_path()) not in mount for mount in captured[0].spec["mounts"]
+            docker_mount_path(auth_token.token_path()) not in mount
+            for mount in captured[0].spec["mounts"]
         )
         assert "rebuild" in capsys.readouterr().out
 
@@ -1226,7 +1194,7 @@ class TestAuthStorageAdmission:
         assert not auth_token.token_path().exists()
 
 
-@pytest.mark.parametrize("kind", ["directory", "foreign", "absent"])
+@pytest.mark.parametrize("kind", ["directory", "foreign", "absent", "symlink"])
 def test_auth_conditional_eda_lock_admission(auth_project, monkeypatch, kind):
     from booley.eda.provisioning import authority
 
@@ -1239,7 +1207,12 @@ def test_auth_conditional_eda_lock_admission(auth_project, monkeypatch, kind):
     previous = token.read_bytes()
     authority.ensure_state_dir()
     lock = authority.state_dir() / "authority.lock"
-    if kind == "directory":
+    if kind == "symlink":
+        target = lock.with_name("unchanged")
+        target.write_text("untouched")
+        lock.symlink_to(target)
+        before = lock.lstat()
+    elif kind == "directory":
         lock.mkdir()
     elif kind == "foreign":
         lock.write_text("unchanged")
@@ -1254,6 +1227,9 @@ def test_auth_conditional_eda_lock_admission(auth_project, monkeypatch, kind):
         assert token.read_bytes() == previous
         if kind == "foreign":
             assert lock.read_text() == "unchanged"
+        elif kind == "symlink":
+            assert lock.lstat() == before
+            assert target.read_text() == "untouched"
 
 
 def test_auth_no_eda_consumer_ignores_unrelated_authority(auth_project, monkeypatch):

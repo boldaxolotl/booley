@@ -246,6 +246,7 @@ def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None
     elif command == "auth":
         from booley.harness import auth_cmd
 
+        monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
         monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
     else:
         from booley.runtime import issuance_invalidation
