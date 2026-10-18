@@ -203,7 +203,6 @@ def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_
     if document.get("complete") is True:
         return False
     repaired = dict(document)
-    repaired.pop("active", None)
     repaired.update(
         {
             "complete": True,
@@ -232,7 +231,6 @@ def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> b
     if phase not in {"starting", "running", "aborted"}:
         return False
     updated = dict(document)
-    updated.pop("active", None)
     updated.update(
         {
             "complete": True,
@@ -345,6 +343,9 @@ def _progress_file_lock(path: Path, *, timeout_s: float = 5) -> Iterator[None]:
 
 
 def _write_progress_json_unlocked(path: Path, document: Mapping[str, object]) -> None:
+    if document.get("phase") in TERMINAL_PHASES:
+        document = dict(document)
+        document.pop("active", None)
     descriptor, temporary = tempfile.mkstemp(prefix=".progress-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
