@@ -1013,34 +1013,30 @@ the primary workspace; creating from a Paired Checkout is refused.
 The outer checkout starts detached unless `<branch>--<description>` selects an
 existing branch.
 
-Before removing either kind, preserve commits you need and copy needed
-worktree-local evidence and other ignored/untracked files into a separate,
-non-overwriting archive **outside the worktree being deleted**. Review the whole
-worktree, including its Booley Directory: examples include `reviewer-evidence/`,
-the Findings Log (`findings.jsonl`), `handoffs/`, reports, and runtime diagnostics.
-Copy all needed live attachment targets referenced by Findings too, including
-those outside the Booley Directory. Copying the log alone does not preserve its
-attachments, and archived absolute attachment paths may no longer resolve.
-Keep the archive separate from the main Findings Log; do not overwrite or merge
-that log. Removing a worktree deletes its local evidence, including ignored files.
+Removing a worktree deletes everything in it, including ignored files. First
+preserve the commits you need, then copy needed untracked and ignored files into
+a new archive outside the worktree, overwriting nothing. Check the whole worktree,
+including its Booley Directory: `reviewer-evidence/`, the Findings Log
+(`findings.jsonl`), `handoffs/`, reports and runtime diagnostics. Also copy every
+needed file that Findings attach, wherever it lives: the log does not contain
+them, and its absolute attachment paths may not resolve from the archive. Keep
+the archive separate from the main Findings Log; do not merge the two.
 
-For a **Snapshot**, remove only the outer worktree:
-`git -C <absolute-project-root> worktree remove <absolute-worktree>`.
-For a **Paired Checkout**, first remove the inner checkout:
-`git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`,
-then remove the outer worktree with the Snapshot command above. Optionally, to
-reuse the name after preserving its commits, delete the Project branch with
-`git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
-These steps do not require deleting an outer branch.
+Then, in the same Sandbox and from outside the worktree:
 
-The command prints removal instructions for both kinds to stderr and keeps only
-the created worktree path on stdout. It currently has no reliable host-path
-mapping, so creation succeeds with a warning and explicitly labeled commands
-using quoted absolute **Sandbox paths**. Run them in the **same Sandbox** from
-outside the worktree being removed; do not paste them into a host terminal.
-After preservation, clean dirty/untracked files before removal, including a
-Snapshot's copied Booley Directory files if Git reports them as untracked.
-Inspect locks before intentionally unlocking a worktree or forcing removal.
+1. Clean dirty and untracked files, including a Snapshot's copied Booley
+   Directory files when Git lists them as untracked.
+2. Paired Checkout only: remove the inner checkout with
+   `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
+3. Remove the outer worktree with
+   `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
+4. Optional, Paired Checkout only: to reuse the name, delete the Project branch
+   with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+
+Inspect locks before unlocking a worktree or forcing removal. `booley worktree new`
+prints the worktree path to stdout and these steps to stderr, with a warning: Booley
+cannot map paths to the host, so the commands use quoted absolute **Sandbox
+paths**. Do not paste them into a host terminal.
 
 Outside Goal Mode, `--baseline` uses the Paired Checkout branch's recorded
 creation base ahead of its upstream. Pushing, merging or rebasing newer Project

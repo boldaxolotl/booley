@@ -91,8 +91,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
                 "in the same Sandbox, preserve needed work and evidence first "
                 "(see docs/user/USAGE.md), then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
-                f"{shlex.quote(str(target))}`; inspect locks and preserve work before "
-                "unlocking or forcing removal"
+                f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
 
 
@@ -285,10 +284,10 @@ def worktree_removal_instructions(
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "WARNING: usable host removal commands are unavailable; "
         "these absolute paths are Sandbox paths.",
-        "Before removal, preserve needed worktree-local evidence and other "
-        "ignored/untracked files outside this worktree; see docs/user/USAGE.md.",
-        "After preservation, clean dirty/untracked files (including the Snapshot copy) "
-        "before removal; inspect locks before unlocking or forcing removal.",
+        "First preserve needed evidence and other ignored/untracked files outside "
+        "this worktree (see docs/user/USAGE.md).",
+        "Then clean dirty/untracked files, including a Snapshot's copied files; "
+        "inspect locks before unlocking or forcing removal.",
     ]
     if paired:
         steps.append(
