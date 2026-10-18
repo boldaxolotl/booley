@@ -65,11 +65,11 @@ def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> Locate
     if len(found) > 1:
         raise jobrec.JobRecordError(f"Ambiguous run_id {run_id!r}: present in multiple job roots")
     if found:
-        _job_binding(found[0].record)
+        job_binding(found[0].record)
     return found[0] if found else None
 
 
-def _job_binding(rec: jobrec.JobRecord) -> GoalRunBinding | None:
+def job_binding(rec: jobrec.JobRecord) -> GoalRunBinding | None:
     """Interpret a persisted Goal binding at the MCP composition boundary."""
     if rec.binding is None:
         return None
@@ -229,7 +229,7 @@ def _endpoint_report_dirs(
 ) -> tuple[Path, ...]:
     """Return existing Flow and MCP endpoint report directories."""
     if located is not None and located.record.binding is not None:
-        binding = _job_binding(located.record)
+        binding = job_binding(located.record)
         assert binding is not None
         runtime_dir = record_paths(binding.booley_dir, binding.record_id).runtime_dir
     elif context is not None and context.runtime_dir is not None:

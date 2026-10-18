@@ -27,7 +27,9 @@ from booley.goals import entry as entry_module
 from booley.goals import test_run_freezing
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
-from booley.mcp import sim_baseline_jobs
+from booley.mcp import (
+    sim_baseline_jobs,
+)
 from booley.runtime import job_records
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import UnknownTargetError
@@ -220,7 +222,12 @@ def entry_environment(layout: SimpleNamespace, **extra: Any) -> Any:
     """The entry environment of *layout*, with a deterministic seed source."""
     from booley.goals.entry import EntryEnvironment
 
-    return EntryEnvironment(booley_dir=layout.control, draw_seeds=counting_draw(), **extra)
+    return EntryEnvironment(
+        booley_dir=layout.control,
+        draw_seeds=counting_draw(),
+        **extra,
+        routing_guidance="Explicit test routing guidance.",
+    )
 
 
 def write_tests_toml(layout: SimpleNamespace, content: bytes) -> None:

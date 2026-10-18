@@ -26,9 +26,9 @@ from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
     _endpoint_subprocess_env,
     _run_subprocess,
-    _write_synthetic_endpoint_end,
+    write_synthetic_endpoint_end,
 )
-from booley.mcp.job_results import _KNOWN_JOB_ROOTS, JobRepository, LocatedJob, _job_binding
+from booley.mcp.job_results import _KNOWN_JOB_ROOTS, JobRepository, LocatedJob, job_binding
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
@@ -120,7 +120,7 @@ class JobLifecycle:
 
     def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
         """Use the admitted binding for every Goal write, including completion."""
-        binding = _job_binding(rec)
+        binding = job_binding(rec)
         if binding is not None:
             return record_paths(binding.booley_dir, binding.record_id).jobs_dir
         return self._record_root(rec.run_id)
@@ -477,7 +477,7 @@ class JobLifecycle:
     _is_alive = staticmethod(is_pid_alive)
     _repository = JobRepository()
     _run_process = staticmethod(_run_subprocess)
-    _write_end = staticmethod(_write_synthetic_endpoint_end)
+    _write_end = staticmethod(write_synthetic_endpoint_end)
     _cancel_process = staticmethod(_cancel_adopted_process_group)
 
     def _report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
