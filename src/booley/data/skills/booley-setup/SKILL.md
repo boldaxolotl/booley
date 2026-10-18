@@ -243,7 +243,8 @@ plain-English reason it matters.
    gate.
 5. After the Step 4 gate is green, set `status: complete` and write the final
    report: what was built, the §3 deviation log, and (unattended) the
-   `review`-flagged decisions the user should audit.
+   `review`-flagged decisions the user should audit. Flow claims follow the
+   Delivered Flow results contract below and appear after Step 6 renders the report.
 6. **Step 5 — parity · optional.** Only if the plan's row 18 selects an oracle
    (≠ `none`): run `steps/5-parity.md` after the gate to diff Booley against the
    repo's native flow where the EDA tools match. It produces
@@ -259,6 +260,46 @@ plain-English reason it matters.
    approved retention mode after the report exists. It uses only the current
    run's manifest, materializes structured Feedback attachments before source
    deletion, and treats plans without ownership ledgers as inventory-only.
+
+## Delivered Flow results
+
+This contract applies to port and greenfield setup, in SETUP-REPORT and the final
+summary. Keep requested choices separate from delivered evidence. Cite every Flow
+result claim to its completed numbered `<Flow>/<N>/report.json` with literal field
+paths and values: `target`, `eda_tool`, `exit_code`, `passed`, and the applicable
+mode.
+
+- Synthesis mode is `detail[Target].synth_mode` (there is no universal top-level
+  mode); quote `detail[Target].area_source` for area/PPA claims.
+- Simulation's `mode` is its execution mode, not synthesis mode. For lint,
+  synthesis mode is `not applicable`.
+- If the wrapper lacks a tool or another fact, cite the path and field of a linked
+  same-invocation artifact.
+
+Match each report to the actual selected public Target and good-path invocation
+(including `run_id` when present). Doctor aggregates, flat/latest copies, earlier
+reports and known-bad self-test reports cannot establish that invocation's mode or
+success. Retain contributing failed/incomplete runs separately, with their actual
+verdict and deviation evidence.
+
+Use one row per Flow: requested Target/tool/mode/part/profile/check; delivered
+literal facts; report identity and field citations; verdict and differences. Flag
+every requested-versus-delivered mismatch and every failed, skipped or not-run
+check. Missing or ambiguous evidence is `not reported` and unverified; never fill
+a delivered field from the request or config. A missing report limits the claim
+without blocking post-gate reporting.
+
+Before scratch cleanup, snapshot the cited reports and required linked artifacts
+in a run-owned evidence subtree under the resolved Booley Directory, recording
+original path, source digest and cited field paths. Cite the retained copies in the
+report and summary, keeping original paths as provenance. Register the snapshots
+as retained report evidence in the run manifest before Step 7's cleanup preview,
+and preserve them through Step 7's retention rules.
+
+After each setup-owned Feedback render, Step 6 adds or replaces one Delivered Flow
+results section at its returned path; the final summary quotes the same evidence
+rows. Later independent Feedback renders keep their existing behavior and are not
+promised to retain this section.
 
 ## Setup guardrails
 
