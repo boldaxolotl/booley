@@ -121,6 +121,7 @@ def test_default_combo_files_and_shapes() -> None:
     assert synth["flow_options"] == {
         "tool": "yosys",
         "arch": "xilinx",
+        "synth_mode": "physical",
         "booley": {"doctor": ["synth"]},
     }
     assert "constraints" in synth["filesets"]
@@ -725,3 +726,209 @@ def test_scaffold_trace_main_isolation(tmp_path, monkeypatch, category):
         assert (root / "rtl/my_ip.sv").exists() is (category == "rtl")
         assert (root / "tb/tb_my_ip.sv").exists() is (category == "tb")
         assert (root / "tb/sim_main.cpp").exists() is (category == "tb")
+
+
+# Synthesis intent must survive the scaffold boundary and delivered reporting.
+def test_scaffold_synth_mode_cli_contract(tmp_path, monkeypatch):
+    from booley.harness.booley import _build_parser
+
+    parser = _build_parser()
+    init = parser._subparsers._group_actions[0].choices["init"]
+    assert "--synth-mode" in init.format_help(), "scaffold synthesis mode flag is missing"
+    ctx = _ctx(tmp_path, monkeypatch)
+    for mode in ("logical", "physical"):
+        args = parser.parse_args(["init", "--scaffold", "my_ip", "--synth-mode", mode])
+        assert gather_scaffold_choices(args, ctx).synth_mode == mode
+    assert (
+        gather_scaffold_choices(parser.parse_args(["init", "--scaffold", "my_ip"]), ctx).synth_mode
+        == "physical"
+    )
+    with pytest.raises(SystemExit):
+        parser.parse_args(["init", "--synth-mode", "invalid"])
+
+
+def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path, monkeypatch)
+    args = _args(synth_mode="logical", fpga_part="xc7a200tfbg484-1")
+    choices = gather_scaffold_choices(args, ctx)
+    assert getattr(choices, "synth_mode", None) == "logical", "logical scaffold mode was dropped"
+    assert step_scaffold(ctx, args)
+    core = read_core(tmp_path / "my_ip.core")
+    assert core["targets"]["synth"]["flow_options"]["synth_mode"] == "logical"
+    assert core["targets"]["synth"]["filesets"] == ["rtl"]
+    assert "constraints" not in core["filesets"]
+    assert not (tmp_path / "constraints/my_ip.sdc").exists()
+    assert (tmp_path / "constraints/my_ip.xdc").is_file()
+    assert core_schema_errors(tmp_path / "my_ip.core") == []
+    assert "synth" in {h.name for h in TargetCatalog.build(tmp_path).list()}
+    resolved = _resolve_target("synth", project_root=tmp_path, build_root=tmp_path / "build")
+    assert resolved.eda_tool == "yosys"
+    _track_scaffold(tmp_path)
+    cfg = tmp_path / ".booley"
+    project = doctor.ProjectAudit(
+        tmp_path,
+        cfg,
+        tomllib.loads((cfg / "booley.toml").read_text()),
+        tomllib.loads((cfg / "tests.toml").read_text()),
+        "sim",
+    )
+    reporter = doctor._Reporter.create()
+    doctor._run_core_audit(
+        project,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _note=reporter.note_,
+    )
+    assert not [f for f in reporter.result(0).findings if f.severity in {"warn", "fail"}]
+
+
+def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path, monkeypatch)
+    choices = gather_scaffold_choices(_args(), ctx)
+    assert getattr(choices, "synth_mode", None) == "physical", (
+        "physical scaffold mode is not recorded"
+    )
+    for mode in (None, "physical"):
+        files = scaffold_files(gather_scaffold_choices(_args(synth_mode=mode), ctx))
+        core = _core(files)
+        assert core["targets"]["synth"]["flow_options"]["synth_mode"] == "physical"
+        assert "constraints" in core["targets"]["synth"]["filesets"]
+        assert "constraints/my_ip.sdc" in files
+    files = scaffold_files(gather_scaffold_choices(_args(asic=False), ctx))
+    assert "synth" not in _core(files)["targets"]
+    assert "constraints/my_ip.sdc" not in files
+
+
+def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, capsys):
+    from booley.harness.setup import scaffold
+
+    ctx = _ctx(tmp_path, monkeypatch)
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    for mode in ("logical", "physical"):
+        ctx.interactive = False
+        args = _args(asic=False, synth_mode=mode)
+        assert gather_scaffold_choices(args, ctx) is None, (
+            "explicit synthesis mode with no ASIC was accepted"
+        )
+        assert not step_scaffold(ctx, args)
+        assert ctx.results[-1].status == "err"
+        assert {
+            p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+        } == before
+        ctx.interactive = True
+        monkeypatch.setattr(scaffold, "_ask_yes_no", lambda *a, **k: False)
+        assert (
+            gather_scaffold_choices(
+                _args(
+                    asic=None,
+                    synth_mode=mode,
+                    sim_eda_tool="verilator",
+                    tb_style="sv",
+                    lint_eda_tool="verilator",
+                ),
+                ctx,
+            )
+            is None
+        )
+    output = capsys.readouterr()
+    assert "--synth-mode" in output.err + output.out
+    assert "--no-asic" in output.err + output.out
+
+
+def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch):
+    import json
+
+    from booley.flows.base import SubprocessResult
+    from booley.flows.endpoint_reporting import write_report
+    from booley.flows.synth.backends import configure, pipeline
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert step_scaffold(ctx, _args(synth_mode="logical"))
+    commands = []
+
+    def configure_actual(self, target, cmd):
+        commands.append(cmd)
+        parsed = configure.parse_configure_argv(cmd)
+        spec = configure.resolve_spec(parsed, project_root=tmp_path, require_liberty=False)
+        build = self._synth_build_dir(target)
+        build.mkdir(parents=True, exist_ok=True)
+        return pipeline.SynthPlan(build_dir=build, spec=spec)
+
+    monkeypatch.setattr(AsicSynthesizeFlow, "_configure_synth", configure_actual)
+    monkeypatch.setattr(
+        AsicSynthesizeFlow,
+        "_execute_boundary",
+        lambda *a, **k: SubprocessResult(
+            returncode=0,
+            stdout=(
+                "Chip area for top module 'my_ip': 1000.0\nNumber of cells: 10\n"
+                "STA_WORST_SLACK_NS: 0.500000\nOPENROAD_DESIGN_AREA_UM2: 1000.0\n"
+                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1\n"
+            ),
+            stderr="",
+        ),
+    )
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "synth",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    flow.read_state()
+    result = flow._run()
+    path = write_report(flow.context, result)
+    report = json.loads(path.read_text())
+    assert report["passed"] is True
+    assert report["detail"]["synth"]["synth_mode"] == "logical", (
+        "scaffold request did not reach the delivered synthesis report"
+    )
+    assert path.parent.name.isdigit()
+    assert report["target"] == "synth"
+    assert report["eda_tool"] == "yosys"
+    assert report["passed"] is True
+    assert report["detail"]["synth"]["area_source"] == "yosys_mapped"
+    assert commands[0][commands[0].index("--synth-mode") + 1] == "logical"
+
+
+@pytest.mark.parametrize("sim", ["verilator", "icarus"])
+@pytest.mark.parametrize("tb", ["sv", "cocotb"])
+def test_logical_scaffold_simulator_combinations(sim, tb):
+    files = scaffold_files(_choices(synth_mode="logical", sim_eda_tool=sim, tb_style=tb))
+    core = _core(files)
+    assert core["targets"]["sim"]["flow_options"]["tool"] == sim
+    assert core["targets"]["synth"]["flow_options"]["synth_mode"] == "logical"
+    assert "constraints/my_ip.sdc" not in files
+
+
+def test_scaffold_interactive_synthesis_mode(tmp_path, monkeypatch):
+    from booley.harness.setup import scaffold
+
+    ctx = _ctx(tmp_path, monkeypatch)
+    ctx.interactive = True
+    questions = []
+
+    def choice(question, options, default):
+        questions.append(question)
+        return "logical" if "synthesis mode" in question else default
+
+    monkeypatch.setattr(scaffold, "_ask_choice", choice)
+    args = _args(asic=True, fpga_part="xc7a200tfbg484-1")
+    assert gather_scaffold_choices(args, ctx).synth_mode == "logical"
+    assert any("synthesis mode" in q for q in questions)
+    questions.clear()
+    args.synth_mode = "physical"
+    assert gather_scaffold_choices(args, ctx).synth_mode == "physical"
+    assert not any("synthesis mode" in q for q in questions)
+    args.asic, args.synth_mode = False, None
+    assert gather_scaffold_choices(args, ctx).asic is False
+    assert not any("synthesis mode" in q for q in questions)
+    args.asic, args.synth_mode = True, "invalid"
+    assert gather_scaffold_choices(args, ctx) is None

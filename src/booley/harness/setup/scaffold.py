@@ -63,8 +63,9 @@ class ScaffoldChoices:
     sim_eda_tool: str  # one of SIM_EDA_TOOLS
     tb_style: str  # one of TB_STYLES
     lint_eda_tool: str  # one of LINT_EDA_TOOLS
-    asic: bool  # emit asic_synthesize Target + SDC
+    asic: bool  # emit asic_synthesize Target
     fpga_part: str | None  # Vivado part → emit fpga Target + XDC; None = skip
+    synth_mode: str = "physical"
 
 
 class _ScaffoldHostProbe:
@@ -181,6 +182,29 @@ def _ask_text(question: str, default: str = "") -> str:
     return raw or default
 
 
+def _resolve_synth_mode(args, asic: bool, interactive: bool) -> str | None:
+    explicit = getattr(args, "synth_mode", None)
+    if explicit is not None and not asic:
+        err("--synth-mode conflicts with --no-asic; enable ASIC synthesis or omit --synth-mode")
+        return None
+    mode = "physical" if explicit is None else explicit
+    if asic and explicit is None and interactive:
+        mode = _ask_choice(
+            "Which synthesis mode?",
+            [
+                ("physical", "Yosys + OpenROAD, constrained timing with SDC"),
+                ("logical", "Yosys mapped area only, without SDC"),
+            ],
+            "physical",
+        )
+    elif asic and explicit is None:
+        info("Synthesis mode: physical (non-interactive default; set --synth-mode)")
+    if mode not in ("logical", "physical"):
+        err(f"synthesis mode {mode!r} is not supported; choose logical or physical")
+        return None
+    return mode
+
+
 def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
     """Resolve wizard answers from CLI flags, prompts, or defaults.
 
@@ -257,10 +281,17 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
     if asic_flag is not None:
         asic = bool(asic_flag)
     elif interactive:
-        asic = _ask_yes_no("Enable ASIC synthesis (yosys + SDC constraints)?", default=True)
+        asic = _ask_yes_no(
+            "Enable ASIC synthesis (Yosys; physical mode also uses OpenROAD and SDC)?",
+            default=True,
+        )
     else:
         info("ASIC synthesis: enabled (non-interactive default; set --no-asic to skip)")
         asic = True
+
+    synth_mode = _resolve_synth_mode(args, asic, interactive)
+    if synth_mode is None:
+        return None
 
     fpga_part = getattr(args, "fpga_part", None)
     if fpga_part is None and interactive:
@@ -279,6 +310,7 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
         lint_eda_tool=lint_eda_tool,
         asic=asic,
         fpga_part=fpga_part or None,
+        synth_mode=synth_mode,
     )
 
 
@@ -448,7 +480,7 @@ module tb_{c.name} #(
     parameter int unsigned WIDTH = 8
 );
 
-  // 10 ns period = 100 MHz; keep in sync with constraints/{c.name}.sdc.
+  // 10 ns period = 100 MHz scaffold stimulus clock.
   localparam int unsigned CLK_HALF_NS = 5;
 
   logic             clk;
@@ -703,7 +735,7 @@ def _sim_flow_options(c: ScaffoldChoices) -> tuple[str, str]:
 
 def _constraint_filesets(c: ScaffoldChoices) -> str:
     rendered = ""
-    if c.asic:
+    if c.asic and c.synth_mode == "physical":
         rendered += f"""\
   constraints:
     files:
@@ -752,12 +784,13 @@ def _lint_target(c: ScaffoldChoices) -> str:
 def _synth_target(c: ScaffoldChoices) -> str:
     if not c.asic:
         return ""
+    filesets = "rtl, constraints" if c.synth_mode == "physical" else "rtl"
     return f"""\
   synth:  # asic_synthesize
     flow: generic
     # arch is required by Edalize's Yosys backend even though Booley overrides the pass.
-    flow_options: {{tool: yosys, arch: xilinx, booley: {{doctor: [synth]}}}}
-    filesets: [rtl, constraints]
+    flow_options: {{tool: yosys, arch: xilinx, synth_mode: {c.synth_mode}, booley: {{doctor: [synth]}}}}
+    filesets: [{filesets}]
     toplevel: {c.name}
     parameters: [WIDTH]
 """
@@ -852,9 +885,9 @@ def _booley_toml(c: ScaffoldChoices) -> str:
     lines += ["", "[flows.synth]"]
     if not c.asic:
         lines += [
-            "# Disabled at scaffold time. To enable: add a `synth` Target plus an SDC",
-            "# fileset and doctor: [synth] metadata to the .core (ADR 0031 — no SDC",
-            "# is a hard error), then drop the `enabled` line:",
+            "# Disabled at scaffold time. To enable: add a `synth` Target with",
+            "# doctor: [synth] metadata; physical mode also requires an SDC fileset.",
+            "# Then drop the `enabled` line:",
             "enabled = false",
         ]
 
@@ -900,7 +933,7 @@ select = "+test_id={index}"
 def _sdc_file(c: ScaffoldChoices) -> str:
     return f"""\
 # constraints/{c.name}.sdc — timing constraints for the `synth` Target.
-# ADR 0031: a synth Target without an SDC fileset is a hard error — no silent
+# Physical synthesis requires a Target-owned SDC fileset — no silent
 # default clock. 10 ns = 100 MHz scaffold clock; keep in sync with the TB.
 create_clock -name clk -period 10.0 [get_ports clk]
 # Only synchronous data ports carry clock-relative I/O delay. rst_n is an
@@ -940,7 +973,7 @@ def scaffold_files(c: ScaffoldChoices) -> dict[str, str]:
         files[f"tb/tb_{c.name}.sv"] = _sv_testbench(c)
     if _owns_sim_main(c):
         files["tb/sim_main.cpp"] = _sim_main(c)
-    if c.asic:
+    if c.asic and c.synth_mode == "physical":
         files[f"constraints/{c.name}.sdc"] = _sdc_file(c)
     if c.fpga_part:
         files[f"constraints/{c.name}.xdc"] = _xdc_file(c)
@@ -995,6 +1028,7 @@ def step_scaffold(ctx: InitContext, args) -> bool:
     summary = (
         f"sim={choices.sim_eda_tool}/{choices.tb_style} lint={choices.lint_eda_tool} "
         f"asic={'on' if choices.asic else 'off'} "
+        f"synth_mode={choices.synth_mode if choices.asic else 'disabled'} "
         f"fpga={choices.fpga_part or 'off'}"
     )
     info(f"scaffolded '{choices.name}' ({summary})")

@@ -208,8 +208,8 @@ later; it doesn't affect the happy-path install, so it's spelled out under
 ### What `--scaffold` adds
 
 On top of everything above, `--scaffold` writes a starter project. On a terminal
-it asks four choices; every answer is also a flag, for non-interactive runs that
-otherwise take the defaults:
+it asks the choices below (synthesis mode only when ASIC is enabled); each
+answer is also a flag, for non-interactive runs that otherwise take the defaults:
 
 | Choice | Options | Flag |
 | --- | --- | --- |
@@ -217,10 +217,17 @@ otherwise take the defaults:
 | Testbench style | SystemVerilog / cocotb | `--tb-style` |
 | Lint EDA tool | Verilator / Verible | `--lint-eda-tool` |
 | Flows to enable | ASIC synthesis, FPGA (and the part) | `--asic` / `--no-asic`, `--fpga-part` |
+| ASIC synthesis mode | `physical` (default) / `logical` | `--synth-mode` |
 
 Two combinations to know about: cocotb requires an image-provisioned simulator,
 and the currently supported choices are Verilator and Icarus. Commercial
 simulators are future work.
+
+Physical synthesis uses Yosys and OpenROAD with a generated 10 ns SDC. Logical
+synthesis uses Yosys mapped-area evidence and emits/references no ASIC SDC;
+FPGA XDC remains independent. An explicit `--synth-mode` together with
+`--no-asic` is rejected before scaffold files are written. Omitting the mode
+with `--no-asic` is supported.
 
 What lands, wired together and ready to run:
 
@@ -228,7 +235,7 @@ What lands, wired together and ready to run:
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
 - `my_ip.core`: one Target per enabled flow (`sim`, `lint`, and optionally
-  `synth` + SDC constraints, `fpga` + XDC)
+  `synth` (plus SDC in physical mode), `fpga` + XDC)
 - `.booley/booley.toml` and `tests.toml`, populated rather than
   skeletons. The scaffolded config also turns
   [stealth mode](CONFIG.md#stealth-mode-stealth) off, since this repo exists to
@@ -304,7 +311,7 @@ Mode session.
 ### A new IP: greenfield mode
 
 You already ran the scaffold on the host: `booley init --scaffold my_ip` (in the
-bootstrap above) asked the four choices and wrote a working,
+bootstrap above) asked the scaffold choices and wrote a working,
 green-by-construction project. So there's no feasibility triage and no config to
 author — the skill only has to finish the job.
 
@@ -312,7 +319,7 @@ author — the skill only has to finish the job.
 detects the scaffolded repo, reads the choices the scaffold recorded into the
 config, and confirms them in one message rather than re-asking. Because the
 scaffold already wrote the config (Step 2) and the project adopts the built-in
-Booley Flows, it skips config authoring and runs only two:
+Booley Flows, it skips config authoring and runs:
 
 - **The doctor gate (Step 4).** `booley doctor`, resolve every failure and
   warning, then `booley doctor --deep`, fix, and re-run until both exit 0 with
@@ -321,12 +328,18 @@ Booley Flows, it skips config authoring and runs only two:
   [`doctor-waivers.toml`](CONFIG.md#doctor-waivers-doctor-waiverstoml) entry;
   warnings are never merely ignored. For a scaffolded project the
   sim, lint, and synthesis smoke checks should pass before you've written a
-  line. That's what proves the wiring. By hand it's the same two commands in a
-  container terminal: read every `FAIL`, `WARN`, and `fix:` hint, and don't stop
+  line. Logical synthesis qualifies with completed mapped-area evidence; physical
+  synthesis also requires constrained timing. That proves the wiring. By hand
+  it's the same two commands in a container terminal: read every `FAIL`, `WARN`, and `fix:` hint, and don't stop
   at a green plain `doctor`. The deep smokes are the point.
 - **AGENTS.md (Step 3), optional.** The Project-level guidance file from the
   sequence above. A scaffolded project typically wants only this beyond the
   gate.
+- **Setup report (Step 6).** The report and final summary compare each Flow's
+  delivered facts (from its numbered `report.json`) with the request and mark
+  missing evidence unverified, per the skill's Delivered Flow results contract.
+  Existing scaffold choices are confirmed as pre-set; a missing synthesis mode
+  means physical. A changed request follows the approved Target-edit plan.
 
 Then replace the counter in `rtl/my_ip.sv` with your design and grow the
 testbench, keeping the generated wiring as the pattern. Refresh
