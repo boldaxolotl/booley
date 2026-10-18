@@ -292,7 +292,7 @@ jobs:
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }}
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Run focused Windows compatibility suite
@@ -306,7 +306,7 @@ jobs:
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
           -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
@@ -317,7 +317,7 @@ jobs:
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=worksteal
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"

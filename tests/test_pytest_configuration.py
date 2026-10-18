@@ -1137,18 +1137,25 @@ def test_scheduled_windows_matrix_retains_crash_diagnostics() -> None:
 
 
 def test_windows_pytest_legs_enforce_timeout_headroom(pytestconfig: pytest.Config) -> None:
-    """Windows timeouts kill the worker silently, so CI fails tests that drift near one."""
-    guard = "${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }}"
+    """Windows timeouts kill the worker silently, so CI fails tests that drift near one.
+
+    The merge gate warns from 50% and fails above 80% so runner noise does not
+    fail unrelated pull requests (#1775); the weekly matrix fails from 50%.
+    """
+    gate = "${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}"
+    weekly = "${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }}"
     primary = _test_workflow()["jobs"]["test"]["steps"]
     scheduled = yaml.safe_load(
         (REPOSITORY_ROOT / ".github/workflows/full-python-matrix.yml").read_text(encoding="utf-8")
     )["jobs"]["test"]["steps"]
-    pytest_steps = [
-        step for step in [*primary, *scheduled] if str(step.get("run", "")).startswith("pytest ")
-    ]
 
-    assert len(pytest_steps) == 4
-    assert all(guard in step["run"] for step in pytest_steps)
+    def pytest_runs(steps: list[dict[str, object]]) -> list[str]:
+        return [
+            str(step["run"]) for step in steps if str(step.get("run", "")).startswith("pytest ")
+        ]
+
+    assert [gate in run for run in pytest_runs(primary)] == [True] * 3
+    assert [weekly in run for run in pytest_runs(scheduled)] == [True]
     assert "tests.timeout_headroom" in _suite_config(pytestconfig).pytest_plugins
 
 
