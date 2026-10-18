@@ -207,7 +207,7 @@ def test_nested_codex_stop_never_marks_the_outer_tab_idle(tmp_path, launcher):
     assert store.read("codex:nested").state == activity.WAITING_USER
 
 
-@pytest.mark.parametrize("corruption", ["schema", "label", "alias", "counter", "duplicate"])
+@pytest.mark.parametrize("corruption", ["schema", "label", "alias", "counter"])
 def test_hook_rejects_the_same_corrupt_handle_maps_as_the_registry(tmp_path, corruption):
     proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
     owner = capture_process_identity(300, proc_root=proc)
@@ -220,11 +220,9 @@ def test_hook_rejects_the_same_corrupt_handle_maps_as_the_registry(tmp_path, cor
     elif corruption == "label":
         data["entries"][key] = 42
     elif corruption == "alias":
-        data["aliases"]["invalid"] = "missing"
+        data["aliases"]["invalid"] = 42
     elif corruption == "counter":
         data["next_number"] = True
-    else:
-        data["entries"]["another"] = "S1"
     store.path.write_text(json.dumps(data))
     with pytest.raises(ValueError):
         store.load()
@@ -442,3 +440,30 @@ def test_main_survives_a_deeply_nested_payload(tmp_path, monkeypatch, capsys):
     code, output = run_main(monkeypatch, capsys, ["codex"], nested, tmp_path)
     assert (code, output.out) == (0, "")
     assert "not recorded" in output.err
+
+
+def test_hook_accepts_shape_valid_handle_maps(tmp_path):
+    proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
+    owner = capture_process_identity(300, proc_root=proc)
+    reserve_codex_chat(tmp_path, owner)
+    store = HandleStore(tmp_path)
+    data = json.loads(store.path.read_bytes())
+    data["entries"].update(duplicate="S1", unusual="display")
+    data["aliases"]["dangling"] = "missing"
+    data["next_number"] = 0
+    store.path.write_text(json.dumps(data))
+    before = store.path.read_bytes()
+    assert store.load().labels()[activity.process_session_key(owner)] == "S1"
+    assert hook.record(
+        "codex",
+        {"hook_event_name": "Stop", "session_id": "root"},
+        tmp_path,
+        NOW,
+        proc_root=proc,
+        pid=500,
+    )
+    assert (
+        ActivityStore(tmp_path).read(activity.process_session_key(owner)).state
+        == activity.WAITING_USER
+    )
+    assert store.path.read_bytes() == before

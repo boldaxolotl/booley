@@ -693,12 +693,10 @@ and session pruning. The `1`–`9` keys remain navigation shortcuts, independent
 of handles. Full session keys and Job run IDs are secondary text in details;
 MCP polling continues to use the full run ID.
 
-Existing sessions and Jobs receive handles from MCP maintenance, which runs
-once per minute, or when they are next registered. Until then, or if handle
-storage is unavailable, the Dashboard shows `S?` or `J-SIM?` (and the equivalent
-for other kinds) with a diagnostic. Maintenance backfills at most 16384 retained
-Job files per pass; files beyond that scan bound stay unassigned until a
-producer registers them. The Dashboard itself never allocates handles.
+Sessions receive handles when registered; Jobs receive them when created.
+Historical records without allocations keep `S?` or `J-SIM?` (and the equivalent
+for other kinds). Handle-storage failures show a diagnostic. The Dashboard
+itself only reads handles and never allocates them.
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none. In a
