@@ -120,7 +120,11 @@ def test_interrupted_entering_is_classified_and_retained(layout, boundary):
             EntryRequest(
                 layout.worktree, "enter", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
-            EntryEnvironment(layout.control, on_boundary=stop),
+            EntryEnvironment(
+                layout.control,
+                on_boundary=stop,
+                routing_guidance="Explicit test routing guidance.",
+            ),
         )
     store = GoalStore(layout.control)
     record = store.active_for_worktree(layout.worktree)
@@ -223,7 +227,11 @@ def test_abandon_lost_terminal_response_retains_entering_classification(layout):
                 "interrupted",
                 parse_goal_args([{"family": "LINT", "target": "top"}]),
             ),
-            EntryEnvironment(layout.control, on_boundary=entering),
+            EntryEnvironment(
+                layout.control,
+                on_boundary=entering,
+                routing_guidance="Explicit test routing guidance.",
+            ),
         )
     store = GoalStore(layout.control)
     record = store.active_for_worktree(layout.worktree)

@@ -7,6 +7,7 @@ agent running detached, burning tokens with nobody reading the answer.
 from __future__ import annotations
 
 import os
+import signal
 import time
 
 import pytest
@@ -164,7 +165,7 @@ class TestDescendantPids:
         import subprocess
 
         # sh -> sleep: a child and a grandchild, both ours.
-        proc = subprocess.Popen(["/bin/sh", "-c", "sleep 30 & wait"])
+        proc = subprocess.Popen(["/bin/sh", "-c", "sleep 30 & wait"], start_new_session=True)
         try:
             assert _wait_for(lambda: len(specialist._descendant_pids(os.getpid())) >= 2)
             pids = specialist._descendant_pids(os.getpid())
@@ -174,7 +175,7 @@ class TestDescendantPids:
             # process actually holding the money in the real case.
             assert any(p not in (proc.pid, os.getpid()) for p in pids)
         finally:
-            proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
 
     def test_is_the_shared_reaper_walk_not_a_second_copy(self):

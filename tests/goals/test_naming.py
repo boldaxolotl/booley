@@ -40,7 +40,7 @@ def _enter(layout, monkeypatch, *, collision=False, goals=None):
             "names",
             parse_goal_args(goals or [{"family": "LINT", "target": QUALIFIED}]),
         ),
-        EntryEnvironment(layout.control),
+        EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance."),
     )
     layout.record = result.record
     return result

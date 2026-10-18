@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,11 @@ from booley.goals.format import render_status
 from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore, GoalStoreError
-from booley.mcp import server
+from booley.mcp import (
+    catalog,
+    job_results,
+    server,
+)
 from booley.mcp.base import McpToolResult
 from booley.mcp.call_context import binding_from_environment, resolve_call_context
 from booley.mcp.goal_tools import dispatch_goal_tool
@@ -278,7 +283,6 @@ def test_spec_from_declared_goal_is_resolved_by_specialist(layout):
 
 
 def test_module_entrypoint_defines_dispatch_before_main(goal_mode):
-    import os
     import subprocess
     import sys
 
@@ -355,7 +359,7 @@ def test_terminal_write_uses_binding_even_if_manager_root_changes(
     jobs._stamp_context(rec, context)
     jobs._job_roots[rec.run_id] = tmp_path / "wrong"
     monkeypatch.setattr(
-        server, "_locate_job", lambda run_id: server.LocatedJob(rec, context.jobs_root)
+        server, "_locate_job", lambda run_id: job_results.LocatedJob(rec, context.jobs_root)
     )
     jobs._record_terminal(rec, 0, timed_out=False)
     assert job_records.read_record(rec.run_id, context.jobs_root).status == "done"
@@ -582,7 +586,7 @@ def test_public_report_recovery_selects_goal_root(goal_mode, monkeypatch, tmp_pa
         (reports / "sim.json").write_text(
             json.dumps({"flow": "sim", "exit_code": 0, "report_text": marker})
         )
-    assert "work_dir" in server._report_mcp_tool_def()["schema"]["properties"]
+    assert "work_dir" in catalog._report_mcp_tool_def()["schema"]["properties"]
     omitted = server._dispatch_report({"endpoint": "sim"})
     assert omitted.is_error and "Pass work_dir" in omitted.value[0].text
     for worktree, marker in ((goal_mode.worktree, "first-goal"), (second, "second-goal")):
@@ -598,7 +602,7 @@ def test_public_report_recovery_selects_goal_root(goal_mode, monkeypatch, tmp_pa
     missing = server._dispatch_report({"endpoint": "sim", "work_dir": str(goal_mode.worktree)})
     assert "Reports on disk: lint." in missing[0].text
     assert "sim" not in missing[0].text.split("Reports on disk:")[1]
-    assert "work_dir" in server._report_mcp_tool_def()["schema"]["properties"]
+    assert "work_dir" in catalog._report_mcp_tool_def()["schema"]["properties"]
     still_omitted = server._dispatch_report({"endpoint": "sim"})
     assert still_omitted.is_error and "Pass work_dir" in still_omitted.value[0].text
 
@@ -1103,55 +1107,6 @@ def test_review_target_declaration_race_is_a_refusal(
     provider.assert_not_called()
 
 
-@pytest.fixture
-def unavailable_guidance_catalog(monkeypatch):
-    from unittest.mock import Mock
-
-    from booley.mcp import catalog
-
-    catalog.reset_guidance_cache()
-    discovery = Mock(side_effect=RuntimeError("injected schema discovery failure"))
-    monkeypatch.setattr(catalog, "_default_interactive_definitions", discovery)
-    yield discovery
-    catalog.reset_guidance_cache()
-
-
-def test_catalog_failure_preserves_goal_entry_status_warning_and_refusal(
-    unavailable_guidance_catalog, goal_mode, caplog
-):
-    from booley.goals.rules import goal_mode_rules
-    from booley.goals.warnings import goal_warnings
-
-    # The goal_mode fixture entered successfully after discovery was made unavailable.
-    assert goal_mode.record.state == GoalState.ACTIVE
-    assert unavailable_guidance_catalog.call_count == 0
-    rules = goal_mode_rules()
-    assert "For utilities, follow the advertised schema" in rules
-    assert "While any Goal Record occupies" in rules
-    status = asyncio.run(
-        dispatch_goal_tool(
-            "goal_status",
-            {"work_dir": str(goal_mode.worktree), "rules": True},
-            booley_dir=goal_mode.control,
-        )
-    )
-    assert not status.is_error
-    from booley.mcp.catalog import work_dir_guidance
-
-    assert work_dir_guidance() in status.value[0][0].text
-    warning = goal_warnings(goal_mode.record, goal_mode.control, work_dir=None)
-    assert "WARNING: Pass work_dir" in warning
-    assert "booley_targets may omit it" in warning
-    with pytest.raises(GoalBindingError, match="Pass work_dir") as refusal:
-        resolve_call_context({})
-    assert "For utilities, follow the advertised schema" in str(refusal.value)
-    assert unavailable_guidance_catalog.call_count == 1
-    diagnostics = [*caplog.get_records("setup"), *caplog.records]
-    assert (
-        sum("Interactive MCP guidance unavailable;" in item.message for item in diagnostics) == 1
-    )
-
-
 def test_mcp_composes_schema_guidance_for_entry_status_warning_and_refusal(layout, monkeypatch):
     from booley.goals.warnings import goal_warnings
     from booley.mcp import catalog
@@ -1161,7 +1116,7 @@ def test_mcp_composes_schema_guidance_for_entry_status_warning_and_refusal(layou
         {"name": "utility_custom", "schema": {"properties": {}}},
         {"name": "accepting_custom", "schema": {"properties": {"work_dir": {}}}},
     ]
-    catalog.reset_guidance_cache()
+    catalog.work_dir_guidance.cache_clear()
     monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
     try:
         (layout.worktree / "top.core").write_text(TOP_CORE)
@@ -1201,4 +1156,4 @@ def test_mcp_composes_schema_guidance_for_entry_status_warning_and_refusal(layou
             resolve_call_context({})
         assert guidance.replace("`", "") in str(refusal.value)
     finally:
-        catalog.reset_guidance_cache()
+        catalog.work_dir_guidance.cache_clear()

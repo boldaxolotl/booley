@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -10,6 +11,9 @@ from booley.goals.store import GoalStore
 from booley.harness.dashboard.app import job_detail
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
+from booley.mcp import (
+    call_context,
+)
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
 
@@ -55,7 +59,6 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
 
 
 def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path, monkeypatch):
-    import os
 
     from booley.flows.progress_lifecycle import progress_document
     from booley.runtime.job_observation import _artifacts as job_artifacts
@@ -247,7 +250,7 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     current = tmp_path / ".interactive_logs/current/.runtime/jobs"
     historic = tmp_path / ".interactive_logs/historic/.runtime/jobs"
     historic.mkdir(parents=True)
-    monkeypatch.setattr(server, "container_jobs_root", lambda: current)
+    monkeypatch.setattr(call_context, "container_jobs_root", lambda: current)
     monkeypatch.setattr(server, "resolve_booley_dir", lambda: tmp_path)
     assert set(
         retained_job_roots(
@@ -402,7 +405,6 @@ def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
 
 
 def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, monkeypatch):
-    import os
 
     from booley.harness.dashboard import jobs
 
@@ -420,7 +422,6 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
 
 
 def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path, monkeypatch):
-    import os
     from pathlib import Path
 
     from booley.harness.dashboard import jobs
@@ -560,7 +561,6 @@ def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, mon
 
 
 def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tmp_path):
-    import os
 
     from booley.goals.store import GoalStore
     from booley.harness.dashboard import jobs

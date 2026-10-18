@@ -147,7 +147,7 @@ def _build_status(
     return GoalStatusView(
         record,
         goals,
-        goal_warnings(record, store.booley_dir, work_dir=root),
+        goal_warnings(record, store.booley_dir, work_dir=root, routing_guidance=""),
         sum(view.state == "pending" and not view.closed_by_abandonment for view in proposals),
         proposals,
         _proposal_conflicts(proposals, record),
