@@ -168,9 +168,10 @@ def test_resume_and_required_target_guidance() -> None:
                 assert "rejects this flag" in actions[flag].help
             assert "omission is required" in actions["--mode"].help
         else:
-            assert "Required: omission is a parse error" in actions["--target"].help
-            with pytest.raises(SystemExit):
-                parser.parse_args([])
+            assert "exactly one eligible Target" in actions["--target"].help
+            assert "zero or multiple" in actions["--target"].help
+            assert not actions["--target"].required
+            parser.parse_args([])
 
 
 def test_module_help_outside_project(tmp_path: Path) -> None:
