@@ -39,7 +39,9 @@ def _finding(
 
 
 def test_project_init_coordinator_fits_on_a_screen() -> None:
-    assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50
+    assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50, (
+        "Project initialization coordinator exceeds the 50-line architecture limit"
+    )
 
 
 def test_project_init_preflight_coordinator_fits_on_a_screen() -> None:

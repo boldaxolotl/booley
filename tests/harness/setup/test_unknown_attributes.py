@@ -464,4 +464,6 @@ def test_init_unknown_summary_is_nonfatal_and_accurate(tmp_path, capsys, check_o
     output = capsys.readouterr().out
     assert "working tree is container-safe" not in output.split("Booley Directory")[0]
     if check_only:
-        assert "for pending changes" in output and "incomplete checks" in output
+        verdict = output.strip().splitlines()[-1]
+        assert verdict.startswith("Checked initialization: pending or unresolved — ")
+        assert f"{result.name}: {result.detail}" in verdict
