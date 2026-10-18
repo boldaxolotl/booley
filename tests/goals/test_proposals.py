@@ -26,7 +26,13 @@ from booley.goals.changes import Approval, read_change_log
 from booley.goals.entry import EntryEnvironment
 from booley.goals.format import render_status
 from booley.goals.paths import record_paths
-from booley.goals.proposals import ProposalError, list_proposals, load_proposal, proposal_path
+from booley.goals.proposals import (
+    ProposalError,
+    finalize,
+    list_proposals,
+    load_proposal,
+    proposal_path,
+)
 from booley.goals.recorder import GOAL_SCOPE, GoalEvidenceRecorder, GoalProjection
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
@@ -622,3 +628,30 @@ def test_missing_published_decision_metadata_never_resets_a_saved_decision(layou
     (proposal_path(root, view.proposal.id) / "state.json").unlink()
     with pytest.raises(ProposalError, match="cannot read"):
         load_proposal(root, view.proposal.id)
+
+
+def test_finalization_refuses_a_view_without_the_durable_decision(layout):
+    env = setup_cycle(layout)
+    pending = proposal(layout, env)
+    interrupted_transaction(layout, env, pending)
+    root = record_paths(layout.control, layout.record.id).root
+    state_path = proposal_path(root, pending.proposal.id) / "state.json"
+    before = state_path.read_bytes()
+    with (
+        env.store.record_lock(layout.record.id) as lock,
+        pytest.raises(ProposalError, match="no matching human decision"),
+    ):
+        finalize(lock, pending)
+    assert state_path.read_bytes() == before
+
+
+def test_finalized_rejection_is_idempotent(layout):
+    env = setup_cycle(layout)
+    pending = proposal(layout, env)
+    rejected = approve(layout, env, pending.proposal.id, answer="reject")
+    root = record_paths(layout.control, layout.record.id).root
+    state_path = proposal_path(root, pending.proposal.id) / "state.json"
+    before = state_path.read_bytes()
+    with env.store.record_lock(layout.record.id) as lock:
+        assert finalize(lock, rejected, rejected=True) == rejected
+    assert state_path.read_bytes() == before
