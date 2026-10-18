@@ -7,6 +7,7 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+from booley.flows.cli_help import SurfaceHelp
 from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import ExecutionResult
@@ -22,11 +23,19 @@ def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.Argument
         description=flow.description,
         allow_abbrev=False,
     )
+    target_help = flow.target_help
+    if flow.name == "sim":
+        resume_help = " For sim resume, the manifest owns selection."
+        target_help = (
+            SurfaceHelp(str(target_help) + resume_help, cli=target_help.cli + resume_help)
+            if isinstance(target_help, SurfaceHelp)
+            else target_help + resume_help
+        )
     add_common_args(
         parser,
         target_required=flow.target_required,
         accepts_target=flow.accepts_target,
-        target_help=flow.target_help,
+        target_help=target_help,
     )
     flow.argument_adapter.add_common_args(parser)
     flow.argument_adapter.add_args(parser)
