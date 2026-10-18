@@ -68,7 +68,7 @@ def _clear_ticket_env() -> None:
 def _make_interactive_simulate(
     tmp_path: Path,
     *,
-    config: str = "lite",
+    config: str | None = "lite",
     tb_top: str | None = "alu_tb",
     extra_args: list[str] | None = None,
 ) -> SimulateFlow:
@@ -86,9 +86,9 @@ def _make_interactive_simulate(
         str(tmp_path),
         "--report-dir",
         str(report_dir),
-        "--target",
-        config,
     ]
+    if config is not None:
+        argv.extend(["--target", config])
     if extra_args:
         argv.extend(extra_args)
 
@@ -108,7 +108,7 @@ class TestRequiredArgsValidation:
     instead of crashing with ``AttributeError`` deep in the call chain."""
 
     def test_missing_config_returns_error(self, tmp_path: Path) -> None:
-        tool = _make_interactive_simulate(tmp_path, config="")
+        tool = _make_interactive_simulate(tmp_path, config=None)
         result = tool._run()
         assert result.exit_code == EXIT_ERROR
         assert "--target" in result.report_text

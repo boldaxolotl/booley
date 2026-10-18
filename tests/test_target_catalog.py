@@ -16,7 +16,7 @@ from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.harness.doctor import _check_sim_target_tb_staging
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.project_repositories import paired_project_repository
-from booley.targets.catalog import TargetCatalog
+from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import (
     AmbiguousTargetError,
     DuplicateTargetError,
@@ -979,3 +979,33 @@ def test_explicit_role_wins_over_sim_inference_and_conflicts_refuse(tmp_path):
     )
     with pytest.raises(fusesoc_registry.FuseSocError, match=r"conflicting source roles.*main.cpp"):
         fusesoc_registry.classified_sources(tmp_path, strict=True)
+
+
+def test_prepared_omitted_selection_is_opt_in(project):
+    assert PreparedTargetSelection.resolve(project, "", for_flow="lint").handles == ()
+    assert TargetCatalog.build(project).select_many("") == ()
+    selection = PreparedTargetSelection.resolve(project, "alpha#sim", for_flow="sim")
+    assert selection.target_arg == "alpha#sim" and not selection.automatic
+
+
+@pytest.mark.parametrize("flow", ("lint", "sim", "synth"))
+def test_prepared_omission_rejects_zero_or_many_with_eligible_selectors(project, flow):
+    from booley.targets.domain import TargetResolutionError
+
+    choices = TargetCatalog.build(project).list(for_flow=flow)
+    with pytest.raises(TargetResolutionError) as exc:
+        PreparedTargetSelection.resolve(project, "", for_flow=flow, select_omitted=True)
+    expected = ", ".join(handle.selector for handle in choices) or "(none)"
+    assert f"Eligible Targets: {expected}" in str(exc.value)
+    if flow == "sim":
+        assert len(choices) == 2 and all("#sim" in handle.selector for handle in choices)
+
+
+def test_prepared_sole_omission_keeps_one_snapshot(project):
+    (project / "beta.core").unlink()
+    selection = PreparedTargetSelection.resolve(project, "", for_flow="sim", select_omitted=True)
+    assert selection.automatic
+    assert selection.handles == (selection.catalog.select("sim", for_flow="sim"),)
+    assert selection.target_arg == "sim"
+    assert selection.matches(project, "sim")
+    assert not selection.matches(project, "")
