@@ -211,17 +211,10 @@ def restore_publication_objects(
             raise FileCommitError("saved publication summary differs from its original blob OID")
         headers = raw_git(private, "cat-file", "commit", commit).split(b"\n\n", 1)[0].split(b"\n")
         expected = publication_tree(private, publication.pin, publication.path, publication.blob)
-        changes = raw_git(
-            private, "diff-tree", "--name-only", "-r", "-t", "-z", publication.pin, commit
-        ).split(b"\0")
-        path = os.fsencode(publication.path)
-        if headers[0] != b"tree " + expected.encode() or any(
-            name and name != path and not path.startswith(name + b"/") for name in changes
-        ):
+        if headers[0] != b"tree " + expected.encode():
             raise FileCommitError("saved publication tree differs from the exact pinned tree")
         if (
             len(headers) not in {4, 5}
-            or not headers[0].startswith(b"tree ")
             or not headers[1].startswith(b"parent ")
             or not headers[2].startswith(b"author ")
             or not headers[3].startswith(b"committer ")
