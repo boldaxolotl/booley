@@ -31,7 +31,7 @@ def _fixture(tmp_path, header=False, copyto=None, eda_tool=None, name=None, defe
     if copyto:
         attributes["copyto"] = copyto
     files = (["dut.sv"] if header else []) + [
-        {str(source) if defect == "abs" else source.name: attributes}
+        {source.as_posix() if defect == "abs" else source.name: attributes}
     ]
     fileset = {"files": files, "file_type": "systemVerilogSource"}
     target = {"filesets": ["rtl"], "default_tool": eda_tool or "icarus", "toplevel": "dut"}
