@@ -250,12 +250,24 @@ def test_zero_match_compact_cocotb_suite_remains_inconclusive(tmp_path: Path) ->
 def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> None:
     source = tmp_path / "rtl/dut.sv"
     source.parent.mkdir(parents=True)
-    source.write_text("not even valid HDL\n" * 16, encoding="utf-8")
+    source.write_bytes(b"not even valid HDL\n" * 16)
 
     breakdown = compute_source_size_budget(["rtl/dut.sv"], tmp_path)
 
     assert breakdown["method"] == "language_neutral_source_size"
     assert breakdown["source_lines"] == 16
+    (source.parent / "unterminated.vhd").write_bytes(b"not HDL")
+    (source.parent / "empty.sv").write_bytes(b"")
+    paths = ["rtl/dut.sv", "rtl/unterminated.vhd", "rtl/empty.sv"]
+    preview = compute_source_size_budget(paths, tmp_path)
+    assert preview["files"] == [
+        {"path": "rtl/dut.sv", "source_lines": 16, "source_bytes": 304},
+        {"path": "rtl/unterminated.vhd", "source_lines": 1, "source_bytes": 7},
+        {"path": "rtl/empty.sv", "source_lines": 0, "source_bytes": 0},
+    ]
+    for key in ["source_lines", "source_bytes"]:
+        assert preview[key] == sum(file[key] for file in preview["files"])
+    assert preview["readable_files"] == len(preview["files"])
     assert "always_blocks" not in breakdown
 
 
