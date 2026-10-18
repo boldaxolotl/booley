@@ -58,7 +58,7 @@ def test_test_within_headroom_passes_and_is_counted(tmp_path: Path, workers: int
     assert "timeout headroom: limit 50.0%, 1 tests checked, highest" in result.stdout
 
 
-@pytest.mark.parametrize(("workers", "github"), [(0, True), (1, False)])
+@pytest.mark.parametrize(("workers", "github"), [(1, True), (0, False)])
 def test_test_in_warning_band_passes_and_is_reported(
     tmp_path: Path, workers: int, github: bool
 ) -> None:
@@ -74,7 +74,8 @@ def test_test_in_warning_band_passes_and_is_reported(
     assert "timeout headroom warning: test_case.py::test_case used" in output
     assert "warning above 0.1%). On Windows" in output
     annotation = "::warning title=Timeout headroom::test_case.py::test_case used"
-    assert (annotation in output) is github
+    # GitHub only parses a workflow command at the start of a line.
+    assert any(line.startswith(annotation) for line in output.splitlines()) is github
     if github:
         assert "%25; warning above 0.1%25)" in output
     warnings = [

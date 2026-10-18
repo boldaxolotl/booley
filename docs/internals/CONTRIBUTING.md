@@ -326,11 +326,13 @@ Porting EDA tools is #1, but not the only way to help:
   seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows
   an expired budget kills the whole xdist worker with no traceback, so Windows
   CI watches how much of its budget each passing test uses. On pull requests,
-  the merge queue, and `main`, a test above 50% gets a warning annotation and a
-  test above 80% fails. The weekly full Python matrix fails any test above
-  50%, so drift is fixed in one batch instead of on unrelated pull requests.
-  Both messages name the marker value to use. Size a budget at three times the
-  test's slowest Windows CI duration, rounded up to a 30-second multiple. Per-test durations are the `time` values in the
+  the merge queue, and `main`, CI runs with `--timeout-headroom=0.8
+  --timeout-headroom-warn=0.5`: a test above 50% gets a warning annotation and
+  a test above 80% fails. The weekly full Python matrix runs with
+  `--timeout-headroom=0.5`, so drift is fixed in one batch instead of failing
+  unrelated pull requests. Both messages name the marker value to use. Size a
+  budget at three times the test's slowest Windows CI duration, rounded up to
+  a 30-second multiple. Per-test durations are the `time` values in the
   uploaded `junit-windows-*` and `full-junit-windows-latest-*` artifacts, and
   each test's `timeout_headroom_ratio` property records how much of its
   budget it used.
