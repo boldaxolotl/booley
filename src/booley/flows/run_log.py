@@ -30,21 +30,16 @@ def begin_run_log(
     flow: str,
     target: str,
     run: str | None = None,
+    owner: Path | None = None,
 ) -> Path:
     """Open a fresh run log with ownership and in-progress markers."""
     path = Path(work_dir, RUN_LOG_NAME)
     absolute = Path(os.path.abspath(path))  # noqa: PTH100 — preserve links
     for ancestor in (absolute, *absolute.parents):
-        try:
-            info = ancestor.lstat()
-        except FileNotFoundError:
-            if ancestor != absolute:
-                raise
-        else:
-            if stat.S_ISLNK(info.st_mode):
-                raise OSError("run log path contains a symbolic link")
-            if ancestor == absolute and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
-                raise OSError("run log must be a singly linked regular file")
+        if ancestor.is_symlink():
+            raise OSError("run log path contains a symbolic link")
+        if owner is None or ancestor == owner:
+            break
     flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as stream:
         info = os.fstat(stream.fileno())
@@ -71,10 +66,11 @@ class RunLogIdentity:
         cls, root: Path, target: str, attempt: str, allowed: tuple[Path, ...]
     ) -> RunLogIdentity:
         path = Path(os.path.abspath(root / RUN_LOG_NAME))  # noqa: PTH100 — preserve links
-        if not any(path.is_relative_to(parent) for parent in allowed):
+        owner = next((parent for parent in allowed if path.is_relative_to(parent)), None)
+        if owner is None:
             raise OSError("run log lies outside the owned evidence roots")
         run = current_run_token()
-        path = begin_run_log(root, flow="sim", target=target, run=run)
+        path = begin_run_log(root, flow="sim", target=target, run=run, owner=owner)
         return cls(path, target, run, attempt, cls._fingerprint(path))
 
     @staticmethod

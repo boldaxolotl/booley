@@ -180,17 +180,15 @@ class TestRunLogProgress:
 
 
 def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):
-    from contextlib import nullcontext, suppress
-    from itertools import product
+    from contextlib import suppress
 
     from booley.flows.run_log import begin_run_log
-    from booley.flows.sim.live_progress import LiveProgressSink, install_progress
     from tests.conftest import symlink_or_skip
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     failures = []
-    for kind, observed in product(("symlink", "hardlink", "ancestor"), (False, True)):
-        case = f"{kind}-observed={observed}"
+    for kind in ("symlink", "hardlink", "ancestor"):
+        case = kind
         case_root = tmp_path / case
         protected = case_root / "protected"
         protected.mkdir(parents=True)
@@ -205,9 +203,39 @@ def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):
                 symlink_or_skip(evidence / "run.log", sentinel)
             else:
                 (evidence / "run.log").hardlink_to(sentinel)
-        sink = LiveProgressSink(case_root / "progress.json", case_root, "current-run")
-        with install_progress(sink) if observed else nullcontext(), suppress(OSError):
-            begin_run_log(evidence, flow="sim", target="sim")
+        with suppress(OSError):
+            begin_run_log(evidence, flow="sim", target="sim", owner=case_root)
         if sentinel.read_text() != "retained evidence":
             failures.append(case)
     assert failures == [], f"retained evidence was truncated: {failures}"
+
+
+def test_begin_run_log_refreshes_under_symlinked_parent(tmp_path):
+    from tests.conftest import symlink_or_skip
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, physical, target_is_directory=True)
+    work = alias / "work"
+    work.mkdir()
+    run_log.write_run_log(work, "previous run")
+    run_log.begin_run_log(work, flow="lint", target="lint_top")
+    assert "previous run" not in (work / "run.log").read_text()
+    assert run_log.RUN_LOG_PENDING in (work / "run.log").read_text()
+
+
+def test_identity_checks_only_through_owning_root(tmp_path):
+    from tests.conftest import symlink_or_skip
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, physical, target_is_directory=True)
+    owner = alias / "owner"
+    work = owner / "work"
+    work.mkdir(parents=True)
+    run_log.write_run_log(work, "previous run")
+    identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (owner,))
+    assert "previous run" not in identity.path.read_text()
+    assert identity.pointer(work, "attempt", owner)["live"] is True

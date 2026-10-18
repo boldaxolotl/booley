@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
@@ -16,12 +16,6 @@ from booley.flows.run_log import RunLogIdentity, current_run_token
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _STAGES = frozenset({"preparing", "pre_sim", "building", "executing", "postprocessing"})
-
-
-@dataclass
-class AttemptOwner:
-    closed: bool = False
-    log: RunLogIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -35,7 +29,6 @@ class AttemptScope:
     revision: str = ""
     ephemeral_root: Path | None = None
     operation: str = "simulation"
-    owner: AttemptOwner = field(default_factory=AttemptOwner)
 
 
 _sink: ContextVar[LiveProgressSink | None] = ContextVar("simulation_live_progress", default=None)
@@ -52,7 +45,9 @@ class LiveProgressSink:
         self.run_token: str = current_run_token()
         self._lock = threading.RLock()
         self._base: dict[str, object] | None = None
-        self._active: dict[str, tuple[AttemptScope, dict[str, object]]] = {}
+        self._active: dict[str, dict[str, object]] = {}
+        self._retired: set[str] = set()
+        self._logs: dict[str, RunLogIdentity] = {}
         self._closed = False
         self.error: str | None = None
 
@@ -81,12 +76,10 @@ class LiveProgressSink:
         log: RunLogIdentity | None,
     ) -> None:
         with self._lock:
-            if self._closed or scope.owner.closed or current_run_token() != self.run_token:
+            if self._closed or scope.key in self._retired or current_run_token() != self.run_token:
                 return
-            if scope.key in self._active:
-                scope = replace(scope, owner=self._active[scope.key][0].owner)
             if log is not None:
-                scope.owner.log = log
+                self._logs[scope.key] = log
             value: dict[str, object] = {
                 "target": scope.target,
                 "identity": scope.identity,
@@ -98,16 +91,18 @@ class LiveProgressSink:
             }
             if scope.revision:
                 value["revision"] = scope.revision
-            log = scope.owner.log
+            log = self._logs.get(scope.key)
             if root is not None and log is not None and log.target == scope.target:
                 pointer = log.pointer(root, token, self.project_root)
                 if pointer is not None:
                     value["log"] = pointer
-            self._active[scope.key] = (scope, value)
+            self._active[scope.key] = value
             self._publish_active()
 
     def retire(self, key: str) -> None:
         with self._lock:
+            self._retired.add(key)
+            self._logs.pop(key, None)
             if self._closed:
                 return
             if self._active.pop(key, None) is not None:
@@ -119,7 +114,7 @@ class LiveProgressSink:
         document["timestamp"] = utc_now_rfc3339()
         document.pop("active", None)
         if self._active and not self._closed:
-            document["active"] = [value for _, value in self._active.values()]
+            document["active"] = list(self._active.values())
             candidate = [item for item in document["active"] if item["role"] == "candidate"]
             document["phase"] = (
                 "running"
@@ -188,7 +183,6 @@ def attempt_scope(
         parent.revision if parent else revision,
         parent.ephemeral_root if parent else ephemeral_root.resolve() if ephemeral_root else None,
         operation,
-        parent.owner if nested else AttemptOwner(),
     )
     token = _scope.set(scope)
     try:
@@ -196,11 +190,8 @@ def attempt_scope(
         yield
     finally:
         sink = _sink.get()
-        if parent is None or scope.key != parent.key:
-            scope.owner.closed = True
-            scope.owner.log = None
-            if sink is not None:
-                sink.retire(scope.key)
+        if sink is not None and (parent is None or scope.key != parent.key):
+            sink.retire(scope.key)
         _scope.reset(token)
 
 
