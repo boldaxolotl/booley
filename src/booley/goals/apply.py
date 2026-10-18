@@ -20,7 +20,7 @@ from booley.core.boundary import require_dict, require_list, require_uuid4
 from booley.criteria.evidence_ledger import prepare_observations
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.goals.apply_barrier import require_no_apply
-from booley.goals.apply_effects import FileEffect, read_bytes, require_destination
+from booley.goals.apply_effects import FileEffect, read_bytes
 from booley.goals.campaign_accounting import quarantine_unreadable
 from booley.goals.change_policy import conflict, validate_kind
 from booley.goals.changes import (
@@ -42,7 +42,6 @@ from booley.goals.proposals import (
     digest,
     encode,
     finalize,
-    finalize_rejection,
     list_proposals,
     save_decision,
 )
@@ -72,10 +71,10 @@ class WaiverPort(Protocol):
         self, proposal: Proposal, decision: Decision, state: DevelopmentState
     ) -> tuple[tuple[FileEffect, ...], CoverageEvaluation]: ...
     def rejection(self, proposal: Proposal, decision: Decision) -> tuple[FileEffect, ...]: ...
+    def validate_effect(self, effect: FileEffect) -> None: ...
     def evaluate(
         self, goal: GoalSpec, detail: Mapping[str, Any]
     ) -> tuple[bool, dict[str, Any]]: ...
-    def validate_effect(self, binding: WaiverBinding, effect: FileEffect) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -135,7 +134,7 @@ class ApplyTransaction:
             or raw["schema"] != "booley.goal-apply/v1"
         ):
             raise ProposalError("invalid Goal apply transaction schema")
-        transaction = cls(
+        return cls(
             require_uuid4(raw["id"], field="transaction.id"),
             require_uuid4(raw["proposal_id"], field="proposal_id"),
             str(raw["payload_digest"]),
@@ -146,16 +145,6 @@ class ApplyTransaction:
                 for effect in require_list(raw["effects"], field="effects")
             ),
         )
-        if (
-            transaction.decision.transaction_id != transaction.id
-            or transaction.decision.payload_digest != transaction.payload_digest
-        ):
-            raise ProposalError("apply transaction decision binding is invalid")
-        if len({effect.path for effect in transaction.effects}) != len(transaction.effects):
-            raise ProposalError("apply transaction repeats a destination")
-        if (transaction.entry is None) != (transaction.decision.decision == "reject"):
-            raise ProposalError("a rejected decision cannot authorize Goal changes")
-        return transaction
 
 
 def transaction_path(root: Path, transaction_id: str) -> Path:
@@ -175,7 +164,6 @@ def decide(
     _remove_orphan_transactions(lock.record_dir)
     with _waiver_lock(view.proposal, env):
         transaction = _prepare(lock, view.proposal, record, decision, env)
-        _validate_contents(view.proposal, transaction)
         atomic_write_once(
             transaction_path(lock.record_dir, transaction.id), encode(transaction.to_json())
         )
@@ -504,7 +492,7 @@ def _state_delta(state: DevelopmentState, proposal: Proposal) -> DevelopmentStat
 def _drive(
     lock: RecordLock, view: ProposalView, transaction: ApplyTransaction, env: ChangeEnvironment
 ) -> ProposalView:
-    _validate_transaction(lock, view, transaction, env)
+    _validate_transaction(view, transaction, env)
     existing = _existing_entry(lock, transaction.entry)
     for effect in transaction.effects:
         effect.require_expected()
@@ -515,7 +503,7 @@ def _drive(
         effect.apply()
         env.checkpoint(f"effect:{effect.label}:{index}")
     if transaction.entry is None:
-        return finalize_rejection(lock, view)
+        return finalize(lock, view, rejected=True)
     if _existing_entry(lock, transaction.entry) != "applied":
         append_applied(lock, transaction.entry.id)
         env.checkpoint("applied")
@@ -528,7 +516,7 @@ def _drive(
 
 
 def _validate_transaction(
-    lock: RecordLock, view: ProposalView, transaction: ApplyTransaction, env: ChangeEnvironment
+    view: ProposalView, transaction: ApplyTransaction, env: ChangeEnvironment
 ) -> None:
     if (
         transaction.proposal_id != view.proposal.id
@@ -536,45 +524,13 @@ def _validate_transaction(
         or transaction.decision != view.decision
     ):
         raise ProposalError("saved transaction does not bind this exact proposal decision")
-    _validate_contents(view.proposal, transaction)
     if view.transaction_digest is None or view.transaction_digest != digest(transaction.to_json()):
         raise ProposalError(
             "recovery conflict: captured transaction differs from durable decision authority; restore the exact prepared transaction before retrying"
         )
-    allowed = (
-        {"candidate"}
-        if transaction.decision.decision == "reject"
-        else {"record", "state", "ledger", "waiver"}
-    )
     for effect in transaction.effects:
-        require_destination(effect.path, effect.label)
-        if effect.label not in allowed:
-            raise ProposalError("effect exceeds this decision's authority")
-        if effect.label in {"waiver", "candidate"}:
-            if view.proposal.waiver is None:
-                raise ProposalError("external effect without waiver binding")
-            _waiver_service(env).validate_effect(view.proposal.waiver, effect)
-        else:
-            _validate_record_effect(lock, view, effect)
-
-
-def _validate_contents(proposal: Proposal, transaction: ApplyTransaction) -> None:
-    """Require the complete decision-specific structure and exact public audit."""
-    labels = [effect.label for effect in transaction.effects]
-    if transaction.decision.decision == "reject":
-        if transaction.entry is not None or labels != (["candidate"] if proposal.waiver else []):
-            raise ProposalError("recovery conflict: effects exceed rejection decision's authority")
-        return
-    if transaction.entry != _change_entry(proposal, transaction.decision):
-        raise ProposalError(
-            "recovery conflict: ChangeEntry differs from exact approved proposal/decision"
-        )
-    if labels.count("record") != 1 or labels.count("state") != 1:
-        raise ProposalError(
-            "recovery conflict: prepared transaction lacks its complete record/state effects"
-        )
-    if (labels.count("waiver") > 0) != (proposal.waiver is not None) or "candidate" in labels:
-        raise ProposalError("recovery conflict: effects exceed approval decision's authority")
+        if effect.label == "waiver":
+            _waiver_service(env).validate_effect(effect)
 
 
 def _existing_entry(
@@ -592,36 +548,3 @@ def _existing_entry(
     if found is None:
         return "absent"
     return "applied" if any(item.id == entry.id for item in log.applied) else "intent"
-
-
-def _validate_record_effect(lock: RecordLock, view: ProposalView, effect: FileEffect) -> None:
-    require_destination(effect.path, effect.label)
-    root = lock.record_dir
-    if effect.label in {"record", "state"}:
-        expected = root / ("record.json" if effect.label == "record" else "booley_state.json")
-        if effect.path != expected or effect.after is None:
-            raise ProposalError("invalid record/state effect destination")
-        if effect.label == "record":
-            record = GoalRecord.from_json(json.loads(effect.after))
-            if record.id != lock.goal_id:
-                raise ProposalError("record effect names another Goal Record")
-        return
-    if effect.label != "ledger" or effect.before is not None or effect.after is None:
-        raise ProposalError("invalid ledger effect")
-    payload = json.loads(effect.after)
-    sequence = payload.get("sequence")
-    if view.decision is None:
-        raise ProposalError("ledger effect has no decision")
-    transaction_id = digest({"proposal": view.proposal.id, "decision": view.decision.to_json()})
-    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
-        raise ProposalError("invalid ledger sequence")
-    expected = (
-        root
-        / "logs"
-        / "acceptance"
-        / "evidence"
-        / f"{sequence:09d}.tx.{transaction_id}"
-        / "record.json"
-    )
-    if effect.path != expected:
-        raise ProposalError("ledger effect does not name its exact observation destination")
