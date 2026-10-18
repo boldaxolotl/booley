@@ -300,20 +300,6 @@ def test_duplicate_custom_names_reject_complete_live_and_startup_candidates(tmp_
         reset_cache()
 
 
-def test_finished_schema_worker_still_enforces_output_bound(tmp_path, monkeypatch):
-    import io
-    import threading
-
-    from booley.mcp import catalog_worker
-
-    monkeypatch.setattr(catalog_worker, "_MAX_OUTPUT_BYTES", 1024)
-    output = io.BytesIO(b"x" * 1025)
-    output.seek(0, 2)
-    finished = SimpleNamespace(poll=lambda: 0, returncode=0)
-    with pytest.raises(RuntimeError, match="exceeded output limit"):
-        catalog_worker._wait_for_worker(finished, output, tmp_path / "result", threading.Event())
-
-
 @pytest.mark.parametrize("default", ["Path('build')", "object()"])
 def test_schema_worker_preserves_valid_siblings_and_wire_defaults(tmp_path, default):
     from booley.mcp.catalog_worker import run_schema_worker

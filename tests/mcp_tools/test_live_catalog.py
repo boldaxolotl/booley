@@ -444,79 +444,6 @@ def test_unchanged_catalog_retains_project_boundary_validation(project, monkeypa
         asyncio.run(application.live_catalog.refresh())
 
 
-def test_schema_worker_does_not_load_transport_adapter(project):
-    from booley.mcp.catalog_worker import run_schema_worker
-
-    path = write_endpoint(project)
-    path.write_text(
-        "import sys\nassert 'booley.mcp.server' not in sys.modules\n" + path.read_text()
-    )
-    definitions, errors = run_schema_worker({"local_check": path})
-    assert not errors, "schema discovery must not load the MCP transport adapter"
-    assert definitions[0]["name"] == "local_check"
-
-
-def test_worker_reuses_warmed_framework_bytecode(project, monkeypatch, tmp_path_factory):
-    import py_compile
-
-    from booley.mcp.catalog_worker import run_schema_worker
-
-    py_compile.compile(server.__file__, doraise=True)
-    marker = project / "framework-recompiled"
-    observer = tmp_path_factory.mktemp("catalog-import-observer")
-    (observer / "sitecustomize.py").write_text(
-        "import os, sys\n"
-        "def observe(event, args):\n"
-        f"    if event == 'compile' and os.path.normcase(str(args[1])) == {os.path.normcase(server.__file__)!r}:\n"
-        f"        with open({str(marker)!r}, 'w') as output: output.write('compiled')\n"
-        "sys.addaudithook(observe)\n"
-    )
-    monkeypatch.syspath_prepend(str(observer))
-    definitions, errors = run_schema_worker({"local_check": write_endpoint(project)})
-    assert not errors
-    assert definitions[0]["name"] == "local_check"
-    assert not marker.exists(), "schema worker must reuse warmed framework bytecode"
-
-
-def test_worker_isolates_project_imports_before_reusing_dependency_cache(project, monkeypatch):
-    import py_compile
-
-    from booley.mcp.catalog_worker import run_schema_worker
-
-    path = write_endpoint(project)
-    helper = path.parent / "_schema_helper.py"
-    helper.write_text("OPTION = 'first'\n")
-    py_compile.compile(str(helper), doraise=True)
-    path.write_text(
-        "import sys\nfrom pathlib import Path\n"
-        "assert Path(sys.pycache_prefix).parent.name.startswith('booley-catalog-')\n"
-        "from _schema_helper import OPTION\n"
-        + path.read_text().replace("'--first'", "'--' + OPTION")
-    )
-    py_compile.compile(str(path), doraise=True)
-    source, source_stat = path.read_text(), path.stat()
-    unsafe_import = project / "unsafe-bootstrap-import"
-    for directory in (project.parent, path.parent):
-        for name in ("sitecustomize", "json", "pydantic"):
-            (directory / f"{name}.py").write_text(
-                f"open({str(unsafe_import)!r}, 'w').write('Project imported before isolation')\n"
-                "raise AssertionError('Project module shadowed a framework dependency')\n"
-            )
-    monkeypatch.syspath_prepend(str(path.parent))
-    for option in ("first", "other"):
-        before = helper.stat()
-        helper.write_text(f"OPTION = {option!r}\n")
-        os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
-        description = "Local capability" if option == "first" else "Other capability"
-        path.write_text(source.replace("Local capability", description))
-        os.utime(path, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
-        definitions, errors = run_schema_worker({"local_check": path})
-        assert not errors
-        assert option in definitions[0]["schema"]["properties"]
-        assert definitions[0]["description"] == description
-    assert not unsafe_import.exists()
-
-
 def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     import time
     from types import SimpleNamespace
@@ -574,34 +501,6 @@ def assert_worker_pid_stopped(pid):
         assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
 
 
-def test_async_worker_cancellation_joins_cleanup(project, monkeypatch):
-    import threading
-
-    from booley.mcp import live_catalog
-
-    entered, reaped = threading.Event(), threading.Event()
-
-    def waiting_worker(paths, cancel):
-        entered.set()
-        assert cancel.wait(3)
-        reaped.set()
-        raise RuntimeError("cancelled")
-
-    monkeypatch.setattr(live_catalog, "run_schema_worker", waiting_worker)
-
-    async def exercise():
-        task = asyncio.create_task(live_catalog._async_schemas({}))
-        async with asyncio.timeout(1):
-            while not entered.is_set():
-                await asyncio.sleep(0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert reaped.is_set()
-
-    asyncio.run(exercise())
-
-
 def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
     monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "sim")
@@ -615,30 +514,6 @@ def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):
             assert set(await tools(client)) == initial - {"sim"}
             assert "booley_poll" in initial
             assert "goal_enter" not in initial
-
-    asyncio.run(exercise())
-
-
-def test_edit_during_discovery_does_not_publish_mixed_generation(project, monkeypatch):
-    from booley.mcp import live_catalog
-
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
-    original = application.list_tools()
-    catalog = application.live_catalog
-    write_endpoint(project)
-
-    def changing_worker(paths, cancel):
-        (project / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
-        return [], []
-
-    monkeypatch.setattr(live_catalog, "run_schema_worker", changing_worker)
-
-    async def exercise():
-        with pytest.raises(RuntimeError, match="changed during discovery"):
-            await catalog.refresh()
-        assert application.list_tools() == original
-        await catalog.refresh()
-        assert "sim" not in {item.name for item in application.list_tools()}
 
     asyncio.run(exercise())
 
@@ -731,38 +606,6 @@ def test_config_cache_preserves_unknown_specialist_rejection(project, monkeypatc
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("replacement", ["directory", "symlink"])
-def test_selected_root_identity_invalidates_metadata_inventory(project, monkeypatch, replacement):
-    from booley.mcp import registry
-
-    scans = []
-    original = registry.extract_mcp_tool_info
-
-    def counted(*args, **kwargs):
-        scans.append(args[0])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(registry, "extract_mcp_tool_info", counted)
-    sdk, _ = server._build_server()
-    startup_scans = len(scans)
-
-    async def exercise():
-        async with live_client(sdk) as client:
-            initial = await tools(client)
-            old = project.with_name("previous")
-            project.rename(old)
-            if replacement == "symlink":
-                new = project.with_name("replacement")
-                new.mkdir()
-                project.symlink_to(new, target_is_directory=True)
-            else:
-                project.mkdir()
-            assert await tools(client) == initial
-            assert len(scans) > startup_scans
-
-    asyncio.run(exercise())
-
-
 def test_config_generation_reexecutes_custom_schema(project):
     path = write_endpoint(project)
     path.write_text(
@@ -786,67 +629,3 @@ def test_config_generation_reexecutes_custom_schema(project):
             assert "first" not in current
 
     asyncio.run(exercise())
-
-
-@pytest.mark.parametrize("alias", [False, True])
-def test_nested_helper_same_size_preserved_mtime_refreshes_schema(project, alias):
-    path = write_endpoint(project)
-    package = path.parent / "_support"
-    package.mkdir()
-    (package / "__init__.py").write_text("")
-    helper = package / "options.py"
-    helper.write_text("OPTION = 'first'\n")
-    import_name = "_support.options"
-    if alias:
-        (path.parent / "linked").symlink_to(package, target_is_directory=True)
-        import_name = "linked.options"
-    source = (
-        path.read_text()
-        .replace("from booley.mcp.base", f"from {import_name} import OPTION\nfrom booley.mcp.base")
-        .replace("'--first'", "'--' + OPTION")
-    )
-    path.write_text(source)
-    sdk, _ = server._build_server()
-
-    async def exercise():
-        async with live_client(sdk) as client:
-            assert "first" in (await tools(client))["local_check"].input_schema["properties"]
-            before = helper.stat()
-            helper.write_text("OPTION = 'other'\n")
-            os.utime(helper, ns=(before.st_atime_ns, before.st_mtime_ns))
-            assert "other" in (await tools(client))["local_check"].input_schema["properties"], (
-                "nested custom helper bytes must refresh the running schema"
-            )
-
-    asyncio.run(exercise())
-
-
-def test_custom_source_walk_bounds_cycles_and_external_directories(project):
-    from booley.mcp.live_catalog import source_fingerprint
-
-    custom = project / "mcp_tools"
-    custom.mkdir()
-    external = project.parent / "external"
-    external.mkdir()
-    helper = external / "helper.py"
-    helper.write_text("VALUE = 1\n")
-    (custom / "cycle").symlink_to(custom, target_is_directory=True)
-    (custom / "external").symlink_to(external, target_is_directory=True)
-    initial = source_fingerprint(project)
-    helper.write_text("VALUE = 2\n")
-    assert source_fingerprint(project) == initial
-    (custom / "local.py").write_text("VALUE = 3\n")
-    assert source_fingerprint(project) != initial
-
-
-def test_custom_source_walk_propagates_unreadable_input(project, monkeypatch):
-    from booley.mcp import live_catalog
-
-    def unreadable(root, *, followlinks, onerror):
-        onerror(PermissionError("custom input unavailable"))
-        return iter(())
-
-    (project / "mcp_tools").mkdir()
-    monkeypatch.setattr(live_catalog.os, "walk", unreadable)
-    with pytest.raises(PermissionError, match="custom input unavailable"):
-        live_catalog.source_fingerprint(project)

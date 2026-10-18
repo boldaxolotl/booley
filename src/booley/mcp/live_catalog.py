@@ -59,91 +59,34 @@ def _file_digest(path: Path) -> str:
 def project_fingerprint(directory: Path | None) -> tuple:
     """Hash selected Project inputs and layout guards without importing Project code."""
     if directory is None:
-        return (installed_fingerprint(),)
+        return ()
     root = directory
-    selector = (
-        ()
-        if os.environ.get("BOOLEY_DIR")
-        else tuple(
-            (directory_identity(parent / "booley.toml"), _file_digest(parent / "booley.toml"))
-            for parent in (Path.cwd(), *Path.cwd().parents)
-            if (parent / "booley.toml").is_file()
-        )
-    )
     marker_paths = [root / name for name in ("tools", "mcp_tools", "pipeline.toml", "project")]
     marker_paths.append(root.parent / ".booley_project")
     markers = tuple(directory_identity(path) for path in marker_paths)
     return (
         directory_identity(root),
         _file_digest(root / "booley.toml"),
-        selector,
         markers,
         directory_identity(root / "mcp_tools"),
         source_fingerprint(directory),
-        installed_fingerprint(),
     )
 
 
-def directory_identity(path: Path | None) -> tuple:
-    """Include lexical selection, symlink target, type and replacement identity."""
-    if path is None:
-        return ()
-    lexical = str(path.absolute())
-    resolved = str(path.resolve())
-    try:
-        link = path.lstat()
-    except FileNotFoundError:
-        return (lexical, resolved, "missing")
-    link_identity = (link.st_dev, link.st_ino, link.st_mode)
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return (lexical, resolved, link_identity, "missing-target")
-    return (lexical, resolved, link_identity, stat.st_dev, stat.st_ino, stat.st_mode)
-
-
-def installed_fingerprint() -> tuple:
-    """Identify installed metadata inputs by contents, including helper edits."""
-    root = Path(__file__).resolve().parent.parent
-    paths = sorted(
-        path
-        for package in ("mcp", "specialists", "flows")
-        for path in (root / package).rglob("*.py")
-    )
-    return (directory_identity(root), tuple((str(path), _file_digest(path)) for path in paths))
-
-
-def _walk_error(error: OSError) -> None:
-    raise error
+def directory_identity(path: Path) -> tuple:
+    """Identify the selected directory and whether it exists."""
+    return (str(path.resolve()), path.exists())
 
 
 def source_fingerprint(directory: Path | None) -> tuple:
-    """Hash all custom Python inputs within the selected source scope."""
+    """Hash custom Python inputs without following helper-directory symlinks."""
     if directory is None:
         return ()
-    root = directory / "mcp_tools"
-    if not root.is_dir():
-        return (("directory", directory_identity(root)),)
-    scope = root.resolve()
-    visited: set[Path] = set()
-    inputs: list[tuple] = [("directory", directory_identity(root))]
-    for current, directories, files in os.walk(root, followlinks=True, onerror=_walk_error):
-        parent = Path(current)
-        resolved = parent.resolve()
-        if resolved in visited:
-            directories.clear()
-            continue
-        visited.add(resolved)
-        for name in sorted(directories):
-            if name != "__pycache__":
-                inputs.append(("directory", directory_identity(parent / name)))
-        directories[:] = sorted(
-            name
-            for name in directories
-            if name != "__pycache__" and (parent / name).resolve().is_relative_to(scope)
-        )
+    inputs = []
+    for current, directories, files in os.walk(directory / "mcp_tools"):
+        directories[:] = sorted(name for name in directories if name != "__pycache__")
         inputs.extend(
-            (str(parent / name), directory_identity(parent / name), _file_digest(parent / name))
+            (str(Path(current) / name), _file_digest(Path(current) / name))
             for name in sorted(files)
             if name.endswith(".py")
         )
@@ -207,8 +150,7 @@ class LiveCatalog:
         if self.directory is not None:
             resolve_booley_dir()
         custom = custom_directory(self.directory)
-        project = project_fingerprint(self.directory)
-        key = (project[:1], project[2:])
+        key = (directory_identity(custom) if custom else (), source_fingerprint(self.directory))
         if key != self._inventory_key:
             inventory = discover_mcp_inventory(project_mcp_tools_dir=custom)
             self._inventory, self._inventory_key = inventory, key
@@ -248,16 +190,10 @@ class LiveCatalog:
                     custom_directory(self.directory)
                 return
             candidates = self._candidates()
-            if fingerprint != self.fingerprint():
-                raise RuntimeError("MCP catalog inputs changed while reading; retry the request")
             if self._failed is not None and self._failed[0] == fingerprint:
                 raise self._failed[1]
             try:
                 endpoints = await self._discover(candidates)
-                if fingerprint != self.fingerprint():
-                    raise RuntimeError(
-                        "MCP catalog inputs changed during discovery; retry the request"
-                    )
                 self.application.replace_tools(self._definitions_provider(endpoints))
             except Exception as exc:
                 self._failed = (fingerprint, exc)

@@ -8,7 +8,6 @@ import logging
 import os
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import threading
 import time
@@ -28,7 +27,6 @@ from booley.runtime.process_group import (
 logger = logging.getLogger(__name__)
 
 DISCOVERY_TIMEOUT_SECONDS = 15.0
-_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _DIAGNOSTIC_BYTES = 4096
 
 
@@ -43,12 +41,12 @@ def run_schema_worker(
         directory = Path(temporary)
         request = directory / "request.json"
         result = directory / "result.json"
-        environment, search_path = _worker_environment(paths)
-        request.write_text(
-            json.dumps(
-                {"paths": [str(path) for path in paths.values()], "search_path": search_path}
-            )
+        project_directory = next(iter(paths.values())).parent.parent
+        environment = {**os.environ, "BOOLEY_DIR": str(project_directory)}
+        environment["PYTHONPATH"] = os.pathsep.join(
+            (str(Path(__file__).resolve().parents[2]), environment.get("PYTHONPATH", ""))
         )
+        request.write_text(json.dumps({"paths": [str(path) for path in paths.values()]}))
         command = [
             sys.executable,
             "-B",
@@ -64,34 +62,13 @@ def run_schema_worker(
             )
             group = capture_process_group(process)
             try:
-                _wait_for_worker(process, output, result, cancel)
+                _wait_for_worker(process, cancel)
             except RuntimeError as exc:
                 raise RuntimeError(f"{exc}\n{_diagnostic_tail(directory / 'worker.log')}") from exc
             finally:
                 # Also terminate descendants that outlive a successfully exited importer.
                 terminate_process_group(process, group, grace_seconds=0.2)
         return _read_result(result)
-
-
-def _worker_environment(paths: dict[str, Path]) -> tuple[dict[str, str], list[str]]:
-    """Keep Project imports out of the framework preload's shared bytecode cache."""
-    environment = dict(os.environ)
-    directory = next(iter(paths.values())).parent.parent
-    # Retain the server's selection even after a Project Root selector edit.
-    environment["BOOLEY_DIR"] = str(directory)
-    source_root = str(Path(__file__).resolve().parents[2])
-    search_path = [source_root, *sys.path, *environment.get("PYTHONPATH", "").split(os.pathsep)]
-    project_roots = {Path.cwd().resolve(), directory.resolve()}
-    project_roots.update(path.parent.resolve() for path in paths.values())
-    installed = {Path(value).resolve() for value in sysconfig.get_paths().values()}
-    bootstrap = []
-    for raw_path in search_path:
-        path = Path(raw_path).resolve()
-        trusted = str(path) == source_root or path in installed
-        if trusted or not any(path.is_relative_to(root) for root in project_roots):
-            bootstrap.append(raw_path)
-    environment["PYTHONPATH"] = os.pathsep.join(bootstrap)
-    return environment, search_path
 
 
 def _diagnostic_tail(path: Path) -> str:
@@ -101,17 +78,11 @@ def _diagnostic_tail(path: Path) -> str:
         return stream.read(_DIAGNOSTIC_BYTES).decode(errors="replace").strip()
 
 
-def _wait_for_worker(process, output, result: Path, cancel: threading.Event) -> None:
+def _wait_for_worker(process, cancel: threading.Event) -> None:
     deadline = time.monotonic() + DISCOVERY_TIMEOUT_SECONDS
     while process.poll() is None and time.monotonic() < deadline:
         if cancel.wait(0.05):
             raise RuntimeError("Custom MCP schema discovery cancelled")
-        if output.tell() > _MAX_OUTPUT_BYTES or (
-            result.exists() and result.stat().st_size > _MAX_OUTPUT_BYTES
-        ):
-            raise RuntimeError("Custom MCP schema discovery exceeded output limit")
-    if output.tell() > _MAX_OUTPUT_BYTES:
-        raise RuntimeError("Custom MCP schema discovery exceeded output limit")
     if process.poll() is None:
         raise RuntimeError("Custom MCP schema discovery timed out")
     if process.returncode != 0:
@@ -119,8 +90,6 @@ def _wait_for_worker(process, output, result: Path, cancel: threading.Event) -> 
 
 
 def _read_result(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    if path.stat().st_size > _MAX_OUTPUT_BYTES:
-        raise RuntimeError("Custom MCP schema discovery exceeded output limit")
     data = require_dict(json.loads(path.read_text()), field="catalog worker result")
     definitions = data.get("definitions")
     errors = data.get("errors")
@@ -194,10 +163,8 @@ def _main(request: Path, result: Path) -> None:
     _preload_schema_modules()
 
     data = require_dict(json.loads(request.read_text()), field="catalog worker request")
-    # Only trusted framework/dependency paths were visible during preload.
     # Project modules and sibling helpers must never reuse timestamp-based pyc.
     sys.pycache_prefix = str(result.parent / "pycache")
-    sys.path[:] = data["search_path"]
     definitions, errors = [], []
     adapter = TypeAdapter(dict[str, Any])
     for raw_path in data["paths"]:
