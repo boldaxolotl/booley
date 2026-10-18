@@ -15,7 +15,7 @@ _DEFAULT_JOB_POLL_WAIT_SECONDS = 240.0
 _STATUS_MCP_TOOL_NAME = "booley_status"
 _COVERAGE_EVIDENCE_TOOL_NAME = "coverage_evidence"
 _REPORT_MCP_TOOL_NAME = "booley_report"
-_POLL_MCP_TOOL_NAME = "booley_poll"
+POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
     "Check on a long-running endpoint (sim / fpga / synth / reviewer / mutation_tester / "
@@ -214,7 +214,7 @@ def _report_mcp_tool_def() -> dict[str, Any]:
 def _poll_mcp_tool_def() -> dict[str, Any]:
     """Return the synthetic poll MCP tool definition."""
     return {
-        "name": _POLL_MCP_TOOL_NAME,
+        "name": POLL_MCP_TOOL_NAME,
         "description": _POLL_MCP_TOOL_DESCRIPTION,
         "schema": {
             "type": "object",

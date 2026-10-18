@@ -36,7 +36,7 @@ def goal_warnings(
     work_dir: Path | None,
     session_key: str | None = None,
     other_sessions: Sequence[str] = (),
-    routing_guidance: str,
+    routing_guidance: str = "",
 ) -> str:
     """Render warnings shared by Flow, Specialist, and status responses."""
     warnings = list(protected_warnings(record, booley_dir, work_dir or Path(record.worktree_path)))

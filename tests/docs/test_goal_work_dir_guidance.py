@@ -43,7 +43,14 @@ def _assert_guidance_names(text, available, source):
         text = re.sub(r"\b((?:booley_|goal_|coverage_)[a-z0-9_]+)\b", r"`\1`", text)
     names = set(re.findall(r"mcp__booley__([a-z][a-z0-9_]*)", text))
     names.update(re.findall(r"`((?:booley_|goal_|coverage_)[a-z0-9_]+)`", text))
-    names.update(set(re.findall(r"`([a-z][a-z0-9_]*)`", text)) & available)
+    for pattern in (
+        r"\b(?i:call|check|use|MCP(?: tool)?) `([a-z][a-z0-9_]*)`",
+        r"operation_id to ([a-z][a-z0-9_]*)\b",
+        r"`([a-z][a-z0-9_]*)\(",
+    ):
+        names.update(re.findall(pattern, text))
+    for inventory in re.findall(r"Available MCP tools: ([^.]+)", text):
+        names.update(re.findall(r"\b[a-z][a-z0-9_]*\b", inventory))
     headings = r"(?:MCP tool|Step/tool|Booley Flow|Specialist)"
     markdown = rf"(?m)^\| {headings} \|[^\n]*\n\|[-: |]+\n((?:\|[^\n]*(?:\n|$))+)"
     terminal = rf"(?m)^  {headings} {{3,}}[^\n]*\n  [─ ]+\n((?:  \S[^\n]*(?:\n|$))+)"
@@ -131,30 +138,43 @@ def test_agent_facing_guidance_names_only_interactive_tools(monkeypatch, capsys)
         _assert_guidance_names(text, names, text[:80])
 
 
-GUIDANCE_REGIONS = r"""src/booley/data/skills/booley-setup/AGENTS_TEMPLATE.md|- Inside the Sandbox,|- If `booley_status`|interactive
-src/booley/data/skills/booley-setup/AGENTS_TEMPLATE.md|- Interactive Mode:|\n|interactive
-docs/internals/ARCHITECTURE.md|## Goal Mode|\n## |interactive
-docs/internals/MCP-TOOLS.md|- Interactive, non-nested servers list|\n|interactive
-docs/internals/MCP-TOOLS.md|The agent selects the arguments and invokes|\n\n|interactive
-docs/internals/MCP-TOOLS.md|The model prompt contains only a compact Campaign reference.|\nChanging filters|Analyst
-qa/missions/coverage/MISSION.md|### 8. cov-analyst|### 9.|Analyst
-qa/shared/coverage/RUNBOOK.md|Set QA_PROVIDER_ROOT|Candidate cases|Analyst""".splitlines()
+GUIDANCE_REGIONS = (
+    (
+        "src/booley/data/skills/booley-setup/AGENTS_TEMPLATE.md",
+        "- Inside the Sandbox,",
+        "- If `booley_status`",
+        "interactive",
+    ),
+    (
+        "src/booley/data/skills/booley-setup/AGENTS_TEMPLATE.md",
+        "- Interactive Mode:",
+        "\n",
+        "interactive",
+    ),
+    ("docs/internals/ARCHITECTURE.md", "## Goal Mode", "\n## ", "interactive"),
+    ("docs/internals/MCP-TOOLS.md", "- Interactive, non-nested servers list", "\n", "interactive"),
+    (
+        "docs/internals/MCP-TOOLS.md",
+        "The agent selects the arguments and invokes",
+        "\n\n",
+        "interactive",
+    ),
+    (
+        "docs/internals/MCP-TOOLS.md",
+        "The model prompt contains only a compact Campaign reference.",
+        "\nChanging filters",
+        "Analyst",
+    ),
+    ("qa/missions/coverage/MISSION.md", "### 8. cov-analyst", "### 9.", "Analyst"),
+    ("qa/shared/coverage/RUNBOOK.md", "Set QA_PROVIDER_ROOT", "Candidate cases", "Analyst"),
+)
 
 
 def test_audited_guidance_regions_match_their_actual_mode(monkeypatch):
     modes = {
         mode: {t.name for t in _tools(monkeypatch, mode)} for mode in ("interactive", "Analyst")
     }
-    original_open = Path.open
-
-    def legacy_locale_open(path, *args, **kwargs):
-        if path.suffix == ".md" and kwargs.get("encoding") in (None, "locale"):
-            kwargs["encoding"] = "cp1252"
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", legacy_locale_open)
-    for row in GUIDANCE_REGIONS:
-        path, start, end, mode = row.replace(r"\n", "\n").split("|")
+    for path, start, end, mode in GUIDANCE_REGIONS:
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
         assert start in text, path
         region = start + text.split(start, 1)[1].split(end, 1)[0]

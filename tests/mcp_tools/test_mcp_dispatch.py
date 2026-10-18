@@ -452,7 +452,7 @@ class TestReportFetch:
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", timed_out)
         write_end = MagicMock()
-        monkeypatch.setattr(endpoint_process, "_write_synthetic_endpoint_end", write_end)
+        monkeypatch.setattr(endpoint_process, "write_synthetic_endpoint_end", write_end)
 
         result = asyncio.run(
             mcp_server._run_inline_endpoint(
@@ -477,7 +477,7 @@ class TestReportFetch:
 
         monkeypatch.setattr(mcp_server, "_run_subprocess", cancelled)
         write_end = MagicMock()
-        monkeypatch.setattr(endpoint_process, "_write_synthetic_endpoint_end", write_end)
+        monkeypatch.setattr(endpoint_process, "write_synthetic_endpoint_end", write_end)
 
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
@@ -1811,7 +1811,7 @@ class TestCancel:
         # five-second production cleanup grace in every case.  Keep the force-
         # kill branch covered without adding a deterministic 15 seconds to the
         # unit suite.
-        monkeypatch.setattr(endpoint_process, "_CANCEL_GRACE_SECONDS", 0.01)
+        monkeypatch.setattr(endpoint_process, "CANCEL_GRACE_SECONDS", 0.01)
 
     @staticmethod
     def _cancel(arguments):

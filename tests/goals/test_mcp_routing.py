@@ -218,7 +218,7 @@ def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monke
         assert job_records.read_record(rec.run_id, root).status == "failed"
 
 
-def test_warning_and_discard_prefix_preserve_structured_result(goal_mode):
+def test_warning_and_discard_prefix_preserve_structured_result(goal_mode, monkeypatch):
     from tests.goals.conftest import edit_protected
 
     context = resolve_call_context({"work_dir": str(goal_mode.worktree)})
@@ -227,6 +227,11 @@ def test_warning_and_discard_prefix_preserve_structured_result(goal_mode):
     rendered = server._format_mcp_tool_result(0, "", "", report)
     assert rendered.startswith("evidence discarded: protected input changed\n")
     structured = ([server.TextContent(type="text", text=rendered)], {"facts": "retained"})
+
+    def unavailable_guidance():
+        raise RuntimeError("unrelated built-in unavailable")
+
+    monkeypatch.setattr(catalog, "work_dir_guidance", unavailable_guidance)
     result = server._goal_warning_result(structured, context.binding, context.session_key)
     assert result.goal_aware
     assert result.value[0][0].text.startswith("WARNING:")

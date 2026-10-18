@@ -1,6 +1,7 @@
 """Catalog ownership, exposure and strict runtime-derived guidance."""
 
 import os
+from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
@@ -48,7 +49,9 @@ def test_single_catalog_assembly_preserves_modes(monkeypatch):
         exposure = catalog.Exposure.from_mapping(os.environ)
         endpoints, errors = catalog.discover_builtin_definitions(discover_mcp_tools(), exposure)
         assert not errors
+        original = deepcopy(custom)
         definitions = owner(exposure, [*endpoints, custom])
+        assert custom == original
         assert definitions[-1] is custom
         assert definitions == sorted(definitions, key=lambda tool: tool["name"])
         assert not any(tool.get("is_goal") for tool in definitions)

@@ -2,7 +2,8 @@ import pytest
 
 
 @pytest.mark.parametrize("source", ["generated", "handwritten"])
-def test_guidance_guard_rejects_unknown_tool_name(source):
+@pytest.mark.parametrize("unknown", ["booley_not_a_tool", "not_a_registered_tool"])
+def test_guidance_guard_rejects_unknown_tool_name(source, unknown):
     from tests.docs import test_goal_work_dir_guidance as guard
 
     from booley.goals.rules import goal_mode_rules
@@ -13,7 +14,7 @@ def test_guidance_guard_rejects_unknown_tool_name(source):
     if source == "handwritten":
         text = (guard.REPO_ROOT / guard.ROUTING_DOCUMENTS[0]).read_text(encoding="utf-8")
     guard._assert_guidance_names(text, available, source)
-    marker = "accept no `work_dir`."
-    text = text.replace(marker, marker + " Reference: `booley_not_a_tool`.", 1)
-    with pytest.raises(AssertionError, match="booley_not_a_tool"):
+    assert "goal_finish" in text
+    text = text.replace("goal_finish", unknown)
+    with pytest.raises(AssertionError, match=unknown):
         guard._assert_guidance_names(text, available, source)

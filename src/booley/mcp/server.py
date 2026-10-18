@@ -186,6 +186,10 @@ _MCP_WATCHDOG_POLL_SECONDS = 30.0
 _HTTP_HOST = "127.0.0.1"
 
 
+def _exposure() -> catalog.Exposure:
+    return catalog.Exposure.from_mapping(os.environ)
+
+
 def _env_timeout_seconds(name: str, default: float | None) -> float | None:
     """Read a timeout env var; non-positive values disable that timeout."""
     raw = os.environ.get(name)
@@ -335,7 +339,7 @@ def _discover_booley_mcp_tools() -> tuple[list[dict[str, Any]], list[str]]:
 
     custom_mcp_tool_paths = _index_custom_mcp_tools(project_mcp_tools_dir, allowed_names)
     builtin_results, builtin_errors = catalog.discover_builtin_definitions(
-        filtered_endpoints, catalog.Exposure.from_mapping(os.environ)
+        filtered_endpoints, _exposure()
     )
     custom_results, custom_errors = _discover_custom_mcp_tools(custom_mcp_tool_paths)
     results = builtin_results + custom_results
@@ -376,9 +380,7 @@ def _discover_custom_mcp_tools(
         if err is not None:
             errors.append(err)
         if mcp_tool_def is not None:
-            if not catalog.tool_visible(
-                mcp_tool_def["name"], catalog.Exposure.from_mapping(os.environ)
-            ):
+            if not catalog.tool_visible(mcp_tool_def["name"], _exposure()):
                 continue
             results.append(mcp_tool_def)
     return results, errors
@@ -614,7 +616,7 @@ async def _run_subprocess(
         is_queued=is_queued,
         on_first_active=on_first_active,
         watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
-        cancel_grace=endpoint_process._CANCEL_GRACE_SECONDS,
+        cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
     )
 
 
@@ -710,7 +712,7 @@ def _build_mcp_tool_index(
     for t in [
         tool
         for tool in catalog._BWAVE_MCP_TOOLS
-        if catalog.tool_visible(tool["name"], catalog.Exposure.from_mapping(os.environ))
+        if catalog.tool_visible(tool["name"], _exposure())
     ]:
         index[t["name"]] = t
     return index
@@ -748,7 +750,7 @@ def _dispatch_status(mcp_tool_names: list[str]) -> list[TextContent]:
 
 def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
     """Prepend a changed automatic-health issue to the first interactive result."""
-    if not catalog.status_visible(catalog.Exposure.from_mapping(os.environ)):
+    if not catalog.status_visible(_exposure()):
         return content
     try:
         from booley.runtime.health_presentation import consume_changed_summary
@@ -881,7 +883,7 @@ async def _dispatch_bwave(
     builder = bwave_subcmds.get(name)
     if builder is None:
         return None
-    if not catalog.tool_visible(name, catalog.Exposure.from_mapping(os.environ)):
+    if not catalog.tool_visible(name, _exposure()):
         return None
     cmd = builder(arguments)
     extra_args = arguments.get("extra_args", [])
@@ -988,7 +990,7 @@ def _format_job_attached(name: str, run_id: str) -> str:
         f"{_job_phase(run_id)}: an identical '{name}' run is already in "
         f"flight — attached to it instead of starting a duplicate "
         f"(run_id={run_id}). This is NOT the result. Call the "
-        f"'{catalog._POLL_MCP_TOOL_NAME}' MCP tool with run_id={run_id} and keep polling "
+        f"'{catalog.POLL_MCP_TOOL_NAME}' MCP tool with run_id={run_id} and keep polling "
         f"until it returns an EXIT_CODE."
     )
 
@@ -1004,7 +1006,7 @@ def _format_job_running(name: str, run_id: str) -> str:
     return (
         f"{phase}: '{name}' {waiting} and is now "
         f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. Call the '{catalog._POLL_MCP_TOOL_NAME}' MCP tool with "
+        f"— the run has not finished. Call the '{catalog.POLL_MCP_TOOL_NAME}' MCP tool with "
         f"run_id={run_id} to keep waiting, and keep polling until it returns "
         f"an EXIT_CODE. Pass/fail criteria are recorded only when the run "
         f"actually completes, so do not conclude the step until then."
@@ -1015,7 +1017,7 @@ def _format_job_running_poll(run_id: str) -> str:
     """Message for a poll whose job is still running (or queued for a slot)."""
     message = (
         f"{_job_phase(run_id)}: job {run_id} is still in progress. Call "
-        f"'{catalog._POLL_MCP_TOOL_NAME}' again with the same run_id to keep waiting for "
+        f"'{catalog.POLL_MCP_TOOL_NAME}' again with the same run_id to keep waiting for "
         f"the result."
     )
     progress = _running_progress(run_id)
@@ -1041,7 +1043,7 @@ def _running_poll_content(run_id: str) -> McpToolContent:
     rec = _job_record(run_id)
     return _goal_warning_result(
         _with_structured_report(content, _running_progress(run_id)),
-        None if rec is None else job_results._job_binding(rec),
+        None if rec is None else job_results.job_binding(rec),
         None if rec is None else rec.session_key,
     )
 
@@ -1086,7 +1088,7 @@ class _JobManager(JobLifecycle):
 
     @staticmethod
     def _write_end(name: str, duration_s: int, **kwargs: Any) -> None:
-        endpoint_process._write_synthetic_endpoint_end(name, duration_s, **kwargs)
+        endpoint_process.write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
     @staticmethod
     async def _cancel_process(pid: int) -> None:
@@ -1126,7 +1128,7 @@ class _JobManager(JobLifecycle):
         ]
         rendered = _with_structured_report(content, report if report_fresh else None)
         rec = self._read_run(run_id)
-        binding = None if rec is None else job_results._job_binding(rec)
+        binding = None if rec is None else job_results.job_binding(rec)
         return _goal_warning_result(
             _dispatch_result(rendered, is_error=exit_code != 0),
             binding,
@@ -1248,7 +1250,7 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
 async def _cancel_adopted_process_group(pid: int) -> None:
     """Delegate disk-only process-group cancellation."""
     await endpoint_process._cancel_adopted_process_group(
-        pid, grace_seconds=endpoint_process._CANCEL_GRACE_SECONDS
+        pid, grace_seconds=endpoint_process.CANCEL_GRACE_SECONDS
     )
 
 
@@ -1269,7 +1271,7 @@ async def _dispatch_cancel_impl(
             TextContent(
                 type="text",
                 text=f"Job {run_id} already finished — nothing to cancel. "
-                f"Fetch its result with '{catalog._POLL_MCP_TOOL_NAME}'.",
+                f"Fetch its result with '{catalog.POLL_MCP_TOOL_NAME}'.",
             )
         ]
     if phase == "finished":
@@ -1277,7 +1279,7 @@ async def _dispatch_cancel_impl(
             TextContent(
                 type="text",
                 text=f"Job {run_id} finished before cancellation took effect. "
-                f"Fetch its result with '{catalog._POLL_MCP_TOOL_NAME}'.",
+                f"Fetch its result with '{catalog.POLL_MCP_TOOL_NAME}'.",
             )
         ]
     return [
@@ -1287,7 +1289,7 @@ async def _dispatch_cancel_impl(
                 f"CANCELLED: {phase} job {run_id} was withdrawn before it started."
                 if phase == "queued"
                 else f"CANCELLED: running job {run_id} received SIGTERM; any process "
-                f"still alive after {endpoint_process._CANCEL_GRACE_SECONDS:.0f}s was force-killed."
+                f"still alive after {endpoint_process.CANCEL_GRACE_SECONDS:.0f}s was force-killed."
             ),
         )
     ]
@@ -1435,12 +1437,12 @@ async def _run_inline_endpoint(
             ),
         )
     except asyncio.CancelledError:
-        endpoint_process._write_synthetic_endpoint_end(
+        endpoint_process.write_synthetic_endpoint_end(
             name, 0, identity=identity, outcome="aborted"
         )
         raise
     if result[3]:
-        endpoint_process._write_synthetic_endpoint_end(name, timeout, identity=identity)
+        endpoint_process.write_synthetic_endpoint_end(name, timeout, identity=identity)
     return result
 
 
@@ -1726,19 +1728,19 @@ async def _dispatch_special_mcp_tool(
     # a hidden-but-named MCP tool falls through to None like an unknown name.
     sync_meta: dict[str, tuple[Callable[[], bool], Callable[[], McpToolContent]]] = {
         catalog._STATUS_MCP_TOOL_NAME: (
-            lambda: catalog.status_visible(catalog.Exposure.from_mapping(os.environ)),
+            lambda: catalog.status_visible(_exposure()),
             lambda: _dispatch_status(status_mcp_tool_names),
         ),
         catalog._REPORT_MCP_TOOL_NAME: (
-            lambda: catalog.report_visible(catalog.Exposure.from_mapping(os.environ)),
+            lambda: catalog.report_visible(_exposure()),
             lambda: _dispatch_report(arguments),
         ),
         catalog._TARGETS_MCP_TOOL_NAME: (
-            lambda: catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)),
+            lambda: catalog.utilities_visible(_exposure()),
             lambda: _dispatch_targets(arguments),
         ),
         catalog._COVERAGE_EVIDENCE_TOOL_NAME: (
-            lambda: catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ)),
+            lambda: catalog.coverage_visible(_exposure()),
             lambda: _dispatch_coverage_evidence(arguments),
         ),
     }
@@ -1746,19 +1748,13 @@ async def _dispatch_special_mcp_tool(
     if entry is not None:
         visible, handler = entry
         return handler() if visible() else None
-    if name == catalog._POLL_MCP_TOOL_NAME and catalog.utilities_visible(
-        catalog.Exposure.from_mapping(os.environ)
-    ):
+    if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs)
-    if name == catalog._CANCEL_MCP_TOOL_NAME and catalog.utilities_visible(
-        catalog.Exposure.from_mapping(os.environ)
-    ):
+    if name == catalog._CANCEL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_cancel(arguments, jobs)
-    if name == catalog._SLEEP_MCP_TOOL_NAME and catalog.Exposure.from_mapping(os.environ).debug:
+    if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
-    if name in GOAL_TOOL_NAMES and catalog.goals_visible(
-        catalog.Exposure.from_mapping(os.environ)
-    ):
+    if name in GOAL_TOOL_NAMES and catalog.goals_visible(_exposure()):
         return await dispatch_goal_tool(
             name, arguments, booley_dir=resolve_booley_dir(), request_context=request_context
         )
@@ -1842,7 +1838,7 @@ def _build_mcp_application(
         )
 
     application = McpApplication(
-        catalog.visible_definitions(catalog.Exposure.from_mapping(os.environ), mcp_tools),
+        catalog.visible_definitions(_exposure(), mcp_tools),
         dispatch=dispatch,
         canonicalize=canonical,
         on_discovery_error=discovery_errors.append,
@@ -2317,7 +2313,6 @@ def _goal_warning_result(
             binding.booley_dir,
             work_dir=binding.worktree_root,
             session_key=session_key,
-            routing_guidance=catalog.work_dir_guidance(),
         )
     except GoalStoreError as exc:
         prefix = f"WARNING: Goal Record cannot be read: {exc}"
