@@ -42,3 +42,19 @@ def test_open_in_editor_launches_detached_and_reports_each_failure(tmp_path, mon
 
     assert "Editor launch failed" in open_in_editor(report, editor=editor, spawn=missing)
     assert len(calls) == 1
+
+
+def test_linked_text_preserves_literal_styles_and_offsets():
+    from rich.console import Console
+    from rich.style import Style
+    from rich.text import Text
+
+    source = Text("Result: PASSED [literal]\n/a/report\n /a/report\nReport: /a/report")
+    source.stylize("green", 8, 14)
+    linked = linked_text(source, ["/a/report"])
+    assert linked.plain == source.plain
+    assert linked.get_style_at_offset(Console(), 8) == Style.parse("green")
+    clicks = [span for span in linked.spans if getattr(span.style, "meta", {}).get("@click")]
+    assert len(clicks) == 1
+    assert linked.plain[clicks[0].start : clicks[0].end] == "/a/report"
+    assert source.spans == source.spans[:1]

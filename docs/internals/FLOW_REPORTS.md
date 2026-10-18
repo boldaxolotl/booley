@@ -40,7 +40,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | Field | Contents |
 |---|---|
 | `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
-| `exit_code`, `passed` | The overall result. |
+| `exit_code`, `passed` | Execution result: `passed` means exit `0`, independently of Criterion satisfaction. |
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
@@ -242,7 +242,10 @@ and enclosing Simulation Campaign together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
-has been written.
+has been written. A coverage threshold miss exits `0` when execution succeeds.
+For an acceptance-bound invocation with one evaluated Criterion,
+`criterion_met` is false on that miss; unbound reports omit Criterion fields
+while retaining the per-Target evaluation.
 
 New coverage builds also publish `declarations/inventory.json`, registered as
 artifact kind `declaration_inventory` with `contract_version:
@@ -301,6 +304,10 @@ produce. An interrupted cleanup is safe to retry with the same arguments.
 | `target_results[]` | Per Target: `target`, `eda_tool`, raw `warnings` count (before deduplication and `--scope`), `files_linted`, `toplevel`, `toplevel_linted`, `duration_s`, `error`, and `log`. |
 | `artifacts` | The report and per-Target logs. |
 
+The invocation `report.json` puts `targets`, `eda_tools`, `total_warnings`,
+and artifact references in `detail`. Individual `warnings[]` and
+`target_results[]` remain in `lint_report.json`, rather than in that Job detail.
+
 ## `synth`
 
 `synth_<target>.json` (a qualified selector becomes a sanitized file name with
@@ -357,6 +364,10 @@ message.
 | `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
 | `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
 | `artifacts` | The report, run log, and build, synthesis, and implementation directories. |
+
+The invocation `report.json` keeps per-Target metrics in
+`detail.implementation.results.<target>.metrics`, alongside `status` and
+`conditions`. The top-level `metrics` above belongs to the per-Target side report.
 
 The baseline and candidate may use different PPA profiles, but a comparison is
 refused when their measurement recipes differ.
