@@ -338,13 +338,8 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         report["argv"] = endpoint._raw_argv
     if result.input_tokens or result.output_tokens:
         report["usage"] = _report_usage(result)
-    report_text = result.report_text
-    notice = getattr(endpoint, "_automatic_target_notice", "")
-    if notice and not _contains_whole_line_block(report_text, notice):
-        separator = "" if not report_text or report_text.endswith("\n") else "\n"
-        report_text = f"{report_text}{separator}{notice}"
-    if report_text:
-        report["report_text"] = report_text
+    if result.report_text:
+        report["report_text"] = result.report_text
     _add_persisted_cycle_counts(endpoint, report)
     return report
 

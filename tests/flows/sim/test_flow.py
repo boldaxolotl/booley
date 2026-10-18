@@ -1200,8 +1200,7 @@ class TestCriterionGating:
 
 class TestMultiConfig:
     def test_empty_config_fails(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        flow.args.target = ""
+        flow = _make_flow(tmp_path, config="")
         with flow.context.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_ERROR

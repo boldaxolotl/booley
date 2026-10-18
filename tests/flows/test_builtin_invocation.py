@@ -51,10 +51,8 @@ def test_builtin_target_repetition_normalizes_to_ordered_scalar(
 
 def test_optional_builtin_target_absence_and_authored_punctuation_stay_scalar() -> None:
     assert SimulateFlow().parse_args([]).target == ""
-    for argv in (["--target", ""], ["--target", " ", "--target", ","]):
-        with pytest.raises(SystemExit) as exc:
-            SimulateFlow().parse_args(argv)
-        assert exc.value.code == 2
+    assert SimulateFlow().parse_args(["--target", ""]).target == ""
+    assert SimulateFlow().parse_args(["--target", " ", "--target", ","]).target == " ,,"
 
 
 def test_target_normalization_uses_strict_boundary_validation() -> None:

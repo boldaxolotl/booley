@@ -66,11 +66,6 @@ def _parse_cli(flow: BuiltinFlow, argv: list[str] | None):
     parser = build_cli_parser(flow)
     args = parser.parse_args(argv)
     quiet = vars(args).pop("_console_quiet")
-    authored_target = getattr(args, "target", None)
-    if authored_target is not None and not getattr(args, "resume_from", None):
-        values = authored_target if isinstance(authored_target, list) else [authored_target]
-        if not any(token.strip() for value in values for token in value.split(",")):
-            parser.error("--target must contain a nonblank Target selector")
     normalize_endpoint_args(args)
     normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)

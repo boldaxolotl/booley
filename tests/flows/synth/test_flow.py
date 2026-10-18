@@ -1552,7 +1552,14 @@ class TestDryRun:
 class TestNoConfigs:
     def test_empty_config_returns_error(self, state_file: Path, tmp_path: Path):
         flow = AsicSynthesizeFlow()
-        flow.context._args = flow.request_type(target="", work_dir=tmp_path)
+        flow.parse_args(
+            [
+                "--target",
+                "",
+                "--work-dir",
+                str(tmp_path),
+            ]
+        )
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR

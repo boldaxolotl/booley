@@ -276,17 +276,8 @@ def test_omitted_sim_target_budget_counts_default_suite(project):
     )
 
 
-@pytest.mark.parametrize(("entry", "name"), CASES, ids=CASE_IDS)
-def test_explicit_blank_target_is_not_automatic(entry, name, project, executed):
-    write_targets(project, name)
-    for blank in ("", "  ", ", ,"):
-        code, text = invoke(entry, name, project, {"target": blank})
-        assert code == 2 and executed == []
-        assert "--target omitted; selected Target" not in text
-
-
 @pytest.mark.parametrize("entry", ("cli", "mcp"))
-def test_explicit_blank_target_with_resume_is_accepted(entry, project, monkeypatch):
+def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
     from types import SimpleNamespace
 
     write_targets(project, "sim")
@@ -319,9 +310,7 @@ def test_explicit_blank_target_with_resume_is_accepted(entry, project, monkeypat
     )
     for count in (0, 2):
         write_targets(project, "sim", count)
-        code, text = invoke(
-            entry, "sim", project, {"resume_from": str(validated.path), "target": ""}
-        )
+        code, text = invoke(entry, "sim", project, {"resume_from": str(validated.path)})
         assert code == 0, text
         assert "--target omitted" not in text
     assert observed == [handle.identity, handle.identity]
@@ -354,10 +343,6 @@ def test_reused_flow_discards_automatic_selection(project, executed):
     assert flow._prepared_target_selection.catalog.project_root == other
     assert executed == ["acme:lib:demo:1#chosen", "acme:lib:other:1#chosen"]
     assert first_request.target == second_request.target == ""
-    assert len(second.outcome.display_lines) >= 1
-    assert (
-        second.outcome.display_lines.count("lint: --target omitted; selected Target chosen.") == 1
-    )
 
 
 @pytest.mark.parametrize("name", FLOWS)
@@ -369,7 +354,6 @@ def test_typed_omission_preserves_caller_request(name, project, executed, capsys
     result = flow.execute(request)
     assert result.exit_code == 0 and executed == ["acme:lib:demo:1#chosen"]
     assert request.target == ""
-    assert result.outcome.display_lines[0] == f"{name}: --target omitted; selected Target chosen."
     assert "--target omitted" not in capsys.readouterr().err
 
 
@@ -424,13 +408,11 @@ def test_selection_notice_survives_preparation_failure(
     captured = capsys.readouterr()
     assert result.exit_code == 2 and executed == []
     assert captured.err.count(notice) == 1 and captured.err.rstrip().endswith(notice)
-    assert result.outcome.display_lines[0] == notice
-    typed = SimulateFlow().execute(
+    SimulateFlow().execute(
         SimulateFlow.request_type(target="", work_dir=project, coverage=failure == "coverage")
     )
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
-    assert typed.outcome.display_lines == [notice]
 
 
 def test_resume_budget_does_not_discover_unrelated_target(project, monkeypatch):

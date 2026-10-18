@@ -124,7 +124,6 @@ def prepare_execution(
     if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
         simulation = flow.prepare_simulation_endpoint()
         if isinstance(simulation, EndpointOutcome):
-            _decorate_target_selection(endpoint, simulation)
             endpoint._publish_console_report(simulation)
             endpoint._report_criteria.project(simulation)
             return simulation
@@ -150,7 +149,6 @@ def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | No
     if endpoint.endpoint_kind == "flow":
         binding_error = endpoint._criterion_binding_gate()
         if binding_error is not None:
-            _decorate_target_selection(endpoint, binding_error)
             endpoint._publish_console_report(binding_error)
             endpoint._report_criteria.project(binding_error)
             return binding_error
@@ -161,13 +159,6 @@ def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | No
             endpoint._publish_console_report(target_error)
             return target_error
     return None
-
-
-def _decorate_target_selection(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
-    """Keep the successful implicit selection visible on every result path."""
-    notice = getattr(endpoint, "_automatic_target_notice", "")
-    if notice and notice not in outcome.display_lines:
-        outcome.display_lines = [notice, *outcome.display_lines]
 
 
 def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> PreparedExecution:
@@ -269,7 +260,6 @@ def finish_execution(
 ) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
     final_outcome = endpoint._adapt_outcome(outcome)
-    _decorate_target_selection(endpoint, final_outcome)
     report_discarded_evidence(endpoint, final_outcome)
     project(endpoint, final_outcome)
     exit_code = endpoint._finish_main(
