@@ -177,3 +177,37 @@ class TestRunLogProgress:
         raw = (tmp_path / "run.log").read_bytes()
         assert len(raw) <= 400 + len(run_log.RUN_LOG_HEADER_PREFIX) + 200
         assert b"line 1999" in raw
+
+
+def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):
+    from contextlib import nullcontext, suppress
+    from itertools import product
+
+    from booley.flows.run_log import begin_run_log
+    from booley.flows.sim.live_progress import LiveProgressSink, install_progress
+    from tests.conftest import symlink_or_skip
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    failures = []
+    for kind, observed in product(("symlink", "hardlink", "ancestor"), (False, True)):
+        case = f"{kind}-observed={observed}"
+        case_root = tmp_path / case
+        protected = case_root / "protected"
+        protected.mkdir(parents=True)
+        sentinel = protected / "run.log"
+        sentinel.write_text("retained evidence")
+        evidence = case_root / "evidence"
+        if kind == "ancestor":
+            symlink_or_skip(evidence, protected, target_is_directory=True)
+        else:
+            evidence.mkdir()
+            if kind == "symlink":
+                symlink_or_skip(evidence / "run.log", sentinel)
+            else:
+                (evidence / "run.log").hardlink_to(sentinel)
+        sink = LiveProgressSink(case_root / "progress.json", case_root, "current-run")
+        with install_progress(sink) if observed else nullcontext(), suppress(OSError):
+            begin_run_log(evidence, flow="sim", target="sim")
+        if sentinel.read_text() != "retained evidence":
+            failures.append(case)
+    assert failures == [], f"retained evidence was truncated: {failures}"
