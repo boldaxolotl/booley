@@ -2438,3 +2438,89 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     ) as exc:
         err(f"{exc}; run `booley init` after resolving this condition")
         return 2
+
+
+def preflight_auth_reseed(project_root: Path) -> None:
+    """Validate existing Project/recovery storage before a credential mutation."""
+    from booley.runtime import session_issuance
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    _check_init_layout(argparse.Namespace(seed=True), project_root)
+    shared_recovery_blocks_command(read_only=True)
+    session_issuance.validate_auth_reseed_storage(project_root)
+
+
+def _auth_reseed_dependencies(project_root: Path) -> bool:
+    from booley.config.host_config import load_host_policy
+    from booley.harness import host_sidecars
+
+    sidecars = host_sidecars.reconcile_sidecars(load_host_policy(), ImageLifecycleIntent.CHECK)
+    for finding in sidecars.findings:
+        if finding.state is host_sidecars.SidecarState.ERROR:
+            err(finding.detail)
+            return False
+    plan = image_lifecycle.plan(ProjectImageScope(project_root), intent=ImageLifecycleIntent.CHECK)
+    host_roles = {
+        image_lifecycle.ImageRole.RUNTIME_BASE,
+        image_lifecycle.ImageRole.STANDARD_SUBSTRATE,
+        image_lifecycle.ImageRole.RISCV_SUBSTRATE,
+    }
+    host_stale = any(
+        step.role in host_roles and step.action is not image_lifecycle.PlanAction.REUSE
+        for step in plan.steps
+    )
+    if host_stale or any(f.state is host_sidecars.SidecarState.PENDING for f in sidecars.findings):
+        err("Host capabilities need `booley bootstrap`; then retry `booley init --seed`.")
+        return False
+    if any(step.action is not image_lifecycle.PlanAction.REUSE for step in plan.steps):
+        err("Project Sandbox Image is not current; run `booley init`, then retry auth.")
+        return False
+    return True
+
+
+def _reseed_auth_unlocked(project_root: Path) -> int:
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    if shared_recovery_blocks_command(read_only=False):
+        err("Recovered interrupted Sandbox host state; retry `booley init --seed`.")
+        return 2
+    if not _auth_reseed_dependencies(project_root):
+        return 2
+    args = argparse.Namespace(seed=True)
+    ctx = _init_context(args, project_root)
+    path = _agent_config_path(project_root, seed=True)
+    if not _project_config_migration_preflight(ctx, path):
+        return _print_summary(ctx)
+    selection = _resolve_agent_selection(ctx, args, path)
+    if selection is None or not _step_agent_config(ctx, selection, path):
+        return _print_summary(ctx)
+    return _run_seed(ctx, selection)
+
+
+def reseed_auth_spec(project_root: Path) -> int:
+    """Reconcile an initialized Project without running full Host Bootstrap."""
+    from booley.config.host_config import HostConfigError
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.checkout_role import SourceCheckoutProjectError
+    from booley.harness.host_sidecars import SidecarError
+    from booley.runtime import issuance_invalidation, session_runtime
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
+
+    try:
+        preflight_auth_reseed(project_root)
+        with host_lifecycle_lock("auth Sandbox spec reseed"):
+            return _reseed_auth_unlocked(project_root)
+    except (
+        BooleyLayoutError,
+        SourceCheckoutProjectError,
+        OSError,
+        subprocess.SubprocessError,
+        issuance_invalidation.InvalidationError,
+        session_runtime.SessionError,
+        RuntimeSpecError,
+        ImageLifecycleError,
+        SidecarError,
+        HostConfigError,
+    ) as exc:
+        err(str(exc))
+        return 2
