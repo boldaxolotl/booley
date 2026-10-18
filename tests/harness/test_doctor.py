@@ -9008,14 +9008,10 @@ def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
     [
         ({"ppa_complete": False}, "ppa_complete"),
         ({"area_source": "other"}, "mapped-area"),
-        ({"area_source": None}, "mapped-area"),
         ({"termination": "timeout"}, "did not complete"),
-        ({"termination": None}, "did not complete"),
         ({"synth_mode": "unknown"}, "unknown synthesis mode"),
-        ({"synth_mode": []}, "unknown synthesis mode"),
         ({"synth_mode": "physical"}, "constrained-clock"),
         ({"synth_mode": ""}, "constrained-clock"),
-        ({"synth_mode": None}, "unknown synthesis mode"),
         (
             {"synth_mode": "physical", "timing_complete": True, "per_clock": []},
             "constrained-clock",

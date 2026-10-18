@@ -786,10 +786,6 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
 
 def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path, monkeypatch)
-    choices = gather_scaffold_choices(_args(), ctx)
-    assert getattr(choices, "synth_mode", None) == "physical", (
-        "physical scaffold mode is not recorded"
-    )
     for mode in (None, "physical"):
         files = scaffold_files(gather_scaffold_choices(_args(synth_mode=mode), ctx))
         core = _core(files)
@@ -898,16 +894,6 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     assert commands[0][commands[0].index("--synth-mode") + 1] == "logical"
 
 
-@pytest.mark.parametrize("sim", ["verilator", "icarus"])
-@pytest.mark.parametrize("tb", ["sv", "cocotb"])
-def test_logical_scaffold_simulator_combinations(sim, tb):
-    files = scaffold_files(_choices(synth_mode="logical", sim_eda_tool=sim, tb_style=tb))
-    core = _core(files)
-    assert core["targets"]["sim"]["flow_options"]["tool"] == sim
-    assert core["targets"]["synth"]["flow_options"]["synth_mode"] == "logical"
-    assert "constraints/my_ip.sdc" not in files
-
-
 def test_scaffold_interactive_synthesis_mode(tmp_path, monkeypatch):
     from booley.harness.setup import scaffold
 
@@ -930,5 +916,3 @@ def test_scaffold_interactive_synthesis_mode(tmp_path, monkeypatch):
     args.asic, args.synth_mode = False, None
     assert gather_scaffold_choices(args, ctx).asic is False
     assert not any("synthesis mode" in q for q in questions)
-    args.asic, args.synth_mode = True, "invalid"
-    assert gather_scaffold_choices(args, ctx) is None

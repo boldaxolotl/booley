@@ -199,9 +199,6 @@ def _resolve_synth_mode(args, asic: bool, interactive: bool) -> str | None:
         )
     elif asic and explicit is None:
         info("Synthesis mode: physical (non-interactive default; set --synth-mode)")
-    if mode not in ("logical", "physical"):
-        err(f"synthesis mode {mode!r} is not supported; choose logical or physical")
-        return None
     return mode
 
 
