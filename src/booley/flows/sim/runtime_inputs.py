@@ -89,15 +89,18 @@ def runtime_input_matches(source: Path, destination: Path) -> bool:
     return destination.is_file() and filecmp.cmp(source, destination, shallow=False)
 
 
-def inspect_runtime_destination(run_cwd: Path, value: str) -> Path | None:
-    """Return a validated destination without creating or traversing unusable parents."""
-    relative = _safe_relative(value)
+def destination_parent_conflict(run_cwd: Path, relative: Path) -> str | None:
+    """Describe an existing parent that cannot hold a runtime input."""
     current = run_cwd
     for component in relative.parts[:-1]:
         current /= component
-        if current.is_symlink() or (current.exists() and not current.is_dir()):
+        if current.is_symlink():
+            return f"run input destination contains a symlink: {relative}"
+        if not current.exists():
             return None
-    return run_cwd / relative
+        if not current.is_dir():
+            return f"run input destination parent is not a directory: {relative}"
+    return None
 
 
 def _safe_child(root: Path, relative: Path, *, label: str) -> Path:
@@ -307,8 +310,8 @@ def _materialize_campaign_input(
     required = {"declaration_id", "source_artifact_path", "destination"}
     if set(declaration) != required:
         raise RuntimeInputError("runtime input declaration has unexpected fields")
-    source_relative = _safe_relative(declaration["source_artifact_path"])
-    destination_relative = _safe_relative(declaration["destination"])
+    source_relative = safe_runtime_relative(declaration["source_artifact_path"])
+    destination_relative = safe_runtime_relative(declaration["destination"])
     source = bundle_root / source_relative
     if source.is_symlink() or not source.is_file():
         raise RuntimeInputError(f"declared runtime input is missing: {source_relative}")
@@ -356,22 +359,17 @@ def _prepare_destination_parent(
     owned_directories: list[Path],
 ) -> None:
     """Create and remember only missing literal-cwd parent directories."""
+    if conflict := destination_parent_conflict(run_cwd, destination):
+        raise RuntimeInputError(conflict)
     current = run_cwd
     for component in destination.parts[:-1]:
         current /= component
-        if current.is_symlink():
-            raise RuntimeInputError(f"run input destination contains a symlink: {destination}")
-        if current.exists():
-            if not current.is_dir():
-                raise RuntimeInputError(
-                    f"run input destination parent is not a directory: {destination}"
-                )
-            continue
-        current.mkdir()
-        owned_directories.append(current)
+        if not current.exists():
+            current.mkdir()
+            owned_directories.append(current)
 
 
-def _safe_relative(value: str) -> Path:
+def safe_runtime_relative(value: str) -> Path:
     path = Path(value)
     if (
         not value
@@ -397,10 +395,11 @@ __all__ = [
     "RuntimeInputBinding",
     "RuntimeInputError",
     "declared_runtime_inputs",
-    "inspect_runtime_destination",
+    "destination_parent_conflict",
     "iter_runtime_inputs",
     "materialize_campaign_runtime_inputs",
     "materialize_runtime_inputs",
     "preview_runtime_inputs",
     "runtime_input_matches",
+    "safe_runtime_relative",
 ]

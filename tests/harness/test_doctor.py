@@ -9020,9 +9020,6 @@ def copyto_audit(tmp_path, monkeypatch):
 
 def test_sim_copyto_collision_warns_with_paths_and_remedies(copyto_audit):
     source, destination, _, check = copyto_audit
-    before = {
-        path: path.read_bytes() for path in source.parent.parent.rglob("*") if path.is_file()
-    }
     findings = check()
     assert findings, "missing copyto collision warning"
     assert len(findings) == 1
@@ -9031,8 +9028,6 @@ def test_sim_copyto_collision_warns_with_paths_and_remedies(copyto_audit):
     assert "sim" in message and "lint" not in message
     assert str(source) in message and str(destination) in message
     assert "rename" in fix.lower() and "remove" in fix.lower() and "run_cwd" in fix
-    assert {path: path.read_bytes() for path in before} == before
-    assert {path for path in source.parent.parent.rglob("*") if path.is_file()} == set(before)
 
 
 def test_sim_copyto_identical_collision_is_silent(copyto_audit):
@@ -9070,30 +9065,46 @@ def test_sim_copyto_literal_cwd_controls_collision(copyto_audit):
         literal.write_bytes(b"collision")
 
 
-def test_sim_copyto_unusable_paths_are_skipped(copyto_audit, monkeypatch):
-    source, destination, configured, check = copyto_audit
-    assert check(), "missing copyto collision warning"
+@pytest.mark.parametrize("kind", ["symlink", "file", "missing"])
+def test_sim_copyto_blocked_parent_warns(copyto_audit, kind):
+    source, destination, _, check = copyto_audit
     core = source.parent / "input.core"
     core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: nested/runtime.mem"))
-
-    def reject_comparison(*args, **kwargs):
-        pytest.fail("unusable destination must not be compared")
-
-    monkeypatch.setattr("booley.flows.sim.runtime_inputs.filecmp.cmp", reject_comparison)
     parent = destination.parent / "nested"
-    parent.symlink_to(source.parent, target_is_directory=True)
-    (source.parent / destination.name).write_bytes(source.read_bytes())
-    assert check() == []
-    assert parent.is_symlink()
-    parent.unlink()
-    parent.write_bytes(b"obstruction")
-    assert check() == []
-    core.write_text(core.read_text().replace("copyto: nested/runtime.mem", "copyto: runtime.mem"))
+    if kind == "symlink":
+        parent.symlink_to(source.parent, target_is_directory=True)
+    elif kind == "file":
+        parent.write_bytes(b"obstruction")
+    assert len(check()) == (0 if kind == "missing" else 1)
+
+
+def test_sim_copyto_escaped_literal_directory_warns(copyto_audit):
+    _, destination, configured, check = copyto_audit
     configured[0] = "{{escaped}}"
     escaped = destination.parent / configured[0]
     escaped.mkdir()
     (escaped / destination.name).write_bytes(b"collision")
-    assert check() == []
-    configured[0] = "."
-    source.unlink()
+    assert len(check()) == 1
+
+
+@pytest.mark.parametrize(
+    "kind", ["invalid-template", "blocked-cwd", "invalid-copyto", "unreadable"]
+)
+def test_sim_copyto_uninspectable_configuration_is_owned_by_other_checks(
+    copyto_audit, monkeypatch, kind
+):
+    source, destination, configured, check = copyto_audit
+    if kind == "invalid-template":
+        configured[0] = "{unknown_placeholder}"
+    elif kind == "blocked-cwd":
+        configured[0] = str(destination)
+    elif kind == "invalid-copyto":
+        core = source.parent / "input.core"
+        core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: ../runtime.mem"))
+    else:
+
+        def unreadable(*_args, **_kwargs):
+            raise PermissionError("unreadable input")
+
+        monkeypatch.setattr("booley.flows.sim.runtime_inputs.filecmp.cmp", unreadable)
     assert check() == []

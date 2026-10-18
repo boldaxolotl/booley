@@ -4276,14 +4276,15 @@ def _check_sim_copyto_collisions(
     """Warn about declared inputs that would conflict at a usable literal run cwd."""
     from booley.flows.sim.runtime_inputs import (
         RuntimeInputError,
-        inspect_runtime_destination,
+        destination_parent_conflict,
         iter_runtime_inputs,
         runtime_input_matches,
+        safe_runtime_relative,
     )
 
     configured = resolve_run_cwd(root)
     try:
-        if parse_run_cwd_template(configured) or "{" in configured or "}" in configured:
+        if parse_run_cwd_template(configured):
             return
         run = (root / configured).absolute()
         if literal_run_cwd_error(run) is not None:
@@ -4300,17 +4301,20 @@ def _check_sim_copyto_collisions(
         for item, copyto in iter_runtime_inputs(declarations):
             source = root / item.path
             try:
-                destination = inspect_runtime_destination(run, copyto)
-                if destination is None or not source.is_file():
-                    continue
-                if not (destination.exists() or destination.is_symlink()):
-                    continue
-                if runtime_input_matches(source, destination):
+                relative = safe_runtime_relative(copyto)
+                destination = run / relative
+                conflict = destination_parent_conflict(run, relative)
+                if not conflict and (
+                    not source.is_file()
+                    or not (destination.exists() or destination.is_symlink())
+                    or runtime_input_matches(source, destination)
+                ):
                     continue
             except (RuntimeInputError, OSError):
                 continue  # Missing/generated/unreadable inputs cannot be compared.
             _warning_sink(warn, "sim.runtime-input-collision", subject=f"{name}:{destination}")(
-                f"sim Target {name!r}: copyto source {source} conflicts with {destination}",
+                f"sim Target {name!r}: copyto source {source} conflicts with {destination}"
+                + (f": {conflict}" if conflict else ""),
                 "Rename the copyto destination, remove the checked-in copy, or choose a "
                 "literal run_cwd without the collision.",
             )
