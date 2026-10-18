@@ -231,7 +231,12 @@ def test_job_completing_after_abandon_and_reentry_is_discarded(
         slug="again",
         goals=parse_goal_args([{"family": "LINT", "target": "top"}]),
     )
-    new = enter_goal_mode(request, EntryEnvironment(booley_dir=goal_mode.control)).record
+    new = enter_goal_mode(
+        request,
+        EntryEnvironment(
+            booley_dir=goal_mode.control, routing_guidance="Explicit test routing guidance."
+        ),
+    ).record
     new_paths = record_paths(goal_mode.control, new.id)
     before = tree_digest(new_paths.root)
 

@@ -42,7 +42,9 @@ def enter(layout):
     call = EntryRequest(
         layout.worktree, "protected", parse_goal_args([{"family": "LINT", "target": "top"}])
     )
-    result = enter_goal_mode(call, EntryEnvironment(layout.control))
+    result = enter_goal_mode(
+        call, EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance.")
+    )
     layout.record = result.record
     return result
 

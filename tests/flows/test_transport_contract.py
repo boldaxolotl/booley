@@ -363,7 +363,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     import sys
     from unittest.mock import Mock
 
-    from booley.mcp import server
+    from booley.mcp import catalog, server
     from tests.flows.lint.test_flow import _LINT_CORE_TEXT
 
     if os.name != "posix" or shutil.which("make") is None:
@@ -394,7 +394,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
 
     async def dispatch():
         jobs = server._JobManager(Mock())
-        definition = server._mcp_tool_def_from_class(
+        definition = catalog._mcp_tool_def_from_class(
             LintFlow, flow_schema(LintFlow()), "lint", module_path="booley.flows.lint"
         )
         content = await server._dispatch_booley_mcp_tool(
@@ -420,8 +420,8 @@ def test_project_endpoint_constructor_schema_loader_and_execution(base, runtime)
     import sys
 
     from booley.harness.booley import _load_mcp_tool_class
+    from booley.mcp.catalog import _find_mcp_tool_class_in_module
     from booley.mcp.registry import extract_mcp_tool_info
-    from booley.mcp.server import _find_mcp_tool_class_in_module
 
     extension = runtime / "project_endpoint.py"
     source = """from booley.flows.base import BooleyFlow

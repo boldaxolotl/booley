@@ -12,6 +12,9 @@ from types import MappingProxyType
 
 import pytest
 
+from booley.mcp import (
+    endpoint_process,
+)
 from booley.mcp.call_context import CallContext, resolve_call_context, resolve_work_dir
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
@@ -244,8 +247,8 @@ class TestServerConsumers:
             ),
         )
 
-        plain = mcp_server._endpoint_subprocess_env(base)
-        layered = mcp_server._endpoint_subprocess_env(context, BOOLEY_R1_ONLY="run")
+        plain = endpoint_process._endpoint_subprocess_env(base)
+        layered = endpoint_process._endpoint_subprocess_env(context, BOOLEY_R1_ONLY="run")
 
         assert plain["BOOLEY_R1_PROBE"] == "server"
         assert "BOOLEY_R1_ONLY" not in plain
