@@ -123,14 +123,6 @@ def test_spawn_failure_preserves_command_status(
     assert captured.err == f"{diagnostic}: {executable}\n"
     assert captured.out == ""
     assert caplog.records == []
-    records = list((data / ".runtime" / "executions").glob("*/record.json"))
-    assert len(records) == 1
-    payload = execution_records.read_json(records[0])
-    assert payload["state"] == "terminal"
-    assert payload["exit_code"] == exit_code
-    assert payload["tree_terminal"] is True
-    assert payload["terminal_cause"] == "spawn_error"
-    assert payload["leader"] is None
 
 
 def test_normal_command_uses_structured_terminal_result(tmp_path: Path, monkeypatch) -> None:

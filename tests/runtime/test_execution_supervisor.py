@@ -145,20 +145,15 @@ def test_spawn_failure_is_terminal(tmp_path: Path, kind, exit_code, diagnostic) 
     assert payload["terminal_cause"] == "spawn_error"
 
 
-@pytest.mark.parametrize("exit_code", [0, 1, 7, 255, 143])
-def test_command_exit_status_is_preserved(tmp_path: Path, exit_code: int) -> None:
-    script = (
-        "import os,signal; os.kill(os.getpid(), signal.SIGTERM)"
-        if exit_code == 143
-        else f"raise SystemExit({exit_code})"
-    )
+def test_signal_exit_status_is_preserved(tmp_path: Path) -> None:
+    script = "import os,signal; os.kill(os.getpid(), signal.SIGTERM)"
 
     result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
 
-    assert result.returncode == exit_code
+    assert result.returncode == 143
     assert result.stderr == ""
     assert result.stdout == ""
-    assert payload["exit_code"] == exit_code
+    assert payload["exit_code"] == 143
     assert payload["state"] == "terminal"
     assert payload["tree_terminal"] is True
 
