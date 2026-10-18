@@ -58,6 +58,54 @@ def test_test_within_headroom_passes_and_is_counted(tmp_path: Path, workers: int
     assert "timeout headroom: limit 50.0%, 1 tests checked, highest" in result.stdout
 
 
+@pytest.mark.parametrize(("workers", "github"), [(1, True), (0, False)])
+def test_test_in_warning_band_passes_and_is_reported(
+    tmp_path: Path, workers: int, github: bool
+) -> None:
+    junit = tmp_path / "junit.xml"
+    # The 0.2 s sleep is above the 0.06 s warning limit and below the 30 s failure limit.
+    options = ["--timeout-headroom=0.5", "--timeout-headroom-warn=0.001", "-n", str(workers)]
+    result = _run_case(tmp_path, [*options, f"--junitxml={junit}"], github=github)
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert _counts(output) == {"passed": 1}, output
+    assert "limit 50.0%, warning above 0.1%, 1 tests checked" in output
+    assert "timeout headroom warning: test_case.py::test_case used" in output
+    assert "warning above 0.1%). On Windows" in output
+    annotation = "::warning title=Timeout headroom::test_case.py::test_case used"
+    # GitHub only parses a workflow command at the start of a line.
+    assert any(line.startswith(annotation) for line in output.splitlines()) is github
+    if github:
+        assert "%25; warning above 0.1%25)" in output
+    warnings = [
+        node
+        for node in ET.parse(junit).iter("property")
+        if node.get("name") == "timeout_headroom_warning"
+    ]
+    assert len(warnings) == 1
+
+
+def test_test_over_failure_limit_is_not_also_a_warning(tmp_path: Path) -> None:
+    result = _run_case(tmp_path, [_TRIP, "--timeout-headroom-warn=0.001"])
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "the headroom limit is 0.1%" in output
+    assert "timeout headroom warning:" not in output
+
+
+@pytest.mark.parametrize(
+    "options",
+    [["--timeout-headroom-warn=0.5"], ["--timeout-headroom=0.5", "--timeout-headroom-warn=0.8"]],
+)
+def test_warning_limit_requires_a_higher_failure_limit(tmp_path: Path, options: list[str]) -> None:
+    result = _run_case(tmp_path, options)
+
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
+    assert "--timeout-headroom-warn requires --timeout-headroom at or above it" in result.stderr
+
+
 def test_ratio_is_recorded_in_junit(tmp_path: Path) -> None:
     junit = tmp_path / "junit.xml"
     result = _run_case(tmp_path, ["--timeout-headroom=0.5", f"--junitxml={junit}"])
@@ -211,6 +259,7 @@ def _run_case(
     timeout_plugin: bool = True,
     autoload: bool = False,
     durations: dict[str, float] | None = None,
+    github: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (tmp_path / "test_case.py").write_text(
@@ -228,8 +277,12 @@ def _run_case(
     if timeout_plugin:
         plugins.append("--timeout=60")
     environment = {
-        name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("PYTEST_") and name != "GITHUB_ACTIONS"
     }
+    if github:
+        environment["GITHUB_ACTIONS"] = "true"
     environment["PYTHONPATH"] = str(Path(__file__).parent)
     if not autoload:
         environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
