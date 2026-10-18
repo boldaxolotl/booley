@@ -28,6 +28,7 @@ from booley.targets.domain import (
     TargetHandle,
     TargetInspection,
     TargetRef,
+    TargetResolutionError,
     flow_can_drive,
 )
 from booley.targets.selection import minimal_selector, resolve, split_selector, vlnv_matches
@@ -75,6 +76,7 @@ class PreparedTargetSelection:
     catalog: TargetCatalog
     handles: tuple[TargetHandle, ...]
     target_arg: str
+    automatic: bool = False
 
     @classmethod
     def resolve(
@@ -83,9 +85,19 @@ class PreparedTargetSelection:
         target_arg: str,
         *,
         for_flow: str | None = None,
+        select_omitted: bool = False,
     ) -> PreparedTargetSelection:
         """Resolve an authored selection once against one catalog snapshot."""
         catalog = TargetCatalog.build(project_root)
+        if select_omitted and not target_arg:
+            eligible = catalog.list(for_flow=for_flow)
+            if len(eligible) != 1:
+                choices = ", ".join(handle.selector for handle in eligible) or "(none)"
+                raise TargetResolutionError(
+                    "--target is required with zero or multiple eligible Targets. "
+                    f"Eligible Targets: {choices}"
+                )
+            return cls(catalog, eligible, eligible[0].selector, automatic=True)
         handles = catalog.select_many(target_arg, for_flow=for_flow)
         return cls(catalog, handles, target_arg)
 

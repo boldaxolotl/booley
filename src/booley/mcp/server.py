@@ -1779,13 +1779,17 @@ def _sim_mcp_tool_timeout_seconds(
     target_count = _target_count(arguments)
     mode = normalize_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
     try:
-        work_units = _resolve_sim_campaign_work_units(
-            work_dir,
-            raw_target,
-            arguments.get("test"),
-            None,
-            mode,
-            seed=arguments.get("seed"),
+        work_units = (
+            1
+            if arguments.get("resume_from") is not None
+            else _resolve_sim_campaign_work_units(
+                work_dir,
+                raw_target,
+                arguments.get("test"),
+                None,
+                mode,
+                seed=arguments.get("seed"),
+            )
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
