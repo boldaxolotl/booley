@@ -151,7 +151,7 @@ def test_builtin_schema_keeps_target_as_comma_separated_scalar(
     assert target["type"] == "string"
     assert "items" not in target
     assert "CLI flag may be repeated" in target["description"]
-    assert ("target" in schema.get("required", [])) is (name != "sim")
+    assert "target" not in schema.get("required", [])
 
 
 def test_fpga_schema_exposes_portable_profile_vocabulary() -> None:

@@ -504,16 +504,21 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     modifies_category: str | None = None
     config_aware: bool = True
     accepts_target: bool = True
+    target_required: bool = False
     announce_success_report: bool = False
     satisfies: ClassVar[list[str]] = []
     satisfies_args: ClassVar[dict[str, str]] = {}
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
-        "List available Targets with `booley targets`.",
+        "List available Targets with `booley targets`. When omitted, exactly one "
+        "eligible Target is selected and announced; zero or multiple eligible Targets "
+        "fail and list the eligible Targets.",
         cli=(
             "FuseSoC .core Target name(s) to run. Repeat the flag or separate names "
-            "with commas. List available Targets with `booley targets`."
+            "with commas. List available Targets with `booley targets`. When omitted, "
+            "exactly one eligible Target is selected and announced; zero or multiple "
+            "eligible Targets fail and list the eligible Targets."
         ),
     )
 
@@ -574,6 +579,7 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
                 self.args.work_dir,
                 self.args.target,
                 for_flow=self.name,
+                select_omitted=True,
             )
         except (FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
@@ -581,6 +587,13 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
                 report_text=f"{self.name} Target selection failed: {exc}",
             )
         self._prepared_target_selection = selection
+        if selection.automatic:
+            from booley.flows.endpoint_reporting import automatic_target_notice
+
+            self.args.target = selection.target_arg
+            self.context._automatic_target_notice = automatic_target_notice(
+                self.name, selection.target_arg
+            )
         return None
 
     def _selected_target_selection(self) -> PreparedTargetSelection:

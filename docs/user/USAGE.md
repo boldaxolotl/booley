@@ -905,6 +905,12 @@ booley flow sim --target sim_soc --test stress+soak@42   # a Test Variant with o
 booley flow sim --help                       # every option
 ```
 
+For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
+exactly one eligible Target, and that selection is announced. With zero or multiple
+eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
+Simulation resume (`--resume-from`) retains the manifest Target regardless of
+the current catalog.
+
 [FLOW_REFERENCE.md](FLOW_REFERENCE.md) has the full details: options, exit
 codes, and results. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md) defines the
 report files.
