@@ -101,6 +101,17 @@ flow may explicitly tell this step to pass `--user-report-path SETUP-REPORT.md`
 for its throwaway clone. That writes the root report instead of an inner copy;
 on a real project, never pass the flag.
 
+After the renderer finishes, follow SKILL.md's **Delivered Flow results** contract:
+add or replace that single section at the actual returned path (the root report
+when the enclosing dogfood flow selected it), keeping existing Feedback content
+intact. The contract owns the evidence rows and the pre-cleanup snapshot. Repeat
+after any setup-owned render; later independent Feedback renders keep their
+existing contract.
+
+This step stays non-blocking. A missing/ambiguous report produces an unverified
+row, never a success inferred from the requested configuration. The walkthrough
+and final summary use the same evidence rows, including deviations and failures.
+
 When the report is complete, mark Step 6 complete in the §3 execution ledger.
 Do not delete a raw attachment here: Step 7 owns the materialization decision
 and must preserve Finding IDs, ordering, filed state, and semantic fields.
@@ -145,5 +156,6 @@ public), then export and inspect the same IDs again.
 
 ## 5. Close out
 
+Reuse the Delivered Flow results evidence rows in the final summary.
 Record in the final report: findings by severity, the top few called out, what
 was triaged where, and whether the user explicitly requested a redacted export.
