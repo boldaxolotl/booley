@@ -236,15 +236,6 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
     )
 
 
-def _style_labels(detail: Text, paths: tuple[str, ...]) -> None:
-    offset = 0
-    for line in detail.plain.splitlines():
-        label, separator, _ = line.partition(":")
-        if separator and line not in paths:
-            detail.stylize(_CHROME, offset, offset + len(label))
-        offset += len(line) + 1
-
-
 def _job_presentation(job: JobView) -> ReportPresentation:
     report = dict(job.report or {})
     report["exit_code"] = job.record.exit_code
@@ -255,10 +246,12 @@ def _job_presentation(job: JobView) -> ReportPresentation:
 
 
 def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
-    return "\n".join(f"{row.label}: {row.value}" for row in rows)
+    return "\n".join(
+        f"{row.label}: {row.value}".rstrip() if row.label else row.value for row in rows
+    )
 
 
-def job_detail(job: JobView, *, now: float | None = None) -> str:
+def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
     """Compact result, independent acceptance, execution and published artifacts."""
     result = _job_presentation(job)
     rows = [result.flow_result]
@@ -285,16 +278,21 @@ def job_detail(job: JobView, *, now: float | None = None) -> str:
             else row
             for row in rows
         ]
-    lines = [_line_text(rows)]
     report = str(job.report_path) if job.report_path is not None else None
     artifacts = [path for path in dict.fromkeys(job.artifacts) if path != report]
     if artifacts:
-        lines.extend(("Artifacts:", *artifacts[:3]))
+        rows.append(ResultLine("Artifacts", ""))
+        rows.extend(ResultLine("", path) for path in artifacts[:3])
         if len(artifacts) > 3:
-            lines.append(f"{len(artifacts) - 3} more artifacts in report")
+            rows.append(ResultLine("", f"{len(artifacts) - 3} more artifacts in report"))
     if report:
-        lines.extend(("Report:", report))
-    return "\n".join(lines)
+        rows.extend((ResultLine("Report", ""), ResultLine("", report)))
+    return rows
+
+
+def job_detail(job: JobView, *, now: float | None = None) -> str:
+    """Render the shared Job rows as plain text."""
+    return _line_text(_job_rows(job, now=now))
 
 
 def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]:
@@ -910,39 +908,32 @@ class DashboardApp(App[None]):
         self.query_one("#detail", Static).update(linked_text(detail, paths))
 
     def _job_detail(self, job: JobView) -> Text:
-        detail = Text(job_detail(job, now=self.snapshot.observed_at))
-        _style_labels(detail, job_paths(job))
-        result = _job_presentation(job)
-        for row in (result.flow_result, result.criterion, *result.result_rows):
-            if row is not None and row.semantic:
-                value = row.value + (
-                    " · no report"
-                    if job.report is None and row.value == "Summary unavailable"
-                    else ""
-                )
-                line = f"{row.label}: {value}"
-                start = detail.plain.find(line)
-                if start >= 0:
-                    detail.stylize(
-                        SEMANTIC_STYLE[row.semantic], start + len(row.label) + 2, start + len(line)
-                    )
-        owner = Text("Owner: ", style=_CHROME)
-        owner.append(
-            _owner_label(
-                job,
-                self.snapshot.sessions,
-                self.snapshot.observed_at,
-                self.snapshot.session_handles,
+        rows = _job_rows(job, now=self.snapshot.observed_at)
+        owner = [
+            ResultLine(
+                "Owner",
+                _owner_label(
+                    job,
+                    self.snapshot.sessions,
+                    self.snapshot.observed_at,
+                    self.snapshot.session_handles,
+                ),
             )
-        )
+        ]
         if job.record.session_key:
-            owner.append("\nSession key: ", style=_CHROME)
-            owner.append(job.record.session_key)
-        # Keep outcome, Criterion and execution together before ownership metadata.
-        offset = detail.plain.find("\nJob:")
-        prefix = detail[:offset] if offset >= 0 else detail
-        suffix = detail[offset:] if offset >= 0 else Text()
-        return Text.assemble(prefix, "\n", owner, suffix)
+            owner.append(ResultLine("Session key", job.record.session_key))
+        offset = next(index for index, row in enumerate(rows) if row.label == "Job")
+        rows[offset:offset] = owner
+        detail = Text()
+        for index, row in enumerate(rows):
+            if index:
+                detail.append("\n")
+            if row.label:
+                detail.append(row.label + ":", style=_CHROME)
+                if row.value:
+                    detail.append(" ")
+            detail.append(row.value, style=SEMANTIC_STYLE.get(row.semantic, ""))
+        return detail
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self.navigation = replace(self.navigation, selected=self._selected_key())

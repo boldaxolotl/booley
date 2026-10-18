@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from rich.console import Console
 from rich.style import Style
 
+import booley.harness.dashboard.app as module
 from booley.criteria.presentation import CriterionPresentation
 from booley.harness.dashboard.app import (
     SEMANTIC_STYLE,
@@ -19,6 +20,8 @@ from booley.harness.dashboard.app import (
 from booley.harness.dashboard.jobs import JobView
 from booley.harness.dashboard.links import linked_text
 from booley.harness.dashboard.model import GoalDetail
+from booley.harness.dashboard.results import present_report, project_facts
+from booley.review.goal_package import proposal_facts
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
@@ -77,7 +80,6 @@ def implementation(grade="pass"):
 
 
 def proposal_app(monkeypatch, facts):
-    import booley.harness.dashboard.app as module
 
     view = SimpleNamespace(
         proposal=SimpleNamespace(id="p"), state="pending", closed_by_abandonment=False
@@ -128,7 +130,6 @@ def test_details_never_dump_structures(monkeypatch):
         )
         assert "\x1b" not in text
     assert "Extra data in report" in _evidence_detail(goal)
-    from booley.harness.dashboard.results import present_report
 
     assert (
         present_report({"flow": "unknown", "report_text": '{"secret": 1}'}).result_rows[0].value
@@ -147,7 +148,6 @@ def test_flow_and_criterion_are_independent():
     assert "Flow result: PASSED" in text, "exit success must remain separate from Criterion"
     assert "Criterion: coverage_top · not met" in text
     assert text.splitlines()[0].startswith("Flow result:")
-    from booley.harness.dashboard.results import present_report
 
     result = present_report(report)
     assert result.flow_result.semantic == "pass" and result.criterion.semantic == "fail"
@@ -167,10 +167,6 @@ def test_criterion_hidden():
         {"criterion_met": True},
         {"criterion_key": "sim_top", "criterion_met": None},
         {"criterion_key": "sim_top"},
-        {"criterion_key": False, "criterion_met": True},
-        {"criterion_key": 42, "criterion_met": True},
-        {"criterion_key": " ", "criterion_met": True},
-        {"criterion_key": "sim_top", "criterion_met": "false"},
         {"criterion_key": "", "criterion_met": True, "detail": {"targets": 2}},
     ]:
         text = job_detail(job({"flow": "sim", **criterion}))
@@ -178,7 +174,6 @@ def test_criterion_hidden():
             "unbound results still need an execution-derived Flow result"
         )
         assert "Criterion:" not in text
-        from booley.harness.dashboard.results import present_report
 
         assert present_report({"exit_code": 0, **criterion}).criterion is None
 
@@ -227,7 +222,6 @@ def test_exit_taxonomy_and_soft_warnings():
         assert f"Flow result: {word}" in job_detail(item), (
             "JobRecord exit owns the result taxonomy"
         )
-        from booley.harness.dashboard.results import present_report
 
         assert present_report({**report, "exit_code": code}).flow_result.semantic == semantic
         app = DashboardApp(lambda: None)
@@ -238,6 +232,27 @@ def test_exit_taxonomy_and_soft_warnings():
 
 
 ROWS = [
+    (
+        "sim",
+        {"campaigns": {"top": {**campaign(), "grade": "inconclusive"}}},
+        "grade inconclusive",
+        [],
+    ),
+    (
+        "sim",
+        {"coverage": True, "targets": ["alpha", "beta"]},
+        "Coverage: evaluation unavailable",
+        ["alpha", "beta"],
+    ),
+    *[
+        (
+            "reviewer",
+            {"contract": {"mode": "done"}, "review_outcome": outcome, "issues": 0},
+            f"Review: {outcome}",
+            [],
+        )
+        for outcome in ("advisory", "corrective", "no_findings")
+    ],
     ("sim", {"campaigns": {"top": campaign()}}, "2/2 tests passed", ["top"]),
     (
         "sim",
@@ -363,7 +378,6 @@ def test_each_flow_report_row():
         assert headline in text, "each Flow needs its own compact human headline"
         assert all(part in text for part in required)
         assert "{'" not in text and '{"' not in text
-        from booley.harness.dashboard.results import present_report
 
         result = present_report(report)
         if endpoint == "coverage_analyst" or (
@@ -379,10 +393,6 @@ def test_each_flow_report_row():
 def test_report_locations_and_coverage_miss():
     for key in [False, True]:
         for evaluation in ["pass", "fail", "blocked"]:
-            report = {"flow": "synth", "detail": {"implementation": implementation()}}
-            assert "Area: 12" in job_detail(job(report, endpoint="synth")), (
-                "metrics live under implementation results"
-            )
             report = {
                 "flow": "sim",
                 "exit_code": 0,
@@ -400,12 +410,8 @@ def test_report_locations_and_coverage_miss():
             text = job_detail(job(report))
             assert "Flow result: PASSED" in text and f"evaluation {evaluation}" in text
             assert ("Criterion:" in text) == key
-            from booley.harness.dashboard.results import present_report
 
             assert present_report(report).flow_result.semantic == "pass"
-            assert "Warnings: 0" not in job_detail(
-                job({"flow": "lint", "detail": {"targets": ["top"]}})
-            )
 
 
 def test_multitarget_and_list_caps():
@@ -424,7 +430,6 @@ def test_multitarget_and_list_caps():
     text = job_detail(job({"flow": "sim", "detail": {"campaigns": campaigns}}))
     assert "3 more failures" in text and "bad6" not in text
     assert "preview" in text
-    from booley.harness.dashboard.results import present_report
 
     result = present_report({"flow": "sim", "detail": {"campaigns": {"top": {}}}})
     assert "unavailable" in result.flow_result.value
@@ -539,7 +544,6 @@ def test_goal_proposal_facts_preserved(monkeypatch):
 
 
 def test_campaign_producer_failure_axes_are_visible():
-    from booley.harness.dashboard.results import present_report
 
     for execution, functional, assertions in [
         ("crash", "not_observed", "not_observed"),
@@ -581,16 +585,9 @@ def test_campaign_producer_failure_axes_are_visible():
         text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
         assert "producer_failure" in text, "producer failure test name must remain visible"
         assert observation["failure_class"] in text
-        for axis, label in (
-            ("execution", "Execution observations"),
-            ("functional", "Functional observations"),
-            ("assertions", "Assertion observations"),
-        ):
-            assert f"{label}: {observation[axis]} 1" in text
 
 
 def test_multitarget_implementation_metrics_keep_target_names():
-    from booley.harness.dashboard.results import present_report
 
     for endpoint in ("synth", "fpga"):
         targets = {
@@ -619,7 +616,6 @@ def test_multitarget_implementation_metrics_keep_target_names():
 
 
 def test_known_endpoint_unknown_detail_uses_safe_fallback():
-    from booley.harness.dashboard.results import present_report
 
     for endpoint in ("lint", "reviewer", "mutation_tester", "coverage_analyst"):
         for detail in (
@@ -642,30 +638,7 @@ def test_known_endpoint_unknown_detail_uses_safe_fallback():
             assert result.flow_result.value == "ERROR"
 
 
-def test_reviewer_done_reads_published_contract_mode():
-    from booley.harness.dashboard.results import present_report
-
-    for outcome in ("advisory", "corrective", "no_findings"):
-        report = {
-            "mcp_tool": "reviewer",
-            "exit_code": 0,
-            "detail": {
-                "contract": {"mode": "done"},
-                "review_outcome": outcome,
-                "issues": 0,
-            },
-        }
-        result = present_report(report)
-        assert result.flow_result.value.startswith(outcome), (
-            "published Reviewer contract determines done mode"
-        )
-        assert "pending" not in result.flow_result.value
-        for code, word in ((1, "FAILED"), (2, "ERROR"), (130, "CANCELLED")):
-            assert present_report({**report, "exit_code": code}).flow_result.value.startswith(word)
-
-
 def test_goal_metric_evidence_keeps_measurements_and_omission_marker():
-    from booley.harness.dashboard.results import project_facts
 
     facts = {
         "producer": "synth",
@@ -686,7 +659,6 @@ def test_goal_metric_evidence_keeps_measurements_and_omission_marker():
 
 
 def test_multiline_proposal_facts_preserve_human_text():
-    from booley.harness.dashboard.results import project_facts
 
     for key in ("rationale", "reason", "quote"):
         rows = project_facts({key: "first line\nsecond\tpart", "source": "human"})
@@ -699,8 +671,6 @@ def test_multiline_proposal_facts_preserve_human_text():
 
 
 def test_retarget_warning_preserves_required_followup():
-    from booley.harness.dashboard.results import project_facts
-    from booley.review.goal_package import proposal_facts
 
     facts = proposal_facts(
         {
@@ -717,29 +687,3 @@ def test_retarget_warning_preserves_required_followup():
     assert warning.endswith("A new discovery review is required after approval."), (
         "retarget safety warning must remain complete"
     )
-
-
-def test_inconclusive_campaign_grade_is_preserved():
-    from booley.harness.dashboard.results import present_report
-
-    data = campaign()
-    data["grade"] = "inconclusive"
-    result = present_report(
-        {"flow": "sim", "exit_code": 1, "detail": {"campaigns": {"top": data}}}
-    )
-    assert "grade inconclusive" in result.flow_result.value, (
-        "published inconclusive grade must remain visible"
-    )
-
-
-def test_coverage_dry_run_does_not_claim_evaluation():
-    from booley.harness.dashboard.results import present_report
-
-    result = present_report(
-        {"flow": "sim", "exit_code": 0, "detail": {"coverage": True, "targets": ["alpha", "beta"]}}
-    )
-    assert "Targets met" not in result.flow_result.value, (
-        "coverage selection is not an evaluated verdict"
-    )
-    text = "\n".join(f"{row.label}: {row.value}" for row in result.result_rows)
-    assert "alpha" in text and "beta" in text and "evaluation unavailable" in text

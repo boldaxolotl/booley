@@ -117,21 +117,24 @@ def _ratio(counts: tuple[int, int] | None) -> str:
     return "test counts unavailable" if counts is None else f"{counts[0]}/{counts[1]} tests passed"
 
 
+_BAD_EXECUTION = {
+    "error",
+    "timeout",
+    "cancelled",
+    "crash",
+    "aborted",
+    "setup_error",
+    "blocked_by_build",
+    "not_run",
+}
+
+
 def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int:
     counts = _mapping(campaign.get("observation_counts"))
     # Axes overlap; the largest marginal count is a lower bound, never their sum.
     bad = {
         "functional": ("fail", "inconclusive", "not_observed"),
-        "execution": (
-            "error",
-            "timeout",
-            "cancelled",
-            "crash",
-            "aborted",
-            "setup_error",
-            "blocked_by_build",
-            "not_run",
-        ),
+        "execution": _BAD_EXECUTION,
         "assertions": ("fail", "dirty"),
     }
     return max(
@@ -143,25 +146,6 @@ def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int
     )
 
 
-def _campaign_axis_counts(campaign: Mapping[str, object]) -> list[ResultLine]:
-    counts = _mapping(campaign.get("observation_counts"))
-    labels = {
-        "execution": "Execution observations",
-        "functional": "Functional observations",
-        "assertions": "Assertion observations",
-    }
-    rows = []
-    for axis, label in labels.items():
-        facts = [
-            f"{literal(key)} {number}"
-            for key, value in _mapping(counts.get(axis)).items()
-            if literal(key) and (number := as_int(value)) is not None and number >= 0
-        ]
-        if facts:
-            rows.append(_row(f"  {label}", ", ".join(facts[:_ITEM_LIMIT])))
-    return rows
-
-
 def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
     observations = [_mapping(item) for item in _sequence(campaign.get("observations"))]
     failures = [
@@ -169,17 +153,7 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
         for row in observations
         if row.get("functional") == "fail"
         or row.get("functional") == "inconclusive"
-        or literal(row.get("execution"))
-        in {
-            "error",
-            "timeout",
-            "cancelled",
-            "crash",
-            "aborted",
-            "setup_error",
-            "blocked_by_build",
-            "not_run",
-        }
+        or literal(row.get("execution")) in _BAD_EXECUTION
         or row.get("assertions") in {"fail", "dirty"}
     ]
     rows = []
@@ -193,9 +167,9 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
             )
         )
     total = _campaign_failure_count(campaign, len(failures))
-    if total is not None and total > len(rows):
+    if total > len(rows):
         rows.append(_row("  Failures", f"at least {total - len(rows)} more failures in report"))
-    if campaign.get("observations_truncated") or (total is not None and total > len(failures)):
+    if campaign.get("observations_truncated") or total > len(failures):
         rows.append(
             _row("  Observations", "truncated preview; full report has remaining observations")
         )
@@ -226,7 +200,7 @@ def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         )
     rows.extend(_more_targets(targets))
     for name, row in targets[:_ITEM_LIMIT]:
-        for fact in [*_campaign_axis_counts(row), *_campaign_failures(row)]:
+        for fact in _campaign_failures(row):
             label = f"  {name} · {fact.label.strip()}" if len(targets) > 1 else fact.label
             rows.append(ResultLine(label, fact.value, fact.semantic))
     grades = [literal(row.get("grade")) for _, row in targets]
@@ -319,7 +293,6 @@ _METRICS = {
     "area_kge": "Area",
     "area_um2": "Area µm²",
     "cells": "Cells",
-    "num_cells": "Cells",
     "wns_ns": "WNS",
     "whs_ns": "Hold slack",
     "estimated_fmax_mhz": "Estimated Fmax",
@@ -333,11 +306,6 @@ _METRICS = {
     "dsp_count": "DSPs",
     "comb_loops": "Combinational loops",
     "multi_driven": "Multiple drivers",
-    "luts": "LUTs",
-    "ffs": "FFs",
-    "brams": "BRAMs",
-    "dsps": "DSPs",
-    "wirelength": "Wire length",
     "critical_path_ps": "Critical path",
     "warnings": "Warnings",
     "has_critical": "Critical",
@@ -349,7 +317,7 @@ def _implementation_target(name: str, data: Mapping[str, object]) -> list[Result
     rows = [_row(f"  {name}", status.get("grade"))]
     rows.extend(_fields(metrics, _METRICS))
     rows.extend(_fields(_mapping(data.get("conditions")), _METRICS))
-    clocks = _targets(metrics.get("clocks") or metrics.get("per_clock"))
+    clocks = _targets(metrics.get("per_clock"))
     for clock, timing in clocks[:_ITEM_LIMIT]:
         facts = _fields(timing, _METRICS)
         if facts:
@@ -378,8 +346,8 @@ def _implementation(endpoint: str, detail: Mapping[str, object]) -> tuple[str, l
         for row in _implementation_target(name, data)[1:]:
             label = f"  {name} · {row.label.strip()}" if len(targets) > 1 else row.label
             rows.append(ResultLine(label, row.value, row.semantic))
-    summary = _implementation_headline(targets)
     grades = [literal(_mapping(data.get("status")).get("grade")) for _, data in targets]
+    summary = f"grade {grades[0]}"
     if len(targets) > 1:
         passed = sum(grade in {"pass", "warn"} for grade in grades)
         summary = (
@@ -391,35 +359,6 @@ def _implementation(endpoint: str, detail: Mapping[str, object]) -> tuple[str, l
         f"{'Synthesis' if endpoint == 'synth' else 'FPGA'}: {len(targets)} Target{'s' if len(targets) != 1 else ''}"
         + (f" · {summary}" if summary else ""),
         rows,
-    )
-
-
-def _implementation_headline(targets: list[tuple[str, Mapping[str, object]]]) -> str:
-    if len(targets) != 1:
-        return ""
-    data = targets[0][1]
-    metrics = _mapping(data.get("metrics"))
-    facts = _fields(
-        metrics,
-        {
-            "area_kge": "Area kGE",
-            "area_um2": "Area µm²",
-            "lut_count": "LUT",
-            "ff_count": "FF",
-            "bram_count": "BRAM",
-            "dsp_count": "DSP",
-            "wns_ns": "WNS",
-        },
-    )
-    clocks = _targets(metrics.get("per_clock") or metrics.get("clocks"))
-    for name, clock in clocks[:_ITEM_LIMIT]:
-        if literal(clock.get("fmax_mhz")):
-            facts.append(_row(f"Fmax {name}", clock["fmax_mhz"]))
-    return " · ".join(
-        [
-            *[f"{row.label}: {row.value}" for row in facts],
-            f"grade {_value(_mapping(data.get('status')).get('grade'))}",
-        ]
     )
 
 
@@ -662,7 +601,6 @@ _FACT_LABELS = {
     "target": "Target",
     "metric": "Metric",
     "threshold": "Threshold",
-    "requirement": "Requirement",
     "observation": "Observation",
     "recorded_at": "Recorded at",
     "producer": "Producer",
@@ -704,7 +642,6 @@ _CONTAINERS = {
     "config",
     "evidence_refs",
     "per_clock",
-    "clocks",
 }
 
 
@@ -747,9 +684,9 @@ def _fact_rows(data: Mapping[str, object], rows: list[ResultLine], *, depth: int
 
 def _container_facts(key: str, value: object, rows: list[ResultLine], *, depth: int) -> None:
     if isinstance(value, Mapping):
-        if key in {"targets", "campaigns", "per_clock", "clocks"}:
+        if key in {"targets", "campaigns", "per_clock"}:
             for name, target in list(value.items())[:_ITEM_LIMIT]:
-                rows.append(_row("Clock" if key in {"per_clock", "clocks"} else "Target", name))
+                rows.append(_row("Clock" if key in {"per_clock"} else "Target", name))
                 _fact_rows(_mapping(target), rows, depth=depth + 1)
         else:
             _fact_rows(value, rows, depth=depth + 1)
