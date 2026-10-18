@@ -25,6 +25,15 @@ from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_a
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
+from booley.harness.dashboard.results import (
+    ReportPresentation,
+    ResultLine,
+    configuration,
+    literal,
+    present_report,
+    project_facts,
+    proposal_summary,
+)
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
@@ -227,34 +236,97 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
     )
 
 
+def _style_labels(detail: Text, paths: tuple[str, ...]) -> None:
+    offset = 0
+    for line in detail.plain.splitlines():
+        label, separator, _ = line.partition(":")
+        if separator and line not in paths:
+            detail.stylize(_CHROME, offset, offset + len(label))
+        offset += len(line) + 1
+
+
+def _job_presentation(job: JobView) -> ReportPresentation:
+    report = dict(job.report or {})
+    report["exit_code"] = job.record.exit_code
+    report["argv"] = job.record.argv
+    endpoint = job.record.endpoint
+    report["flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool"] = endpoint
+    return present_report(report)
+
+
+def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
+    return "\n".join(f"{row.label}: {row.value}" for row in rows)
+
+
 def job_detail(job: JobView, *, now: float | None = None) -> str:
-    """Execution outcome and design verdict remain distinct; no inline logs."""
-    rec, report = job.record, job.report or {}
-    paths = job_paths(job)
+    """Compact result, independent acceptance, execution and published artifacts."""
+    result = _job_presentation(job)
+    rows = [result.flow_result]
+    if result.criterion is not None:
+        rows.append(result.criterion)
     elapsed = job_elapsed_seconds(job, now)
-    return "\n".join(
-        [
-            f"{_job_label(job)} · {rec.endpoint}",
-            f"Run ID: {rec.run_id}",
-            f"Execution: {job.state} · exit {rec.exit_code}",
-            f"Design verdict: {report.get('passed', 'unavailable')}",
-            f"Flow configuration: {' '.join(rec.argv) or '—'}",
-            f"EDA tool: {report.get('eda_tool') or report.get('tool') or job.eda_tool or '—'}",
-            f"Start: {format_clock(rec.run_started_at or rec.started_at, now=now)} · End: {format_clock(rec.ended_at, now=now) if rec.ended_at else '—'}",
-            f"Elapsed: {format_duration(elapsed) if elapsed is not None else 'unavailable'}",
-            f"Stage: {job.stage or '—'}",
-            f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
-            f"Result: {report.get('summary', report.get('detail', 'unavailable'))}",
-            "Metrics / failure details: " + _reported_metrics(report),
-            "Artifacts:\n" + ("\n".join(paths) or "—"),
-        ]
+    duration = format_duration(elapsed) if elapsed is not None else "unavailable"
+    rows.append(
+        ResultLine("Execution", f"{job.state} · {result.execution.value} · elapsed {duration}")
     )
+    rows.extend(
+        (
+            ResultLine("Job", f"{_job_label(job)} · {job.record.endpoint}"),
+            ResultLine("Run ID", job.record.run_id),
+        )
+    )
+    rows.extend(configuration(job.record.argv))
+    rows.extend(_job_metadata(job, now=now))
+    rows.extend(result.result_rows)
+    if job.report is None:
+        rows = [
+            replace(row, value="Summary unavailable · no report")
+            if row.value == "Summary unavailable"
+            else row
+            for row in rows
+        ]
+    lines = [_line_text(rows)]
+    report = str(job.report_path) if job.report_path is not None else None
+    artifacts = [path for path in dict.fromkeys(job.artifacts) if path != report]
+    if artifacts:
+        lines.extend(("Artifacts:", *artifacts[:3]))
+        if len(artifacts) > 3:
+            lines.append(f"{len(artifacts) - 3} more artifacts in report")
+    if report:
+        lines.extend(("Report:", report))
+    return "\n".join(lines)
+
+
+def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]:
+    report = job.report or {}
+    rows = []
+    for label, stamp in (
+        ("Start", job.record.run_started_at or job.record.started_at),
+        ("End", job.record.ended_at),
+    ):
+        if stamp:
+            rows.append(ResultLine(label, format_clock(stamp, now=now)))
+    tool = literal(report.get("eda_tool") or report.get("tool") or job.eda_tool)
+    if tool:
+        rows.append(ResultLine("EDA tool", tool))
+    if job.stage:
+        rows.append(ResultLine("Stage", literal(job.stage)))
+    parts = []
+    if job.cpu_percent is not None:
+        parts.append(f"CPU {job.cpu_percent:.1f}% of one core")
+    for label, value in (("Memory", job.memory), ("Peak memory", job.peak_memory)):
+        if value is not None:
+            parts.append(f"{label}: {_measure(value)}")
+    if parts:
+        rows.append(ResultLine("Resources", " · ".join(parts)))
+    return rows
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """The report and artifact paths published for one Job, each shown on its own line."""
-    report = (str(job.report_path),) if job.report_path is not None else ()
-    return (*report, *job.artifacts)
+    """Visible deduplicated side artifacts first, exact report last."""
+    report = str(job.report_path) if job.report_path is not None else None
+    artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
+    return (*artifacts, report) if report else artifacts
 
 
 def _job_summary(job: JobView, now: float) -> str:
@@ -263,35 +335,26 @@ def _job_summary(job: JobView, now: float) -> str:
     return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
 
 
-def _reported_metrics(report: dict[str, Any]) -> str:
-    structured = {"metrics", "counts", "failure_reason", "issues", "conditions"}
-    metadata = {"run_id", "invocation_id", "exit_code", "elapsed_s", "schema", "schema_version"}
-    fields = {
-        key: value
-        for key, value in report.items()
-        if key in structured
-        or (key not in metadata and type(value) in {int, float} and as_float(value) is not None)
-    }
-    return json.dumps(fields, indent=2)[:8000]
-
-
 def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
     frozen = "".join(f"{line}\n" for line in goal.test_runs)
     if goal.evidence is None:
         return frozen + "Last check: unavailable · Evidence unavailable"
-    facts = goal.evidence
-    recorded = facts.get("recorded_at")
+    facts = observation_facts(goal.evidence)
+    recorded = goal.evidence.get("recorded_at")
     checked = format_clock(recorded, now=now) if recorded is not None else "unavailable"
-    return (
-        frozen
-        + f"Last check: {checked}\n"
-        + "Observations: "
-        + json.dumps(observation_facts(facts).get("observations", {}), indent=2)[:8000]
-        + "\nImmutable derivation provenance: "
-        + json.dumps([observation_facts(row) for row in goal.provenance], indent=2)[:8000]
-        + "\nAvailable evidence paths:\n"
-        + ("\n".join(goal.artifacts) or "—")
-    )
+    lines = [
+        f"Last check: {checked}",
+        "Observations:",
+        _line_text(project_facts(facts)),
+        "Immutable derivation provenance:",
+    ]
+    for row in goal.provenance[:5]:
+        lines.append(_line_text(project_facts(observation_facts(row))))
+    if len(goal.provenance) > 5:
+        lines.append(f"{len(goal.provenance) - 5} more provenance records in evidence")
+    if goal.artifacts:
+        lines.extend(("Available evidence paths:", *goal.artifacts))
+    return frozen + "\n".join(lines)
 
 
 class DashboardApp(App[None]):
@@ -630,7 +693,7 @@ class DashboardApp(App[None]):
             activities.extend(
                 (
                     "proposal:" + view.proposal.id,
-                    "Pending proposal: " + json.dumps(proposal_presentation(view)),
+                    "Pending proposal: " + proposal_summary(proposal_presentation(view)),
                 )
                 for view in goal.status.proposals
                 if view.state == "pending" and not view.closed_by_abandonment
@@ -812,9 +875,11 @@ class DashboardApp(App[None]):
         )
         if view is None:
             return "Proposal unavailable"
-        return json.dumps(proposal_presentation(view), indent=2) + "\nApproval remains in chat."
+        return (
+            _line_text(project_facts(proposal_presentation(view))) + "\nApproval remains in chat."
+        )
 
-    def _detail_content(self) -> tuple[str, tuple[str, ...]]:
+    def _detail_content(self) -> tuple[str | Text, tuple[str, ...]]:
         """Detail text for the current view and the published paths it may link."""
         view = self.navigation.view
         if view in {"jobs", "job"}:
@@ -844,19 +909,40 @@ class DashboardApp(App[None]):
         aside.styles.width = "100%" if dedicated else "50%"
         self.query_one("#detail", Static).update(linked_text(detail, paths))
 
-    def _job_detail(self, job: JobView) -> str:
-        return (
-            "Owner: "
-            + _owner_label(
+    def _job_detail(self, job: JobView) -> Text:
+        detail = Text(job_detail(job, now=self.snapshot.observed_at))
+        _style_labels(detail, job_paths(job))
+        result = _job_presentation(job)
+        for row in (result.flow_result, result.criterion, *result.result_rows):
+            if row is not None and row.semantic:
+                value = row.value + (
+                    " · no report"
+                    if job.report is None and row.value == "Summary unavailable"
+                    else ""
+                )
+                line = f"{row.label}: {value}"
+                start = detail.plain.find(line)
+                if start >= 0:
+                    detail.stylize(
+                        SEMANTIC_STYLE[row.semantic], start + len(row.label) + 2, start + len(line)
+                    )
+        owner = Text("Owner: ", style=_CHROME)
+        owner.append(
+            _owner_label(
                 job,
                 self.snapshot.sessions,
                 self.snapshot.observed_at,
                 self.snapshot.session_handles,
             )
-            + (f"\nSession key: {job.record.session_key}" if job.record.session_key else "")
-            + "\n"
-            + job_detail(job, now=self.snapshot.observed_at)
         )
+        if job.record.session_key:
+            owner.append("\nSession key: ", style=_CHROME)
+            owner.append(job.record.session_key)
+        # Keep outcome, Criterion and execution together before ownership metadata.
+        offset = detail.plain.find("\nJob:")
+        prefix = detail[:offset] if offset >= 0 else detail
+        suffix = detail[offset:] if offset >= 0 else Text()
+        return Text.assemble(prefix, "\n", owner, suffix)
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self.navigation = replace(self.navigation, selected=self._selected_key())

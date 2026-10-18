@@ -49,9 +49,10 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
     view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
     assert view.state == "completed"
     assert view.report["passed"] is False
-    assert "Design verdict: False" in job_detail(view)
+    assert "Flow result: PASSED" in job_detail(view)
+    assert "Design verdict:" not in job_detail(view)
     assert str(exact) in job_detail(view)
-    assert "Peak memory: —" in job_detail(view)
+    assert "Peak memory:" not in job_detail(view)
 
 
 def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path, monkeypatch):
@@ -192,12 +193,12 @@ def test_reported_metrics_and_legacy_elapsed_are_not_invented():
         },
     )
     rendered = job_detail(view, now=1792000000)
-    assert "210.5" in rendered and '"cells": 42' in rendered
-    assert "timing threshold missed" in rendered
+    assert "Estimated Fmax: 210.5" in rendered and "Cells: 42" in rendered
+    assert "Failure reason: timing threshold missed" in rendered
     assert "raw log must remain hidden" not in rendered
-    assert "Elapsed: 5s" in job_detail(view, now=1792000000)
-    assert "Elapsed: 5s" in job_detail(view, now=1892000000)
-    assert "Elapsed: unavailable" in job_detail(replace(view, report=None), now=1892000000)
+    assert "elapsed 5s" in job_detail(view, now=1792000000)
+    assert "elapsed 5s" in job_detail(view, now=1892000000)
+    assert "elapsed unavailable" in job_detail(replace(view, report=None), now=1892000000)
 
 
 def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, monkeypatch):
@@ -340,13 +341,13 @@ def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
     monkeypatch.setattr(time, "time", lambda: 1791453605)
     view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
     text = job_detail(view)
-    assert "Elapsed: 5s" in text
-    assert f"Stage: {stage or '—'}" in text
+    assert "elapsed 5s" in text
+    assert f"Stage: {stage}" in text if stage else "Stage:" not in text
     assert "EDA tool: icarus" in text
     assert files(tmp_path) == before
     (work / "fixture.core").unlink()
     missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    assert "EDA tool: —" in job_detail(missing)
+    assert "EDA tool:" not in job_detail(missing)
 
 
 def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
