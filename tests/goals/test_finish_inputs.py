@@ -246,7 +246,7 @@ def test_cleanliness_does_not_refresh_shared_index_for_same_bytes(layout, outcom
 @pytest.mark.skipif(os.name == "nt", reason="POSIX namespace-spelling fixture uses symlinks")
 @pytest.mark.parametrize(
     "boundary",
-    [None, "attempt-frozen", "finishing", "publication-intent", "ref-published", "finished"],
+    [None, "attempt-frozen", "finishing", "commit-journaled", "ref-published", "finished"],
 )
 def test_same_physical_mount_spelling_can_finish_and_recover(
     layout, tmp_path, monkeypatch, boundary
