@@ -5,8 +5,9 @@ from __future__ import annotations
 import sys
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -245,6 +246,7 @@ def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None
     elif command == "auth":
         from booley.harness import auth_cmd
 
+        monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
         monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
     else:
         from booley.runtime import issuance_invalidation
@@ -1556,3 +1558,109 @@ def test_auth_status_cli_refuses_corrupt_owned_project(
     captured = capsys.readouterr()
     assert "agents run on" not in captured.out
     assert "[XX]" in captured.out
+
+
+def _auth_cli_environment(tmp_path, monkeypatch, argv):
+    from io import StringIO
+
+    monkeypatch.chdir(tmp_path)
+    for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_IN_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "private-config"))
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", *argv])
+    monkeypatch.setattr(sys, "stdin", StringIO("sk-ant-oat01-synthetic-cli\n"))
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    reset_cache()
+
+
+def test_auth_token_stdin_outside_project_stores_and_explains_pickup(
+    tmp_path, monkeypatch, capsys
+):
+    from booley.harness import init_cmd
+    from booley.runtime import auth_token
+
+    _auth_cli_environment(tmp_path, monkeypatch, ["--token-stdin"])
+    init = Mock(side_effect=AssertionError("outside auth must not initialize"))
+    monkeypatch.setattr(init_cmd, "run_init", init)
+    try:
+        result = tlr._dispatch_main()
+    except (SystemExit, RuntimeError, FileNotFoundError) as exc:
+        result = exc
+    assert result == 0, "auth incorrectly requires a Project"
+    assert auth_token.token_path().read_text().strip() == "sk-ant-oat01-synthetic-cli"
+    output = capsys.readouterr().out
+    assert "session up" in output and "init --seed" in output
+    init.assert_not_called()
+
+
+def test_auth_nested_checkout_does_not_inherit_ancestor_project(tmp_path, monkeypatch):
+    from booley.harness import auth_cmd
+    from booley.runtime import session_runtime
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="subscription"\n')
+    child = tmp_path / "nested"
+    (child / ".git").mkdir(parents=True)
+    (child / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    _auth_cli_environment(child, monkeypatch, [])
+    runtime = Mock(return_value=0)
+    host = Mock(return_value=SimpleNamespace(returncode=0))
+    reseed = Mock(return_value=True)
+    monkeypatch.setattr(session_runtime, "run_project_command", runtime)
+    monkeypatch.setattr(auth_cmd.shutil, "which", lambda _: "/synthetic/claude")
+    original_run = auth_cmd.subprocess.run
+
+    def run(command, *args, **kwargs):
+        if tuple(command) == ("claude", "setup-token"):
+            return host(command, *args, **kwargs)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(auth_cmd.subprocess, "run", run)
+    monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: "sk-ant-oat01-synthetic-nested")
+    monkeypatch.setattr(auth_cmd, "_reseed_spec", reseed)
+    result = tlr._dispatch_main()
+    assert not runtime.called, "uninitialized nested checkout inherited ancestor Sandbox"
+    assert result == 0
+    host.assert_called_once()
+    assert not reseed.called or reseed.call_args.args == (None,)
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_auth_ordinary_subdirectory_uses_owning_project(tmp_path, monkeypatch, external):
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    data = tmp_path / "external" if external else project / ".booley"
+    data.mkdir()
+    if external:
+        (project / "booley.toml").write_text('[project]\ndir="../external"\n')
+    child = project / "src"
+    child.mkdir()
+    _auth_cli_environment(child, monkeypatch, ["--token-stdin"])
+    if external:
+        monkeypatch.setenv("BOOLEY_DIR", str(data))
+    roots = []
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
+    assert tlr._dispatch_main() == 0
+    assert roots == [project]
+
+
+def test_auth_nested_checkout_ignores_ancestor_config_override(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    data = tmp_path / "external"
+    data.mkdir()
+    (tmp_path / "booley.toml").write_text('[project]\ndir="external"\n')
+    child = tmp_path / "nested"
+    (child / ".git").mkdir(parents=True)
+    (child / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    _auth_cli_environment(child, monkeypatch, ["--token-stdin"])
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    roots = []
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
+    assert tlr._dispatch_main() == 0
+    assert roots == [None]
