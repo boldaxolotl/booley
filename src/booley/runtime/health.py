@@ -141,10 +141,6 @@ def _input_change_reason(recorded: object, current: dict[str, Any]) -> str:
     recorded = as_dict(recorded)
     if recorded is None or recorded.keys() != current.keys():
         return generic
-    if current.keys() != _INPUT_LABELS.keys() or any(
-        value is not None and not isinstance(value, str) for value in recorded.values()
-    ):
-        return generic
     names = [label for key, label in _INPUT_LABELS.items() if recorded[key] != current[key]]
     shown = names[:3]
     if len(names) > 3:

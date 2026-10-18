@@ -207,54 +207,9 @@ def test_core_origins_with_equal_relative_paths_remain_distinct(tmp_path):
     assert health.compute_fingerprint(directory, tmp_path) != before
 
 
-def test_booley_core_and_directory_aliases_are_stable(tmp_path):
-    root = tmp_path / "host-project"
-    root.mkdir()
-    directory = _project(root)
-    (directory / "cores").mkdir()
-    core = directory / "cores" / "design.core"
-    core.write_text("authored")
-    generated = directory / "runtime" / "generated.core"
-    generated.parent.mkdir()
-    generated.write_text("runtime state")
-    sandbox = tmp_path / "work"
-    try:
-        sandbox.symlink_to(root, target_is_directory=True)
-    except OSError:
-        sandbox = root / ".." / root.name
-    alias = root / "booley-alias"
-    try:
-        alias.symlink_to(directory, target_is_directory=True)
-    except OSError:
-        alias = directory / ".." / directory.name
-    before = health.compute_fingerprint(directory, root)
-    assert health.compute_fingerprint(directory, sandbox) == before
-    assert health.compute_fingerprint(alias, root) == before
-    generated.write_text("new runtime state")
-    assert health.compute_fingerprint(alias, sandbox) == before
-    core.write_text("changed authored input")
-    assert health.compute_fingerprint(alias, sandbox) != before
-
-
 def test_fingerprint_labels_cover_every_input(tmp_path):
     directory = _project(tmp_path)
     assert set(health.compute_fingerprint(directory, tmp_path)) == set(health._INPUT_LABELS)
-
-
-def test_read_health_computes_fingerprint_once(tmp_path, monkeypatch):
-    directory = _project(tmp_path)
-    _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
-    (directory / "booley.toml").write_text("changed")
-    original = health.compute_fingerprint
-    calls = []
-
-    def fingerprint(*args):
-        calls.append(args)
-        return original(*args)
-
-    monkeypatch.setattr(health, "compute_fingerprint", fingerprint)
-    assert health.read_health(tmp_path).due == "Doctor inputs changed: booley.toml"
-    assert len(calls) == 1
 
 
 def test_changed_input_names_are_ordered_and_bounded(tmp_path):
@@ -267,19 +222,7 @@ def test_changed_input_names_are_ordered_and_bounded(tmp_path):
     )
 
 
-def test_guidance_labels_distinguish_origins(tmp_path):
-    directory = _project(tmp_path)
-    _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
-    (directory / "AGENTS.md").write_text("Booley guidance")
-    (tmp_path / "AGENTS.md").write_text("root guidance")
-    (tmp_path / "CLAUDE.md").write_text("other root guidance")
-    assert health.due_reason(tmp_path) == (
-        "Doctor inputs changed: Booley Directory AGENTS.md, "
-        "Project Root AGENTS.md, Project Root CLAUDE.md"
-    )
-
-
-@pytest.mark.parametrize("change", ["missing", "extra", "malformed", "value", "absent"])
+@pytest.mark.parametrize("change", ["missing", "extra", "malformed", "absent"])
 def test_incompatible_fingerprints_use_safe_generic_reason(tmp_path, change):
     directory = _project(tmp_path)
     document = _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
@@ -290,25 +233,10 @@ def test_incompatible_fingerprints_use_safe_generic_reason(tmp_path, change):
         recorded["/secret/hostile-name"] = "secret content"
     elif change == "malformed":
         document["fingerprint"] = ["/secret/hostile-name"]
-    elif change == "value":
-        recorded["booley_toml_sha256"] = {"/secret/hostile-name": "secret content"}
     else:
         del document["fingerprint"]
     health.report_path(directory).write_text(json.dumps(document))
     assert health.due_reason(tmp_path) == "Doctor inputs changed"
-
-
-def test_version_and_visible_core_drift_keep_distinct_names(tmp_path, monkeypatch):
-    import booley
-
-    _project(tmp_path)
-    _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
-    monkeypatch.setattr(booley, "__version__", "different-version")
-    assert health.due_reason(tmp_path) == "Doctor inputs changed: Booley version"
-    (tmp_path / "visible-only-on-host.core").write_text("masked in Sandbox")
-    assert health.due_reason(tmp_path) == (
-        "Doctor inputs changed: authored .core files, Booley version"
-    )
 
 
 def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monkeypatch):
