@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from functools import cache
 from itertools import chain
 from pathlib import Path
@@ -31,7 +32,9 @@ def has_git_worktree_marker(path: Path) -> bool:
         return False
 
 
-def _data_root(start: Path, checkouts: list[Path], checkout_data) -> Path | None:
+def _data_root(
+    start: Path, checkouts: list[Path], checkout_data: Callable[[Path], Path | None]
+) -> Path | None:
     for parent in (start, *start.parents):
         if parent.name == BOOLEY_DIR_NAME and (
             parent != Path.home() / BOOLEY_DIR_NAME or has_git_worktree_marker(parent.parent)
@@ -84,7 +87,9 @@ def _checkout_candidates(start: Path | None) -> tuple[Path, list[Path]]:
     return current, checkouts
 
 
-def _owning_checkouts(candidates: list[Path], data: Path, checkout_data) -> set[Path]:
+def _owning_checkouts(
+    candidates: list[Path], data: Path, checkout_data: Callable[[Path], Path | None]
+) -> set[Path]:
     owners = set()
     for candidate in candidates:
         if contains(candidate, booley_dir=data) is None and has_git_worktree_marker(candidate):
