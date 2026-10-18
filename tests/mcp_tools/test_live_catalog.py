@@ -535,6 +535,7 @@ def test_retired_layout_marker_invalidates_and_recovers(project):
     asyncio.run(exercise())
 
 
+@pytest.mark.timeout(120)  # Windows CI: 34.4 s; 3x rounded up to 30 s.
 def test_config_only_refresh_reuses_unfiltered_discovery(project, monkeypatch):
     from booley.mcp import registry
 
