@@ -221,8 +221,8 @@ def test_begin_run_log_refreshes_under_symlinked_parent(tmp_path):
     work.mkdir()
     run_log.write_run_log(work, "previous run")
     run_log.begin_run_log(work, flow="lint", target="lint_top")
-    assert "previous run" not in (work / "run.log").read_text()
-    assert run_log.RUN_LOG_PENDING in (work / "run.log").read_text()
+    assert "previous run" not in (work / "run.log").read_text(encoding="utf-8")
+    assert run_log.RUN_LOG_PENDING in (work / "run.log").read_text(encoding="utf-8")
 
 
 def test_identity_checks_only_through_owning_root(tmp_path):
@@ -237,5 +237,5 @@ def test_identity_checks_only_through_owning_root(tmp_path):
     work.mkdir(parents=True)
     run_log.write_run_log(work, "previous run")
     identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (owner,))
-    assert "previous run" not in identity.path.read_text()
+    assert "previous run" not in identity.path.read_text(encoding="utf-8")
     assert identity.pointer(work, "attempt", owner)["live"] is True
