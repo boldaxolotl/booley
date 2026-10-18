@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import AbstractContextManager, ExitStack
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +55,7 @@ from booley.flows.sim.execution import (
 )
 from booley.flows.sim.execution.engine import PreparedOrdinaryGroup, _preview_work
 from booley.flows.sim.execution.freshness import ArtifactValidationError
+from booley.flows.sim.live_progress import LiveProgressSink, install_progress
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
@@ -143,6 +144,7 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
         tool_options={},
         inputs=(),
         core_closure=lambda _handles: (),
+        compile_inputs=lambda handle: TargetCompileSurface(handle.project_root, (), ()),
         rtl_files=(),
         tb_files=(),
     )
@@ -1081,14 +1083,16 @@ def test_unchanged_timeout_partial_result_is_stale(tmp_path: Path) -> None:
         )
 
 
-def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path) -> None:
+@pytest.mark.parametrize("observed", [False, True])
+def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path, observed) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
     invoke = MagicMock()
 
-    with patch(
-        "booley.flows.sim.execution.engine.begin_run_log",
-        side_effect=OSError("read-only filesystem"),
+    sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "failure")
+    with (
+        install_progress(sink) if observed else nullcontext(),
+        patch("booley.flows.run_log.begin_run_log", side_effect=OSError("read-only filesystem")),
     ):
         outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
 
@@ -3105,11 +3109,15 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
         ("verilator", ("Vtb_demo",), "--bin-dir"),
     ],
 )
+@pytest.mark.parametrize("observed", [False, True])
+@pytest.mark.parametrize("log_failure", [False, True])
 def test_ordinary_group_builds_before_launching_supplied_snapshot(
     tmp_path: Path,
     eda_tool: str,
     artifact_names: tuple[str, ...],
     adapter_flag: str,
+    observed: bool,
+    log_failure: bool,
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
@@ -3154,9 +3162,18 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
             assert build.passed
             assert group.artifact_paths == artifacts
             assert len(commands) == 1
-        outcome = group.launch_snapshot(snapshot, run_cwd)
+        sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "snapshot")
+        with (
+            install_progress(sink) if observed else nullcontext(),
+            patch("booley.flows.run_log.begin_run_log", side_effect=OSError("full"))
+            if log_failure
+            else nullcontext(),
+        ):
+            outcome = group.launch_snapshot(snapshot, run_cwd)
 
     assert outcome.passed
+    if observed and log_failure:
+        assert sink.error == "OSError: full"
     assert timeouts == [7, 5]
     assert len(commands) == 2
     launch = commands[1][-1]
@@ -3423,3 +3440,32 @@ def test_real_copyto_same_basename_uses_full_declared_paths(tmp_path, monkeypatc
         assert entries["first.hex"]["source_path"] == "data/firmware.hex"
         assert entries["second.hex"]["source_path"] == "other/firmware.hex"
         assert entries["first.hex"]["sha256"] != entries["second.hex"]["sha256"]
+
+
+@pytest.mark.parametrize("observed", [False, True])
+def test_retained_log_failure_keeps_build_slot_failure_boundary(tmp_path, observed):
+    from booley.flows.sim.build_session import SimulationBuildSlotError
+
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    session = MagicMock()
+    session.try_reuse.return_value = prepared
+    execution._build_session = session
+    execution._fresh_generation = prepared.work_root
+    sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "reuse")
+    with (
+        install_progress(sink) if observed else nullcontext(),
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
+        patch("booley.flows.run_log.begin_run_log", side_effect=OSError("full")),
+    ):
+        attempt = execution._prepare_attempt(handle, ())
+        with pytest.raises(SimulationBuildSlotError, match="cannot open retained generation log"):
+            execution._select_generation_for_group(handle, attempt, {})
+    session.discard_candidate.assert_called_once_with(prepared.work_root)
+    execution._invoke.assert_not_called()
+    assert execution._fresh_generation is None
