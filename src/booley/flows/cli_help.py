@@ -133,9 +133,14 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
     target = (
         "Required: omission is a parse error."
         if target_required
-        else "When omitted, discover/select Simulation Targets; on resume the manifest owns "
-        "selection and an explicit Target conflicts with --resume-from."
+        else "When omitted, exactly one eligible Target is selected and announced; "
+        "zero or multiple eligible Targets fail and list the eligible Targets."
     )
+    if flow_name == "sim":
+        target += (
+            " On resume the manifest owns selection and an explicit Target "
+            "conflicts with --resume-from."
+        )
     return (
         HelpGroup(
             "Common",
