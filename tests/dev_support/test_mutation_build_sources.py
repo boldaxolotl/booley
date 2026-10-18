@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +18,7 @@ from booley.dev_support.mutation_variants import MutationVariantError, MutationV
 from booley.specialists.mutation_tester import MutationSpec
 
 
-def _fixture(tmp_path: Path, header=False, copyto=None, tool=None, name=None, ambiguous=False):
+def _fixture(tmp_path, header=False, copyto=None, eda_tool=None, name=None, defect=None):
     name = name or "acme:lib:dut:1"
     source = tmp_path / ("message.svh" if header else "dut.sv")
     body = 'module dut; initial begin $display("BASELINE"); $finish; end endmodule\n'
@@ -31,12 +30,14 @@ def _fixture(tmp_path: Path, header=False, copyto=None, tool=None, name=None, am
     attributes = {"is_include_file": header, "include_path": "."}
     if copyto:
         attributes["copyto"] = copyto
-    files = (["dut.sv"] if header else []) + [{source.name: attributes}]
+    files = (["dut.sv"] if header else []) + [
+        {str(source) if defect == "abs" else source.name: attributes}
+    ]
     fileset = {"files": files, "file_type": "systemVerilogSource"}
-    target = {"filesets": ["rtl"], "default_tool": tool or "icarus", "toplevel": "dut"}
+    target = {"filesets": ["rtl"], "default_tool": eda_tool or "icarus", "toplevel": "dut"}
     target["tools"] = {"verilator": {"mode": "binary"}}
     data = {"name": name, "filesets": {"rtl": fileset}, "targets": {"sim": target}}
-    if ambiguous:
+    if defect == "ambiguous":
         (tmp_path / "other.sv").write_bytes(source.read_bytes())
         data["filesets"]["rtl"]["files"] = [source.name, {"other.sv": attributes}]
         data["filesets"]["unused"] = {"files": [{source.name: attributes}]}
@@ -45,10 +46,12 @@ def _fixture(tmp_path: Path, header=False, copyto=None, tool=None, name=None, am
     root = tmp_path / "build"
     (root / "alias").mkdir(parents=True)
     command = ["fusesoc", "--cores-root", str(tmp_path), "run", "--setup"]
+    if defect == "live":
+        command.append("--no-export")
     _run([*command, "--work-root", str(root), "--target", "sim", name], tmp_path)
     resolved = SimpleNamespace(build_root=root, edam_path=next(root.glob("*.eda.yml")))
     edam = yaml.safe_load(resolved.edam_path.read_text())
-    if not tool:
+    if not eda_tool:
         for recipe in [root / "Makefile", *root.glob("*.scr"), *root.glob("*.vc")]:
             recipe.unlink(missing_ok=True)
     spec = MutationSpec(1, "literal", source.name, 1, "BASELINE", "MUTANT")
@@ -66,10 +69,8 @@ def _run(argv, cwd):
 )
 def test_unproven_or_unsafe_export_is_invalid(tmp_path, defect):
     source, staged, variants, resolved, edam = _fixture(
-        tmp_path, False, "alias/dut.sv", "icarus", ambiguous=defect == "ambiguous"
+        tmp_path, False, "alias/dut.sv", "icarus", defect=defect
     )
-    core = tmp_path / "dut.core"
-    data = yaml.safe_load(core.read_text())
     exported = resolved.build_root / "src/acme_lib_dut_1" / source.name
     if defect in ("missing", "copy"):
         (staged if defect == "missing" else exported).unlink()
@@ -77,15 +78,10 @@ def test_unproven_or_unsafe_export_is_invalid(tmp_path, defect):
         edam["files"] = []
     elif defect == "wrong_core":
         edam["files"][0]["core"] = "other:lib:dut:1"
-    elif defect in ("abs", "live"):
-        edam["files"][0]["name"] = str(source)
-        if defect == "abs":
-            data["filesets"]["rtl"]["files"] = [{str(source): {}}]
     elif defect == "type":
         edam["files"][0]["file_type"] = "user"
     elif defect == "changed":
         staged.write_text("changed\n")
-    core.write_text("CAPI=2:\n" + yaml.safe_dump(data))
     resolved.edam_path.write_text(yaml.safe_dump(edam))
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     with pytest.raises((MutationVariantError, FileNotFoundError)):
@@ -111,14 +107,14 @@ def test_direct_and_generated_dual_consumption_rejected_before_setup(tmp_path, b
     assert staged.read_bytes() == source.read_bytes()
 
 
-@pytest.mark.parametrize("tool", [None, "icarus", "verilator"])
+@pytest.mark.parametrize("eda_tool", [None, "icarus", "verilator"])
 @pytest.mark.parametrize(
     "header,copyto", [(False, None), (True, None), (True, "alias/renamed.svh"), (True, "alias")]
 )
-def test_private_exports(tmp_path, header, copyto, tool):
-    if tool and not shutil.which("iverilog" if tool == "icarus" else tool):
-        pytest.skip(f"{tool} unavailable: required Sandbox compiler case")
-    source, staged, variants, resolved, _edam = _fixture(tmp_path, header, copyto, tool)
+def test_private_exports(tmp_path, header, copyto, eda_tool):
+    if eda_tool and not shutil.which("iverilog" if eda_tool == "icarus" else eda_tool):
+        pytest.skip(f"{eda_tool} unavailable: required Sandbox compiler case")
+    source, staged, variants, resolved, _edam = _fixture(tmp_path, header, copyto, eda_tool)
     pristine = source.read_bytes()
     try:
         materialize_build_mutation(variants, 1, tmp_path, resolved)
@@ -127,9 +123,9 @@ def test_private_exports(tmp_path, header, copyto, tool):
     assert staged.read_bytes() == pristine.replace(b"BASELINE", b"MUTANT")
     exported = resolved.build_root / "src/acme_lib_dut_1" / source.name
     assert exported.read_bytes() == staged.read_bytes()
-    if tool:
-        _run(["make", "binary" if tool == "verilator" else "all"], resolved.build_root)
-        command = ["./Vdut"] if tool == "verilator" else ["make", "run"]
+    if eda_tool:
+        _run(["make", "binary" if eda_tool == "verilator" else "all"], resolved.build_root)
+        command = ["./Vdut"] if eda_tool == "verilator" else ["make", "run"]
         assert "MUTANT" in _run(command, resolved.build_root)
     assert source.read_bytes() == pristine
 

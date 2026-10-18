@@ -1,3 +1,5 @@
+"""Resolve private FuseSoC exports for mutation from EDAM and core declarations."""
+
 from pathlib import Path
 
 import yaml
