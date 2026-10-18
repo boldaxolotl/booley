@@ -64,7 +64,7 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
-from booley.flows.sim.live_progress import observe_stage
+from booley.flows.sim.live_progress import observe_stage, prepare_attempt_log
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun
 from booley.fusesoc.fusesoc_registry import (
@@ -283,7 +283,9 @@ class VerilatorCoverageExecution:
             "building",
             evidence_root=prepared.build_root,
             attempt_token=token,
-            initialize_log=True,
+            log=prepare_attempt_log(
+                prepared.build_root, self._handle.selector, token, self._handle.project_root
+            ),
         )
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
@@ -439,7 +441,12 @@ class VerilatorCoverageExecution:
             "executing",
             evidence_root=prepared.build_root,
             attempt_token=transport.attempt_token,
-            initialize_log=True,
+            log=prepare_attempt_log(
+                prepared.build_root,
+                self._handle.selector,
+                transport.attempt_token,
+                self._handle.project_root,
+            ),
             tests=(request.test.name,),
         )
         try:
