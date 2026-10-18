@@ -16,18 +16,27 @@ from booley.runtime.safe_storage import refuse_symlinks
 logger = logging.getLogger(__name__)
 MAX_MAP_BYTES = 16 * 1024 * 1024
 
+JOB_TYPES = {
+    "sim": "SIM",
+    "simulate": "SIM",
+    "sim_baseline": "SIM",
+    "synth": "SYN",
+    "asic_synthesize": "SYN",
+    "lint": "LINT",
+    "lint_rtl": "LINT",
+    "fpga": "FPGA",
+    "fpga_impl": "FPGA",
+}
+
 
 def job_prefix(endpoint: str) -> str:
-    return "J-" + {
-        **dict.fromkeys(("sim", "simulate", "sim_baseline"), "SIM"),
-        **dict.fromkeys(("synth", "asic_synthesize"), "SYN"),
-        **dict.fromkeys(("lint", "lint_rtl"), "LINT"),
-        **dict.fromkeys(("fpga", "fpga_impl"), "FPGA"),
-    }.get(endpoint, "JOB")
+    return "J-" + JOB_TYPES.get(endpoint, "JOB")
 
 
 @dataclass
 class HandleMap:
+    """Display allocations and direct aliases, loaded under the owner's writer lock."""
+
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     next_number: int = 1
@@ -67,6 +76,8 @@ def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
 
 
 class HandleStore:
+    """Atomic map I/O. Writers supply serialization; readers never create files."""
+
     def __init__(self, booley_dir: Path, *, jobs: bool = False) -> None:
         self.jobs = jobs
         self.root = booley_dir / "runtime" / ("job-handles" if jobs else "sessions/handles")
@@ -148,13 +159,15 @@ def register_job(
     *,
     work_dir: str | None = None,
 ) -> None:
-    for key, jobs in ((run_id, True), (session_key, False)):
-        if not key:
-            continue
-        store = HandleStore(booley_dir, jobs=jobs)
+    if run_id:
         try:
-            predecessors = () if jobs else fallback_predecessors(key, work_dir)
-            store.reserve(key, job_prefix(endpoint) if jobs else "S", predecessors=predecessors)
+            HandleStore(booley_dir, jobs=True).reserve(run_id, job_prefix(endpoint))
         except (OSError, ValueError, RuntimeError) as exc:
-            kind = "Job" if jobs else "Session"
-            logger.warning("%s handle unavailable for Job %s: %s", kind, run_id, exc)
+            logger.warning("Job handle unavailable for Job %s: %s", run_id, exc)
+    if session_key:
+        try:
+            HandleStore(booley_dir).reserve(
+                session_key, "S", predecessors=fallback_predecessors(session_key, work_dir)
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Session handle unavailable for Job %s: %s", run_id, exc)

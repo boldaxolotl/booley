@@ -236,14 +236,17 @@ def test_missing_read_and_symlink_refusal(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "payload", ["[" * 50000 + "0" + "]" * 50000, "x" * (16 * 1024 * 1024 + 1)]
+    "payload",
+    ["[" * 50000 + "0" + "]" * 50000, "x" * (16 * 1024 * 1024 + 1)],
+    ids=["deeply-nested", "oversized"],
 )
 def test_deeply_nested_or_oversized_map_is_diagnosed_without_mutation(tmp_path, payload):
     store = handles.HandleStore(tmp_path)
     store.root.mkdir(parents=True)
     store.path.write_text(payload)
-    assert store.snapshot()[0] == {}
-    assert "handles unavailable" in store.snapshot()[1][0]
+    labels, warnings = store.snapshot()
+    assert labels == {}
+    assert "handles unavailable" in warnings[0]
     assert store.path.read_text() == payload
 
 
