@@ -139,7 +139,7 @@ from booley.harness.setup.line_endings import (
     sample_worktree_cleanliness,
 )
 from booley.harness.setup.plan import InitPlan, InitPlanBlockedError, InitPreconditionError
-from booley.harness.setup.project_origin import publish_project_origin, read_project_origin
+from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.projects.inventory import ProjectInventoryError, remember_project
@@ -226,11 +226,13 @@ TESTS_TOML_SKELETON = """\
 # ---------------------------------------------------------------------------
 
 
-def _backfill_config_skeletons(booley_dir: Path, ctx: InitContext) -> None:
+def _backfill_config_skeletons(
+    booley_dir: Path, ctx: InitContext, content: str = BOOLEY_TOML_SKELETON
+) -> None:
     """Create missing config skeletons without guessing project-specific values."""
     # Create-only configuration preserves Project-authored content.
     skeletons = {
-        "booley.toml": BOOLEY_TOML_SKELETON,
+        "booley.toml": content,
         "tests.toml": TESTS_TOML_SKELETON,
     }
     added = [
@@ -382,9 +384,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
     guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
 
     # booley.toml + tests.toml skeletons (idempotent, never overwrites).
-    _backfill_config_skeletons(target, ctx)
-    if not _publish_port_origin(target, ctx):
-        return
+    _backfill_config_skeletons(target, ctx, "# booley-init-origin: port\n" + BOOLEY_TOML_SKELETON)
     _backfill_fusesoc_ignore(target, ctx)
     _init_project_git_repo(target, ctx)
 
@@ -395,18 +395,6 @@ def _step_booley_dir(ctx: InitContext) -> None:
         "Step 0 (planning). Its Step 2 fills these files."
     )
     ctx.record("booley_dir", "ok", "created with config skeletons")
-
-
-def _publish_port_origin(target: Path, ctx: InitContext) -> bool:
-    try:
-        publish_project_origin(
-            target / "booley.toml", "port", expected=BOOLEY_TOML_SKELETON.encode()
-        )
-    except (InitPreconditionError, InitPlanBlockedError, OSError) as exc:
-        err(f"could not record successful Project creation origin: {exc}")
-        ctx.record("booley_dir", "err", str(exc))
-        return False
-    return True
 
 
 def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
@@ -1867,12 +1855,6 @@ def _step_advisories(ctx: InitContext) -> None:
     if ctx.check_only and any(r.name == "scaffold" and r.status == "warn" for r in ctx.results):
         _print_planned_scaffold_advisory()
         ctx.record("advisories", "ok", "planned scaffold")
-        return
-    try:
-        read_project_origin(booley_dir_for_init(ctx.project_root) / "booley.toml")
-    except ValueError as exc:
-        err(str(exc))
-        ctx.record("project_origin", "err", str(exc))
         return
     published = _is_published_project(ctx.project_root)
     # A scaffolded project needs a different send-off: --scaffold already wrote

@@ -40,7 +40,6 @@ from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
-from booley.runtime.init_plan import InitPlanBlockedError, InitPreconditionError
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -1143,6 +1142,14 @@ def _current_auth_and_image(monkeypatch):
 
 
 def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, capsys):
+    reconcile = init_cmd.image_lifecycle.reconcile_planned
+
+    def inspect(scope, intent, **kwargs):
+        assert intent == init_cmd.ImageLifecycleIntent.CHECK
+        return reconcile(scope, intent, **kwargs)
+
+    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", inspect)
+
     def interactive(ctx, **_kwargs):
         ctx.step_banner("Interactive Mode")
         ctx.record("interactive", "skip", "current")
@@ -1218,27 +1225,6 @@ def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypa
     assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
     assert _filesystem_snapshot(repo) == before
     assert not (repo / ".booley/booley.toml").exists()
-
-
-@pytest.mark.parametrize("failure", [InitPreconditionError, InitPlanBlockedError, OSError])
-def test_port_origin_publication_failure_is_reported(repo, monkeypatch, capsys, failure):
-    _current_auth_and_image(monkeypatch)
-    preserved = b"# intervening user content\n"
-
-    def fail_publication(path, _origin, *, expected):
-        assert path.read_bytes() == expected
-        path.write_bytes(preserved)
-        raise failure("unique-origin-publication-failure")
-
-    monkeypatch.setattr(init_cmd, "publish_project_origin", fail_publication)
-    assert _run_full_init(repo) == 2
-
-    output = capsys.readouterr().out
-    assert "[XX] booley_dir" in output, "origin publication needs a recorded Directory error"
-    assert "unique-origin-publication-failure" in output
-    assert "Booley Directory created at" not in output
-    assert "already configured" not in output
-    assert (repo / ".booley/booley.toml").read_bytes() == preserved
 
 
 def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, capsys):

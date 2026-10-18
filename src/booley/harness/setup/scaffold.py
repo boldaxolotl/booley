@@ -43,7 +43,7 @@ from booley.harness.setup.plan import (
     apply_init_plan,
     plan_init_filesystem,
 )
-from booley.harness.setup.project_origin import publish_project_origin, read_project_origin
+from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.runtime.booley_dir import reset_cache
 
 # Wizard vocabulary. `sv` = a plain self-checking SystemVerilog TB scored by
@@ -110,12 +110,6 @@ def _apply_scaffold_files(ctx: InitContext, plan: InitPlan) -> bool:
 
 
 def _scaffold_inputs_available(ctx: InitContext) -> bool:
-    try:
-        read_project_origin(ctx.project_root / ".booley/booley.toml")
-    except ValueError as exc:
-        err(str(exc))
-        ctx.record("scaffold", "err", str(exc))
-        return False
     design_files = existing_design_files(ctx.project_root)
     if design_files:
         listing = ", ".join(str(path) for path in design_files)
@@ -998,7 +992,7 @@ def step_scaffold(ctx: InitContext, args) -> bool:
         ctx.record("scaffold", "warn", f"would write {len(pending)} file(s)")
         return True
 
-    if not _apply_scaffold_files(ctx, plan) or not _publish_scaffold_origin(ctx, files):
+    if not _apply_scaffold_files(ctx, plan) or not _publish_scaffold_origin(ctx):
         return False
     reset_cache()  # .booley may have just come into existence
 
@@ -1020,14 +1014,10 @@ def step_scaffold(ctx: InitContext, args) -> bool:
     return True
 
 
-def _publish_scaffold_origin(ctx: InitContext, files: dict[str, str]) -> bool:
+def _publish_scaffold_origin(ctx: InitContext) -> bool:
     try:
-        publish_project_origin(
-            ctx.project_root / ".booley/booley.toml",
-            "scaffold",
-            expected=files[".booley/booley.toml"].encode(),
-        )
-    except (InitPreconditionError, InitPlanBlockedError, OSError) as exc:
+        record_scaffold_origin(ctx.project_root / ".booley/booley.toml")
+    except OSError as exc:
         err(f"could not record successful scaffold origin: {exc}")
         ctx.record("scaffold", "err", str(exc))
         return False

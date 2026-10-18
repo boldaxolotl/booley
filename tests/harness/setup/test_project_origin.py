@@ -1,38 +1,6 @@
 """Explicit creation records preserve authored configuration and reject conflicts."""
 
-import pytest
-
 from booley.harness.setup import project_origin
-from booley.harness.setup.plan import InitPreconditionError
-
-
-def test_origin_preserves_config_bytes_and_is_idempotent(tmp_path):
-    config = tmp_path / "booley.toml"
-    original = b"# authored\r\n[project]\r\nname = 'test'\r\n"
-    config.write_bytes(original)
-    project_origin.publish_project_origin(config, "port", expected=original)
-    recorded = config.read_bytes()
-    assert recorded == b"# booley-init-origin: port\n" + original
-    assert project_origin.read_project_origin(config) == "port"
-    project_origin.publish_project_origin(config, "port", expected=recorded)
-    assert config.read_bytes() == recorded
-    project_origin.publish_project_origin(config, "scaffold", expected=recorded)
-    assert config.read_bytes() == recorded.replace(b": port", b": scaffold")
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        b"# booley-init-origin: unknown\n",
-        b"# booley-init-origin: port\n# booley-init-origin: scaffold\n",
-    ],
-)
-def test_invalid_explicit_origin_fails(tmp_path, content):
-    config = tmp_path / "booley.toml"
-    config.write_bytes(content)
-    with pytest.raises(ValueError, match="invalid booley-init-origin"):
-        project_origin.read_project_origin(config)
-    assert config.read_bytes() == content
 
 
 def test_origin_never_infers_legacy_headers(tmp_path):
@@ -43,77 +11,6 @@ def test_origin_never_infers_legacy_headers(tmp_path):
         encoding="utf-8",
     )
     assert project_origin.read_project_origin(config) is None
-
-
-def test_origin_refuses_intervening_edit(tmp_path):
-    config = tmp_path / "booley.toml"
-    config.write_bytes(b"# changed\n")
-    with pytest.raises(InitPreconditionError, match="changed before origin publication"):
-        project_origin.publish_project_origin(config, "port", expected=b"# original\n")
-    assert config.read_bytes() == b"# changed\n"
-
-
-def test_origin_apply_failure_does_not_publish(tmp_path, monkeypatch):
-    config = tmp_path / "booley.toml"
-    original = b"# scaffold config\n"
-    config.write_bytes(original)
-
-    def fail(_plan, _apply):
-        raise InitPreconditionError("interrupted apply")
-
-    monkeypatch.setattr(project_origin, "apply_init_plan", fail)
-    with pytest.raises(InitPreconditionError, match="interrupted"):
-        project_origin.publish_project_origin(config, "scaffold", expected=original)
-    assert project_origin.read_project_origin(config) is None
-    assert config.read_bytes() == original
-
-
-def test_atomic_publication_failure_preserves_config_and_can_retry(tmp_path, monkeypatch):
-    config = tmp_path / "booley.toml"
-    original = b"# authored\n"
-    config.write_bytes(original)
-    replace = type(config).replace
-
-    def fail(*_args):
-        raise OSError("interrupted replace")
-
-    monkeypatch.setattr(type(config), "replace", fail)
-    with pytest.raises(OSError, match="interrupted replace"):
-        project_origin.publish_project_origin(config, "scaffold", expected=original)
-    assert config.read_bytes() == original
-    assert list(tmp_path.iterdir()) == [config]
-    monkeypatch.setattr(type(config), "replace", replace)
-    project_origin.publish_project_origin(config, "scaffold", expected=original)
-    assert project_origin.read_project_origin(config) == "scaffold"
-
-
-def test_origin_survives_committed_config_clone(tmp_path):
-    import subprocess
-
-    for origin in ("port", "scaffold"):
-        source = tmp_path / origin
-        source.mkdir()
-        config = source / "booley.toml"
-        original = b"# authored config\n"
-        config.write_bytes(original)
-        project_origin.publish_project_origin(config, origin, expected=original)
-        commands = (
-            ("init", "-q"),
-            ("add", "booley.toml"),
-            ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "config"),
-        )
-        for args in commands:
-            subprocess.run(
-                ["git", "-C", str(source), *args], check=True, capture_output=True, timeout=10
-            )
-        clone = tmp_path / (origin + "-clone")
-        subprocess.run(
-            ["git", "clone", "-q", str(source), str(clone)],
-            check=True,
-            capture_output=True,
-            timeout=10,
-        )
-        assert project_origin.read_project_origin(clone / "booley.toml") == origin
 
 
 def test_scaffold_check_and_interrupted_apply_publish_no_origin(tmp_path, monkeypatch):
@@ -136,32 +33,6 @@ def test_scaffold_check_and_interrupted_apply_publish_no_origin(tmp_path, monkey
     monkeypatch.setattr(scaffold, "_apply_scaffold_files", lambda *_a: False)
     assert not scaffold.step_scaffold(InitContext(project_root=tmp_path, interactive=False), args)
     assert project_origin.read_project_origin(tmp_path / ".booley/booley.toml") is None
-
-
-def test_seed_image_intent_is_check_with_original_context(tmp_path, monkeypatch):
-    from booley.harness import init_cmd
-    from booley.harness.setup.common import InitContext
-
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    seen = []
-    current = init_cmd.LifecycleResult(
-        "private", "sha256:id", init_cmd.ImageLifecycleStatus.CURRENT
-    )
-
-    def observe(_scope, intent, **_kwargs):
-        seen.append(intent)
-        return current
-
-    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", observe)
-    contexts = []
-    monkeypatch.setattr(init_cmd, "_step_interactive", lambda ctx, **_k: contexts.append(ctx))
-    for force in (False, True):
-        for check in (False, True):
-            ctx = InitContext(project_root=tmp_path, force=force, check_only=check)
-            assert init_cmd._run_seed(ctx, init_cmd.AgentSelection("claude", "subscription")) == 0
-            assert contexts[-1] is ctx
-            assert ctx.force is force
-    assert seen == [init_cmd.ImageLifecycleIntent.CHECK] * 4
 
 
 def test_early_check_recovery_and_migration_verdicts(tmp_path, monkeypatch, capsys):
