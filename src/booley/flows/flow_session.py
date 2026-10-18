@@ -30,6 +30,9 @@ class FlowSession(EndpointState):
         self.terminal_progress: TerminalProgress | None = None
         self.publication_resources = ExitStack()
         self.flow = flow
+        self._automatic_target_notice = ""
+        self._automatic_target_notice_published = False
+        flow._prepared_target_selection = None
         self.configure_flow_execution(execution_adapter)
         self.flow_acceptance = ResolvedFlowAcceptance()
         self.name = flow.name
@@ -48,6 +51,9 @@ class FlowSession(EndpointState):
     def reset_report_metadata(self) -> None:
         """Clear invocation-local Simulation metadata before admission gates."""
         self._simulation_report_outcomes = ()
+        self._automatic_target_notice = ""
+        self._automatic_target_notice_published = False
+        self.flow._prepared_target_selection = None
         self.flow.begin_invocation()
 
     @property
