@@ -1362,6 +1362,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         announce_unit(f"{role}: synthesis", target=target)
         observe_logs(
             [plan.build_dir / name for name in ("sv2v.log", "yosys.log", "openroad.log")],
+            target=target,
             temporary=role == "baseline",
         )
         start = time.monotonic()
