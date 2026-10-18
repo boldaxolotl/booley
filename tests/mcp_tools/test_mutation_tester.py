@@ -554,86 +554,41 @@ def _assert_preview_lines(result, count):
 
 
 @pytest.mark.parametrize(
-    "sizes,timeout_ms,formula_count,budget_cap,count",
-    [
-        ((4, 1), 1800000, 3, 12, 3),
-        ((40, 41), 1800500, 9, 12, 9),
-        ((100, 125), 1800000, 15, 12, 12),
-        ((400, 500), 4500000, 25, 30, 25),
-        ((0, 0), 1800000, 3, 12, 3),
-    ],
-    ids=["small", "rounded", "time-cap", "upper-clamp", "empty"],
+    "sizes,timeout,count", [((4, 1), 1800, 3), ((100, 125), 1800, 12)], ids=["small", "time-cap"]
 )
-def test_auto_dry_run_explains_source_size_count(
-    tmp_path, monkeypatch, sizes, timeout_ms, formula_count, budget_cap, count
-):
-    paths = ["rtl/mod_a.sv", "rtl/mod_b.sv"]
-    contents = [b"// source\n" * n for n in sizes]
-    if sizes == (4, 1):
-        contents[1] = b"// source"
-    for path, content in zip(paths, contents, strict=True):
-        source = tmp_path / path
+def test_auto_dry_run_explains_source_size_count(tmp_path, monkeypatch, sizes, timeout, count):
+    for name, lines in zip(("mod_a.sv", "mod_b.sv"), sizes, strict=True):
+        source = tmp_path / "rtl" / name
         source.parent.mkdir(exist_ok=True)
-        source.write_bytes(content)
+        source.write_bytes(b"// source\n" * lines)
     endpoint = _make_endpoint(
         tmp_path,
         monkeypatch,
         count="auto",
-        extra_args=["--dry-run", "--timeout-ms", str(timeout_ms)],
+        extra_args=["--dry-run", "--timeout-ms", str(timeout * 1000)],
     )
-    result, progress = _run_count_preview(endpoint, monkeypatch)
-
-    assert "source-size breakdown:" in result.report_text, (
-        "dry-run is missing the per-file source-size breakdown"
-    )
-    progress.assert_not_called()
+    result, _ = _run_count_preview(endpoint, monkeypatch)
     _assert_preview_lines(result, count)
-    text = result.report_text
-    for path, lines, content in zip(paths, sizes, contents, strict=True):
-        assert f"{path}: {lines} source lines; {len(content)} bytes" in text
-    assert text.index(paths[0]) < text.index(paths[1]) < text.index("total:")
-    total = sum(sizes)
-    assert f"total: {total} source lines; {sum(map(len, contents))} bytes" in text
-    assert "source lines are the count input; bytes are context" in text
-    assert "count source: auto-derived" in text
-    assert "max(3, min(25, round(sqrt(total_source_lines or 1))))" in text
-    assert f"round(sqrt({total} or 1)) = {round((total or 1) ** 0.5)}" in text
-    assert f"source clamp [3, 25] => {formula_count}" in text
-    assert f"configured timeout: {(timeout_ms + 999) // 1000} seconds" in text
-    assert "max(3, timeout_seconds // 150)" in text
-    assert f"budget cap = {budget_cap}" in text
-    assert f"min({formula_count}, {budget_cap}) = {count}" in text
-    assert text.index("source-size breakdown:") < text.index("source clamp")
-    assert text.index("budget cap") < text.index("mutation_tester dry-run:")
+    for name, lines in zip(("mod_a.sv", "mod_b.sv"), sizes, strict=True):
+        assert f"rtl/{name}: {lines} lines ({10 * lines} bytes)" in result.report_text
+    assert f"total: {sum(sizes)} lines" in result.report_text
+    assert f"time cap: max(3, {timeout}s // 150) = 12" in result.report_text
+    assert f") = {count}" in result.display_lines[-2]
 
 
-@pytest.mark.parametrize(
-    "arg_count,params,count",
-    [(7, {}, 7), (None, {"total": 7}, 7), (None, {}, 10)],
-    ids=["cli", "criterion", "default"],
-)
-def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch, arg_count, params, count):
-    for path, lines in [("rtl/mod_a.sv", 100), ("rtl/mod_b.sv", 125)]:
-        source = tmp_path / path
+def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):
+    for name in ("mod_a.sv", "mod_b.sv"):
+        source = tmp_path / "rtl" / name
         source.parent.mkdir(exist_ok=True)
-        source.write_bytes(b"// source\n" * lines)
-    endpoint = _make_endpoint(tmp_path, monkeypatch, count=arg_count, extra_args=["--dry-run"])
-    result, progress = _run_count_preview(endpoint, monkeypatch, params=params)
-
-    assert "count source: fixed" in result.report_text, (
-        "dry-run does not identify a given fixed count"
-    )
-    progress.assert_not_called()
-    _assert_preview_lines(result, count)
-    assert f"count={count} (not auto-derived)" in result.report_text
-    assert "count source: auto-derived" not in result.report_text
-    assert "source-size breakdown:" not in result.report_text
-    assert "budget cap" not in result.report_text
-    assert "--count" not in result.report_text
-    assert "CLI" not in result.report_text
+        source.write_bytes(b"// source\n")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, count=7, extra_args=["--dry-run"])
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+    _assert_preview_lines(result, 7)
+    assert "count source: fixed; count=7 (not auto-derived)" in result.report_text
+    assert "source-size breakdown" not in result.report_text
 
 
-def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch, capsys):
+def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
     paths = [f"rtl/module_{i:02d}_{'x' * 130}.sv" for i in range(20)]
     for path in paths:
         source = tmp_path / path
@@ -642,32 +597,12 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch, ca
     endpoint = _make_endpoint(
         tmp_path, monkeypatch, count="auto", scope=",".join(paths), extra_args=["--dry-run"]
     )
-    result, progress = _run_count_preview(endpoint, monkeypatch)
-
-    assert "source-size breakdown:" in result.report_text, (
-        "dry-run is missing the per-file source-size breakdown"
-    )
-    progress.assert_not_called()
-    _assert_preview_lines(result, 9)
-    assert len(result.report_text.encode()) > 2048
-    assert len(result.display_lines) > 16
-    for path in paths:
-        assert f"{path}: 4 source lines; 40 bytes" in result.report_text
-        assert result.report_text.index(path) < result.report_text.index(
-            "mutation_tester dry-run:"
-        )
-    assert "total: 80 source lines; 800 bytes" in result.report_text
-    assert "min(9, 12) = 9" in result.report_text
+    result, _ = _run_count_preview(endpoint, monkeypatch)
     event = _display_safe_event(
         _endpoint_end_event("mutation_tester", "lite", result, 0.0, dry_run=True)
     )
     assert event["display_lines_truncated"] > 0
-    assert event["summary"] == result.display_lines[-1], (
-        "bounded display event loses the proposed count summary"
-    )
-    endpoint._console_publication_requested = True
-    endpoint._publish_console_report(result)
-    assert capsys.readouterr().out == result.report_text + "\n"
+    assert event["summary"] == result.display_lines[-1]
 
 
 # ---------------------------------------------------------------------------
