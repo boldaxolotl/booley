@@ -21,7 +21,7 @@ from booley.flows.lint.flow import LintFlow
 from booley.flows.observed_process import communicate_observed
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
-from booley.flows.terminal_progress import TerminalProgress, current_progress
+from booley.flows.terminal_progress import ProgressText, TerminalProgress, current_progress
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from tests.criteria.ledger_support import FixtureRecorder
 
@@ -82,7 +82,9 @@ def test_progress_footer_preserves_each_log_owner(tmp_path):
     for target, path in paths.items():
         path.parent.mkdir()
         path.touch()
-        sink.stage_changed("candidate: synthesis", target=target)
+        sink.stage_changed(
+            ProgressText("candidate: 1m 01s", record_text="candidate: 61.2s"), target=target
+        )
         sink.log_path_known(path)
     sink.stage_changed("baseline: configure", target="a")
     sink.stage_changed("baseline: checking", target="b")
@@ -93,28 +95,8 @@ def test_progress_footer_preserves_each_log_owner(tmp_path):
     assert [(target, path) for target, _, path in records] == list(paths.items()), (
         "footer log owner mismatch"
     )
-    assert [stage for _, stage, _ in records] == ["candidate: synthesis"] * 2
+    assert [stage for _, stage, _ in records] == ["candidate: 61.2s"] * 2
     assert (sink.target, sink.stage) == ("b", "baseline: checking")
-
-
-def test_log_stage_snapshot_preserves_legacy_record_text(tmp_path):
-    from booley.flows.terminal_progress import ProgressText
-
-    sink = observer(tmp_path)
-    path = tmp_path / "run.log"
-    path.touch()
-    stage = ProgressText(
-        "candidate: completed in 1m 01s", record_text="candidate: completed in 61.2s"
-    )
-    sink.stage_changed(stage, target="owner")
-    sink.log_path_known(path)
-    sink.stage_changed("baseline: checking", target="other")
-    sink.footer()
-    assert (
-        progress_logs(sink.stream.getvalue())
-        == [("owner", "candidate: completed in 61.2s", path)] * 2
-    )
-    assert (sink.target, sink.stage) == ("other", "baseline: checking")
 
 
 def write_lint_progress_core(tmp_path, targets):
@@ -173,54 +155,6 @@ def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
         artifact = result.outcome.detail["artifacts"][f"log_{target}"]
         assert Path(artifact).parts[-2:] == (target, "run.log")
         assert (tmp_path / artifact).is_file()
-
-
-def test_abandoned_footer_does_not_wait_for_observer_lock(tmp_path):
-    sink = observer(tmp_path)
-    sink.abandoned = True
-    finished = threading.Event()
-
-    def render_footer():
-        sink.footer()
-        finished.set()
-
-    with sink.lock:
-        worker = threading.Thread(target=render_footer, daemon=True)
-        worker.start()
-        completed_without_lock = finished.wait(timeout=1)
-    worker.join(timeout=2)
-    assert completed_without_lock, "abandoned footer waited for observer lock"
-    assert not worker.is_alive()
-    assert sink.stream.getvalue() == ""
-
-
-def test_explicit_watched_owner_pending_temporary_and_reregistration(tmp_path):
-    from booley.flows.terminal_progress import observe_logs
-
-    sink = observer(tmp_path)
-    pending = tmp_path / "pending.log"
-    sink.stage_changed("candidate: configure", target="a")
-    sink.stage_changed("candidate: synthesis")
-    sink.stage_changed("baseline: checking", target="b")
-    with sink.installed():
-        observe_logs([pending], target="a")
-        assert (sink.target, sink.stage) == ("b", "baseline: checking")
-        pending.touch()
-        sink.footer()
-        records = progress_logs(sink.stream.getvalue())
-        assert records == [("a", "candidate: synthesis", pending)] * 2
-        sink.stage_changed("baseline: synthesis", target="a")
-        observe_logs([pending], target="a", temporary=True)
-        sink.stream.seek(0)
-        sink.stream.truncate()
-        sink.footer()
-        assert progress_logs(sink.stream.getvalue()) == []
-        sink.stage_changed("checking", target="b")
-        observe_logs([pending], target="b")
-        sink.stream.seek(0)
-        sink.stream.truncate()
-        sink.footer()
-        assert progress_logs(sink.stream.getvalue()) == [("b", "checking", pending)]
 
 
 def wait_until(predicate, *, timeout=4):

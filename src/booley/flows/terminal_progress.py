@@ -560,16 +560,11 @@ class TerminalProgress:
             self._log_failure()
 
     def footer(self) -> None:
-        if self.abandoned:
-            return
-        with self.lock:
-            if self.log_path is not None:
-                self._record(f"transcript={self.log_path}")
-            for path, registration in self.paths.items():
-                if not registration.temporary and path.is_file():
-                    self._record(
-                        f"log={path}", target=registration.target, stage=registration.stage
-                    )
+        if self.log_path is not None:
+            self._record(f"transcript={self.log_path}")
+        for path, registration in self.paths.items():
+            if not registration.temporary and path.is_file():
+                self._record(f"log={path}", target=registration.target, stage=registration.stage)
 
 
 def announce_unit(stage: str, *, target: str | None = None) -> None:
