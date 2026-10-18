@@ -770,8 +770,8 @@ async def test_time_display_pilot_snapshots(monkeypatch):
         record=replace(current.jobs.jobs[0].record, ended_at="2026-10-08T10:01:01Z"),
     )
     detail = job_detail(completed, now=current.observed_at)
-    assert "Start: 14:00:00 · End: 14:01:01" in detail, "dashboard time migration missing"
-    assert "Elapsed: 1m 01s" in detail
+    assert "Start: 14:00:00\nEnd: 14:01:01" in detail, "dashboard time migration missing"
+    assert "elapsed 1m 01s" in detail
     _check_time_edge_fields(current, completed)
     current = replace(
         current, jobs=JobSnapshot((completed,)), activity={"codex:00": Activity(WORKING, STAMP)}
@@ -795,7 +795,7 @@ def _check_time_edge_fields(current, completed):
     invalid = replace(
         completed, record=replace(completed.record, started_at="bad", ended_at="bad")
     )
-    assert "Start: unknown · End: unknown" in job_detail(invalid, now=current.observed_at)
+    assert "Start: unknown\nEnd: unknown" in job_detail(invalid, now=current.observed_at)
     future = replace(current.sessions[0], last_call_at="2026-10-09T10:00:00Z")
     future_app = DashboardApp(lambda: current)
     future_app.snapshot = replace(current, sessions=(future,))
@@ -836,7 +836,7 @@ async def _capture_time_pilot(monkeypatch, current, completed, orientation, size
         app.render_snapshot()
         await pilot.pause()
         shown = str(app.query_one("#detail", Static).render())
-        assert "Start: 14:00:00 · End: 14:01:01" in shown
+        assert "Start: 14:00:00\nEnd: 14:01:01" in shown
         if output:
             (root / f"dashboard-{size[0]}x{size[1]}.svg").write_text(app.export_screenshot())
             (root / f"dashboard-{size[0]}x{size[1]}.txt").write_text(orientation + "\n" + shown)
@@ -853,7 +853,7 @@ def test_absent_time_fields_keep_unavailable_markers():
     assert "unavailable" in _job_summary(missing, current.observed_at), (
         "absent time marker changed"
     )
-    assert "Elapsed: unavailable" in job_detail(missing, now=current.observed_at)
+    assert "elapsed unavailable" in job_detail(missing, now=current.observed_at)
     evidence = model.GoalDetail(
         "clock", "passing", CriterionPresentation("Lint top", "", "", "", ""), {}
     )
@@ -1083,3 +1083,69 @@ def test_dashboard_palette_imports_have_no_copied_codes():
                 assert node.value not in codes if isinstance(node.value, int) else True
                 if isinstance(node.value, str):
                     assert not any(f"color({code})" in node.value for code in codes)
+
+
+def _compact_result_job(report, code=0):
+    return JobView(
+        Path("/jobs"),
+        JobRecord("compact", "sim", STAMP, 60, status="done", exit_code=code, ended_at=STAMP),
+        "completed",
+        report=report,
+        report_path=Path("/reports/one.json") if report else None,
+        artifacts=("/reports/sim.log",) if report else (),
+    )
+
+
+async def _result_pilot(report, expected, code=0, compact=False):
+    from textual.containers import VerticalScroll
+
+    from tests.harness.test_dashboard_results import campaign
+
+    if report == "passing":
+        report = {"flow": "sim", "detail": {"campaigns": {"top": campaign()}}}
+    item = _compact_result_job(report, code)
+    current = replace(snapshot(1), jobs=JobSnapshot((item,)))
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.press("r")
+        await pilot.pause()
+        widget = app.query_one("#detail", Static)
+        text = str(widget.content)
+        assert "Flow result:" in text, "Pilot must show the new Flow result in the selected pane"
+        assert expected in text
+        if compact:
+            aside = app.query_one("#aside", VerticalScroll)
+            assert aside.virtual_size.height <= aside.size.height
+            assert text.splitlines()[0] == "Flow result: PASSED · 2/2 tests passed · grade pass"
+            assert len(text.splitlines()[0]) <= widget.size.width
+            content = widget.content
+            links = [
+                span for span in content.spans if getattr(span.style, "meta", {}).get("@click")
+            ]
+            assert content.plain[links[-1].start : links[-1].end] == str(Path("/reports/one.json"))
+            assert (
+                widget.region.y + text.splitlines().index(str(Path("/reports/one.json")))
+                < aside.region.bottom
+            )
+        if report is None:
+            assert text.count("Summary unavailable") == 1
+            assert "Execution:" in text
+
+
+@pytest.mark.asyncio
+async def test_pilot_compact_passing_result():
+    await _result_pilot("passing", "Flow result: PASSED", compact=True)
+
+
+@pytest.mark.asyncio
+async def test_pilot_failing_result_names():
+    from tests.harness.test_dashboard_results import campaign
+
+    await _result_pilot(
+        {"flow": "sim", "detail": {"campaigns": {"top": campaign(1, 1)}}}, "test_bad", 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_pilot_no_report_result():
+    await _result_pilot(None, "Summary unavailable")
