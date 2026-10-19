@@ -299,9 +299,6 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
 
 
 def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):
-    import json
-
-    from booley.flows.endpoint_reporting import write_report
     from booley.flows.endpoint_session import prepare_execution
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
@@ -311,11 +308,14 @@ def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeyp
     flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "rejected")
     flow._campaign_endpoint_outcome([campaign])
     previous = flow.context._simulation_campaign_outcomes
-    monkeypatch.setattr(
-        flow.context, "_apply_pre_state_gate", lambda: EndpointOutcome(exit_code=2)
-    )
-    result = prepare_execution(flow.context)
-    with flow.context.publication_resources:
-        path = write_report(flow.context, flow.context._adapt_outcome(result))
-    assert "cycle_counts" not in json.loads(path.read_text())
-    assert flow.context._simulation_campaign_outcomes is previous
+    rejected = EndpointOutcome(exit_code=2)
+
+    def gate():
+        with flow.context.publication_resources:
+            path = flow.context.write_report(flow.context._adapt_outcome(rejected))
+        assert '"cycle_counts"' not in path.read_text()
+        assert flow.context._simulation_campaign_outcomes is previous
+        return rejected
+
+    monkeypatch.setattr(flow.context, "_apply_pre_state_gate", gate)
+    assert prepare_execution(flow.context) is rejected

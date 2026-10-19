@@ -831,6 +831,7 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
     monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", unexpected_read)
     result = flow._campaign_endpoint_outcome([outcome])
     assert ("cycles=" in result.report_text) is (count is not None)
+    assert "cycle counts omitted" not in result.report_text
     assert result.detail["pre_sim_current"] == 0
 
 
