@@ -517,6 +517,19 @@ def _read_owned_record(
         raise ImageLifecycleError(f"cannot read refresh image ownership: {exc}") from exc
 
 
+def owned_image_ids(identity: str) -> tuple[str, ...]:
+    """Exact image IDs the ownership records still attribute to a canonical stored root."""
+    store = _owned_store()
+    if not store.validate_existing_directory():
+        return ()
+    prefix = hashlib.sha256(identity.encode()).hexdigest() + "-"
+    return tuple(
+        image
+        for path in sorted(store.root.glob(prefix + "*.json"))
+        for image in _read_owned_record(store, path.name)[2]
+    )
+
+
 def _owned_image_blocker(image: str, docker: DockerPort) -> str:
     if any(row.image_id == image for row in docker.image_references()):
         return "tag/keeper"

@@ -90,6 +90,7 @@ def test_projects_forget_reports_the_exact_root(
             "tag": keeper_image(project),
             "image_id": None,
         },
+        "leftovers": [],
     }
 
 
@@ -140,11 +141,48 @@ def test_projects_forget_human_output_names_root(
         "forget_project",
         lambda _project: (project, image_keepers.KeeperRelease("absent", "keeper")),
     )
+    monkeypatch.setattr(runtime_image_keepers, "project_leftovers", lambda _project: ())
 
     args = _parser().parse_args(["projects", "forget", str(project)])
 
     assert _run(args) == 0
-    assert f"Forgot remembered Project path: {project}" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert f"Forgot remembered Project path: {project}" in output
+    assert "No Docker resources left behind for this Project." in output
+
+
+def test_forget_lists_leftovers_with_sizes_and_tags(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.config.sandbox import project_image_name
+
+    project = _remember(tmp_path)
+    image = "sha256:" + "a" * 64
+    keeper_host.tags.update({f"{project_image_name(project)}:latest": image, "mirror:x": image})
+    assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
+    assert (
+        f"Left behind for this Project:\n  image {image} 1GB [shared] tags: "
+        f"mirror:x, {project_image_name(project)}:latest\n"
+    ) in capsys.readouterr().out
+
+
+def test_forget_reports_leftover_listing_failure_after_forgetting(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _remember(tmp_path)
+
+    def fail(_identity: str) -> tuple[()]:
+        raise RuntimeError("daemon went away")
+
+    monkeypatch.setattr(runtime_image_keepers, "leftovers", fail)
+    assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 2
+    assert "could not list its leftover Docker resources: daemon went away" in (
+        capsys.readouterr().err
+    )
+    assert project_inventory.project_inventory() == ()
 
 
 def test_projects_human_output_explains_empty_inventory(
@@ -197,12 +235,25 @@ class FakeDocker:
         self.calls: list[list[str]] = []
         self.fail_remove: str | None = None
 
-    def __call__(self, args: Any, **kwargs: Any) -> Any:
+    def __call__(self, args: Any, **kwargs: Any) -> Any:  # noqa: PLR0911 -- one branch per Docker command
         import subprocess
 
         self.calls.append(args)
         if args[:2] == ["image", "ls"]:
-            return subprocess.CompletedProcess(args, 0, "\n".join(self.tags), "")
+            # The leftover report asks for ID, reference and size rows.
+            rows = (
+                "".join(
+                    f"{image}\t{tag}\t1GB\n"
+                    for tag, image in self.tags.items()
+                    if not tag.startswith("sha256:")
+                )
+                if "--all" in args
+                else "\n".join(self.tags)
+            )
+            return subprocess.CompletedProcess(args, 0, rows, "")
+        if args[:2] in (["volume", "ls"], ["network", "ls"]) or "--filter" in args:
+            # No state volumes, networks, or Project-labelled containers on this host.
+            return subprocess.CompletedProcess(args, 0, "", "")
         if args[:2] == ["container", "ls"]:
             return subprocess.CompletedProcess(args, 0, "\n".join(self.containers), "")
         if args[:2] == ["container", "inspect"]:
@@ -691,7 +742,8 @@ def test_human_keeper_outcomes_identify_image_and_retained_tags(
     image = "sha256:" + "a" * 64
     release = image_keepers.KeeperRelease("retained-in-use", "keeper", image)
     assert (
-        project_inventory_cli._render_forgotten(Path("/project"), release, json_output=False) == 0
+        project_inventory_cli._render_forgotten(Path("/project"), release, (), json_output=False)
+        == 0
     )
     assert image in capsys.readouterr().out
     result = image_keepers.PruneResult("digest", (), retained=["changed", "unresolved"])

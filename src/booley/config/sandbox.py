@@ -15,9 +15,13 @@ SANDBOX_IMAGE = "booley-sandbox"
 
 def project_image_name(project_root: Path) -> str:
     """Return the deterministic Docker-safe tag for a generated Project image."""
-    project_root = project_root.resolve()
-    slug = re.sub(r"[^a-z0-9_.-]+", "-", project_root.name.lower()).strip("-._")
-    owner = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()[:24]
+    return project_image_name_for_identity(str(project_root.resolve()))
+
+
+def project_image_name_for_identity(identity: str) -> str:
+    """Name the image for an already canonical stored root without touching the filesystem."""
+    slug = re.sub(r"[^a-z0-9_.-]+", "-", Path(identity).name.lower()).strip("-._")
+    owner = hashlib.sha256(identity.encode()).hexdigest()[:24]
     return f"{slug or 'project'}-{SANDBOX_IMAGE}-{owner}"
 
 

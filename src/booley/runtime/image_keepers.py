@@ -10,9 +10,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from booley.projects import inventory
-from booley.projects.image_keepers import Candidate, KeeperRelease, PruneResult
+from booley.projects.image_keepers import Candidate, KeeperRelease, Leftover, PruneResult
 from booley.runtime import interactive_docker as docker
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.project_resources import leftovers
 from booley.runtime.session_issuance import keeper_image_for_identity
 from booley.runtime.session_refresh import shared_recovery_blocks_command
 
@@ -62,6 +63,16 @@ def forget_project(project: Path) -> tuple[Path, KeeperRelease]:
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
     return forgotten, outcomes[0]
+
+
+def project_leftovers(project: Path) -> tuple[Leftover, ...]:
+    """List what a forgotten root still holds in Docker; never mutates."""
+    try:
+        return leftovers(str(project))
+    except (RuntimeError, OSError) as exc:
+        raise inventory.ProjectInventoryError(
+            f"forgot {project}, but could not list its leftover Docker resources: {exc}"
+        ) from exc
 
 
 def _protected_tags(roots: frozenset[str]) -> frozenset[str]:
