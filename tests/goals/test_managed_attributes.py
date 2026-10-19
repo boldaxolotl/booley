@@ -1,21 +1,19 @@
-"""Real Git projections and Finish under Project Initialization's local policy."""
+"""Real Git checkout policy, canonical replay, and Finish recovery."""
 
-import hashlib
 import json
-import os
 from pathlib import Path
 
 import pytest
 
-from booley.goals.committed_bytes import attributes, byte_policy, projected_blobs
-from booley.goals.committed_export import export_tree, materializations_unchanged
+from booley.goals.committed_export import materializations_unchanged
 from booley.goals.finish import finish_goal
-from booley.goals.input_identity import root_bindings
 from booley.goals.lifecycle import LifecycleError
+from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
+from tests.conftest import symlink_or_skip
+from tests.goals.attribute_support import system_attributes as system_attributes  # noqa: PLC0414 — pytest fixture
 from tests.goals.conftest import enter_goals, git
-from tests.goals.test_committed_export import raw_blob, repository
-from tests.goals.test_finish import environment, request
+from tests.goals.test_finish import Crash, environment, request
 from tests.goals.test_finish_inputs import paired_complete
 from tests.goals.test_status import publish
 
@@ -29,67 +27,101 @@ def managed_attributes(root):
     return path
 
 
+@pytest.fixture
+def projection(tmp_path, request):
+    from tests.goals.test_attribute_projection import capture, export, source
+
+    root, pin, scratch = source(tmp_path, content=getattr(request, "param", b"$Id$\n"))
+
+    def project():
+        rows = export(root, pin, scratch)
+        git(root, "checkout-index", "--all", "--force")
+        assert (scratch / "view/rtl.txt").read_bytes() == (root / "rtl.txt").read_bytes()
+        return capture(root, rows)
+
+    return root, project
+
+
+def external_policy(root, tmp_path, monkeypatch, source, rule):
+    path = tmp_path / "git/attributes"
+    path.parent.mkdir()
+    path.write_text(rule + "\n")
+    if source == "user":
+        git(root, "config", "core.attributesFile", str(path))
+    elif source == "default-user":
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    else:
+        config = tmp_path / "system.config"
+        git(root, "config", "--file", str(config), "core.attributesFile", str(path))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "0")
+
+
 @pytest.mark.parametrize("managed", [False, True])
-def test_info_policy_projection_matches_real_checkout(tmp_path, managed):
-    root = repository(tmp_path / "source")
+@pytest.mark.parametrize(
+    "projection", [b"one\r\ntwo\r\n", b"one\ntwo\n"], ids=["crlf", "lf"], indirect=True
+)
+def test_info_policy_projection_matches_real_checkout(projection, managed):
+    root, project = projection
     git(root, "config", "core.eol", "crlf")
-    for name, content in {"crlf.txt": b"one\r\ntwo\r\n", "lf.txt": b"one\ntwo\n"}.items():
-        git(
-            root,
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            f"100644,{raw_blob(root, content)},{name}",
-        )
-    git(root, "commit", "-qm", "raw line endings")
     if managed:
         managed_attributes(root)
-    git(root, "checkout-index", "--all", "--force")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    proof = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert attributes(root, git(root, "rev-parse", "HEAD"), [b"lf.txt"], policy=byte_policy(root))[
-        b"lf.txt"
-    ]["eol"] == ("lf" if managed else "unspecified")
-    for name in ("crlf.txt", "lf.txt"):
-        assert (scratch / "view" / name).read_bytes() == (root / name).read_bytes()
-    assert proof[0]["policy"]["managed_rule"] == (GITATTRIBUTES_RULE if managed else "")
-    roots = root_bindings({"rtl": root, "project": root})
-    capture = {"committed_materializations": proof, "path_roots": roots}
-    assert materializations_unchanged(capture, roots)
-    if managed:
-        (root / ".git/info/attributes").unlink()
-        assert not materializations_unchanged(capture, roots)
+    proof, roots = project()
+    rows = proof["committed_materializations"]
+    assert rows[0]["policy"]["managed_rule"] == (GITATTRIBUTES_RULE if managed else "")
+    assert materializations_unchanged(proof, roots)
 
 
-@pytest.mark.parametrize("source", ["extra-info", "user-file", "default-user", "system-config"])
-def test_other_ambient_policy_is_refused_even_when_managed_rule_masks_it(
-    tmp_path, monkeypatch, source
+@pytest.mark.parametrize(
+    "source,rule",
+    [(source, "* text eol=crlf") for source in ("user", "default-user", "system-config")]
+    + [("user", "nonexistent text eol=crlf"), ("user", "*.txt diff=markdown")],
+    ids=["user-masked", "default-user-masked", "system-config-masked", "unmatched", "diff"],
+)
+def test_managed_policy_accepts_user_attributes(projection, tmp_path, monkeypatch, source, rule):
+    root, project = projection
+    managed_attributes(root)
+    external_policy(root, tmp_path, monkeypatch, source, rule)
+    project()
+
+
+def test_managed_policy_accepts_masked_system_checkout_attributes(system_attributes, projection):
+    root, project = projection
+    managed_attributes(root)
+    system_attributes.write_text("* text eol=crlf\n")
+    project()
+
+
+@pytest.mark.parametrize(
+    "managed,rule",
+    [
+        (False, "text eol=crlf"),
+        (False, "text eol=lf"),
+        (False, "ident"),
+        (False, "crlf"),
+        (True, "ident"),
+        (True, "crlf"),
+    ],
+)
+def test_no_managed_policy_refuses_real_system_attributes(
+    system_attributes, projection, managed, rule
 ):
-    root = repository(tmp_path / "source")
-    (root / "rtl.v").write_bytes(b"design\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    info = managed_attributes(root)
-    if source == "extra-info":
-        info.write_bytes(info.read_bytes() + b"nonexistent text\n")
-    else:
-        user = tmp_path / "git/attributes"
-        user.parent.mkdir()
-        user.write_bytes(b"* text eol=crlf\n")
-        if source == "user-file":
-            git(root, "config", "core.attributesFile", str(user))
-        elif source == "default-user":
-            monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-        else:
-            system = tmp_path / "system.config"
-            git(root, "config", "--file", str(system), "core.attributesFile", str(user))
-            monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(system))
-            monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "0")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    with pytest.raises(LifecycleError, match="unsupported ambient input attributes"):
-        export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
+    root, project = projection
+    if managed:
+        managed_attributes(root)
+    system_attributes.write_text("* " + rule + "\n")
+    with pytest.raises(LifecycleError, match="unsupported ambient input attributes;"):
+        project()
+
+
+@pytest.mark.parametrize("source", ["user", "default-user", "system-config"])
+def test_no_managed_policy_preserves_ineffective_external_attributes(
+    layout, tmp_path, monkeypatch, source
+):
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
+    publish(layout)
+    external_policy(layout.worktree, tmp_path, monkeypatch, source, "nonexistent text eol=crlf")
+    assert finish_goal(request(layout), environment(layout))["status"] == "finished"
 
 
 @pytest.mark.parametrize("paired", [False, True])
@@ -104,37 +136,51 @@ def test_finish_accepts_and_records_managed_policy_for_each_participant(layout, 
     call = request(layout)
     result = finish_goal(call, environment(layout))
     assert result["status"] == "finished"
-    proof = json.loads(Path(result["package"]).read_bytes())["input_proof"]
-    assert all(
-        row["policy"]["managed_rule"] == GITATTRIBUTES_RULE
-        for row in proof["committed_materializations"]
-    )
+    package = json.loads(Path(result["package"]).read_bytes())
+    rows = package["input_proof"]["committed_materializations"]
+    assert all(row["policy"]["managed_rule"] == GITATTRIBUTES_RULE for row in rows)
     assert finish_goal(call, environment(layout)) == result
 
 
-@pytest.mark.parametrize("content", [b"", b" " + GITATTRIBUTES_RULE.encode() + b" \r\n"])
-def test_empty_info_or_recognized_rule_whitespace_is_safe(tmp_path, content):
-    root = repository(tmp_path / "source")
-    (root / "rtl.v").write_bytes(b"design\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    managed_attributes(root).write_bytes(content)
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    proof = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert proof[0]["policy"]["info_attributes_sha256"] == (
-        hashlib.sha256(content).hexdigest() if content else ""
+@pytest.mark.parametrize(
+    "comment", [b"existing policy", b"raw \xff comment"], ids=["ascii", "non-utf8-comment"]
+)
+def test_init_preserves_export_only_content_and_finish_replays_it(
+    layout, tmp_path, monkeypatch, comment
+):
+    external_policy(layout.worktree, tmp_path, monkeypatch, "default-user", "# no checkout policy")
+    info = managed_attributes(layout.worktree)
+    exports = b"\n\nrtl.v export-ignore -export-subst\n*.txt -export-ignore export-subst\n"
+    extra = b"# " + comment + exports
+    info.write_bytes(extra)
+    git(layout.worktree, "config", "--unset", "core.autocrlf")
+    report = reconcile_project_line_endings(
+        layout.worktree, layout.worktree / ".booley", mode=LineEndingMode.REPAIR
     )
-
-
-@pytest.mark.parametrize("change", ["remove", "extra"])
-def test_finish_recovery_revalidates_local_policy(layout, change):
-    from tests.goals.test_finish import Crash
-
+    assert report.status.value == "safe"
+    assert info.read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n" + extra
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
-    info = managed_attributes(layout.worktree)
+    result = finish_goal(request(layout), environment(layout))
+    assert result["status"] == "finished"
+    assert comment not in Path(result["package"]).read_bytes()
+
+
+@pytest.mark.parametrize("content", [b"", b" " + GITATTRIBUTES_RULE.encode() + b" \r\n"])
+def test_empty_info_or_recognized_rule_whitespace_is_safe(projection, content):
+    root, project = projection
+    managed_attributes(root).write_bytes(content)
+    project()
+
+
+@pytest.mark.parametrize("change", ["remove", "extra", "add"])
+def test_finish_recovery_revalidates_local_policy(layout, change):
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
+    publish(layout)
     call = request(layout)
+    info = managed_attributes(layout.worktree)
+    if change == "add":
+        info.unlink()
 
     def stop(name):
         if name == "finishing":
@@ -142,74 +188,57 @@ def test_finish_recovery_revalidates_local_policy(layout, change):
 
     with pytest.raises(Crash):
         finish_goal(call, environment(layout, stop))
-    if change == "remove":
-        info.unlink()
-        result = finish_goal(call, environment(layout))
-        assert result["status"] == "revalidation_required"
-    else:
+    if change == "extra":
         info.write_bytes(info.read_bytes() + b"nonexistent text\n")
         with pytest.raises(LifecycleError, match="unsupported ambient input attributes"):
             finish_goal(call, environment(layout))
-
-
-@pytest.mark.parametrize("source", ["user-directory", "invalid-system-switch"])
-def test_unsafe_attribute_inputs_refuse_with_actionable_error(tmp_path, monkeypatch, source):
-    root = repository(tmp_path / "source")
-    (root / "rtl.v").write_bytes(b"design\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    managed_attributes(root)
-    if source == "user-directory":
-        (tmp_path / "git/attributes").mkdir(parents=True)
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     else:
-        monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "invalid")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    with pytest.raises(LifecycleError, match="managed info/attributes"):
-        export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
+        if change == "remove":
+            info.unlink()
+        else:
+            managed_attributes(layout.worktree)
+        assert finish_goal(call, environment(layout))["status"] == "revalidation_required"
 
 
-def test_numeric_system_disable_switch_keeps_managed_projection_hermetic(tmp_path, monkeypatch):
-    root = repository(tmp_path / "source")
-    (root / "rtl.v").write_bytes(b"design\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    managed_attributes(root)
-    monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "2")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert (scratch / "view/rtl.v").read_bytes() == b"design\n"
-
-
-@pytest.mark.parametrize("change", ["managed", "extra-line"])
-def test_policy_drift_between_attribute_query_and_projection_refuses(tmp_path, change):
-    from booley.runtime.pinned_history import tree_rows
-
-    root = repository(tmp_path / "source")
-    (root / "rtl.v").write_bytes(b"design\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    pin = git(root, "rev-parse", "HEAD")
-    policy = byte_policy(root)
-    attrs = attributes(root, pin, [b"rtl.v"], policy=policy)
+def test_comment_only_policy_edits_preserve_recovery(projection):
+    root, project = projection
     info = managed_attributes(root)
-    if change == "extra-line":
+    info.write_bytes(info.read_bytes() + b"# private local context\n")
+    proof, roots = project()
+    assert "private local context" not in json.dumps(proof)
+    policy = proof["committed_materializations"][0]["policy"]
+    assert set(policy) == {"autocrlf", "eol", "managed_rule", "checkout_attributes"}
+    info.write_bytes(info.read_bytes().replace(b"private local context", b"another comment"))
+    assert materializations_unchanged(proof, roots)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "parent-symlink"])
+def test_unsafe_info_source_uses_legacy_effective_comparison(projection, tmp_path, kind):
+    root, project = projection
+    info = managed_attributes(root)
+    if kind == "directory":
+        info.unlink()
+        info.mkdir()
+        assert project()[0]["committed_materializations"][0]["policy"]["managed_rule"] == ""
+        return
+    target = tmp_path / "attributes"
+    if kind == "symlink":
+        info.rename(target)
+        symlink_or_skip(info, target)
+    else:
+        info.parent.rename(target)
+        symlink_or_skip(info.parent, target, target_is_directory=True)
+    with pytest.raises(LifecycleError, match="unsupported ambient input attributes;"):
+        project()
+
+
+@pytest.mark.parametrize("source", ["info", "user"])
+def test_extra_local_policy_or_user_ident_is_refused(projection, tmp_path, monkeypatch, source):
+    root, project = projection
+    info = managed_attributes(root)
+    if source == "info":
         info.write_bytes(info.read_bytes() + b"nonexistent text\n")
-    with pytest.raises(LifecycleError, match="input attributes changed during finish"):
-        projected_blobs(root, pin, tree_rows(root, pin), attrs, policy)
-
-
-@pytest.mark.parametrize("selection", ["", os.devnull])
-def test_disabled_user_attributes_accept_managed_policy(tmp_path, selection):
-    root = repository(tmp_path / "source")
-    (root / "rtl.v").write_bytes(b"design\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    managed_attributes(root)
-    git(root, "config", "core.attributesFile", selection)
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert (scratch / "view/rtl.v").read_bytes() == b"design\n"
+    else:
+        external_policy(root, tmp_path, monkeypatch, "user", "* ident")
+    with pytest.raises(LifecycleError, match="unsupported ambient input attributes;"):
+        project()
