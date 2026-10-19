@@ -75,7 +75,7 @@ class GoalPresentationProvider(Protocol):
 class CandidateStoreProvider(Protocol):
     """Optional neutral paths for recording advisory coverage candidates."""
 
-    def candidate_store_paths(self) -> tuple[str, Path, Path]: ...
+    def candidate_store_paths(self) -> tuple[Path, Path]: ...
 
 
 def execution_presentation(

@@ -55,11 +55,25 @@ def _screened(point_id: str, source_sha256: str, screening: str = "ready_for_hum
     ]
 
 
+def _record_candidates(
+    context, loaded, campaign, path, sha, *, invocation_id="7", screening="ready_for_human_review"
+):
+    return record_goal_candidates(
+        context,
+        campaign,
+        loaded.summary,
+        path,
+        _screened(campaign.points[0].id, sha, screening),
+        invocation_id=invocation_id,
+        now=_NOW,
+    )
+
+
 @pytest.fixture
 def record_context(tmp_path: Path):
     path = source_project(tmp_path)
     loaded = read_coverage_campaign(path)
-    context = GoalCandidateContext("g-1", tmp_path / "reports", tmp_path / "record")
+    context = GoalCandidateContext(tmp_path / "reports", tmp_path / "record")
     campaign = _strict_failure(loaded.campaign)
     source_sha256 = str(campaign.source_closure["rtl"][0]["sha256"])
     return context, loaded, campaign, path, source_sha256
@@ -67,17 +81,8 @@ def record_context(tmp_path: Path):
 
 def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(record_context) -> None:
     context, loaded, campaign, path, sha = record_context
-    point_id = campaign.points[0].id
 
-    section = record_goal_candidates(
-        context,
-        campaign,
-        loaded.summary,
-        path,
-        _screened(point_id, sha),
-        invocation_id="7",
-        now=_NOW,
-    )
+    section = _record_candidates(context, loaded, campaign, path, sha)
 
     assert section["status"] == "recorded", section
     assert section["recorded"] == 1
@@ -85,7 +90,7 @@ def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(record_cont
     assert section["verdicts"]["provisional"] == "pass"
     (candidate,) = section["verdicts"]["candidates"]
     assert candidate["status"] == "offered" and candidate["needed"] is True
-    record = store.load(context.record_dir, "g-1")
+    record = store.load(context.record_dir)
     (stored,) = record.candidates.values()
     assert stored.binding.campaign_path == "sim/12/targets/sim_counter/coverage.json"
     assert stored.binding.manifest_sha256 == loaded.summary.manifest_sha256
@@ -94,35 +99,26 @@ def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(record_cont
 
 
 def test_investigate_candidates_are_not_recorded(record_context) -> None:
-    context, loaded, campaign, path, sha = record_context
+    context = record_context[0]
 
-    section = record_goal_candidates(
-        context,
-        campaign,
-        loaded.summary,
-        path,
-        _screened(campaign.points[0].id, sha, screening="investigate"),
-        invocation_id="7",
-        now=_NOW,
-    )
+    section = _record_candidates(*record_context, screening="investigate")
 
     assert section["recorded"] == 0
     assert section["verdicts"]["provisional"] == "fail"
-    assert store.load(context.record_dir, "g-1").is_empty
+    assert store.load(context.record_dir).is_empty
 
 
 def test_rejected_point_is_filtered_from_later_proposals(record_context) -> None:
     context, loaded, campaign, path, sha = record_context
     point_id = campaign.points[0].id
-    store.record_rejections(
-        context.record_dir,
-        "g-1",
+    record = store.rejected_record(
+        store.CandidateRecord(),
         [store.Rejection(campaign.target.identity, point_id, sha, "2026-09-30T11:00:00Z", "A.R.")],
     )
+    context.record_dir.mkdir(parents=True)
+    store.waiver_candidates_path(context.record_dir).write_bytes(record.to_bytes())
 
-    section = record_goal_candidates(
-        context, campaign, loaded.summary, path, _screened(point_id, sha), invocation_id="7"
-    )
+    section = _record_candidates(context, loaded, campaign, path, sha)
 
     assert (section["recorded"], section["filtered_by_rejection"]) == (0, 1)
 
@@ -133,14 +129,7 @@ def test_campaign_outside_the_record_flow_reports_is_refused(
     context, loaded, campaign, path, sha = record_context
     elsewhere = replace(context, flow_reports_root=tmp_path / "other")
 
-    section = record_goal_candidates(
-        elsewhere,
-        campaign,
-        loaded.summary,
-        path,
-        _screened(campaign.points[0].id, sha),
-        invocation_id="7",
-    )
+    section = _record_candidates(elsewhere, loaded, campaign, path, sha)
 
     assert section["status"] == "failed"
     assert "flow-reports" in section["reason"]
@@ -160,18 +149,11 @@ def test_legacy_campaign_without_point_store_is_refused(record_context) -> None:
 
 def test_corrupt_candidate_record_is_reported_not_raised(record_context) -> None:
     context, loaded, campaign, path, sha = record_context
-    record_path = store.waiver_candidates_path(context.record_dir, context.slug)
+    record_path = store.waiver_candidates_path(context.record_dir)
     record_path.parent.mkdir(parents=True)
     record_path.write_text("{not json", encoding="utf-8")
 
-    section = record_goal_candidates(
-        context,
-        campaign,
-        loaded.summary,
-        path,
-        _screened(campaign.points[0].id, sha),
-        invocation_id="7",
-    )
+    section = _record_candidates(context, loaded, campaign, path, sha)
 
     assert section["status"] == "failed"
     assert record_path.read_text(encoding="utf-8") == "{not json"
@@ -211,7 +193,7 @@ def _unreachable_model(monkeypatch):
 
 def test_run_records_candidates_in_goal_mode(tmp_path: Path, monkeypatch) -> None:
     path = source_project(tmp_path)
-    context = GoalCandidateContext("g-1", tmp_path / "reports", tmp_path / "record")
+    context = GoalCandidateContext(tmp_path / "reports", tmp_path / "record")
     monkeypatch.setattr(analyst_module.GoalCandidateContext, "from_recorder", lambda *_: context)
     analyst = CoverageAnalystSpecialist(model=_unreachable_model(monkeypatch))
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
@@ -243,20 +225,12 @@ def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(
 ):
     context, loaded, campaign, path, sha = record_context
     goal_dir = tmp_path / "goals" / "evidence-20261007T100000Z"
-    context = replace(context, slug=goal_dir.name, record_dir=goal_dir)
-    section = record_goal_candidates(
-        context,
-        campaign,
-        loaded.summary,
-        path,
-        _screened(campaign.points[0].id, sha),
-        invocation_id="1",
-        now=_NOW,
-    )
+    context = replace(context, record_dir=goal_dir)
+    section = _record_candidates(context, loaded, campaign, path, sha, invocation_id="1")
     assert section["status"] == "recorded"
     assert (goal_dir / "waiver-candidates.json").is_file()
     assert not (context.record_dir / "waiver-candidates").exists()
-    assert not store.load(goal_dir, context.slug).is_empty
+    assert not store.load(goal_dir).is_empty
 
 
 def test_image_alias_reports_root_records_canonical_campaign(
@@ -271,17 +245,9 @@ def test_image_alias_reports_root_records_canonical_campaign(
     symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
     configure_project_alias(monkeypatch, alias, tmp_path / "reports")
     context = replace(context, flow_reports_root=alias)
-    section = record_goal_candidates(
-        context,
-        campaign,
-        loaded.summary,
-        path,
-        _screened(campaign.points[0].id, sha),
-        invocation_id="7",
-        now=_NOW,
-    )
+    section = _record_candidates(context, loaded, campaign, path, sha)
     assert section["status"] == "recorded", section
-    record = store.load(context.record_dir, "g-1")
+    record = store.load(context.record_dir)
     assert (
         next(iter(record.candidates.values())).binding.campaign_path
         == "sim/12/targets/sim_counter/coverage.json"

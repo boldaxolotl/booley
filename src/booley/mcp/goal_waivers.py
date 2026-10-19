@@ -152,7 +152,7 @@ class GoalWaiverService:
         )
 
     def _candidate(self, candidate_id: str) -> candidates.WaiverCandidate:
-        record = candidates.load(self.paths.root, self.record.id)
+        record = candidates.load(self.paths.root)
         found = [item for item in record.candidates.values() if item.candidate_id == candidate_id]
         if len(found) != 1:
             raise ProposalError(
@@ -171,7 +171,6 @@ class GoalWaiverService:
         reference = cast("Mapping[str, Any]", detail["coverage_campaign_reference"])
         if (
             binding.campaign_path != reference["path"]
-            or binding.campaign_id != resolved.loaded.campaign.campaign_id
             or binding.manifest_sha256 != summary.manifest_sha256
             or summary.point_store is None
             or binding.point_store_sha256 != summary.point_store.sha256
@@ -211,7 +210,7 @@ class GoalWaiverService:
         with lock_path.open("a+") as handle:
             wait_for_file_lock(handle, timeout_s=30)
             try:
-                with candidates.candidate_lock(self.paths.root, self.record.id):
+                with candidates.record_lock(self.paths.root):
                     yield
             finally:
                 release_file_lock(handle)
@@ -320,7 +319,7 @@ class GoalWaiverService:
         """Persist exact candidate rejection, even if the proposal otherwise conflicts."""
         assert proposal.waiver is not None
         item = proposal.waiver.candidate
-        record = candidates.load(self.paths.root, self.record.id)
+        record = candidates.load(self.paths.root)
         rejection = candidates.Rejection(
             item.target_identity,
             item.point_id,

@@ -472,10 +472,9 @@ def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project)
 
 
 def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
-    from tests.flows.sim.test_waiver_candidates import _rejection
+    from tests.flows.sim.test_waiver_candidates import _record
 
     from booley.flows.sim.waiver_candidates import (
-        record_rejections,
         waiver_candidates_lock_path,
         waiver_candidates_path,
     )
@@ -488,7 +487,7 @@ def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
     assert board.is_file()
     assert_clean(repo)
     record_dir = data / "tickets/waiver-candidates/audit"
-    assert record_rejections(record_dir, "audit", [_rejection()]) == 1
-    assert waiver_candidates_path(record_dir, "audit").is_file()
-    assert waiver_candidates_lock_path(record_dir, "audit").is_file()
+    assert _record(record_dir).recorded == 1
+    assert waiver_candidates_path(record_dir).is_file()
+    assert waiver_candidates_lock_path(record_dir).is_file()
     assert_clean(repo)
