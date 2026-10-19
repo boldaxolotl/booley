@@ -2735,6 +2735,91 @@ def test_mixed_lint_rejects_before_preparation(
     execute.assert_not_called()
 
 
+def test_job_report_lint_findings_cap(tmp_path, state_file):
+    for count in (0, 20, 21):
+        output = "".join(f"%Warning-WIDTH: f.sv:{i + 1}:1: message {i}\n" for i in range(count))
+        with (
+            patch.object(
+                LintFlow, "_prepare_lint_command", return_value=(["lint"], _stub_resolved())
+            ),
+            patch.object(
+                LintFlow,
+                "_execute",
+                return_value=MagicMock(
+                    returncode=0,
+                    stdout=output,
+                    stderr="",
+                    timed_out=False,
+                    duration_s=1.0,
+                ),
+            ),
+        ):
+            flow = LintFlow()
+            flow.parse_args(["--target", "lite", "--report-dir", str(tmp_path / "reports")])
+            flow.read_state()
+            result = flow._run()
+        detail = result.detail
+        assert "findings" in detail
+        assert detail["findings"] == [
+            {
+                "severity": "warning",
+                "rule": "WIDTH",
+                "file": "f.sv",
+                "line": i + 1,
+                "message": f"message {i}",
+                "target": "lite",
+            }
+            for i in range(min(count, 20))
+        ]
+        assert (detail["findings_total"], detail["findings_truncated"]) == (count, count > 20)
+        assert detail["targets"] == ["lite"] and detail["total_warnings"] == count
+        assert detail["eda_tools"] == {"lite": "verilator"}
+        full = json.loads((tmp_path / detail["artifacts"]["report"]).read_text())
+        assert len(full["warnings"]) == count and full["errors"] == []
+        assert full["passed"] is (count == 0)
+        assert result.exit_code == (EXIT_FAILURE if count else EXIT_SUCCESS)
+
+
+def test_job_report_lint_findings_targets():
+    from booley.flows.lint.flow import _lint_result_parts
+
+    targets = ["first", "second", "empty"]
+    for warning_count, error_count in ((1, 0), (19, 2), (20, 1), (0, 2)):
+        warnings = [
+            LintWarning("WIDTH", "rtl/a.sv", i, 1, str(i), target)
+            for target in targets[:2]
+            for i in range(warning_count)
+        ]
+        outside = LintWarning("WIDTH", "vendor/a.sv", 1, 1, "outside", "second")
+        unique = filter_by_scope(deduplicate_warnings([*warnings, outside]), "rtl/")
+        results = [
+            LintConfigResult(t, error=f"error {i}" if i < error_count else "")
+            for i, t in enumerate(targets)
+        ]
+        _, detail = _lint_result_parts(targets, unique, 1.25, results)
+        assert "findings" in detail
+        total = warning_count + error_count
+        assert detail["findings_total"] == total
+        assert detail["findings_truncated"] is (total > 20)
+        assert len(detail["findings"]) == min(20, total)
+        assert all(f["target"] == "first" for f in detail["findings"][:warning_count])
+        assert detail["findings"][warning_count:] == [
+            {
+                "severity": "error",
+                "rule": None,
+                "file": None,
+                "line": None,
+                "message": f"error {i}",
+                "target": targets[i],
+            }
+            for i in range(min(error_count, 20 - warning_count))
+        ]
+        assert detail["findings_by_target"] == {
+            t: {"warnings": warning_count if i < 2 else 0, "errors": int(i < error_count)}
+            for i, t in enumerate(targets)
+        }
+
+
 @pytest.mark.parametrize("target", ["lite", "lite,full"])
 def test_invocation_report_records_tools_by_target(tmp_path, state_file, target):
     flow = LintFlow()
