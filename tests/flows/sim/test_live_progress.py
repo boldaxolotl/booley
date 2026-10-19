@@ -9,6 +9,13 @@ from booley.flows.base import SubprocessResult
 from booley.flows.progress_lifecycle import progress_document
 from booley.flows.sim.adapter_transport import AdapterResult, write_adapter_result
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from booley.flows.sim.live_progress import (
+    LiveProgressSink,
+    attempt_scope,
+    install_progress,
+    observe_stage,
+    publish_checkpoint,
+)
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_execution_engine import (
     _compile_surface_patch,
@@ -19,11 +26,6 @@ from tests.flows.sim.test_execution_engine import (
 
 
 def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_path, monkeypatch):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        install_progress,
-        publish_checkpoint,
-    )
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     handle = _handle(tmp_path)
@@ -90,7 +92,6 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
 
 
 def _checkpoint(path, *, completed=(), coverage=False, phase="starting"):
-    from booley.flows.sim.live_progress import publish_checkpoint
 
     publish_checkpoint(
         path,
@@ -109,13 +110,6 @@ def _checkpoint(path, *, completed=(), coverage=False, phase="starting"):
 def test_concurrent_attempts_retain_results_and_close_before_late_event(tmp_path, monkeypatch):  # noqa: PLR0915 — one bounded interleaving verifies preserved checkpoints and terminal closure
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, Event
-
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -167,11 +161,9 @@ def test_concurrent_attempts_retain_results_and_close_before_late_event(tmp_path
 
 
 def test_terminal_retry_remains_possible_after_event_admission_closes(tmp_path, monkeypatch):
-    import pytest
 
     from booley.flows.progress_lifecycle import ProgressLifecycle, ProgressPublicationError
     from booley.flows.sim import live_progress
-    from booley.flows.sim.live_progress import LiveProgressSink, install_progress, observe_stage
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -198,7 +190,6 @@ def test_terminal_retry_remains_possible_after_event_admission_closes(tmp_path, 
 
 def test_advisory_lock_failures_retry_without_changing_checkpoint_authority(tmp_path, monkeypatch):
     from booley.flows.sim import live_progress
-    from booley.flows.sim.live_progress import LiveProgressSink, install_progress, observe_stage
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -226,13 +217,12 @@ def test_advisory_lock_failures_retry_without_changing_checkpoint_authority(tmp_
     assert json.loads(path.read_text())["complete"] is True
 
 
-def test_active_pointer_requires_exact_owned_root_token_and_header(tmp_path, monkeypatch):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_active_pointer_requires_exact_owned_root_token_and_header(
+    tmp_path, monkeypatch, link_kind
+):
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -244,7 +234,11 @@ def test_active_pointer_requires_exact_owned_root_token_and_header(tmp_path, mon
     with install_progress(sink), attempt_scope("sim"):
         _checkpoint(path)
         observe_stage(
-            "sim", "preparing", evidence_root=root, attempt_token="owned", initialize_log=True
+            "sim",
+            "preparing",
+            evidence_root=root,
+            attempt_token="owned",
+            log=prepare_attempt_log(root, "sim", "owned", tmp_path),
         )
         observe_stage("sim", "executing", evidence_root=root, attempt_token="owned")
         assert json.loads(path.read_text())["active"][0]["log"]["live"] is True
@@ -260,23 +254,30 @@ def test_active_pointer_requires_exact_owned_root_token_and_header(tmp_path, mon
         assert "log" not in json.loads(path.read_text())["active"][0]
         protected = tmp_path / "protected"
         protected.write_text("unchanged")
-        symlink_or_skip(root / "run.log", protected)
-        observe_stage(
-            "sim", "executing", evidence_root=root, attempt_token="owned", initialize_log=True
-        )
-        assert protected.read_text() == "unchanged"
-        assert "log" not in json.loads(path.read_text())["active"][0]
+        if link_kind == "hardlink":
+            (root / "run.log").hardlink_to(protected)
+        else:
+            symlink_or_skip(root / "run.log", protected)
+        with attempt_scope("sim", attempt_id="unsafe"):
+            observe_stage(
+                "sim",
+                "executing",
+                evidence_root=root,
+                attempt_token="owned",
+                log=prepare_attempt_log(root, "sim", "owned", tmp_path),
+            )
+            active = json.loads(path.read_text())["active"][-1]
+            assert active["stage"] == "executing"
+            assert protected.read_text() == "unchanged"
+            assert sink.error is not None
+            assert "log" not in active
 
 
 def test_ephemeral_baseline_is_removed_before_cleanup_and_never_completes_candidate(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     project = tmp_path / "project"
@@ -294,7 +295,7 @@ def test_ephemeral_baseline_is_removed_before_cleanup_and_never_completes_candid
                 "executing",
                 evidence_root=baseline,
                 attempt_token="baseline",
-                initialize_log=True,
+                log=prepare_attempt_log(baseline, "older_target", "baseline", project),
             )
             doc = json.loads(path.read_text())
             assert doc["phase"] == "baseline"
@@ -305,7 +306,6 @@ def test_ephemeral_baseline_is_removed_before_cleanup_and_never_completes_candid
 
 
 def test_nonregular_progress_lock_is_observational_and_recovers(tmp_path, monkeypatch):
-    from booley.flows.sim.live_progress import LiveProgressSink, install_progress, observe_stage
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -325,7 +325,6 @@ def test_nonregular_progress_lock_is_observational_and_recovers(tmp_path, monkey
 
 def test_active_writer_uses_short_lock_timeout_and_mandatory_keeps_default(tmp_path, monkeypatch):
     from booley.flows import progress_lifecycle
-    from booley.flows.sim.live_progress import LiveProgressSink, install_progress, observe_stage
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     timeouts = []
@@ -384,7 +383,6 @@ def test_reap_and_coverage_supersede_remove_active_pointers(tmp_path, origin_pha
 
 def test_coverage_build_and_launch_stages_survive_observation_failure(tmp_path, monkeypatch):
     from booley.flows.sim import live_progress
-    from booley.flows.sim.live_progress import LiveProgressSink, attempt_scope, install_progress
     from tests.flows.sim.test_verilator_coverage_execution import (
         _build_coverage,
         _execution_fixture,
@@ -431,10 +429,8 @@ def test_coverage_build_and_launch_stages_survive_observation_failure(tmp_path, 
 
 
 def test_failed_mandatory_checkpoint_does_not_become_worker_base(tmp_path, monkeypatch):
-    import pytest
 
     from booley.flows.sim import live_progress
-    from booley.flows.sim.live_progress import LiveProgressSink, install_progress, observe_stage
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -517,12 +513,8 @@ def test_hdl_backend_exceptions_are_visible_before_child_completion(tmp_path, mo
 
 
 def test_nested_same_attempt_retains_active_log_until_owning_scope_exits(tmp_path, monkeypatch):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     path = tmp_path / "progress.json"
@@ -537,7 +529,7 @@ def test_nested_same_attempt_retains_active_log_until_owning_scope_exits(tmp_pat
                     "executing",
                     evidence_root=root,
                     attempt_token="owned",
-                    initialize_log=True,
+                    log=prepare_attempt_log(root, "sim", "owned", tmp_path),
                 )
             observe_stage("sim", "postprocessing", evidence_root=root, attempt_token="owned")
             document = json.loads(path.read_text())
@@ -548,12 +540,8 @@ def test_nested_same_attempt_retains_active_log_until_owning_scope_exits(tmp_pat
 
 
 def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypatch):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     project = tmp_path / "project"
@@ -570,7 +558,7 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
             "executing",
             evidence_root=evidence,
             attempt_token="owned",
-            initialize_log=True,
+            log=prepare_attempt_log(evidence, "sim", "owned", project),
         )
         document = json.loads(path.read_text())
         assert document["active"][0]["log"]["path"] == str(
@@ -579,48 +567,12 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
         assert sink.error is None
 
 
-def test_preplanted_hardlinked_log_is_never_truncated(tmp_path, monkeypatch):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
-
-    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
-    protected = tmp_path / "protected"
-    protected.write_text("retained evidence")
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    (evidence / "run.log").hardlink_to(protected)
-    path = tmp_path / "progress.json"
-    sink = LiveProgressSink(path, tmp_path, "current-run")
-    with install_progress(sink), attempt_scope("sim"):
-        _checkpoint(path)
-        observe_stage(
-            "sim",
-            "executing",
-            evidence_root=evidence,
-            attempt_token="owned",
-            initialize_log=True,
-        )
-        document = json.loads(path.read_text())
-        assert document["active"][0]["stage"] == "executing"
-        assert "log" not in document["active"][0]
-        assert sink.error is not None
-    assert protected.read_text() == "retained evidence"
-
-
 def test_baseline_under_symlinked_temporary_root_uses_exact_canonical_pointer(
     tmp_path,
     monkeypatch,
 ):
-    from booley.flows.sim.live_progress import (
-        LiveProgressSink,
-        attempt_scope,
-        install_progress,
-        observe_stage,
-    )
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     project = tmp_path / "project"
@@ -641,8 +593,111 @@ def test_baseline_under_symlinked_temporary_root_uses_exact_canonical_pointer(
             "executing",
             evidence_root=baseline,
             attempt_token="owned",
-            initialize_log=True,
+            log=prepare_attempt_log(baseline, "sim", "owned", project),
         )
         document = json.loads(path.read_text())
         assert document["active"][0]["log"]["path"] == str(baseline / "run.log")
         assert document["phase"] == "baseline" and sink.error is None
+
+
+def test_retired_owner_cannot_reappear_while_another_attempt_is_active(tmp_path, monkeypatch):
+    from contextvars import copy_context
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    path = tmp_path / "progress.json"
+    with install_progress(LiveProgressSink(path, tmp_path, "current-run")):
+        _checkpoint(path)
+        with attempt_scope("one"):
+            delayed = copy_context()
+        with attempt_scope("two"):
+            observe_stage("two", "executing")
+            before = json.loads(path.read_text())
+            delayed.run(observe_stage, "one", "building")
+            after = json.loads(path.read_text())
+            assert after["active"] == before["active"]
+            assert after["phase"] == "running" and after["complete"] is False
+
+
+def test_unchanged_log_is_not_reopened_on_stage_update(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    path = tmp_path / "progress.json"
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    with (
+        install_progress(LiveProgressSink(path, tmp_path, "current-run")),
+        attempt_scope("sim"),
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
+    ):
+        _checkpoint(path)
+        attempt = execution._prepare_attempt(handle, ())
+        root, token = prepared.build_root, attempt.identity.attempt_token
+        observe_stage("sim", "building", evidence_root=root, attempt_token=token)
+        inode = (root / "run.log").stat().st_ino
+        original = os.fdopen
+        reads = []
+
+        def opened(fd, mode="r", *args, **kwargs):
+            if "r" in mode and os.fstat(fd).st_ino == inode:
+                reads.append(fd)
+            return original(fd, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "fdopen", opened)
+        observe_stage("sim", "executing", evidence_root=root, attempt_token=token)
+        assert json.loads(path.read_text())["active"][0]["log"]["live"] is True
+        assert reads == []
+
+
+def test_scope_exit_during_log_observation_preserves_progress(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    from threading import Event
+
+    from booley.flows.sim.live_progress import prepare_attempt_log
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    path = tmp_path / "progress.json"
+    root = tmp_path / "evidence"
+    root.mkdir()
+    sink = LiveProgressSink(path, tmp_path, "current-run")
+    reading, released = Event(), Event()
+    retire = sink.retire
+
+    def retiring(key):
+        released.set()
+        retire(key)
+
+    monkeypatch.setattr(sink, "retire", retiring)
+    identity = prepare_attempt_log(root, "sim", "owned", tmp_path)
+
+    class DelayedLog:
+        @property
+        def target(self):
+            reading.set()
+            assert released.wait(5)
+            return identity.target
+
+        def pointer(self, *args):
+            return identity.pointer(*args)
+
+    with ThreadPoolExecutor(max_workers=1) as pool, install_progress(sink):
+        _checkpoint(path)
+        with attempt_scope("sim"):
+            observed = pool.submit(
+                copy_context().run,
+                observe_stage,
+                "sim",
+                "executing",
+                evidence_root=root,
+                attempt_token="owned",
+                log=DelayedLog(),
+            )
+            assert reading.wait(5)
+        observed.result(timeout=5)
+        assert "active" not in json.loads(path.read_text())
