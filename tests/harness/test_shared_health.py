@@ -128,7 +128,7 @@ def test_upgrade_only_uses_weekly_cadence_and_drift_wins(project):
     assert health.read_health(root, now=NOW - timedelta(seconds=1)).due is None
     assert health.read_health(root, now=NOW).due == "automatic Doctor result expired"
     (directory / "booley.toml").write_text('[project]\nname="changed"\n')
-    assert health.read_health(root, now=NOW).due == "Doctor inputs changed"
+    assert health.read_health(root, now=NOW).due == "Doctor inputs changed: booley.toml"
 
 
 @pytest.mark.parametrize("value", [None, "invalid", 42])
