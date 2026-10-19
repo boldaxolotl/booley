@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows import endpoint_reporting
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.mcp_tools.test_base import ConcreteMcpTool
 
@@ -36,7 +37,9 @@ def fake_accounting(
             getrusage=getrusage,
         ),
     )
-    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(
+        endpoint_reporting, "sys", SimpleNamespace(**(vars(sys) | {"platform": platform}))
+    )
     return calls
 
 
@@ -52,7 +55,9 @@ def report_endpoint(tmp_path: Path, *, target: str = "sim") -> ConcreteMcpTool:
 def test_report_resources_sum_cpu_and_take_largest_process_rss(
     tmp_path, monkeypatch, platform, peak
 ):
+    host_platform = sys.platform
     fake_accounting(monkeypatch, platform=platform, peak=peak)
+    assert sys.platform == host_platform, "accounting fixture changed process-wide platform"
     path = report_endpoint(tmp_path).write_report(EndpointOutcome())
     report = json.loads(path.read_text())
     expected_peak = 0 if peak == 0 else 256
