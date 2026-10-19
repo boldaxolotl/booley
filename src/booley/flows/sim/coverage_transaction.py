@@ -22,7 +22,7 @@ from .coverage_campaign import (
 )
 from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
 from .coverage_invocation import CoverageTargetPlan
-from .coverage_policy import evaluate_coverage_campaign
+from .coverage_policy import evaluate_coverage_campaign, threshold_number
 from .coverage_provenance import coverage_digest, validate_coverage_sources
 from .coverage_report import coverage_metrics
 from .coverage_source_gaps import source_gap_findings
@@ -285,11 +285,7 @@ def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageC
         evaluation.update(
             status="blocked",
             thresholds={
-                item.metric: (
-                    item.minimum_percent.numerator
-                    if item.minimum_percent.denominator == 1
-                    else float(item.minimum_percent)
-                )
+                item.metric: threshold_number(item.minimum_percent)
                 for item in plan.criterion.thresholds
             }
             if plan.criterion is not None

@@ -90,6 +90,8 @@ def test_projects_forget_reports_the_exact_root(
             "tag": keeper_image(project),
             "image_id": None,
         },
+        "purge": None,
+        "leftovers": [],
     }
 
 
@@ -138,13 +140,113 @@ def test_projects_forget_human_output_names_root(
     monkeypatch.setattr(
         runtime_image_keepers,
         "forget_project",
-        lambda _project: (project, image_keepers.KeeperRelease("absent", "keeper")),
+        lambda _project, purge: (project, image_keepers.KeeperRelease("absent", "keeper"), None),
     )
+    monkeypatch.setattr(runtime_image_keepers, "project_leftovers", lambda _project: ())
 
     args = _parser().parse_args(["projects", "forget", str(project)])
 
     assert _run(args) == 0
-    assert f"Forgot remembered Project path: {project}" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert f"Forgot Project path: {project}" in output
+    assert "No Docker resources left behind for this Project." in output
+
+
+def test_forget_lists_leftovers_with_sizes_and_tags(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.config.sandbox import project_image_name
+
+    project = _remember(tmp_path)
+    image = "sha256:" + "a" * 64
+    keeper_host.tags.update({f"{project_image_name(project)}:latest": image, "mirror:x": image})
+    assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
+    assert (
+        f"Left behind for this Project:\n  image {image} 1GB [shared] tags: "
+        f"mirror:x, {project_image_name(project)}:latest\n"
+    ) in capsys.readouterr().out
+
+
+def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.config.sandbox import project_image_name
+
+    project = _remember(tmp_path)
+    family = project_image_name(project)
+    unused, shared = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    keeper_host.tags.update({f"{family}:latest": unused, f"{family}-wheel:latest": shared})
+    keeper_host.tags["mirror:x"] = shared
+    assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
+    assert f"booley projects forget --purge {project}" in capsys.readouterr().out
+    assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
+    output = capsys.readouterr().out
+    assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
+    assert "No Docker resources left behind" in output and "mirror:x" in keeper_host.tags
+
+
+@pytest.mark.parametrize("grant", [False, True])
+def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    grant: bool,
+) -> None:
+    from types import SimpleNamespace
+
+    from booley.config.sandbox import project_image_name, project_image_name_for_identity
+
+    deleted = tmp_path / "deleted"
+    keeper_host.tags[f"{project_image_name_for_identity(str(deleted))}:latest"] = (
+        "sha256:" + "a" * 64
+    )
+    # The old path now points at another Project; purge must not follow it there.
+    other = _remember(tmp_path / "other-root")  # a remembered Project with its own images
+    keeper_host.tags[f"{project_image_name(other)}:latest"] = "sha256:" + "c" * 64
+    deleted.symlink_to(other, target_is_directory=True)
+    grants = (
+        (
+            SimpleNamespace(
+                project_root=str(deleted), kind="vivado", installation=None, license_profile=None
+            ),
+        )
+        if grant
+        else ()
+    )
+    monkeypatch.setattr(project_inventory, "_authority_grants", lambda: grants)
+    never = tmp_path / "never-remembered"
+    assert _run(_parser().parse_args(["projects", "forget", str(never)])) == 2
+    assert "not remembered" in capsys.readouterr().err
+    flags = ["projects", "forget", "--purge", str(deleted), "--json"]
+    assert _run(_parser().parse_args(flags)) == (2 if grant else 0)
+    if grant:
+        assert "revoke" in capsys.readouterr().err and len(keeper_host.tags) == 2
+    else:
+        assert json.loads(capsys.readouterr().out)["purge"]["removed"] == [
+            f"{project_image_name_for_identity(str(deleted))}:latest"
+        ]
+    assert f"{project_image_name(other)}:latest" in keeper_host.tags
+    assert str(other) in [entry.project_root for entry in project_inventory.project_inventory()]
+
+
+def test_forget_reports_leftover_listing_failure_after_forgetting(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _remember(tmp_path)
+
+    def fail(_identity: str) -> tuple[()]:
+        raise RuntimeError("daemon went away")
+
+    monkeypatch.setattr(runtime_image_keepers.project_resources, "leftovers", fail)
+    assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 2
+    error = capsys.readouterr().err
+    assert "could not list its leftover Docker resources: daemon went away" in error
+    assert f"(keeper absent: {keeper_image(project)})" in error
+    assert project_inventory.project_inventory() == ()
 
 
 def test_projects_human_output_explains_empty_inventory(
@@ -197,26 +299,47 @@ class FakeDocker:
         self.calls: list[list[str]] = []
         self.fail_remove: str | None = None
 
-    def __call__(self, args: Any, **kwargs: Any) -> Any:
+    def __call__(self, args: Any, **kwargs: Any) -> Any:  # noqa: PLR0911 -- one branch per Docker command
         import subprocess
 
         self.calls.append(args)
         if args[:2] == ["image", "ls"]:
-            return subprocess.CompletedProcess(args, 0, "\n".join(self.tags), "")
+            # The leftover report asks for ID, reference and size rows.
+            rows = (
+                "".join(
+                    f"{image}\t{tag}\t1GB\n"
+                    for tag, image in self.tags.items()
+                    if not tag.startswith("sha256:")
+                )
+                if "--all" in args
+                else "\n".join(self.tags)
+            )
+            return subprocess.CompletedProcess(args, 0, rows, "")
+        if args[:2] in (["volume", "ls"], ["network", "ls"]) or args[:4] == [
+            "container",
+            "ls",
+            "--all",
+            "--filter",
+        ]:
+            # No state volumes, networks, or Project-labelled containers on this host.
+            return subprocess.CompletedProcess(args, 0, "", "")
         if args[:2] == ["container", "ls"]:
             return subprocess.CompletedProcess(args, 0, "\n".join(self.containers), "")
         if args[:2] == ["container", "inspect"]:
             return subprocess.CompletedProcess(args, 0, self.containers[args[2]], "")
         if args[:2] == ["image", "inspect"]:
-            value = self.tags.get(args[2])
+            # Purge orders tags by layer count; every fake image has one layer.
+            value = "1" if "{{len .RootFS.Layers}}" in args else self.tags.get(args[2])
             return subprocess.CompletedProcess(
                 args, 0 if value else 1, value or "", "" if value else "No such image"
             )
         if args[:2] == ["image", "rm"]:
-            assert len(args) == 3 and args[2].startswith("booley-issued-")
-            if args[2] == self.fail_remove:
+            # Only the Project's own keeper or managed image tags are ever released.
+            assert args[2] == "--no-prune" and len(args) == 4
+            assert args[3].startswith("booley-issued-") or "-booley-sandbox-" in args[3]
+            if args[3] == self.fail_remove:
                 return subprocess.CompletedProcess(args, 1, "", "removal denied")
-            self.tags.pop(args[2], None)
+            self.tags.pop(args[3], None)
             return subprocess.CompletedProcess(args, 0, "", "")
         raise AssertionError(args)
 
@@ -691,7 +814,10 @@ def test_human_keeper_outcomes_identify_image_and_retained_tags(
     image = "sha256:" + "a" * 64
     release = image_keepers.KeeperRelease("retained-in-use", "keeper", image)
     assert (
-        project_inventory_cli._render_forgotten(Path("/project"), release, json_output=False) == 0
+        project_inventory_cli._render_forgotten(
+            Path("/project"), release, None, (), json_output=False
+        )
+        == 0
     )
     assert image in capsys.readouterr().out
     result = image_keepers.PruneResult("digest", (), retained=["changed", "unresolved"])
@@ -866,7 +992,7 @@ def test_real_module_operations_support_keywords_and_preview_default(
     keeper_host.tags[own] = "sha256:" + "a" * 64
     preview = runtime_image_keepers.prune_keepers()
     assert preview.released == [] and not preview.candidates[0].eligible
-    root, release = runtime_image_keepers.forget_project(project=project)
+    root, release, _removed = runtime_image_keepers.forget_project(project=project)
     assert root == project and release.status == "released" and own not in keeper_host.tags
     orphan = keeper_image(tmp_path / "orphan")
     keeper_host.tags[orphan] = "sha256:" + "b" * 64

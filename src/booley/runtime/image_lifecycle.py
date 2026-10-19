@@ -224,6 +224,8 @@ class LifecycleResult:
     cleanup: ImageCleanup = field(default_factory=ImageCleanup)
     wheel_source_fingerprint: str | None = None
     wheel_sha256: str | None = None
+    # Prior IDs of the Project's own tags that this adoption moved, now owned for cleanup.
+    superseded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,7 +449,11 @@ def _owned_store() -> PrivateStore:
 
 
 def _owned_prefix(project: Path) -> str:
-    return hashlib.sha256(str(project.resolve()).encode()).hexdigest() + "-"
+    return _owned_prefix_for_identity(str(project.resolve()))
+
+
+def _owned_prefix_for_identity(identity: str) -> str:
+    return hashlib.sha256(identity.encode()).hexdigest() + "-"
 
 
 def record_owned_images(
@@ -498,10 +504,10 @@ def _read_owned_record(
             raise ImageLifecycleError("invalid refresh image record fields/version")
         project = Path(require_str(raw, "project_root"))
         transaction = require_str(raw, "transaction")
+        # Match the stored root string; the directory may since be gone or replaced.
         if (
             not project.is_absolute()
-            or str(project.resolve()) != str(project)
-            or name != _owned_prefix(project) + transaction + ".json"
+            or name != _owned_prefix_for_identity(str(project)) + transaction + ".json"
         ):
             raise ImageLifecycleError("invalid refresh image record identity")
         refs = require_dict(raw["references"], field="owned image references")
@@ -515,6 +521,18 @@ def _read_owned_record(
         return project, dict(refs), tuple(ids)
     except (BoundaryError, OSError, ValueError) as exc:
         raise ImageLifecycleError(f"cannot read refresh image ownership: {exc}") from exc
+
+
+def owned_image_ids(identity: str) -> tuple[str, ...]:
+    """Exact image IDs the ownership records still attribute to a canonical stored root."""
+    store = _owned_store()
+    if not store.validate_existing_directory():
+        return ()
+    return tuple(
+        image
+        for path in sorted(store.root.glob(_owned_prefix_for_identity(identity) + "*.json"))
+        for image in _read_owned_record(store, path.name)[2]
+    )
 
 
 def _owned_image_blocker(image: str, docker: DockerPort) -> str:
@@ -533,16 +551,26 @@ def _owned_image_blocker(image: str, docker: DockerPort) -> str:
 
 
 def cleanup_owned_images(
-    project: Path | None = None, *, docker: DockerPort | None = None
+    project: Path | str | None = None, *, docker: DockerPort | None = None
 ) -> tuple[str, ...]:
-    """Retry only proven records; in-use image bytes never block runtime recovery."""
+    """Retry only proven records; in-use image bytes never block runtime recovery.
+
+    A ``str`` project is an exact stored root identity and is not resolved.
+    """
     store = _owned_store()
     if not store.validate_existing_directory():
         return ()
     adapter = docker or _docker_adapter()
     retained = []
+    prefix = (
+        None
+        if project is None
+        else _owned_prefix_for_identity(project)
+        if isinstance(project, str)
+        else _owned_prefix(project)
+    )
     for path in sorted(store.root.glob("*.json")):
-        if project is not None and not path.name.startswith(_owned_prefix(project)):
+        if prefix is not None and not path.name.startswith(prefix):
             continue
         root, refs, owned = _read_owned_record(store, path.name)
         remaining = []
@@ -560,7 +588,8 @@ def cleanup_owned_images(
                 remaining.append(image)
                 retained.append(f"{image}: deferred ({exc})")
         if remaining:
-            transaction = path.name.removeprefix(_owned_prefix(root)).removesuffix(".json")
+            transaction = path.name.removeprefix(_owned_prefix_for_identity(str(root)))
+            transaction = transaction.removesuffix(".json")
             store.atomic_write_text(
                 path.name,
                 json.dumps(

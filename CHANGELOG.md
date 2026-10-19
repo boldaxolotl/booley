@@ -195,11 +195,6 @@ Packaged release history starts at 0.2.7. For older changes, see
   capture each sampling edge. Literal `distance` counts every held matching
   sample, so sustained levels contribute consecutive-cycle pairs.
 
-- Physical synthesis no longer repairs to OpenROAD's implicit fanout of 50.
-  Fanout is limited only by the SDC, the library, or the new Target setting
-  `advanced_settings_openroad.max_fanout`, which a per-call PPA profile keeps.
-  The report's `fanout_policy` names the limit that applied and its source.
-
 ### Upgrade notes
 
 - Existing Review Goal evidence may need to be refreshed once after upgrading;
@@ -269,11 +264,6 @@ Packaged release history starts at 0.2.7. For older changes, see
   `booley bootstrap --update`, then `booley init` and `booley session refresh`
   in each Project; until then sessions show `activity unknown` and Doctor
   warns inside the Sandbox.
-
-- Physical synthesis results can differ from 0.3.0, and earlier physical
-  recipe evidence is no longer accepted: rerun physical synthesis to refresh
-  it. Logical synthesis is unchanged. An SDC that switches analysis mode or
-  reloads the design now stops physical synthesis before repair.
 
 - Removed retired Ticket workflow internals and Console implementation. Shared Flow loading, agent execution, verification freshness, and waiver candidate storage now live with their active owners. External extensions importing `booley.ticket_board` must update their imports; the package has been removed. Goal Mode and Interactive recording keep their persisted formats.
 

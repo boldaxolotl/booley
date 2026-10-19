@@ -52,7 +52,11 @@ def _request(layout: SimpleNamespace, goals: list[dict[str, Any]] | None = None,
 
 
 def _env(layout: SimpleNamespace, on_boundary: Callable[[str], None] | None = None):
-    return EntryEnvironment(booley_dir=layout.control, on_boundary=on_boundary)
+    return EntryEnvironment(
+        booley_dir=layout.control,
+        on_boundary=on_boundary,
+        routing_guidance="Explicit test routing guidance.",
+    )
 
 
 def _store(layout: SimpleNamespace) -> GoalStore:
@@ -90,7 +94,7 @@ def test_entry_creates_branch_record_and_unmet_strict_state(layout: SimpleNamesp
     assert set(state["criteria"]) == {"lint_clean_top", "sim_pass_top"}
     assert all(not e["met"] and e["mandatory"] for e in state["criteria"].values())
     assert state["criteria"]["lint_clean_top"]["params"]["target"] == "top"
-    assert "Pass `work_dir`" in result.render()
+    assert "Explicit test routing guidance." in result.render()
     assert _store(layout).active_for_worktree(layout.worktree) == record
 
 
@@ -145,7 +149,9 @@ def test_second_entry_on_an_active_worktree_is_refused(layout: SimpleNamespace) 
 
 
 def test_booley_dir_inside_the_worktree_is_refused(layout: SimpleNamespace) -> None:
-    env = EntryEnvironment(booley_dir=layout.worktree / ".booley")
+    env = EntryEnvironment(
+        booley_dir=layout.worktree / ".booley", routing_guidance="Explicit test routing guidance."
+    )
     with pytest.raises(GoalEntryError, match=r"Worktree Booley Directory.*Main Booley Directory"):
         enter_goal_mode(_request(layout), env)
 
@@ -806,3 +812,21 @@ def test_paired_root_gitlink_is_not_exempt_from_entry(layout, tmp_path, committe
         enter_goal_mode(_request(layout), _env(layout))
     if committed:
         assert (paired / "booley.toml").read_bytes() == b"user work\n"
+
+
+def test_entry_requires_guidance_before_mutation(layout):
+    before = (
+        _head_ref(layout.worktree),
+        _branches(layout.worktree),
+        sorted(str(p.relative_to(layout.control)) for p in layout.control.rglob("*")),
+    )
+    with pytest.raises(GoalEntryError, match="routing guidance"):
+        enter_goal_mode(
+            _request(layout),
+            EntryEnvironment(booley_dir=layout.control),
+        )
+    assert (
+        _head_ref(layout.worktree),
+        _branches(layout.worktree),
+        sorted(str(p.relative_to(layout.control)) for p in layout.control.rglob("*")),
+    ) == before

@@ -18,6 +18,7 @@ import pytest
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, session_runtime
+from booley.runtime.platform_paths import docker_mount_path
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -624,22 +625,10 @@ class TestCli:
 
 
 class TestClaudeMintLocation:
-    def test_missing_project_state_is_not_initialized(self, tmp_path, monkeypatch):
-        from booley.runtime import booley_dir
-
-        monkeypatch.setattr(
-            booley_dir,
-            "resolve_checkout_booley_dir",
-            Mock(side_effect=FileNotFoundError("missing")),
-        )
-
-        assert not auth_cmd._project_is_initialized(tmp_path)
-
     def test_project_mint_uses_runtime_without_host_cli(self, tmp_path, monkeypatch):
         project = tmp_path / "rtl"
         project.mkdir()
         runtime = Mock(return_value=0)
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
         monkeypatch.setattr(session_runtime, "run_project_command", runtime)
         monkeypatch.setattr(
             auth_cmd.shutil,
@@ -664,7 +653,6 @@ class TestClaudeMintLocation:
         project.mkdir()
         prompt = Mock()
         errors: list[str] = []
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
         monkeypatch.setattr(
             session_runtime,
             "run_project_command",
@@ -678,7 +666,7 @@ class TestClaudeMintLocation:
         prompt.assert_not_called()
         assert errors == []
 
-    def test_run_auth_returns_two_for_sandbox_start_refusal(self, tmp_path, monkeypatch):
+    def test_run_auth_returns_two_for_sandbox_start_refusal(self, auth_project, monkeypatch):
         errors: list[str] = []
         monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
         monkeypatch.setattr(auth_cmd, "err", errors.append)
@@ -694,7 +682,7 @@ class TestClaudeMintLocation:
             token_stdin=False,
         )
 
-        assert auth_cmd.run_auth(args, tmp_path) == 2
+        assert auth_cmd.run_auth(args, auth_project) == 2
         assert errors == [
             "could not run `claude setup-token` in the Sandbox: Sandbox start refused: at cap"
         ]
@@ -715,7 +703,6 @@ class TestClaudeMintLocation:
         issuance_invalidation.cancel(pending)
         booley_config = home / "config" / "booley"
         booley_config.chmod(0o755)
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
         args = SimpleNamespace(
             status=False,
             clear=False,
@@ -726,7 +713,7 @@ class TestClaudeMintLocation:
         assert auth_cmd.run_auth(args, project) == 2
 
         captured = capsys.readouterr()
-        assert "could not run `claude setup-token` in the Sandbox" in captured.out
+        assert "credential store" in captured.out
         assert str(booley_config) in captured.out
         assert "0755" in captured.out
         assert f"chmod 700 {booley_config}" in captured.out
@@ -736,15 +723,12 @@ class TestClaudeMintLocation:
     def test_non_project_mint_keeps_host_cli_fallback(self, tmp_path, monkeypatch):
         run = Mock(return_value=SimpleNamespace(returncode=0))
         runtime = Mock()
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
         monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: "/host/bin/claude")
         monkeypatch.setattr(auth_cmd.subprocess, "run", run)
         monkeypatch.setattr(session_runtime, "run_project_command", runtime)
         monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: _TOKEN)
 
-        token = auth_cmd._mint_claude_token(
-            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
-        )
+        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None)
 
         assert token == _TOKEN
         run.assert_called_once_with(("claude", "setup-token"), check=False)
@@ -752,13 +736,10 @@ class TestClaudeMintLocation:
 
     def test_missing_host_cli_names_project_runtime_option(self, tmp_path, monkeypatch):
         errors: list[str] = []
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
         monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: None)
         monkeypatch.setattr(auth_cmd, "err", errors.append)
 
-        token = auth_cmd._mint_claude_token(
-            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
-        )
+        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None)
 
         assert token is None
         assert "initialized Booley Project" in errors[0]
@@ -767,7 +748,6 @@ class TestClaudeMintLocation:
     def test_failed_host_mint_reports_exit_and_does_not_prompt(self, tmp_path, monkeypatch):
         prompt = Mock()
         errors: list[str] = []
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
         monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: "/host/bin/claude")
         monkeypatch.setattr(
             auth_cmd.subprocess,
@@ -777,30 +757,16 @@ class TestClaudeMintLocation:
         monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
         monkeypatch.setattr(auth_cmd, "err", errors.append)
 
-        token = auth_cmd._mint_claude_token(
-            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
-        )
+        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None)
 
         assert token is None
         prompt.assert_not_called()
         assert errors == ["`claude setup-token` failed (exit 7)"]
 
-    def test_external_booley_directory_counts_as_initialized(self, tmp_path, monkeypatch):
-        project = tmp_path / "rtl"
-        project_data = tmp_path / "private-state"
-        project.mkdir()
-        project_data.mkdir()
-        (project / "booley.toml").write_text(
-            '[project]\ndir = "../private-state"\n', encoding="utf-8"
-        )
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-
-        assert auth_cmd._project_is_initialized(project)
-
     def test_token_stdin_never_inspects_or_starts_a_runtime(self, tmp_path, monkeypatch):
         monkeypatch.setattr(auth_cmd.sys, "stdin", SimpleNamespace(read=lambda: f"{_TOKEN}\n"))
         project_probe = Mock(side_effect=AssertionError("runtime must not be inspected"))
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", project_probe)
+        monkeypatch.setattr(session_runtime, "run_project_command", project_probe)
 
         token = auth_cmd._acquire(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], True, tmp_path)
 
@@ -816,20 +782,16 @@ class TestClaudeMintLocation:
         mint.assert_called_once_with(credential, tmp_path)
 
     def test_non_project_reseed_is_a_successful_noop(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
 
-        assert auth_cmd._reseed_spec(tmp_path)
+        assert auth_cmd._reseed_spec(None)
 
-    def test_project_reseed_reports_run_init_result(self, tmp_path, monkeypatch):
+    def test_project_reseed_reports_narrow_reseed_result(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
 
-        run_init = Mock(return_value=0)
-        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
-        monkeypatch.setattr(init_cmd, "run_init", run_init)
-
+        reseed = Mock(return_value=0)
+        monkeypatch.setattr(init_cmd, "reseed_auth_spec", reseed)
         assert auth_cmd._reseed_spec(tmp_path)
-        assert run_init.call_args.args[1] == tmp_path
-        assert run_init.call_args.args[0].seed is True
+        reseed.assert_called_once_with(tmp_path)
 
     def test_store_rejects_invalid_credential(self, tmp_path, monkeypatch):
         errors: list[str] = []
@@ -841,7 +803,7 @@ class TestClaudeMintLocation:
         monkeypatch.setattr(auth_cmd, "err", errors.append)
 
         stored = auth_cmd._store_and_reseed(
-            "invalid", auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+            "invalid", auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None
         )
 
         assert stored is None
@@ -859,7 +821,8 @@ class TestClaudeMintLocation:
             == stored
         )
 
-    def test_reseed_failure_keeps_stored_token_but_returns_failure(self, tmp_path, monkeypatch):
+    def test_reseed_failure_keeps_stored_token_but_returns_failure(self, home, monkeypatch):
+        tmp_path = home
         stored = tmp_path / "config" / "booley" / "claude-oauth-token"
         errors: list[str] = []
         monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
@@ -876,13 +839,13 @@ class TestClaudeMintLocation:
             token_stdin=False,
         )
 
-        rc = auth_cmd.run_auth(args, tmp_path)
+        rc = auth_cmd.run_auth(args, None)
 
         assert rc == 1
         auth_token.store_token.assert_called_once_with(_TOKEN, auth_token.APP_CLAUDE)
         assert errors == [
             "credential was stored, but the Project Sandbox spec could not be re-seeded; "
-            "run `booley init --seed` and retry"
+            "resolve the condition reported above before retrying"
         ]
 
     def test_clear_reseed_failure_returns_failure(self, tmp_path, monkeypatch):
@@ -974,3 +937,436 @@ def test_codex_subscription_plan_uses_cli_home(isolated_home, monkeypatch, tmp_p
         auth_token.subscription_creds_path("codex", home=tmp_path)
         == tmp_path / ".codex" / "auth.json"
     )
+
+
+def _linked_auth(tmp_path, monkeypatch, *, data=True):
+    from tests.harness.test_session_runtime import _linked_project
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    if data:
+        (linked / ".booley").mkdir()
+    effects = []
+
+    def effect(name, value=None):
+        def call(*args, **kwargs):
+            effects.append(name)
+            return value
+
+        return call
+
+    for name, value in [
+        ("_acquire", _TOKEN),
+        ("_read_token_from_stdin", _TOKEN),
+        ("_prompt_secret", _TOKEN),
+        ("_mint_claude_token", _TOKEN),
+        ("_reseed_spec", True),
+    ]:
+        monkeypatch.setattr(auth_cmd, name, effect(name, value))
+    for name, value in [
+        ("store_token", tmp_path / "token"),
+        ("clear_stored_token", True),
+        ("read_stored_token", None),
+    ]:
+        monkeypatch.setattr(auth_token, name, effect(name, value))
+    return root, linked, effects
+
+
+@pytest.mark.parametrize("mode", ["mint", "token-stdin", "clear"])
+@pytest.mark.parametrize(
+    "selection",
+    ["implicit-with-data", "implicit-without-data", "explicit-with-data", "explicit-without-data"],
+)
+def test_cli_linked_auth_refuses_before_required_guard(
+    tmp_path, monkeypatch, capsys, selection, mode
+):
+    import sys
+
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch, data="without" not in selection)
+    flags = {"mint": [], "token-stdin": ["--token-stdin"], "clear": ["--clear"]}[mode]
+    argv = ["booley", "auth", *flags]
+    if selection.startswith("explicit"):
+        monkeypatch.chdir(tmp_path)
+        argv = ["booley", "-C", str(linked), "auth", *flags]
+    monkeypatch.setattr(sys, "argv", argv)
+    result = tlr.main()
+    text = capsys.readouterr().err
+    assert (
+        result == 2
+        and not effects
+        and "run from the Project Root" in text
+        and "booley init" not in text
+    ), "linked CLI auth must require Project Root before generic guards"
+
+
+@pytest.mark.parametrize("repo", ["unrelated", "source-checkout"])
+def test_cli_auth_from_non_project_linked_worktree_is_not_refused(
+    tmp_path, monkeypatch, capsys, repo
+):
+    """Only a proven linked Project checkout refuses; other linked worktrees keep auth."""
+    import subprocess
+    import sys
+
+    _linked_auth(tmp_path, monkeypatch)
+    main = tmp_path / "plain"
+    git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com"]
+    subprocess.run([*git, "init", str(main)], check=True, capture_output=True, timeout=30)
+    if repo == "source-checkout":
+        (main / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+        subprocess.run([*git, "-C", str(main), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        [*git, "-C", str(main), "commit", "--allow-empty", "-m", "initial"],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    linked = tmp_path / "plain-linked"
+    subprocess.run(
+        [*git, "-C", str(main), "worktree", "add", "--detach", str(linked)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    monkeypatch.chdir(linked)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--clear"])
+    result = tlr.main()
+    assert result == 0, capsys.readouterr().err
+
+
+def test_linked_auth_status_preserves_selected_checkout(tmp_path, monkeypatch):
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
+    selected = []
+    monkeypatch.setattr(
+        auth_cmd, "_safe_report_status", lambda app, root: selected.append(root) or 0
+    )
+    assert auth_cmd.run_auth(SimpleNamespace(status=True), linked) == 0
+    assert selected == [linked]
+    assert not effects
+
+
+def test_auth_from_project_subdirectory_retains_behavior(tmp_path, monkeypatch):
+    root, _, effects = _linked_auth(tmp_path, monkeypatch)
+    child = root / "rtl"
+    child.mkdir()
+    assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), child) == 0
+    assert effects == ["clear_stored_token", "_reseed_spec"]
+
+
+def test_uninitialized_nested_checkout_is_not_adopted_as_ancestor_project(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import discover_project_root
+
+    root, _, _ = _linked_auth(tmp_path, monkeypatch)
+    nested = root / "unrelated"
+    nested.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", str(nested)], check=True, capture_output=True, timeout=30)
+    assert discover_project_root(nested) == nested
+
+
+@pytest.fixture
+def auth_project(home, monkeypatch):
+    from booley.runtime.booley_dir import reset_cache
+
+    (home / "config").mkdir(mode=0o700)
+    project = home / "project"
+    data = project / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="subscription"\n')
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    reset_cache()
+    return project
+
+
+def _auth_stdin(monkeypatch, project):
+    from io import StringIO
+
+    monkeypatch.setattr(auth_cmd.sys, "stdin", StringIO(_TOKEN + "-replacement\n"))
+    return auth_cmd.run_auth(SimpleNamespace(token_stdin=True), project)
+
+
+def _foreign_owner(monkeypatch, target):
+    original = Path.stat
+
+    def stat_path(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if path == target:
+            values = list(result)
+            values[4] = os.getuid() + 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "stat", stat_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and mode admission")
+class TestAuthStorePreflight:
+    def test_unsafe_xdg_parent_preserves_credentials(self, auth_project, monkeypatch, capsys):
+        token = auth_token.store_token(_TOKEN)
+        previous = token.read_bytes()
+        token.parent.parent.chmod(0o775)
+        reseed = Mock(return_value=True)
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", reseed)
+        rc = _auth_stdin(monkeypatch, auth_project)
+        assert token.read_bytes() == previous, "credential changed before permission preflight"
+        assert rc == 2
+        assert token.parent.parent.stat().st_mode & 0o777 == 0o775
+        assert "chmod 700" in capsys.readouterr().out
+        reseed.assert_not_called()
+
+    @pytest.mark.parametrize("kind", ["mode", "foreign"])
+    def test_unsafe_booley_directory_stores_nothing(self, auth_project, monkeypatch, capsys, kind):
+        token = auth_token.token_path()
+        token.parent.mkdir(parents=True, mode=0o700)
+        if kind == "mode":
+            token.parent.chmod(0o755)
+        else:
+            _foreign_owner(monkeypatch, token.parent)
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
+        rc = _auth_stdin(monkeypatch, auth_project)
+        assert not token.exists(), "credential written into an unsafe directory"
+        assert rc == 2
+        if kind == "mode":
+            assert token.parent.stat().st_mode & 0o777 == 0o755
+        assert ("chmod 700" if kind == "mode" else "owned") in capsys.readouterr().out
+
+    def test_foreign_project_data_preserves_credentials(self, auth_project, monkeypatch, capsys):
+        token = auth_token.store_token(_TOKEN)
+        previous = token.read_bytes()
+        _foreign_owner(monkeypatch, auth_project / ".booley")
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
+        rc = _auth_stdin(monkeypatch, auth_project)
+        assert token.read_bytes() == previous, (
+            "credential changed before Project data ownership preflight"
+        )
+        assert rc == 2
+        assert "owned" in capsys.readouterr().out
+
+
+def _auth_interactive_ports(monkeypatch):
+    from booley.harness.setup import interactive
+    from booley.runtime import dashboard_tasks
+
+    monkeypatch.setattr(interactive, "_unlicensed_relay_pending", lambda _: False)
+    monkeypatch.setattr(
+        session_runtime,
+        "plan_stopped_headless_runtime_reconciliation",
+        lambda *a: SimpleNamespace(pending=False),
+    )
+    monkeypatch.setattr(session_runtime, "reconcile_stopped_headless_runtime", lambda *a: False)
+    monkeypatch.setattr(interactive, "git_excludes_pending", lambda *a: False)
+    monkeypatch.setattr(interactive, "add_git_excludes", lambda *a: False)
+    monkeypatch.setattr(dashboard_tasks, "inspect", lambda *a: dashboard_tasks.TaskPlan())
+
+
+def _auth_reseed_boundaries(project, monkeypatch):
+    from booley.harness import bootstrap, host_sidecars, image_lifecycle, init_cmd
+    from booley.runtime import session_issuance
+
+    bootstrap_calls = []
+    captured = []
+
+    def full_bootstrap(*args, **kwargs):
+        bootstrap_calls.append(True)
+        return bootstrap.BootstrapResult(image_lifecycle.Intent.CHECK, ())
+
+    monkeypatch.setattr(bootstrap, "reconcile_bootstrap", full_bootstrap)
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", full_bootstrap)
+    monkeypatch.setattr(
+        host_sidecars, "reconcile_sidecars", lambda *a, **k: SimpleNamespace(findings=())
+    )
+    monkeypatch.setattr(image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=()))
+    monkeypatch.setattr(
+        image_lifecycle,
+        "reconcile_planned",
+        lambda *a, **k: image_lifecycle.LifecycleResult(
+            "synthetic-image", "sha256:" + "a" * 64, image_lifecycle.Status.CURRENT
+        ),
+    )
+    pdk = project.parent / "pdk"
+    pdk.mkdir()
+    monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
+    monkeypatch.setattr(session_issuance, "_resolve_image_id", lambda _: "sha256:" + "a" * 64)
+    monkeypatch.setattr(session_issuance, "_project_data_alias_capable", lambda *a: False)
+    monkeypatch.setattr(session_issuance, "_pin_initialize_command", lambda *a: None)
+    monkeypatch.setattr(session_issuance, "_seal_with_requirements", lambda *a: "synthetic-digest")
+    issued = SimpleNamespace(license_profile=None, project_data_layout="legacy")
+    monkeypatch.setattr(session_issuance, "_prospective_issuance", lambda *a: issued)
+    monkeypatch.setattr(
+        session_issuance,
+        "inspect_prepared",
+        Mock(side_effect=session_issuance.RuntimeSpecError("not issued")),
+    )
+
+    def issue(_root, prepared, **kwargs):
+        captured.append(prepared)
+        return issued
+
+    monkeypatch.setattr(session_issuance, "issue_prepared", issue)
+    _auth_interactive_ports(monkeypatch)
+    return bootstrap_calls, captured
+
+
+class TestAuthReseed:
+    def test_auth_never_runs_full_bootstrap(self, auth_project, monkeypatch):
+        calls, captured = _auth_reseed_boundaries(auth_project, monkeypatch)
+        rc = _auth_stdin(monkeypatch, auth_project)
+        assert not calls, "auth invoked full Host Bootstrap"
+        assert rc == 0
+        assert len(captured) == 1
+        assert any(
+            docker_mount_path(auth_token.token_path()) in mount
+            for mount in captured[0].spec["mounts"]
+        )
+        assert captured[0].spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
+
+    def test_clear_never_runs_full_bootstrap(self, auth_project, monkeypatch, capsys):
+        auth_token.store_token(_TOKEN)
+        calls, captured = _auth_reseed_boundaries(auth_project, monkeypatch)
+        rc = auth_cmd.run_auth(SimpleNamespace(clear=True), auth_project)
+        assert not calls, "clear invoked full Host Bootstrap"
+        assert rc == 0
+        assert not auth_token.token_path().exists()
+        assert len(captured) == 1
+        assert all(
+            docker_mount_path(auth_token.token_path()) not in mount
+            for mount in captured[0].spec["mounts"]
+        )
+        assert "rebuild" in capsys.readouterr().out
+
+
+class TestAuthStorageAdmission:
+    def test_rewrite_keeps_bound_inode(self, home):
+        path = auth_token.store_token(_TOKEN)
+        inode = path.stat().st_ino
+        path.chmod(0o644)
+        auth_token.store_token(_TOKEN + "-new")
+        assert path.stat().st_ino == inode
+        assert path.read_text().strip() == _TOKEN + "-new"
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o600
+
+    @pytest.mark.parametrize("kind", ["symlink", "directory", "foreign"])
+    def test_unsafe_token_target_preserves_existing_bytes(self, home, monkeypatch, kind):
+        path = auth_token.store_token(_TOKEN)
+        previous = path.read_bytes()
+        if kind == "symlink":
+            target = path.with_name("target")
+            path.rename(target)
+            path.symlink_to(target)
+        elif kind == "directory":
+            path.unlink()
+            path.mkdir()
+            target = path / "unmodified"
+            target.write_bytes(previous)
+        else:
+            if os.name == "nt":
+                pytest.skip("POSIX owner admission")
+            target = path
+            _foreign_owner(monkeypatch, path)
+        with pytest.raises(auth_token.CredentialStoreError):
+            auth_token.store_token(_TOKEN + "-new")
+        assert target.read_bytes() == previous
+
+    @pytest.mark.parametrize(
+        "relative", ["runtime", "runtime/session-specs", "eda/session-refresh"]
+    )
+    def test_unsafe_project_storage_refuses_before_store(
+        self, auth_project, monkeypatch, relative
+    ):
+        if os.name == "nt":
+            pytest.skip("POSIX mode admission")
+        token = auth_token.store_token(_TOKEN)
+        previous = token.read_bytes()
+        directory = token.parent / relative
+        directory.mkdir(parents=True, mode=0o700)
+        directory.chmod(0o755)
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
+        assert _auth_stdin(monkeypatch, auth_project) == 2
+        assert token.read_bytes() == previous
+
+    def test_write_failure_is_plain_and_does_not_report_success(
+        self, auth_project, monkeypatch, capsys
+    ):
+        original = auth_token.os.open
+
+        def open_path(path, *args, **kwargs):
+            if path == auth_token.token_path():
+                raise PermissionError("synthetic credential write denied")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(auth_token.os, "open", open_path)
+        assert _auth_stdin(monkeypatch, auth_project) != 0
+        output = capsys.readouterr()
+        assert "synthetic credential write denied" in output.out
+        assert "[OK] stored" not in output.out
+        assert "Traceback" not in output.out + output.err
+        assert _TOKEN not in output.out + output.err
+
+    def test_store_only_names_policy_and_future_pickup(self, home, monkeypatch, capsys):
+        assert _auth_stdin(monkeypatch, None) == 0
+        output = capsys.readouterr().out
+        assert "session up" in output and "init --seed" in output
+        assert "claude" in output and "auto/subscription" in output
+
+    @pytest.mark.parametrize("present", [False, True])
+    def test_clear_outside_project(self, home, present):
+        if present:
+            auth_token.store_token(_TOKEN)
+        assert auth_cmd.run_auth(SimpleNamespace(clear=True), None) == 0
+        assert not auth_token.token_path().exists()
+
+
+@pytest.mark.parametrize("kind", ["directory", "foreign", "absent", "symlink"])
+def test_auth_conditional_eda_lock_admission(auth_project, monkeypatch, kind):
+    from booley.eda.provisioning import authority
+
+    if kind == "foreign" and os.name == "nt":
+        pytest.skip("POSIX ownership admission")
+    (auth_project / ".booley" / "booley.toml").write_text(
+        '[flows.fpga]\nenabled=true\n[eda.vivado]\nprovisioning="image"\n'
+    )
+    token = auth_token.store_token(_TOKEN)
+    previous = token.read_bytes()
+    authority.ensure_state_dir()
+    lock = authority.state_dir() / "authority.lock"
+    if kind == "symlink":
+        target = lock.with_name("unchanged")
+        target.write_text("untouched")
+        lock.symlink_to(target)
+        before = lock.lstat()
+    elif kind == "directory":
+        lock.mkdir()
+    elif kind == "foreign":
+        lock.write_text("unchanged")
+        _foreign_owner(monkeypatch, lock)
+    monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
+    rc = _auth_stdin(monkeypatch, auth_project)
+    if kind == "absent":
+        assert rc == 0
+        assert not lock.exists()
+    else:
+        assert rc == 2
+        assert token.read_bytes() == previous
+        if kind == "foreign":
+            assert lock.read_text() == "unchanged"
+        elif kind == "symlink":
+            assert lock.lstat() == before
+            assert target.read_text() == "untouched"
+
+
+def test_auth_no_eda_consumer_ignores_unrelated_authority(auth_project, monkeypatch):
+    from booley.eda.provisioning import authority
+
+    token = auth_token.store_token(_TOKEN)
+    root = token.parent / "eda"
+    root.mkdir(mode=0o700)
+    lock = root / "authority.lock"
+    lock.mkdir()
+    monkeypatch.setattr(
+        authority, "load_state", Mock(side_effect=AssertionError("no EDA consumer"))
+    )
+    monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
+    assert _auth_stdin(monkeypatch, auth_project) == 0
+    assert lock.is_dir()

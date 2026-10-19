@@ -738,7 +738,7 @@ def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeyp
             EntryRequest(
                 worktree, "user-goal", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
-            EntryEnvironment(control),
+            EntryEnvironment(control, routing_guidance="Explicit test routing guidance."),
         ).record
         assert record.paired_project_base_sha == git(control, "rev-parse", "HEAD")
         layout = SimpleNamespace(main=root, control=control, worktree=worktree, record=record)

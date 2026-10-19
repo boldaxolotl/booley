@@ -14,7 +14,9 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.harness import auto_doctor, doctor, upgrade_review
 from booley.harness import booley as cli
 from booley.harness.dashboard import model as dashboard
-from booley.mcp import server
+from booley.mcp import (
+    server,
+)
 from booley.runtime import health, health_presentation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime
@@ -64,7 +66,7 @@ def _isolate_mcp_and_dashboard(monkeypatch, root):
     monkeypatch.chdir(root)
     monkeypatch.setattr(server, "_interactive_session_id", lambda: "fixture")
     monkeypatch.setattr(server, "format_status_line", lambda: "status")
-    monkeypatch.setattr(server, "_status_mcp_tool_visible", lambda: True)
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setattr(
         upgrade_review,
         "read_status",
@@ -126,7 +128,7 @@ def test_upgrade_only_uses_weekly_cadence_and_drift_wins(project):
     assert health.read_health(root, now=NOW - timedelta(seconds=1)).due is None
     assert health.read_health(root, now=NOW).due == "automatic Doctor result expired"
     (directory / "booley.toml").write_text('[project]\nname="changed"\n')
-    assert health.read_health(root, now=NOW).due == "Doctor inputs changed"
+    assert health.read_health(root, now=NOW).due == "Doctor inputs changed: booley.toml"
 
 
 @pytest.mark.parametrize("value", [None, "invalid", 42])

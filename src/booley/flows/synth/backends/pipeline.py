@@ -171,7 +171,6 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
             spec.timing,
             target=spec.target or spec.design_name,
             source_sdc_paths=sdc_paths,
-            fanout_report_dir=Path("reports/fanout"),
         )
 
     attempt_token = new_attempt_token()
@@ -286,7 +285,6 @@ def _write_recipe_artifact(spec: SynthSpec, build_dir: Path) -> None:
             "utilization_pct": timing.utilization_pct,
             "placement_density": density,
             "repair_setup": timing.repair_timing,
-            "max_fanout": timing.max_fanout,
             "repair_hold": timing.repair_hold,
             "gate_cloning": timing.gate_cloning,
             "setup_margin_ns": timing.setup_margin_ns,
@@ -347,8 +345,6 @@ def _sta_recipe_lines(spec: SynthSpec, token: str) -> list[str]:
         *(_required_file(token, "openroad", str(path), path.name) for path in pdk),
         "\topenroad -no_init -exit run_openroad.tcl > openroad.log 2>&1 "
         + _fail_tail("openroad.log"),
-        _required_output(token, "openroad", "reports/fanout/policy.json"),
-        _required_output(token, "openroad", "reports/fanout/worst.rpt", nonempty=False),
         _required_output(token, "openroad", "reports/timing/overall.rpt"),
         _required_output(token, "openroad", "reports/timing/overall.csv.rpt", nonempty=False),
         _required_output(token, "openroad", f"openroad_{spec.design_name}.v"),
@@ -585,29 +581,8 @@ def _missing_output_marker(
                 ),
             ]
         )
-    if physical:
-        required_outputs.extend(
-            [
-                (
-                    "openroad",
-                    "reports/fanout/policy.json",
-                    fresh_text("reports/fanout/policy.json"),
-                ),
-                ("openroad", "reports/fanout/worst.rpt", fresh_text("reports/fanout/worst.rpt")),
-            ]
-        )
     for owner, subject, contents in required_outputs:
-        if subject == "reports/fanout/policy.json" and contents:
-            from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-            try:
-                parse_policy(contents)
-            except (ValueError, TypeError):
-                return render_failure_marker(plan.attempt_token, "missing_output", owner, subject)
-        if contents is None or (
-            subject not in {"reports/timing/overall.csv.rpt", "reports/fanout/worst.rpt"}
-            and not contents
-        ):
+        if contents is None or (subject != "reports/timing/overall.csv.rpt" and not contents):
             return render_failure_marker(plan.attempt_token, "missing_output", owner, subject)
     return None
 
@@ -793,7 +768,6 @@ def _recipe_summary(spec: SynthSpec) -> str:
             f"YOSYS_GENERIC_ABC_BEFORE_MAPPING: {str(spec.generic_abc_before_mapping).lower()}",
             f"OPENROAD_UTILIZATION_PCT: {timing.utilization_pct:g}",
             f"OPENROAD_PLACEMENT_DENSITY: {density:g}",
-            f"OPENROAD_MAX_FANOUT: {timing.max_fanout if timing.max_fanout is not None else 'none'}",
             f"OPENROAD_REPAIR_SETUP: {str(timing.repair_timing).lower()}",
             f"OPENROAD_REPAIR_HOLD: {str(timing.repair_hold).lower()}",
             f"OPENROAD_GATE_CLONING: {str(timing.gate_cloning).lower()}",
@@ -825,16 +799,6 @@ def _timing_sections(
             openroad_timing._print_openroad_area_markers(openroad_text)
         if not surfaced and openroad_text is not None:
             print("WARNING: STA completed but no timing path slack was reported")
-    policy = fresh_text("reports/fanout/policy.json")
-    if policy:
-        from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-        try:
-            parsed = parse_policy(policy)
-        except (ValueError, TypeError):
-            parts.append("BOOLEY_INPUT_ERROR: malformed native fanout policy artifact")
-        else:
-            parts.append("OPENROAD_FANOUT_POLICY: " + json.dumps(parsed, separators=(",", ":")))
     derived = buf.getvalue()
     if derived:
         parts.append(derived.rstrip("\n"))

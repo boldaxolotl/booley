@@ -4267,6 +4267,57 @@ def _check_target_sources(
     )
     _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
     _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_sim_copyto_collisions(audit.root, refs, inputs, audit.warn)
+
+
+def _check_sim_copyto_collisions(
+    root: Path, refs: dict[str, TargetHandle], inputs: _CoreAuditInputs, warn: Check
+) -> None:
+    """Warn about declared inputs that would conflict at a usable literal run cwd."""
+    from booley.flows.sim.runtime_inputs import (
+        RuntimeInputError,
+        destination_parent_conflict,
+        iter_runtime_inputs,
+        runtime_input_matches,
+        safe_runtime_relative,
+    )
+
+    configured = resolve_run_cwd(root)
+    try:
+        if parse_run_cwd_template(configured):
+            return
+        run = (root / configured).absolute()
+        if literal_run_cwd_error(run) is not None:
+            return
+    except (ValueError, OSError):
+        return  # Configuration and cwd audits own unusable run directories.
+    for name, ref in sorted(refs.items()):
+        if not flow_can_drive("sim", ref):
+            continue
+        try:
+            declarations = inputs.inspection_for(name).inputs
+        except (fusesoc_registry.FuseSocError, OSError):
+            continue  # Source diagnostics own unavailable inspections.
+        for item, copyto in iter_runtime_inputs(declarations):
+            source = root / item.path
+            try:
+                relative = safe_runtime_relative(copyto)
+                destination = run / relative
+                conflict = destination_parent_conflict(run, relative)
+                if not conflict and (
+                    not source.is_file()
+                    or not (destination.exists() or destination.is_symlink())
+                    or runtime_input_matches(source, destination)
+                ):
+                    continue
+            except (RuntimeInputError, OSError):
+                continue  # Missing/generated/unreadable inputs cannot be compared.
+            _warning_sink(warn, "sim.runtime-input-collision", subject=f"{name}:{destination}")(
+                f"sim Target {name!r}: copyto source {source} conflicts with {destination}"
+                + (f": {conflict}" if conflict else ""),
+                "Rename the copyto destination, remove the checked-in copy, or choose a "
+                "literal run_cwd without the collision.",
+            )
 
 
 def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
@@ -6962,10 +7013,30 @@ def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return f"report is unreadable ({exc})"
+    return _synth_report_evidence_error(report)
+
+
+def _synth_report_evidence_error(report: object) -> str:
+    """Validate logical mapped area or physical/legacy constrained timing."""
+    if not isinstance(report, dict):
+        return "report is not a JSON object"
     if report.get("ppa_complete") is not True:
         return "ppa_complete is not true"
+    mode = report.get("synth_mode", "")
+    if mode == "logical":
+        return _logical_synth_evidence_error(report)
+    if mode not in ("", "physical"):
+        return f"unknown synthesis mode {mode!r}"
     if report.get("timing_complete") is not True or not report.get("per_clock"):
         return "no completed constrained-clock timing result"
+    return ""
+
+
+def _logical_synth_evidence_error(report: dict) -> str:
+    if report.get("termination") != "completed":
+        return "logical synthesis did not complete"
+    if report.get("area_source") != "yosys_mapped":
+        return "no completed Yosys mapped-area result"
     return ""
 
 

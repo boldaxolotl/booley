@@ -67,7 +67,9 @@ def test_required_commands_refuse_outside_project(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == (
-        "ERROR: not a Booley Project; cd into one or run `booley init` on the host.\n"
+        "ERROR: Cannot determine owning Project; run from the Project Root.\n"
+        if path[0] == "session"
+        else "ERROR: not a Booley Project; cd into one or run `booley init` on the host.\n"
     )
 
 
@@ -292,3 +294,26 @@ def test_explicit_sandbox_commands_still_refuse_host(command, cli_project, monke
         cli.main()
     assert error.value.code == 2
     assert "runs inside the Booley Sandbox" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("location", ["plain", "orphan-worktree"])
+def test_session_without_owner_requires_project_root(tmp_path, monkeypatch, capsys, location):
+    monkeypatch.chdir(tmp_path)
+    if location == "orphan-worktree":
+        (tmp_path / ".git").write_text("gitdir: /missing/worktrees/orphan\n")
+    for key in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    reset_cache()
+    effects = []
+    monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
+    monkeypatch.setitem(cli._EARLY_COMMANDS, "session", lambda *_: effects.append("dispatch") or 0)
+    monkeypatch.setattr(sys, "argv", ["booley", "session", "status"])
+    result = cli.main()
+    text = capsys.readouterr().err
+    assert "run from the Project Root" in text, (
+        "unresolvable session must direct the user to the Project Root"
+    )
+    assert result == 2 and not effects
+    assert "booley init" not in text and "Traceback" not in text

@@ -959,9 +959,9 @@ def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
     output = capsys.readouterr().out
     _assert_backfill_report(output, missing)
     assert "would secure Booley Directory permissions" in output
-    assert [(r.name, r.status, r.detail) for r in ctx.results] == [
-        ("booley_dir", "warn", "permissions need 0700")
-    ]
+    assert all(r.name == "booley_dir" and r.status == "warn" for r in ctx.results)
+    assert any(r.detail == "permissions need 0700" for r in ctx.results)
+    assert any("tests.toml" in r.detail for r in ctx.results)
     assert _complete_snapshot(repo) == before
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     _assert_applied_backfills(repo, target, missing)
@@ -986,7 +986,8 @@ def test_booley_dir_check_correct_permissions_keeps_skip(repo, capsys):
     _assert_backfill_report(output, missing)
     assert "Booley Directory found at" in output
     assert "permissions" not in output
-    assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
+    assert all(r.status == "warn" for r in ctx.results)
+    assert any("tests.toml" in r.detail for r in ctx.results)
     assert _complete_snapshot(repo) == before
 
 
@@ -1132,3 +1133,203 @@ def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     assert ignore.read_text() == repaired
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
+
+
+def _current_auth_and_image(monkeypatch):
+    monkeypatch.setattr(
+        init_cmd, "_step_auth", lambda ctx, *_a, **_k: ctx.record("auth", "skip", "current")
+    )
+
+
+def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, capsys):
+    reconcile = init_cmd.image_lifecycle.reconcile_planned
+
+    def inspect(scope, intent, **kwargs):
+        assert intent == init_cmd.ImageLifecycleIntent.CHECK
+        return reconcile(scope, intent, **kwargs)
+
+    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", inspect)
+
+    def interactive(ctx, **_kwargs):
+        ctx.step_banner("Interactive Mode")
+        ctx.record("interactive", "skip", "current")
+
+    monkeypatch.setattr(init_cmd, "_step_interactive", interactive)
+    for force, check in ((False, False), (True, False), (False, True), (True, True)):
+        ctx = InitContext(project_root=repo, force=force, check_only=check)
+        init_cmd._run_seed(ctx, init_cmd.AgentSelection("claude", "subscription"))
+        numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
+        assert numbers == list(range(1, len(numbers) + 1)), "seed headings must be sequential"
+
+
+def test_check_only_reports_directory_backfills_as_pending(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    assert _run_full_init(repo) == 0
+    (repo / ".booley/tests.toml").unlink()
+    capsys.readouterr()
+    before = _filesystem_snapshot(repo)
+    args = _init_args()
+    args.check_only = True
+    code = init_cmd.run_init(args, repo)
+    output = capsys.readouterr().out
+    assert code == 1, "backfill must be pending"
+    assert "tests.toml" in output.splitlines()[-1]
+    assert _filesystem_snapshot(repo) == before
+
+
+def _scaffold_args():
+    args = _init_args()
+    args.scaffold = "starter"
+    args.sim_eda_tool = "verilator"
+    args.lint_eda_tool = "verilator"
+    args.tb_style = "sv"
+    args.asic = False
+    args.fpga_part = None
+    return args
+
+
+def test_scaffold_origin_survives_plain_rerun(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    assert init_cmd.run_init(_scaffold_args(), repo) == 0
+    config = repo / ".booley/booley.toml"
+    assert "# booley-init-origin: scaffold" in config.read_text(), (
+        "scaffold rerun must use greenfield guidance"
+    )
+    assert "/booley-setup new" in capsys.readouterr().out
+    for check in (False, True):
+        args = _init_args()
+        args.check_only = check
+        assert init_cmd.run_init(args, repo) == 0
+        output = capsys.readouterr().out
+        assert "plan phase" not in output
+        assert "Step 2 (fpga)" not in output
+        assert "doctor" in output
+        assert "AGENTS.md is" not in output
+        assert "# booley-init-origin: scaffold" in config.read_text()
+
+
+def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    args = _scaffold_args()
+    args.check_only = True
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(args, repo) == 1
+
+    output = capsys.readouterr().out
+    assert "After applying the scaffold" in output, "planned scaffold needs prospective advice"
+    assert "Reopen in Container" in output
+    assert "/booley-setup new" in output
+    assert "Scaffolded starter project" not in output
+    assert "plan phase, here on the host" not in output
+    assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
+    assert _filesystem_snapshot(repo) == before
+    assert not (repo / ".booley/booley.toml").exists()
+
+
+def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, capsys):
+    args = _init_args()
+    args.check_only = True
+
+    def fail(*_args):
+        raise OSError("unique-inspection-failure")
+
+    monkeypatch.setattr(init_cmd, "_check_init_layout", fail)
+    assert init_cmd.run_init(args, repo) == 2
+    output = capsys.readouterr().out
+    assert "Checked initialization: failed" in output.splitlines()[-1], (
+        "early check error must end with checked verdict"
+    )
+    assert "unique-inspection-failure" in output.splitlines()[-1]
+
+
+def test_check_only_unavailable_inner_git_branch_is_unresolved(repo, monkeypatch, capsys):
+    target = repo / ".booley"
+    target.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        init_cmd.project_repositories,
+        "inspect_symbolic_branch",
+        lambda *_a: type("Branch", (), {"branch": None, "detail": "detached HEAD"})(),
+    )
+    ctx = InitContext(project_root=repo, check_only=True)
+    init_cmd._init_project_git_repo(target, ctx)
+    assert any(r.status == "warn" and "branch" in r.detail for r in ctx.results), (
+        "unavailable branch must be recorded unresolved"
+    )
+
+
+def test_comment_only_port_skeleton_then_scaffold_updates_creation_origin(repo, monkeypatch):
+    _current_auth_and_image(monkeypatch)
+    config = repo / ".booley/booley.toml"
+    config.parent.mkdir(mode=0o700)
+    config.write_text(
+        "# booley-init-origin: port\n" + init_cmd.BOOLEY_TOML_SKELETON, encoding="utf-8"
+    )
+    assert init_cmd.run_init(_scaffold_args(), repo) == 0
+    assert "# booley-init-origin: scaffold" in config.read_text(encoding="utf-8")
+    assert "# booley-init-origin: port" not in config.read_text(encoding="utf-8")
+
+
+def test_existing_directory_config_backfill_never_invents_port_origin(repo, monkeypatch):
+    _current_auth_and_image(monkeypatch)
+    (repo / ".booley").mkdir(mode=0o700)
+    assert _run_full_init(repo) == 0
+    assert "booley-init-origin:" not in (repo / ".booley/booley.toml").read_text()
+
+
+def test_legacy_init_modes_never_backfill_origin(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+    assert _run_full_init(repo) == 0
+    config = repo / ".booley/booley.toml"
+    original = config.read_text(encoding="utf-8").replace("# booley-init-origin: port\n", "")
+    original = (
+        "# booley.toml — generated by `booley init --scaffold` for the 'starter' starter IP.\n"
+        + original
+    )
+    config.write_text(original, encoding="utf-8")
+    for mode in ("plain", "force", "check_only", "seed"):
+        args = _init_args()
+        if mode != "plain":
+            setattr(args, mode, True)
+        assert init_cmd.run_init(args, repo) == 0
+        assert config.read_text(encoding="utf-8") == original
+        assert "/booley-setup new" not in capsys.readouterr().out
+
+
+def test_completed_port_init_still_refuses_scaffold(repo, monkeypatch):
+    _current_auth_and_image(monkeypatch)
+    assert _run_full_init(repo) == 0
+    config = repo / ".booley/booley.toml"
+    original = config.read_bytes()
+    assert init_cmd.run_init(_scaffold_args(), repo) == 2
+    assert config.read_bytes() == original
+
+
+def test_init_origin_ignores_external_booley_dir(repo, monkeypatch):
+    _current_auth_and_image(monkeypatch)
+    external = repo.parent / "external"
+    external.mkdir()
+    config = external / "booley.toml"
+    config.write_text("# external\n")
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
+    assert _run_full_init(repo) == 0
+    assert "# booley-init-origin: port" in (repo / ".booley/booley.toml").read_text()
+    assert config.read_text() == "# external\n"
+    assert os.environ["BOOLEY_DIR"] == str(external)
+
+
+def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    for scaffold, force, check in (
+        (True, False, False),
+        (False, False, False),
+        (False, True, False),
+        (False, False, True),
+    ):
+        args = _scaffold_args() if scaffold else _init_args()
+        args.force = force
+        args.check_only = check
+        assert init_cmd.run_init(args, repo) == 0
+        numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
+        assert numbers == list(range(1, len(numbers) + 1))

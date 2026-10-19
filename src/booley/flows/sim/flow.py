@@ -126,7 +126,7 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
-from booley.targets.catalog import TargetCatalog
+from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import (
     TargetHandle,
     criterion_matches_target,
@@ -2115,7 +2115,13 @@ def _resolve_sim_campaign_work_units(
     """
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
-        return 1
+        try:
+            selection = PreparedTargetSelection.resolve(
+                work_dir, "", for_flow="sim", select_omitted=True
+            )
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return 1
+        targets = [handle.selector for handle in selection.handles]
     selected_mode = normalize_simulation_mode(mode)
     if selected_mode is SimulationMode.ELAB_ONLY:
         return len(targets)

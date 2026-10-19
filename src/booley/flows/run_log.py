@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import stat
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
 RUN_LOG_NAME = "run.log"
@@ -27,12 +30,76 @@ def begin_run_log(
     flow: str,
     target: str,
     run: str | None = None,
+    owner: Path | None = None,
 ) -> Path:
     """Open a fresh run log with ownership and in-progress markers."""
     path = Path(work_dir, RUN_LOG_NAME)
-    header = format_run_log_header(flow=flow, target=target, run=run)
-    path.write_text(f"{header}{RUN_LOG_PENDING}\n", encoding="utf-8")
+    absolute = Path(os.path.abspath(path))  # noqa: PTH100 — preserve links
+    for ancestor in (absolute, *absolute.parents):
+        if ancestor.is_symlink():
+            raise OSError("run log path contains a symbolic link")
+        if owner is None or ancestor == owner:
+            break
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("run log must be a singly linked regular file")
+        stream.truncate(0)
+        header = format_run_log_header(flow=flow, target=target, run=run)
+        stream.write(f"{header}{RUN_LOG_PENDING}\n")
     return path
+
+
+@dataclass
+class RunLogIdentity:
+    """Writer-owned identity, refreshed only when the log's stat identity changes."""
+
+    path: Path
+    target: str
+    run: str
+    attempt: str
+    fingerprint: tuple[int, ...]
+
+    @classmethod
+    def create(
+        cls, root: Path, target: str, attempt: str, allowed: tuple[Path, ...]
+    ) -> RunLogIdentity:
+        path = Path(os.path.abspath(root / RUN_LOG_NAME))  # noqa: PTH100 — preserve links
+        owner = next((parent for parent in allowed if path.is_relative_to(parent)), None)
+        if owner is None:
+            raise OSError("run log lies outside the owned evidence roots")
+        run = current_run_token()
+        path = begin_run_log(root, flow="sim", target=target, run=run, owner=owner)
+        return cls(path, target, run, attempt, cls._fingerprint(path))
+
+    @staticmethod
+    def _fingerprint(path: Path) -> tuple[int, ...]:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("run log must be a singly linked regular file")
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def pointer(self, root: Path, token: str, project: Path) -> dict[str, object] | None:
+        if root.absolute() != self.path.parent or (token and token != self.attempt):
+            return None
+        try:
+            fingerprint = self._fingerprint(self.path)
+            if fingerprint != self.fingerprint:
+                with os.fdopen(open_regular_nofollow(self.path), "r", encoding="utf-8") as stream:
+                    fields = parse_run_log_header(stream.readline(4096))
+                if fields is None or any(
+                    fields.get(key) != value
+                    for key, value in (("run", self.run), ("flow", "sim"), ("target", self.target))
+                ):
+                    return None
+                self.fingerprint = fingerprint
+            representation = (
+                self.path.relative_to(project) if self.path.is_relative_to(project) else self.path
+            )
+            return {"path": str(representation), "live": True, "complete": False}
+        except (OSError, ValueError):
+            return None
 
 
 def format_run_log_header(*, flow: str, target: str, run: str | None = None) -> str:

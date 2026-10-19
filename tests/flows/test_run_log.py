@@ -177,3 +177,65 @@ class TestRunLogProgress:
         raw = (tmp_path / "run.log").read_bytes()
         assert len(raw) <= 400 + len(run_log.RUN_LOG_HEADER_PREFIX) + 200
         assert b"line 1999" in raw
+
+
+def test_begin_run_log_never_truncates_unrelated_file(tmp_path, monkeypatch):
+    from contextlib import suppress
+
+    from booley.flows.run_log import begin_run_log
+    from tests.conftest import symlink_or_skip
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    failures = []
+    for kind in ("symlink", "hardlink", "ancestor"):
+        case = kind
+        case_root = tmp_path / case
+        protected = case_root / "protected"
+        protected.mkdir(parents=True)
+        sentinel = protected / "run.log"
+        sentinel.write_text("retained evidence")
+        evidence = case_root / "evidence"
+        if kind == "ancestor":
+            symlink_or_skip(evidence, protected, target_is_directory=True)
+        else:
+            evidence.mkdir()
+            if kind == "symlink":
+                symlink_or_skip(evidence / "run.log", sentinel)
+            else:
+                (evidence / "run.log").hardlink_to(sentinel)
+        with suppress(OSError):
+            begin_run_log(evidence, flow="sim", target="sim", owner=case_root)
+        if sentinel.read_text() != "retained evidence":
+            failures.append(case)
+    assert failures == [], f"retained evidence was truncated: {failures}"
+
+
+def test_begin_run_log_refreshes_under_symlinked_parent(tmp_path):
+    from tests.conftest import symlink_or_skip
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, physical, target_is_directory=True)
+    work = alias / "work"
+    work.mkdir()
+    run_log.write_run_log(work, "previous run")
+    run_log.begin_run_log(work, flow="lint", target="lint_top")
+    assert "previous run" not in (work / "run.log").read_text(encoding="utf-8")
+    assert run_log.RUN_LOG_PENDING in (work / "run.log").read_text(encoding="utf-8")
+
+
+def test_identity_checks_only_through_owning_root(tmp_path):
+    from tests.conftest import symlink_or_skip
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, physical, target_is_directory=True)
+    owner = alias / "owner"
+    work = owner / "work"
+    work.mkdir(parents=True)
+    run_log.write_run_log(work, "previous run")
+    identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (owner,))
+    assert "previous run" not in identity.path.read_text(encoding="utf-8")
+    assert identity.pointer(work, "attempt", owner)["live"] is True

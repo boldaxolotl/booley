@@ -58,7 +58,6 @@ def test_two_tabs_carry_handles_without_allocating_subagent_ids(tmp_path):
     assert labels["codex:other"] == "S2"
     assert HandleStore(tmp_path).load().next_number == 3
     assert len(registry.snapshot().rows) == 2
-    registry.backfill_handles()
     assert HandleStore(tmp_path).load().next_number == 3
 
 
@@ -226,3 +225,26 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         )
     finally:
         observer.close()
+
+
+def test_equal_labels_do_not_hide_thread_route_changes(tmp_path):
+    proc = tmp_path / "proc"
+    first = process(proc, 100, 1, executable="node")
+    second = process(proc, 200, 1, executable="node")
+    first_peer, second_peer = process(proc, 101, 100), process(proc, 201, 200)
+    chat_sessions.reserve_codex_chat(tmp_path, first)
+    chat_sessions.reserve_codex_chat(tmp_path, second)
+    store = HandleStore(tmp_path)
+    state = store.load()
+    state.entries[process_session_key(second)] = "S1"
+    state.entries["codex:main"] = "S9"
+    state.next_number = 10
+    store.save(state)
+    registry = SessionRegistry(tmp_path, proc_root=proc)
+    for peer, owner in [(first_peer, first), (second_peer, second)]:
+        facts = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
+        registry.upsert(facts, "sim", "completed", now=100)
+        assert store.load().aliases["chat:thread:codex:main"] == process_session_key(owner)
+    peerless = Attribution("codex:main", "thread", "", "", namespace=SCOPE)
+    assert registry.chat_attribution(peerless).key == process_session_key(second)
+    assert store.load().entries["codex:main"] == "S9"

@@ -6,11 +6,15 @@ and edge cases (empty dirs, syntax errors, missing attributes).
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from booley.mcp import (
+    catalog,
+)
 from booley.mcp.registry import (
     BUILTIN_FLOW_PACKAGES,
     SKIP_MODULES,
@@ -567,14 +571,19 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
 
 
 def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
-    from booley.mcp import server as mcp_server
+    monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
 
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-    monkeypatch.setattr(mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
+
     builtins = [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}]
-    names = {definition["name"] for definition in mcp_server._all_mcp_tool_defs(builtins)}
+    names = {
+        definition["name"]
+        for definition in catalog.visible_definitions(
+            catalog.Exposure.from_mapping(os.environ), builtins
+        )
+    }
     assert len(names) == 10
     assert {name for name in names if name.startswith("goal_")} == {
         "goal_enter",
@@ -582,3 +591,102 @@ def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
         "goal_propose_change",
         "goal_finish",
     }
+
+
+@pytest.mark.parametrize("disabled", [None, "flow", "specialist", "mcp_tool"])
+def test_unfiltered_inventory_composes_existing_discovery_policy(disabled):
+    from booley.mcp.registry import discover_mcp_inventory, discover_mcp_tools, filter_mcp_tools
+
+    inventory = discover_mcp_inventory()
+    flows = {
+        item.name: {"enabled": False} for item in inventory if item.kind == disabled == "flow"
+    }
+    specialists = {
+        item.name: {"enabled": False}
+        for item in inventory
+        if item.kind == disabled == "specialist"
+    }
+    assert filter_mcp_tools(
+        inventory, specialist_config=specialists, flow_config=flows
+    ) == discover_mcp_tools(specialist_config=specialists, flow_config=flows)
+    assert filter_mcp_tools(inventory) == inventory
+
+
+def test_unfiltered_inventory_validates_disabled_specialist_names():
+    from booley.mcp.registry import discover_mcp_inventory, filter_mcp_tools
+
+    with pytest.raises(ValueError, match="unknown_specialist"):
+        filter_mcp_tools(
+            discover_mcp_inventory(), specialist_config={"unknown_specialist": {"enabled": False}}
+        )
+
+
+def test_cached_inventory_preserves_custom_order_exclusions_and_duplicate_metadata(tmp_path):
+    from booley.mcp.registry import discover_mcp_inventory
+
+    builtin = tmp_path / "builtin"
+    (builtin / "mcp").mkdir(parents=True)
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    _write_endpoint_file(builtin / "mcp", "direct.py", VALID_MCP_TOOL_SRC)
+    for filename, content in (
+        ("a_flow.py", FLOW_SRC),
+        ("b_specialist.py", SPECIALIST_SRC),
+        ("c_direct.py", VALID_MCP_TOOL_SRC),
+        ("_disabled.py", VALID_MCP_TOOL_CODE_MODIFYING),
+        ("base.py", VALID_MCP_TOOL_CODE_MODIFYING),
+        ("helper.py", NO_ENDPOINT_CLASS_SRC),
+    ):
+        _write_endpoint_file(custom, filename, content)
+    inventory = discover_mcp_inventory(booley_src=builtin, project_mcp_tools_dir=custom)
+    assert [item.name for item in inventory] == ["run_sim", "lint_check", "debug_agent", "run_sim"]
+    config = {
+        "specialist_config": {"debug_agent": {"enabled": False}},
+        "flow_config": {"lint_check": {"enabled": False}},
+    }
+    expected = discover_mcp_tools(booley_src=builtin, project_mcp_tools_dir=custom, **config)
+    assert discover_mcp_tools(inventory=inventory, **config) == expected
+    assert [item.name for item in expected] == ["run_sim", "run_sim"]
+    assert discover_mcp_tools(inventory=[]) == []
+
+
+def test_live_inventory_preserves_disabled_duplicate_policy(tmp_path, monkeypatch):
+    from booley.mcp import live_catalog
+    from booley.mcp.registry import McpToolInfo
+
+    (tmp_path / "booley.toml").write_text("[flows.local]\nenabled = false\n")
+    inventory = [
+        McpToolInfo("local", "a.py", "First", kind="flow"),
+        McpToolInfo("local", "b.py", "Second", kind="flow"),
+    ]
+    monkeypatch.setattr(live_catalog, "resolve_booley_dir", lambda: tmp_path)
+    monkeypatch.setattr(live_catalog, "discover_mcp_inventory", lambda **kwargs: inventory)
+    catalog = live_catalog.LiveCatalog.__new__(live_catalog.LiveCatalog)
+    catalog.directory = tmp_path
+    catalog._inventory_key = None
+    catalog._inventory = []
+    assert catalog._candidates() == []
+    (tmp_path / "booley.toml").write_text("[flows.local]\nenabled = true\n")
+    with pytest.raises(ValueError, match="Duplicate MCP endpoint"):
+        catalog._candidates()
+
+
+def test_schema_worker_excludes_job_report_and_transport_owners(tmp_path):
+    from booley.mcp.catalog_worker import run_schema_worker
+
+    path = tmp_path / "local.py"
+    path.write_text(
+        "import sys\n"
+        "for module in ('booley.mcp.server', 'booley.mcp.job_lifecycle', "
+        "'booley.mcp.job_results', 'booley.mcp.report_encoding', 'booley.mcp.sim_baseline_jobs'):\n"
+        "    assert module not in sys.modules, module\n"
+        "from booley.mcp.base import McpTool\n"
+        "class Local(McpTool):\n"
+        "    name = 'local'\n"
+        "    description = 'Neutral worker guard'\n"
+        "    def _add_args(self, parser): pass\n"
+        "    def _run(self, args): pass\n"
+    )
+    definitions, errors = run_schema_worker({"local": path})
+    assert not errors
+    assert definitions[0]["name"] == "local"

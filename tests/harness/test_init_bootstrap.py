@@ -39,7 +39,9 @@ def _finding(
 
 
 def test_project_init_coordinator_fits_on_a_screen() -> None:
-    assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50
+    assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50, (
+        "Project initialization coordinator exceeds the 50-line architecture limit"
+    )
 
 
 def test_project_init_preflight_coordinator_fits_on_a_screen() -> None:
@@ -458,3 +460,54 @@ def test_init_renders_host_table_alias_and_preserves_priority(
     assert ("Remove [interactive]" if both_tables else "replace it with") in output
     assert policies[0].max_sessions == (7 if both_tables else 2)
     assert path.read_text() == text
+
+
+@pytest.mark.parametrize("state", ["pending", "error"])
+def test_auth_reseed_checks_sidecars_without_full_bootstrap(tmp_path, monkeypatch, capsys, state):
+    from booley.harness import host_sidecars
+
+    full = []
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", lambda *a, **k: full.append(True))
+    monkeypatch.setattr(
+        host_sidecars,
+        "reconcile_sidecars",
+        lambda *a, **k: host_sidecars.SidecarResult(
+            (
+                host_sidecars.SidecarFinding(
+                    "proxy", host_sidecars.SidecarState(state), "synthetic sidecar error"
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=())
+    )
+    assert not init_cmd._auth_reseed_dependencies(tmp_path)
+    output = capsys.readouterr().out
+    assert not full
+    if state == "pending":
+        assert output.count("booley bootstrap") == 1
+        assert "init --seed" in output
+    else:
+        assert "synthetic sidecar error" in output
+        assert "booley bootstrap" not in output
+
+
+@pytest.mark.parametrize("host", [False, True])
+def test_auth_reseed_classifies_image_repair(tmp_path, monkeypatch, capsys, host):
+    from booley.harness import host_sidecars, image_lifecycle
+
+    monkeypatch.setattr(
+        host_sidecars, "reconcile_sidecars", lambda *a, **k: host_sidecars.SidecarResult(())
+    )
+    role = (
+        image_lifecycle.ImageRole.RUNTIME_BASE
+        if host
+        else image_lifecycle.ImageRole.PROJECT_OVERLAY
+    )
+    step = SimpleNamespace(role=role, action=image_lifecycle.PlanAction.BUILD)
+    monkeypatch.setattr(image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=(step,)))
+    assert not init_cmd._auth_reseed_dependencies(tmp_path)
+    output = capsys.readouterr().out
+    assert ("booley bootstrap" in output) == host
+    assert "booley init" in output

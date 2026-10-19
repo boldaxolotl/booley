@@ -9,20 +9,22 @@ from copy import deepcopy
 import pytest
 
 from booley.goals.rules import goal_mode_rules
-from booley.mcp import catalog
+from booley.mcp import (
+    catalog,
+)
 from booley.mcp.catalog import work_dir_guidance
 from booley.mcp.registry import discover_mcp_tools
 
 
 @pytest.fixture(autouse=True)
 def isolated_guidance_cache():
-    catalog.reset_guidance_cache()
+    catalog.work_dir_guidance.cache_clear()
     yield
-    catalog.reset_guidance_cache()
+    catalog.work_dir_guidance.cache_clear()
 
 
 def test_rules_tell_the_agent_to_reproduce_a_bug_red_first() -> None:
-    rules = goal_mode_rules()
+    rules = goal_mode_rules(routing_guidance=work_dir_guidance())
     assert "confirm the test fails" in rules
     assert "before changing code" in rules
     assert "for the reported bug, not for an unrelated build or setup error" in rules
@@ -33,7 +35,7 @@ def test_rules_tell_the_agent_to_reproduce_a_bug_red_first() -> None:
 
 def test_rules_do_not_claim_red_first_is_enforced() -> None:
     # Goal acceptance does not check for a red run yet, so the text must not say it does.
-    rules = goal_mode_rules()
+    rules = goal_mode_rules(routing_guidance=work_dir_guidance())
     assert "needs a recorded failing run" not in rules
     assert "fail -> pass" not in rules
 
@@ -71,7 +73,7 @@ def test_work_dir_guidance_tracks_catalog_schema_changes(monkeypatch):
     assert "configured_endpoint" not in first
     definitions[0]["schema"]["properties"]["work_dir"] = {}
     definitions[1]["schema"]["properties"].clear()
-    catalog.reset_guidance_cache()
+    catalog.work_dir_guidance.cache_clear()
     second = work_dir_guidance()
     assert "Goal tools, `utility_z`." in second
     assert "`utility_a` accept no `work_dir`" in second
@@ -80,7 +82,7 @@ def test_work_dir_guidance_tracks_catalog_schema_changes(monkeypatch):
 
 def test_work_dir_guidance_uses_default_interactive_catalog(monkeypatch):
     expected = work_dir_guidance()
-    catalog.reset_guidance_cache()
+    catalog.work_dir_guidance.cache_clear()
     for key, value in {
         "BOOLEY_MCP_MODE": "other",
         "BOOLEY_MCP_DEBUG_TOOLS": "1",
@@ -110,8 +112,5 @@ def test_nonaccepting_configurable_endpoint_uses_safe_fallback(monkeypatch):
     with pytest.raises(ValueError, match="configured_endpoint lacks work_dir"):
         catalog.partition_work_dir(definitions)
     monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
-    text = work_dir_guidance()
-    assert text.startswith("Pass `work_dir`")
-    assert "For utilities, follow the advertised schema" in text
-    assert "configured_endpoint" not in text
-    assert "While any Goal Record occupies" in text
+    with pytest.raises(ValueError, match="configured_endpoint lacks work_dir"):
+        work_dir_guidance()

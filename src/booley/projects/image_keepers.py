@@ -35,3 +35,22 @@ class PruneResult:
     retained: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     schema: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class Leftover:
+    """One Docker resource a forgotten Project still leaves on the host."""
+
+    kind: Literal["image", "volume", "container", "network"]
+    name: str
+    reason: Literal["unused", "in-use", "shared", "unrecorded", "labelled"]
+    size: str | None = None
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeResult:
+    """What one purge removed, and what it kept with the reason."""
+
+    removed: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()

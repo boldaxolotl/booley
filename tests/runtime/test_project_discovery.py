@@ -1,22 +1,10 @@
 """Project discovery distinguishes the checkout from its data repositories."""
 
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
-
-from booley.harness.booley import find_project_root
-
-
-def test_nested_data_repository_selects_checkout(tmp_path, monkeypatch):
-    outer = tmp_path / "checkout"
-    data = outer / ".booley"
-    data.mkdir(parents=True)
-    for root in (outer, data):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
-    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.chdir(data)
-    assert find_project_root() == outer
 
 
 @pytest.mark.parametrize("name", [".booley", "custom-data"])
@@ -35,6 +23,8 @@ def test_all_checkout_local_data_selections(tmp_path, monkeypatch, name):
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(child) == outer
+    monkeypatch.chdir(data)
+    assert discover_project_root() == outer
 
 
 def test_unrelated_nested_checkout_keeps_identity(tmp_path, monkeypatch):
@@ -141,7 +131,11 @@ def test_linked_git_marker_and_symlink_data(tmp_path, monkeypatch):
     assert discover_project_root(alias) == outer
 
 
-def test_source_stale_data_refuses_goal_but_feedback_routes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("stale_data", [False, True])
+def test_source_stale_data_refuses_goal_but_feedback_routes(
+    tmp_path, monkeypatch, stale_data, retired
+):
     from booley.harness.booley import _command_project_root
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
@@ -149,11 +143,16 @@ def test_source_stale_data_refuses_goal_but_feedback_routes(tmp_path, monkeypatc
     data.mkdir()
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
-    monkeypatch.chdir(data)
-    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    with pytest.raises(ProjectRootDiscoveryError):
-        _command_project_root("goal")
+    monkeypatch.chdir(data if stale_data else tmp_path)
+    for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", "BOOLEY_CONTAINER", "BOOLEY_PROJECT_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    if retired:
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
+    if stale_data:
+        with pytest.raises(ProjectRootDiscoveryError):
+            _command_project_root("goal")
+    else:
+        assert _command_project_root("goal") == tmp_path
     assert _command_project_root("feedback") == tmp_path
 
 
@@ -213,6 +212,7 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     root, alias, unrelated = (tmp_path / name for name in ("selected", "alias", "unrelated"))
     for directory in (root, alias, unrelated):
         directory.mkdir()
+    resolve = project_discovery.resolve_authoritative_booley_dir
     original = Path.samefile
     calls = []
 
@@ -224,11 +224,11 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "samefile", samefile)
     monkeypatch.setenv("BOOLEY_DIR", str(root))
-    assert project_discovery._data_root(alias / "new", []) == root
+    assert project_discovery._data_root(alias / "new", [], resolve) == root
     assert calls
     nested = alias / "embedded"
     nested.mkdir()
-    assert project_discovery._data_root(nested, [nested]) is None
+    assert project_discovery._data_root(nested, [nested], resolve) is None
     (nested / ".git").mkdir()
     (nested / ".git" / "HEAD").write_text("ref: refs/heads/main")
     (nested / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
@@ -242,10 +242,10 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
 
     reset_cache()
     assert resolve_booley_dir() == unrelated
-    assert project_discovery._data_root(alias / "new", [owner]) == root
-    assert project_discovery._owning_checkouts([owner], root) == {owner}
+    assert project_discovery._data_root(alias / "new", [owner], resolve) == root
+    assert project_discovery._owning_checkouts([owner], root, resolve) == {owner}
     reset_cache()
-    assert project_discovery._owning_checkouts([nested], root) == set()
+    assert project_discovery._owning_checkouts([nested], root, resolve) == set()
 
 
 @pytest.mark.parametrize("owned", [True, False])
@@ -269,3 +269,164 @@ def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned)
     else:
         with pytest.raises(discovery.ProjectRootDiscoveryError):
             discovery.discover_project_root(data)
+
+
+def test_session_owner_from_creator_path_with_external_data(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch, sandbox_pointer=True)
+    external = tmp_path / "external-data"
+    external.mkdir()
+    (root / "booley.toml").write_text(f'[project]\ndir = "{external.as_posix()}"\n')
+    (root / ".booley" / "FUSESOC_IGNORE").touch()
+    context = discover_session_context(linked)
+    assert context.project_root == root
+    assert context.booley_dir == external
+    assert context.checkout == linked
+    assert context.cwd == "/work/.booley/worktrees/goal"
+
+
+def test_session_owner_from_sandbox_created_absolute_pointers(tmp_path, monkeypatch):
+    """Host Git cannot read `/work/...` pointers; the creator path alone proves ownership."""
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch, sandbox_pointer=True)
+    admin = root / ".git" / "worktrees" / "goal"
+    assert (admin / "gitdir").read_text().strip() == "/work/.booley/worktrees/goal/.git"
+    assert (linked / ".git").read_text().strip() == "gitdir: /work/.git/worktrees/goal"
+    context = discover_session_context(linked)
+    assert (context.project_root, context.checkout) == (root, linked)
+    assert context.cwd == "/work/.booley/worktrees/goal"
+
+
+def test_session_owner_keeps_source_checkout_rejection(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.core.checkout_role import SourceCheckoutProjectError
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    (root / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    with pytest.raises(SourceCheckoutProjectError):
+        discover_session_context(linked)
+
+
+@pytest.mark.parametrize("admin", ["separate", "relative"])
+def test_session_owner_git_administration(tmp_path, monkeypatch, admin):
+    from tests.harness.test_session_runtime import _linked_project, _replace_file
+
+    from booley.runtime.project_discovery import (
+        ProjectRootDiscoveryError,
+        discover_session_context,
+    )
+
+    root, linked = _linked_project(tmp_path, monkeypatch, external=True)
+    if admin == "separate":
+        # A separate Git directory has no owning checkout to adopt.
+        subprocess.run(
+            ["git", "init", "--separate-git-dir", str(tmp_path / "administration"), str(root)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "worktree", "repair", str(linked)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
+            discover_session_context(linked)
+        return
+    pointer = Path((linked / ".git").read_text().removeprefix("gitdir:").strip())
+    (pointer / "commondir").write_text("../..\n")
+    _replace_file(linked / ".git", "gitdir: " + os.path.relpath(pointer, linked) + "\n")
+    context = discover_session_context(linked)
+    assert context.project_root == root
+    assert context.cwd is None
+
+
+def test_external_data_attachment_records_use_owner_authority(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime import runtime_attachment, session_runtime
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    external = tmp_path / "external-data"
+    external.mkdir()
+    (root / "booley.toml").write_text(f'[project]\ndir = "{external.as_posix()}"\n')
+    (linked / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(linked / ".booley"))
+    monkeypatch.setattr(session_runtime, "_probe_command_cwd", lambda *_: None)
+    captured = []
+
+    def run(driver, execution_id, argv):
+        captured.append(driver._project_data)
+        return SimpleNamespace(exit_code=0)
+
+    monkeypatch.setattr(runtime_attachment.SupervisedExecutionDriver, "run", run)
+    runtime_attachment.run_command(
+        root, "immutable-id", ["pwd"], tty=False, cwd="/work/.booley/worktrees/goal"
+    )
+    assert captured == [external]
+
+
+def test_ambiguous_ownership_refuses(tmp_path, monkeypatch):
+    from booley.runtime import project_discovery as discovery
+
+    owner, other, data = (tmp_path / name for name in ("owner", "other", "data"))
+    data.mkdir()
+    for root in (owner, other):
+        root.mkdir()
+        (root / ".git").write_text("gitdir: /unused/metadata\n")
+        (root / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
+    (owner / "custom-data").symlink_to(data, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setattr(discovery, "WORK_DIR", str(other))
+    monkeypatch.setattr(discovery, "BOOLEY_DIR_TARGET", str(data))
+    with pytest.raises(
+        discovery.ProjectRootDiscoveryError,
+        match="run from the Project Root or set RTL_PROJECT_ROOT",
+    ):
+        discovery.discover_project_root(owner / "custom-data")
+
+
+def test_authoritative_directory_resolved_once_per_invocation(tmp_path, monkeypatch):
+    from collections import Counter
+
+    from booley.runtime import project_discovery as discovery
+
+    owner, data, replacement = (tmp_path / name for name in ("owner", "data", "replacement"))
+    for root in (owner, data, replacement):
+        root.mkdir()
+        (root / ".git").write_text("gitdir: /unused/metadata\n")
+    config = owner / "booley.toml"
+    config.write_text(f'[project]\ndir = "{data.as_posix()}"\n')
+    alias = owner / "custom-data"
+    alias.symlink_to(data, target_is_directory=True)
+    for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    resolve = discovery.resolve_authoritative_booley_dir
+    calls = Counter()
+
+    def counted(root):
+        calls[root.resolve()] += 1
+        return resolve(root)
+
+    monkeypatch.setattr(discovery, "resolve_authoritative_booley_dir", counted)
+    assert discovery.discover_project_root(alias) == owner
+    assert calls == {data: 1, owner: 1}, "authoritative resolution repeated within invocation"
+    calls.clear()
+    config.write_text(f'[project]\ndir = "{replacement.as_posix()}"\n')
+    assert discovery.discover_project_root(alias) == data
+    assert calls == {data: 1, owner: 1}

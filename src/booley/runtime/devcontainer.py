@@ -331,6 +331,16 @@ def state_volume_name(app: str, project_id: str, policy: str = "auto") -> str | 
     return f"booley-{app}-state-{project_id}{suffix}"
 
 
+def state_volume_names(project_id: str) -> frozenset[str]:
+    """Every state-volume name one Project can own across agent apps and auth policies."""
+    return frozenset(
+        name
+        for app in _APP_STATE_DIR
+        for policy in ("auto", "subscription", "api_key")
+        if (name := state_volume_name(app, project_id, policy)) is not None
+    )
+
+
 def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str | None:
     """Return the persistent home-state volume mount for *app*, or ``None``.
 
