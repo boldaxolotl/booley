@@ -631,7 +631,9 @@ def _other_thread_can_lock(store: GoalStore, goal_id: str) -> bool:
         with store.record_lock(goal_id):
             return True
 
-    return _in_copied_context_thread(take, contextvars.Context()) == [True]
+    (outcome,) = _in_copied_context_thread(take, contextvars.Context())
+    assert outcome is True or isinstance(outcome, GoalLockTimeoutError), outcome
+    return outcome is True
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")

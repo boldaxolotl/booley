@@ -554,8 +554,7 @@ class GoalStore:
 
         Raises :class:`StaleRevisionError` when another writer saved first,
         and :class:`InvalidRecordUpdateError` for a forbidden state
-        transition, a change to a field fixed at creation, or content that
-        would not load back.
+        transition, a change to a field fixed at creation, or invalid record invariants.
         """
         lock.require_owned()
         current = self.load(record.id)
@@ -666,7 +665,7 @@ def frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
 
 
 def _validate_encodable(record: GoalRecord) -> bytes:
-    """Encode *record*, refusing content :meth:`GoalStore.load` would reject."""
+    """Encode a typed candidate and check its record invariants."""
     encoded = (json.dumps(record.to_json(), indent=2, sort_keys=True) + "\n").encode("utf-8")
     try:
         record.validate()
