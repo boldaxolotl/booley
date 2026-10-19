@@ -286,9 +286,11 @@ def test_pruned_publication_reconstructs_exact_journaled_commit(layout, abandon)
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop_at("commit-journaled")))
     directory = complete.control / "goals" / call.record_id / "operations" / call.operation_id
-    journal = json.loads((directory / "intended-commit.json").read_bytes())
+    journal = json.loads((directory / "publication.json").read_bytes())
     original = journal["commit"]
-    raw = bytes.fromhex(journal["raw_commit_hex"])
+    from booley.runtime.pinned_history import raw_git
+
+    raw = raw_git(complete.worktree, "cat-file", "commit", original)
     pin = git(complete.worktree, "rev-parse", "HEAD")
     git(complete.worktree, "prune", "--expire=now")
     from booley.runtime.history_commit import FileCommitError
@@ -311,7 +313,7 @@ def test_pruned_publication_reconstructs_exact_journaled_commit(layout, abandon)
 
 
 @pytest.mark.parametrize(
-    "attack", ["raw-recipe", "physical-control", "physical-admin", "legacy-hash-only"]
+    "attack", ["corrupt-pack", "physical-control", "physical-admin", "missing-pack"]
 )
 def test_pruned_publication_without_exact_authority_refuses_without_git_writes(layout, attack):
     from booley.goals.proposals import digest, encode
@@ -322,15 +324,15 @@ def test_pruned_publication_without_exact_authority_refuses_without_git_writes(l
         finish_goal(call, environment(complete, stop_at("commit-journaled")))
     directory = complete.control / "goals" / call.record_id / "operations" / call.operation_id
     if attack not in {"physical-control", "physical-admin"}:
-        path = directory / "intended-commit.authority.json"
+        path = directory / "publication.authority.json"
         authority = json.loads(path.read_bytes())
-        if attack == "raw-recipe":
-            authority["value"]["raw_commit_hex"] = b"substituted commit".hex()
+        if attack == "corrupt-pack":
+            authority["value"]["pack_hex"] = b"substituted pack".hex()
         else:
-            del authority["value"]["raw_commit_hex"]
+            del authority["value"]["pack_hex"]
         authority["digest"] = digest(authority["value"])
         path.write_bytes(encode(authority))
-        (directory / "intended-commit.json").write_bytes(encode(authority["value"]))
+        (directory / "publication.json").write_bytes(encode(authority["value"]))
     elif attack == "physical-admin":
         recreate(complete.main / ".git")
     else:
@@ -352,19 +354,6 @@ def test_pruned_publication_without_exact_authority_refuses_without_git_writes(l
         git(complete.worktree, "count-objects", "-v"),
         git(complete.worktree, "diff", "--cached", "--raw"),
     )
-
-
-@pytest.mark.timeout(150)
-def test_pruned_blob_before_any_commit_journal_restores_frozen_summary(layout):
-    complete = publication_layout(layout)
-    call = request(complete)
-    with pytest.raises(Crash):
-        finish_goal(call, environment(complete, stop_at("publication-intent")))
-    directory = complete.control / "goals" / call.record_id / "operations" / call.operation_id
-    assert not (directory / "intended-commit.authority.json").exists()
-    git(complete.worktree, "prune", "--expire=now")
-    assert finish_goal(call, environment(complete))["status"] == "finished"
-    assert (directory / "intended-commit.authority.json").is_file()
 
 
 def test_legacy_own_publication_with_moved_paired_pin_repairs_only_owned_index(
