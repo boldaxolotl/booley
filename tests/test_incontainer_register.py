@@ -256,6 +256,7 @@ class TestCodexPermissionMode:
 
         import tomllib
 
+        assert reg.codex_config_path(tmp_path).stat().st_mode & 0o777 == 0o600
         parsed = tomllib.loads(reg.codex_config_path(tmp_path).read_text())
         assert parsed["approval_policy"] == "never"
         assert parsed["sandbox_mode"] == "danger-full-access"
@@ -264,7 +265,9 @@ class TestCodexPermissionMode:
 
     def test_idempotent(self, tmp_path):
         assert reg._apply_codex_permission_mode(tmp_path) == "written"
+        before = reg.codex_config_path(tmp_path).read_bytes()
         assert reg._apply_codex_permission_mode(tmp_path) == "current"
+        assert reg.codex_config_path(tmp_path).read_bytes() == before
 
     def test_preserves_other_config_and_notice_settings(self, tmp_path):
         path = reg.codex_config_path(tmp_path)
@@ -1250,10 +1253,15 @@ def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch
     assert settings.read_bytes() == settings_before
 
 
-@pytest.mark.parametrize("operation", ["permission", "register"])
-def test_codex_permission_writer_parses_once(tmp_path, monkeypatch, operation):
-    import tomli
+def test_codex_permission_writer_parses_once(tmp_path, monkeypatch):
+    _assert_codex_permission_parse_count(tmp_path, monkeypatch, "permission")
 
+
+def test_codex_registration_parses_permission_document_once(tmp_path, monkeypatch):
+    _assert_codex_permission_parse_count(tmp_path, monkeypatch, "register")
+
+
+def _assert_codex_permission_parse_count(tmp_path, monkeypatch, operation):
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir()
     source = 'model="existing"\nnotice.other=true\nother={time=12:34, escaped="\\e\\x41"}\n'
@@ -1298,8 +1306,16 @@ def test_codex_permission_writer_parses_once(tmp_path, monkeypatch, operation):
     assert result["other"] == tomli.loads(source)["other"]
 
 
-@pytest.mark.parametrize("failure", ["missing", "broken-import", "broken-probe", "incompatible"])
-def test_codex_editor_failure_precedes_registration(tmp_path, monkeypatch, failure):
+def test_codex_editor_failure_precedes_registration(tmp_path, monkeypatch):
+    _assert_codex_editor_preflight(tmp_path, monkeypatch, "missing")
+
+
+@pytest.mark.parametrize("failure", ["broken-import", "broken-probe", "incompatible"])
+def test_codex_broken_editor_precedes_registration(tmp_path, monkeypatch, failure):
+    _assert_codex_editor_preflight(tmp_path, monkeypatch, failure)
+
+
+def _assert_codex_editor_preflight(tmp_path, monkeypatch, failure):
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir()
     path.write_text('model="existing"\n')
@@ -1340,21 +1356,14 @@ def test_codex_editor_failure_precedes_registration(tmp_path, monkeypatch, failu
             editor.cache_clear()
 
 
-@pytest.mark.parametrize("existing", [None, 'broken="', "notice=true\n"])
-def test_codex_permission_boundary_preserves_private_or_invalid_file(tmp_path, existing):
+@pytest.mark.parametrize("existing", ['broken="', "notice=true\n"])
+def test_codex_permission_boundary_preserves_invalid_file(tmp_path, existing):
     path = reg.codex_config_path(tmp_path)
-    if existing is not None:
-        path.parent.mkdir()
-        path.write_text(existing)
-        with pytest.raises(ValueError, match=re.escape(str(path))):
-            reg._apply_codex_permission_mode(tmp_path)
-        assert path.read_text() == existing
-    else:
-        assert reg._apply_codex_permission_mode(tmp_path) == "written"
-        assert path.stat().st_mode & 0o777 == 0o600
-        before = path.read_bytes()
-        assert reg._apply_codex_permission_mode(tmp_path) == "current"
-        assert path.read_bytes() == before
+    path.parent.mkdir()
+    path.write_text(existing)
+    with pytest.raises(ValueError, match=re.escape(str(path))):
+        reg._apply_codex_permission_mode(tmp_path)
+    assert path.read_text() == existing
 
 
 def test_codex_credential_failure_does_not_publish_permissions(tmp_path, monkeypatch):
@@ -1364,10 +1373,9 @@ def test_codex_credential_failure_does_not_publish_permissions(tmp_path, monkeyp
     for name in ("deploy_skills", "deploy_host_skills"):
         monkeypatch.setattr(reg, name, lambda *args: 0)
 
-    def credential(*args):
-        raise ValueError("credential policy conflict")
-
-    monkeypatch.setattr(reg, "apply_stored_credential", credential)
+    monkeypatch.setattr(
+        reg, "apply_stored_credential", Mock(side_effect=ValueError("credential policy conflict"))
+    )
     with pytest.raises(ValueError, match="credential policy conflict"):
         reg.register("codex", home=tmp_path)
     assert tomllib.loads(path.read_text())["approval_policy"] == "on-request"
