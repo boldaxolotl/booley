@@ -43,6 +43,7 @@ class EndpointOutcome:
     display_lines: list[str] = field(default_factory=list)
     display_label: str | None = None
     summary: str = ""
+    cycle_report_json: str = "{}"
 
 
 @dataclass(frozen=True, slots=True)
