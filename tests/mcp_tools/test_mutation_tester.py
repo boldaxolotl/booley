@@ -745,6 +745,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
             staged.parent.mkdir(parents=True, exist_ok=True)
             staged.write_bytes(source.read_bytes())
             entries.append({"name": name, "core": "acme:test:fixture:1"})
+            entries[-1]["file_type"] = "systemVerilogSource"
         edam_path = root / "fixture.eda.yml"
         edam_path.write_text(
             yaml.safe_dump(
@@ -754,8 +755,6 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                 }
             )
         )
-        (root / "Makefile").write_text("verilator -f fixture.vc\n")
-        (root / "fixture.vc").write_text("\n".join(entry["name"] for entry in entries))
         resolved = types.SimpleNamespace(
             edam_path=edam_path,
             build_root=Path(build_root),
