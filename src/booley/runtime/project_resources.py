@@ -8,6 +8,7 @@ bytes comes only from the image lifecycle's owned-image records.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import NamedTuple
 
 from booley.config.sandbox import project_image_name_for_identity
@@ -16,7 +17,7 @@ from booley.core.project_identity import accepted_project_labels, project_name_i
 from booley.projects.image_keepers import Leftover
 from booley.runtime import interactive_docker
 from booley.runtime.devcontainer import state_volume_names
-from booley.runtime.image_lifecycle import owned_image_ids
+from booley.runtime.image_lifecycle import cleanup_owned_images, owned_image_ids
 from booley.runtime.session_issuance import keeper_image_for_identity
 
 # Docker prints a missing repository or tag as this placeholder.
@@ -154,3 +155,45 @@ def _labelled(identity: str) -> tuple[Leftover, ...]:
 def leftovers(identity: str) -> tuple[Leftover, ...]:
     """List every Booley-owned Docker resource that still carries this root's identity."""
     return (*_images(identity), *_volumes(identity), *_labelled(identity))
+
+
+def _layer_count(image: str) -> int:
+    return int("".join(_lines(["image", "inspect", "--format", "{{len .RootFS.Layers}}", image])))
+
+
+def _release_own_tags(identity: str, removed: list[str]) -> None:
+    """Untag children before parents so Docker can reclaim each chain's bytes."""
+    in_use = interactive_docker.container_image_ids_strict()
+    tags = [
+        (image, reference)
+        for image, reference, _size in _image_rows()
+        if _is_tag(reference) and _owns_tag(identity, reference) and image not in in_use
+    ]
+    layers = {image: _layer_count(image) for image, _reference in tags}
+    for _image, reference in sorted(tags, key=lambda row: (-layers[row[0]], row[1])):
+        _lines(["image", "rm", reference])  # non-force: other tags keep the bytes
+        removed.append(reference)
+
+
+def purge(identity: str) -> tuple[str, ...]:
+    """Remove the root's unused own tags, recorded untagged images and unused state volumes.
+
+    Every removal is non-force. Unrecorded untagged images, labelled containers
+    and networks, and anything a container uses stay for the caller to report.
+    """
+    removed: list[str] = []
+    try:
+        _release_own_tags(identity, removed)
+        present = {image for image, _reference, _size in _image_rows()}
+        recorded = set(owned_image_ids(identity)) & present
+        cleanup_owned_images(Path(identity))
+        present = {image for image, _reference, _size in _image_rows()}
+        removed.extend(sorted(recorded - present))
+        for volume in _volumes(identity):
+            if volume.reason == "unused":
+                _lines(["volume", "rm", volume.name])
+                removed.append(volume.name)
+    except RuntimeError as exc:
+        done = ", ".join(removed) or "nothing"
+        raise RuntimeError(f"{exc}; already removed: {done}; run the purge again") from exc
+    return tuple(removed)

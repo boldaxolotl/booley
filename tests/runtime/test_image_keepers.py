@@ -13,12 +13,12 @@ def test_forget_retries_only_forgotten_project_proof(tmp_path: Path, monkeypatch
     release = image_keepers.KeeperRelease("absent", "keeper")
     monkeypatch.setattr(image_keepers, "_release_root", lambda _root: release)
 
-    def forget(root, *, before_forget):
+    def forget(root, *, before_forget, allow_forgotten):
         before_forget(root)
         return root
 
     monkeypatch.setattr(image_keepers.inventory, "forget_project", forget)
     cleanup = Mock(return_value=())
     monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
-    assert image_keepers.forget_project(project) == (project, release)
+    assert image_keepers.forget_project(project) == (project, release, ())
     cleanup.assert_called_once_with(project)

@@ -241,6 +241,8 @@ named by its own tags or recorded as built for it, its agent state volumes, and
 containers or networks labelled for it. Each entry says whether a container
 uses it or another tag shares it. Forget removes none of the listed resources. A state volume
 holds a copy of the agent's login and the agent's history.
+`booley projects forget --purge <project>` also removes the unused ones; it
+accepts a root that is already forgotten or deleted, unless a live Grant holds it.
 For keepers left by earlier forgotten Projects, preview with
 `booley projects prune-keepers`, then apply that exact preview with
 `booley projects prune-keepers --confirm <digest>`.

@@ -28,6 +28,9 @@ class FakeHost:
         self.volumes: dict[str, str] = {}
         self.networks: dict[str, str] = {}  # name -> project label
         self.df_fails = False
+        self.layers: dict[str, int] = {}
+        self.fail_volume_rm = False
+        self.removals: list[str] = []
 
     def __call__(self, args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args, 0, self._answer(args), "")
@@ -54,12 +57,30 @@ class FakeHost:
                 for name, label in self.networks.items()
                 if args[3].endswith(f"={label}")
             )
+        if args[:2] in (["image", "rm"], ["volume", "rm"], ["image", "inspect"]):
+            return self._mutate(args)
         if args[:2] == ["system", "df"]:
             if self.df_fails:
                 raise subprocess.TimeoutExpired(args, 60)
             rows = [{"Name": name, "Size": size} for name, size in self.volumes.items()]
             return json.dumps({"Images": [], "Volumes": rows})
         raise AssertionError(args)
+
+    def _mutate(self, args: list[str]) -> str:
+        if args[:2] == ["image", "inspect"]:
+            return f"{self.layers.get(args[-1], 1)}\n"
+        self.removals.append(args[2])
+        if args[0] == "volume":
+            if self.fail_volume_rm:
+                raise subprocess.TimeoutExpired(args, 30)
+            del self.volumes[args[2]]
+            return ""
+        image = next(i for i, ref, _size in self.images if ref == args[2])
+        self.images = [row for row in self.images if row[1] != args[2]]
+        if all(ref.endswith("<none>") for i, ref, _size in self.images if i == image):
+            # Docker reclaims the bytes once their last tag goes.
+            self.images = [row for row in self.images if row[0] != image]
+        return ""
 
 
 @pytest.fixture
@@ -147,3 +168,76 @@ def test_leftovers_fails_loud_when_docker_cannot_list_images(
     )
     with pytest.raises(RuntimeError, match="daemon down"):
         project_resources.leftovers(str(tmp_path / "chip"))
+
+
+def _purge_host(host: FakeHost, root: str, other: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    family = project_image_name_for_identity(root)
+    host.images = [
+        (_id("1"), f"{family}-standard-substrate:latest", "5GB"),
+        (_id("2"), f"{family}:latest", "5.1GB"),
+        (_id("2"), keeper_image_for_identity(root), "5.1GB"),
+        (_id("3"), f"{family}-wheel:latest", "1GB"),
+        (_id("3"), "mirror/wheel:copy", "1GB"),
+        (_id("4"), f"{family}-layout-x:latest", "5.2GB"),
+        (_id("5"), "<none>:<none>", "4.9GB"),
+        (_id("6"), f"{family}:<none>", "4.8GB"),
+        (_id("7"), f"{project_image_name_for_identity(other)}:latest", "5GB"),
+    ]
+    host.layers = {_id("1"): 10, _id("2"): 12, _id("3"): 3, _id("4"): 13}
+    image_lifecycle.record_owned_images(Path(root), "t1", {}, (_id("5"),))
+    used = f"booley-codex-state-{project_name_id(root)}"
+    idle = f"booley-claude-state-{project_name_id(root)}"
+    host.volumes = {
+        used: "1MB",
+        idle: "2MB",
+        f"booley-codex-state-{project_name_id(other)}": "3MB",
+    }
+    host.containers = {"c" * 64: (_id("4"), (used,), project_label_id(root))}
+
+    def cleanup(project: Path) -> tuple[str, ...]:
+        assert project == Path(root)
+        host.images = [row for row in host.images if row[0] != _id("5")]
+        return ()
+
+    monkeypatch.setattr(project_resources, "cleanup_owned_images", cleanup)
+
+
+def test_purge_removes_only_unused_resources_proven_to_be_the_projects(
+    tmp_path: Path, host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, other = str(tmp_path / "chip"), str(tmp_path / "other")
+    family = project_image_name_for_identity(root)
+    _purge_host(host, root, other, monkeypatch)
+
+    removed = project_resources.purge(root)
+
+    # Children before parents; the in-use layout image and its volume stay.
+    assert removed == (
+        keeper_image_for_identity(root),
+        f"{family}:latest",
+        f"{family}-standard-substrate:latest",
+        f"{family}-wheel:latest",
+        _id("5"),
+        f"booley-claude-state-{project_name_id(root)}",
+    )
+    assert host.removals == [*removed[:4], removed[5]]
+    assert {row[0] for row in host.images} == {_id("3"), _id("4"), _id("6"), _id("7")}
+    # The mirrored wheel bytes are no longer the Project's once its own tag is gone.
+    assert [(item.name, item.reason) for item in project_resources.leftovers(root)] == [
+        (_id("4"), "in-use"),
+        (_id("6"), "unrecorded"),
+        (f"booley-codex-state-{project_name_id(root)}", "in-use"),
+        ("c" * 64, "labelled"),
+    ]
+
+
+def test_purge_failure_names_progress_and_a_rerun_finishes(
+    tmp_path: Path, host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = str(tmp_path / "chip")
+    _purge_host(host, root, str(tmp_path / "other"), monkeypatch)
+    host.fail_volume_rm = True
+    with pytest.raises(RuntimeError, match=r"already removed: .*sha256:5+; run the purge again"):
+        project_resources.purge(root)
+    host.fail_volume_rm = False
+    assert project_resources.purge(root) == (f"booley-claude-state-{project_name_id(root)}",)

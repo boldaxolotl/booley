@@ -74,18 +74,31 @@ def discover_projects(search_roots: tuple[Path, ...]) -> tuple[Path, ...]:
 
 
 def forget_project(
-    project_root: Path, *, before_forget: Callable[[Path], None] | None = None
+    project_root: Path,
+    *,
+    before_forget: Callable[[Path], None] | None = None,
+    allow_forgotten: bool = False,
 ) -> Path:
-    """Forget one exact remembered Project path."""
+    """Forget one exact remembered Project path.
+
+    With ``allow_forgotten``, an absolute root that is no longer remembered
+    (including a deleted directory) is accepted as-is so its leftovers can be
+    cleaned; the live-Grant guard still applies.
+    """
     with _locked_roots() as roots:
-        identity = _remembered_identity(project_root, roots)
+        try:
+            identity = _remembered_identity(project_root, roots)
+        except ProjectInventoryError:
+            if not (allow_forgotten and project_root.is_absolute()):
+                raise
+            identity = str(project_root.resolve())
         if any(grant.project_root == identity for grant in _authority_grants()):
             raise ProjectInventoryError(
                 f"cannot forget {identity}: revoke its live Project Grant first"
             )
         if before_forget is not None:
             before_forget(Path(identity))
-        roots.remove(identity)
+        roots.discard(identity)
     return Path(identity)
 
 
