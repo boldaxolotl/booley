@@ -804,8 +804,9 @@ for the root refuses it. Purge removes:
 - the Project's unused state volumes, including the login copy and agent
   history inside them.
 
-Purge keeps `in-use`, `unrecorded`, and `labelled` entries and lists them
-afterwards. Remove an `unrecorded` image yourself with `docker image rm <id>`
+Purge prints a `Removed:` line for each removal and a `Kept:` line, with the
+reason, for each recorded image it had to keep. It keeps `in-use`,
+`unrecorded`, and `labelled` entries and lists them afterwards. Remove an `unrecorded` image yourself with `docker image rm <id>`
 once you are sure no other Project needs it. If a removal fails, the error
 names what was already removed; run the same command again to finish.
 

@@ -91,7 +91,8 @@ def forget_project(
         except ProjectInventoryError:
             if not (allow_forgotten and project_root.is_absolute()):
                 raise
-            identity = str(project_root.resolve())
+            # Never follow symlinks: the path may now point at another Project.
+            identity = os.path.normpath(str(project_root))
         if any(grant.project_root == identity for grant in _authority_grants()):
             raise ProjectInventoryError(
                 f"cannot forget {identity}: revoke its live Project Grant first"

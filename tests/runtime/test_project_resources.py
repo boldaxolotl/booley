@@ -58,7 +58,7 @@ class FakeHost:
                 if args[3].endswith(f"={label}")
             )
         if args[:2] in (["image", "rm"], ["volume", "rm"], ["image", "inspect"]):
-            return self._mutate(args)
+            return self._remove_or_count_layers(args)
         if args[:2] == ["system", "df"]:
             if self.df_fails:
                 raise subprocess.TimeoutExpired(args, 60)
@@ -66,7 +66,7 @@ class FakeHost:
             return json.dumps({"Images": [], "Volumes": rows})
         raise AssertionError(args)
 
-    def _mutate(self, args: list[str]) -> str:
+    def _remove_or_count_layers(self, args: list[str]) -> str:
         if args[:2] == ["image", "inspect"]:
             return f"{self.layers.get(args[-1], 1)}\n"
         self.removals.append(args[2])
@@ -194,8 +194,8 @@ def _purge_host(host: FakeHost, root: str, other: str, monkeypatch: pytest.Monke
     }
     host.containers = {"c" * 64: (_id("4"), (used,), project_label_id(root))}
 
-    def cleanup(project: Path) -> tuple[str, ...]:
-        assert project == Path(root)
+    def cleanup(project: str) -> tuple[str, ...]:
+        assert project == root  # the exact stored identity, never re-resolved
         host.images = [row for row in host.images if row[0] != _id("5")]
         return ()
 
@@ -209,7 +209,8 @@ def test_purge_removes_only_unused_resources_proven_to_be_the_projects(
     family = project_image_name_for_identity(root)
     _purge_host(host, root, other, monkeypatch)
 
-    removed = project_resources.purge(root)
+    result = project_resources.purge(root)
+    removed = result.removed
 
     # Children before parents; the in-use layout image and its volume stay.
     assert removed == (
@@ -221,6 +222,8 @@ def test_purge_removes_only_unused_resources_proven_to_be_the_projects(
         f"booley-claude-state-{project_name_id(root)}",
     )
     assert host.removals == [*removed[:4], removed[5]]
+    # The mirrored wheel bytes survive their Project tag and are named as kept.
+    assert result.kept == (f"{_id('3')}: bytes kept (another image or tag still needs them)",)
     assert {row[0] for row in host.images} == {_id("3"), _id("4"), _id("6"), _id("7")}
     # The mirrored wheel bytes are no longer the Project's once its own tag is gone.
     assert [(item.name, item.reason) for item in project_resources.leftovers(root)] == [
@@ -240,4 +243,6 @@ def test_purge_failure_names_progress_and_a_rerun_finishes(
     with pytest.raises(RuntimeError, match=r"already removed: .*sha256:5+; run the purge again"):
         project_resources.purge(root)
     host.fail_volume_rm = False
-    assert project_resources.purge(root) == (f"booley-claude-state-{project_name_id(root)}",)
+    assert project_resources.purge(root).removed == (
+        f"booley-claude-state-{project_name_id(root)}",
+    )

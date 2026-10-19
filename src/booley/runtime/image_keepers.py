@@ -10,7 +10,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from booley.projects import inventory
-from booley.projects.image_keepers import Candidate, KeeperRelease, Leftover, PruneResult
+from booley.projects.image_keepers import (
+    Candidate,
+    KeeperRelease,
+    Leftover,
+    PruneResult,
+    PurgeResult,
+)
 from booley.runtime import interactive_docker as docker
 from booley.runtime import project_resources
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -49,11 +55,11 @@ def _require_recovered_host() -> None:
 
 def forget_project(
     project: Path, *, purge: bool = False
-) -> tuple[Path, KeeperRelease, tuple[str, ...]]:
+) -> tuple[Path, KeeperRelease, PurgeResult | None]:
     """Validate Grants, release only this root's unused tag, then persist forgetting.
 
     ``purge`` also accepts an already-forgotten absolute root and then removes
-    the root's unused images and state volumes; it returns what it removed.
+    the root's unused images and state volumes, returning what it removed and kept.
     """
     outcomes: list[KeeperRelease] = []
     try:
@@ -64,14 +70,15 @@ def forget_project(
                 before_forget=lambda root: outcomes.append(_release_root(root)),
                 allow_forgotten=purge,
             )
+            if purge:  # purge collects recorded images itself, after releasing tags
+                return forgotten, outcomes[0], project_resources.purge(str(forgotten))
             from booley.runtime.image_lifecycle import cleanup_owned_images
 
             for retained in cleanup_owned_images(forgotten):
                 logger.warning("refresh image cleanup: %s", retained)
-            removed = project_resources.purge(str(forgotten)) if purge else ()
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
-    return forgotten, outcomes[0], removed
+    return forgotten, outcomes[0], None
 
 
 def project_leftovers(project: Path) -> tuple[Leftover, ...]:

@@ -20,5 +20,5 @@ def test_forget_retries_only_forgotten_project_proof(tmp_path: Path, monkeypatch
     monkeypatch.setattr(image_keepers.inventory, "forget_project", forget)
     cleanup = Mock(return_value=())
     monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
-    assert image_keepers.forget_project(project) == (project, release, ())
+    assert image_keepers.forget_project(project) == (project, release, None)
     cleanup.assert_called_once_with(project)

@@ -549,16 +549,26 @@ def _owned_image_blocker(image: str, docker: DockerPort) -> str:
 
 
 def cleanup_owned_images(
-    project: Path | None = None, *, docker: DockerPort | None = None
+    project: Path | str | None = None, *, docker: DockerPort | None = None
 ) -> tuple[str, ...]:
-    """Retry only proven records; in-use image bytes never block runtime recovery."""
+    """Retry only proven records; in-use image bytes never block runtime recovery.
+
+    A ``str`` project is an exact stored root identity and is not resolved.
+    """
     store = _owned_store()
     if not store.validate_existing_directory():
         return ()
     adapter = docker or _docker_adapter()
     retained = []
+    prefix = (
+        None
+        if project is None
+        else _owned_prefix_for_identity(project)
+        if isinstance(project, str)
+        else _owned_prefix(project)
+    )
     for path in sorted(store.root.glob("*.json")):
-        if project is not None and not path.name.startswith(_owned_prefix(project)):
+        if prefix is not None and not path.name.startswith(prefix):
             continue
         root, refs, owned = _read_owned_record(store, path.name)
         remaining = []
