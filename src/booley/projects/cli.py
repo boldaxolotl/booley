@@ -69,7 +69,12 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
         if action == "forget":
             assert keeper_operations is not None
             forgotten, keeper = keeper_operations.forget_project(args.project)
-            left = keeper_operations.project_leftovers(forgotten)
+            try:
+                left = keeper_operations.project_leftovers(forgotten)
+            except inventory.ProjectInventoryError as exc:
+                raise inventory.ProjectInventoryError(
+                    f"{exc} (keeper {keeper.status}: {keeper.tag})"
+                ) from exc
             return _render_forgotten(
                 forgotten, keeper, left, json_output=getattr(args, "json", False)
             )

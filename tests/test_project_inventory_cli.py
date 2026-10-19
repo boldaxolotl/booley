@@ -179,9 +179,9 @@ def test_forget_reports_leftover_listing_failure_after_forgetting(
 
     monkeypatch.setattr(runtime_image_keepers, "leftovers", fail)
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 2
-    assert "could not list its leftover Docker resources: daemon went away" in (
-        capsys.readouterr().err
-    )
+    error = capsys.readouterr().err
+    assert "could not list its leftover Docker resources: daemon went away" in error
+    assert f"(keeper absent: {keeper_image(project)})" in error
     assert project_inventory.project_inventory() == ()
 
 
@@ -251,7 +251,12 @@ class FakeDocker:
                 else "\n".join(self.tags)
             )
             return subprocess.CompletedProcess(args, 0, rows, "")
-        if args[:2] in (["volume", "ls"], ["network", "ls"]) or "--filter" in args:
+        if args[:2] in (["volume", "ls"], ["network", "ls"]) or args[:4] == [
+            "container",
+            "ls",
+            "--all",
+            "--filter",
+        ]:
             # No state volumes, networks, or Project-labelled containers on this host.
             return subprocess.CompletedProcess(args, 0, "", "")
         if args[:2] == ["container", "ls"]:

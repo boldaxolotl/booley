@@ -447,7 +447,11 @@ def _owned_store() -> PrivateStore:
 
 
 def _owned_prefix(project: Path) -> str:
-    return hashlib.sha256(str(project.resolve()).encode()).hexdigest() + "-"
+    return _owned_prefix_for_identity(str(project.resolve()))
+
+
+def _owned_prefix_for_identity(identity: str) -> str:
+    return hashlib.sha256(identity.encode()).hexdigest() + "-"
 
 
 def record_owned_images(
@@ -522,10 +526,9 @@ def owned_image_ids(identity: str) -> tuple[str, ...]:
     store = _owned_store()
     if not store.validate_existing_directory():
         return ()
-    prefix = hashlib.sha256(identity.encode()).hexdigest() + "-"
     return tuple(
         image
-        for path in sorted(store.root.glob(prefix + "*.json"))
+        for path in sorted(store.root.glob(_owned_prefix_for_identity(identity) + "*.json"))
         for image in _read_owned_record(store, path.name)[2]
     )
 

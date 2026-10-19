@@ -785,7 +785,11 @@ Forget also lists the Docker resources the Project leaves behind, with sizes:
 - containers and networks still labelled for the Project, marked `labelled`.
 
 Forget removes none of them. If Docker cannot list them, the root stays
-forgotten and the command reports the error.
+forgotten and the command reports the error and the keeper outcome.
+
+An untagged image with neither a build record nor the Project's repository
+name can't be traced to any Project, so forget doesn't list it.
+`docker image prune` reclaims every dangling image on the host, from any Project.
 
 To reclaim keepers from Projects forgotten before this behavior was available:
 

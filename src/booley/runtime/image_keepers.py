@@ -69,7 +69,7 @@ def project_leftovers(project: Path) -> tuple[Leftover, ...]:
     """List what a forgotten root still holds in Docker; never mutates."""
     try:
         return leftovers(str(project))
-    except (RuntimeError, OSError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         raise inventory.ProjectInventoryError(
             f"forgot {project}, but could not list its leftover Docker resources: {exc}"
         ) from exc

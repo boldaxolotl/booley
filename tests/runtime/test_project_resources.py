@@ -93,7 +93,7 @@ def test_leftovers_lists_only_this_projects_resources(
     idle = f"booley-claude-state-{project_name_id(root)}-subscription"
     host.volumes = {
         used: "300MB",
-        idle: "20MB",
+        idle: "N/A",
         f"booley-codex-state-{project_name_id(other)}": "1MB",
     }
     host.containers = {
@@ -115,7 +115,7 @@ def test_leftovers_lists_only_this_projects_resources(
         ),
         Leftover("image", _id("5"), "unused", "4.9GB"),
         Leftover("image", _id("7"), "unrecorded", "4.7GB"),
-        Leftover("volume", idle, "unused", volume_size("20MB")),
+        Leftover("volume", idle, "unused"),
         Leftover("volume", used, "in-use", volume_size("300MB")),
         Leftover("container", "c" * 64, "labelled"),
         Leftover("network", "chip-flexnet", "labelled"),
