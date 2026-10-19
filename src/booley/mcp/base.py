@@ -79,6 +79,7 @@ def _as_mcp_tool_result(outcome: EndpointOutcome) -> McpToolResult:
         display_lines=outcome.display_lines,
         display_label=outcome.display_label,
         summary=outcome.summary,
+        cycle_report_json=outcome.cycle_report_json,
     )
 
 

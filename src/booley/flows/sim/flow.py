@@ -575,38 +575,24 @@ def _campaign_report_lines(
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
     trailing_lines: Sequence[str] | None = (),
     *,
-    blocks: list[str] | None = None,
     report_path: Path | None = None,
     default_seeds: Mapping[str, int | None] | None = None,
 ) -> list[str]:
-    """Compose counts; None trailing lines means unavailable optional byte budget.
-
-    *default_seeds* gives each Target's effective Default Seed, which decides
-    whether its Test Run rows say more than its own line.
-    """
-    if coverage_campaigns is None and any(
-        getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
-    ):
+    if coverage_campaigns is None:
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
-    if blocks is None:
-        blocks = _campaign_base_report_lines(
-            outcomes, coverage_campaigns, report_path=report_path, default_seeds=default_seeds
-        )
-    if trailing_lines is None:
-        return blocks
-    stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
-    base_bytes = len("\n".join((*blocks, *trailing_lines)).encode("utf-8")) + 2
-    budget = min(stream // 4, max(0, stream - base_bytes))
+    blocks = _campaign_report_blocks(outcomes, coverage_campaigns, report_path, default_seeds)
+    budget = 0
+    if trailing_lines is not None:
+        stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
+        parts = [line for prefix, suffix in blocks for line in (*prefix, *suffix)]
+        parts.extend(trailing_lines)
+        used = sum(len(line.encode()) + 1 for line in parts) + 1
+        budget = min(stream // 4, max(0, stream - used))
     additions = _campaign_cycle_lines(outcomes, budget)
-    if not any(additions):
-        return blocks
-    return _campaign_base_report_lines(
-        outcomes,
-        coverage_campaigns,
-        additions,
-        report_path=report_path,
-        default_seeds=default_seeds,
-    )
+    return [
+        "\n".join((*prefix, *extra, *suffix))
+        for (prefix, suffix), extra in zip(blocks, additions, strict=True)
+    ]
 
 
 def _campaign_cycle_lines(outcomes: Sequence[CampaignOutcome], budget: int) -> list[list[str]]:
@@ -617,19 +603,16 @@ def _campaign_cycle_lines(outcomes: Sequence[CampaignOutcome], budget: int) -> l
         for item in outcome.observations
         if item.get("cycle_count") is not None
     ]
-    if not records:
-        return additions
     notice = f"  {len(records)} cycle counts omitted"
     remaining = max(0, budget - len(notice.encode("utf-8")) - 1)
-    shown = 0
+    omitted = len(records)
     for index, item in records[:32]:
         line = _cycle_display_line(item, remaining)
         if line is None:
             continue
         additions[index].append(line)
         remaining -= len(line.encode("utf-8")) + 1
-        shown += 1
-    omitted = len(records) - shown
+        omitted -= 1
     notice = f"  {omitted} cycle counts omitted"
     if omitted and len(notice.encode("utf-8")) + 1 <= budget:
         additions[-1].append(notice)
@@ -661,37 +644,23 @@ def _observation_reasons(outcome: CampaignOutcome) -> list[str]:
     return reasons
 
 
-def _campaign_base_report_lines(
+def _campaign_report_blocks(
     outcomes: Sequence[CampaignOutcome],
-    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
-    cycle_lines: Sequence[Sequence[str]] | None = None,
-    *,
-    report_path: Path | None = None,
-    default_seeds: Mapping[str, int | None] | None = None,
-) -> list[str]:
-    if (resolved := coverage_campaigns) is None and any(
-        getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
-    ):
-        resolved = _resolved_coverage_campaigns(outcomes)
-    lines: list[str] = []
-    for index, outcome in enumerate(outcomes):
+    coverage_campaigns: Mapping[str, CoverageCampaign],
+    report_path: Path | None,
+    default_seeds: Mapping[str, int | None] | None,
+) -> list[tuple[list[str], list[str]]]:
+    blocks = []
+    for outcome in outcomes:
         acceptance = getattr(outcome, "acceptance_facts", None)
         facts = getattr(acceptance, "document", {})
         campaign_id = facts.get("campaign_id", "unavailable")
         selector = str(outcome.target["selector"])
-        if getattr(outcome, "coverage_reference", None) is None:
-            line = (
-                f"{selector}: {outcome.aggregate_grade.upper()} "
-                f"(Simulation Campaign {campaign_id})"
-            )
-        else:
-            assert resolved is not None
-            campaign = resolved[selector]
-            suffix = _coverage_report_suffix(campaign)
-            line = (
-                f"{selector}: simulation {outcome.aggregate_grade.upper()} · {suffix} "
-                f"(Simulation Campaign {campaign_id})"
-            )
+        label = outcome.aggregate_grade.upper()
+        if getattr(outcome, "coverage_reference", None) is not None:
+            campaign = coverage_campaigns[selector]
+            label = f"simulation {label} · {_coverage_report_suffix(campaign)}"
+        line = f"{selector}: {label} (Simulation Campaign {campaign_id})"
         reasons = _observation_reasons(outcome)
         build_detail = _campaign_build_infrastructure_detail([outcome])
         if build_detail and reasons:
@@ -705,15 +674,14 @@ def _campaign_base_report_lines(
                 selector, outcome, _effective_default_seed(default_seeds, selector)
             ),
         ]
-        if cycle_lines is not None:
-            report_lines.extend(cycle_lines[index])
+        suffix = []
         if getattr(outcome, "coverage_reference", None) is not None:
-            report_lines.extend(_waiver_block_hint_lines(campaign))
-            report_lines.extend(source_gap_report_lines(campaign))
+            suffix.extend(_waiver_block_hint_lines(campaign))
+            suffix.extend(source_gap_report_lines(campaign))
             if not hasattr(outcome, "pre_sim_firings"):
-                report_lines.extend(_coverage_pre_sim_lines(selector, campaign))
-        lines.append("\n".join(report_lines))
-    return lines
+                suffix.extend(_coverage_pre_sim_lines(selector, campaign))
+        blocks.append((report_lines, suffix))
+    return blocks
 
 
 def _coverage_run_label(campaign: CoverageCampaign, run: CoverageRun) -> str:
@@ -794,28 +762,21 @@ def _pre_sim_integrity_failure(
     return result
 
 
-def _current_pre_sim_keys(
-    outcomes, invocation: Path | None
-) -> frozenset[tuple[str, str, str, int]]:
-    if invocation is None:
-        return frozenset()
-    return frozenset(
+def _campaign_hook_inputs(outcomes, invocation):
+    firings = {f.key: f for outcome in outcomes for f in outcome.pre_sim_firings}
+    keys = frozenset(
         key
         for outcome in outcomes
-        if getattr(outcome, "producer_invocation_directory", None) == invocation.absolute()
-        for key in getattr(outcome, "current_pre_sim_keys", ())
+        if invocation is not None
+        and outcome.producer_invocation_directory == invocation.absolute()
+        for key in outcome.current_pre_sim_keys
     )
+    return firings, keys
 
 
-def _campaign_pre_sim_details(outcomes, invocation: Path | None) -> dict[str, object]:
+def _campaign_pre_sim_details(firings, current_keys, invocation: Path | None) -> dict[str, object]:
     from .execution.pre_sim_reporting import pre_sim_report_line
 
-    firings = {
-        firing.key: firing
-        for outcome in outcomes
-        for firing in getattr(outcome, "pre_sim_firings", ())
-    }
-    current_keys = _current_pre_sim_keys(outcomes, invocation)
     manifest_refs = {}
     lines = []
     preview = []
@@ -892,51 +853,22 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
     return record
 
 
-def _campaign_pre_sim_report_lines(outcomes, invocation: Path | None) -> list[str]:
+def _campaign_pre_sim_report_lines(firings, current_keys) -> list[str]:
     from .execution.pre_sim_reporting import pre_sim_report_line
 
-    if invocation is None:
-        return []
-    current_keys = _current_pre_sim_keys(outcomes, invocation)
-    firings = {
-        firing.key: firing
-        for outcome in outcomes
-        for firing in getattr(outcome, "pre_sim_firings", ())
-        if firing.key in current_keys
-    }
     groups: dict[str, list[str]] = {}
-    for firing in firings.values():
-        document = firing.document
-        groups.setdefault(document["role"], []).append(
-            pre_sim_report_line(document["target"]["selector"], document)
-        )
-    if len(groups) <= 1:
-        return [line for lines in groups.values() for line in lines]
+    for key, firing in firings.items():
+        if key in current_keys:
+            document = firing.document
+            groups.setdefault(document["role"], []).append(
+                pre_sim_report_line(document["target"]["selector"], document)
+            )
     labels = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
-    return [line for role, lines in groups.items() for line in (labels[role] + ":", *lines)]
-
-
-def _campaign_published_hook_lines(
-    outcomes: Sequence[CampaignOutcome],
-    invocation: Path,
-    published_keys: frozenset[tuple[str, str, str, int]],
-) -> list[str] | None:
-    """Budget authenticated current hook facts; missing keys make the budget unavailable."""
-    from types import SimpleNamespace
-
-    firings = {
-        firing.key: firing
-        for outcome in outcomes
-        for firing in getattr(outcome, "pre_sim_firings", ())
-    }
-    if not published_keys.issubset(firings):
-        return None
-    context = SimpleNamespace(
-        pre_sim_firings=tuple(firings.values()),
-        producer_invocation_directory=invocation.absolute(),
-        current_pre_sim_keys=published_keys,
-    )
-    return _campaign_pre_sim_report_lines([context], invocation)
+    return [
+        line
+        for role, lines in groups.items()
+        for line in ([labels[role] + ":"] if len(groups) > 1 else []) + lines
+    ]
 
 
 def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
@@ -2704,18 +2636,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self.context, outcomes, baseline_refusals=self._test_runs.baseline.refusals
         )
 
-    def persisted_cycle_counts(self) -> dict[str, list[dict[str, object]]]:
-        """Derive complete observational counts without affecting acceptance."""
-        # FlowSession stores the report-only snapshot untyped; only
-        # Simulation Campaign runs populate it, always with CampaignOutcome.
-        outcomes = cast("tuple[CampaignOutcome, ...]", self.context._simulation_report_outcomes)
-        return {
-            str(outcome.target["selector"]): [
-                {"test": item["test"], "cycle_count": item["cycle_count"]}
-                for item in outcome.observations
-            ]
-            for outcome in outcomes
-        }
+    def _capture_cycle_report(self, outcomes: Sequence[CampaignOutcome]) -> None:
+        if self.context.cycle_report_json is not None:
+            return
+        try:
+            rows = {
+                str(outcome.target["selector"]): [
+                    {"test": item["test"], "cycle_count": item["cycle_count"]}
+                    for item in outcome.observations
+                ]
+                for outcome in outcomes
+            }
+            self.context.cycle_report_json = json.dumps({"cycle_counts": rows}) if rows else "{}"
+        except Exception:  # optional metadata cannot change verdict or acceptance
+            logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
+            self.context.cycle_report_json = '{"cycle_counts_error":"unavailable"}'
 
     def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
         """Bind final projection references after acceptance publication."""
@@ -2909,25 +2844,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return self._project_published_pre_sim(result, tuple(firings), invocation)
 
     def _project_published_pre_sim(self, result, firings, invocation) -> EndpointOutcome:
-        from types import SimpleNamespace
-
         if not firings:
             return result
-        context = SimpleNamespace(
-            pre_sim_firings=firings,
-            producer_invocation_directory=invocation.absolute(),
-            current_pre_sim_keys=frozenset(getattr(self, "_current_published_pre_sim_keys", ())),
-        )
-        result.detail.update(_campaign_pre_sim_details([context], invocation))
+        firings = {firing.key: firing for firing in firings}
+        keys = frozenset(getattr(self, "_current_published_pre_sim_keys", ()))
+        result.detail.update(_campaign_pre_sim_details(firings, keys, invocation))
         result.report_text = "\n".join(
             line
             for line in result.report_text.splitlines()
             if not line.startswith("pre_run_commands ")
             and line not in {"Candidate:", "Cycle Count baseline:"}
         )
-        return _append_missing_report_lines(
-            result, _campaign_pre_sim_report_lines([context], invocation)
-        )
+        return _append_missing_report_lines(result, _campaign_pre_sim_report_lines(firings, keys))
 
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
@@ -3731,7 +3659,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 outcome = self._run_validated_resume_campaign(
                     validated, invocation, admission, coverage_plan, manifest_published
                 )
-                self.context._simulation_report_outcomes = (outcome,)
+                self._capture_cycle_report((outcome,))
                 _checkpoint_coverage_campaign(progress, outcome)
                 supersede_progress(
                     validated.path.parents[3] / "progress.json",
@@ -4236,7 +4164,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 outcome = campaign.run(request)
             except SimulationCampaignCancellationError as exc:
-                self.context._simulation_report_outcomes = tuple(outcomes)
+                self._capture_cycle_report(outcomes)
                 return self._campaign_cancelled_outcome(exc)
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
@@ -4275,8 +4203,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
         self.context._simulation_campaign_outcomes = tuple(outcomes)
-        self.context._simulation_report_outcomes = (
-            (*outcomes, failed_outcome) if failed_outcome is not None else tuple(outcomes)
+        self._capture_cycle_report(
+            (*outcomes, failed_outcome) if failed_outcome is not None else outcomes
         )
         targets = _coverage_compatibility_targets(
             outcomes,
@@ -4808,7 +4736,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lifecycle.complete()
                 return result
         except SimulationCampaignCancellationError as exc:
-            self.context._simulation_report_outcomes = tuple(outcomes)
+            self._capture_cycle_report(outcomes)
             return self._with_campaign_paths(self._campaign_cancelled_outcome(exc), published)
         except (OSError, ValueError, RuntimeError) as exc:
             return self._with_campaign_paths(
@@ -4823,7 +4751,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         invocation: Path,
     ) -> EndpointOutcome:
         """Retain the existing ordinary error detail and completion semantics."""
-        self.context._simulation_report_outcomes = tuple(outcomes)
+        self._capture_cycle_report(outcomes)
         if result is not None and isinstance(error, ProgressPublicationError):
             failure = error.__cause__ if isinstance(error.__cause__, Exception) else error
             return normalize_completion_error(
@@ -5325,7 +5253,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
         self.context._simulation_campaign_outcomes = tuple(outcomes)
-        self.context._simulation_report_outcomes = tuple(outcomes)
+        self._capture_cycle_report(outcomes)
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
         exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or max(
@@ -5338,7 +5266,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "report_path": self._report_destination(),
             "default_seeds": self._test_runs.default_seeds,
         }
-        lines = _campaign_base_report_lines(outcomes, coverage_campaigns, **report)
         invocation = self.context._reserved_invocation_dir
         campaigns = _campaign_structured_details(outcomes, invocation)
         coverage_targets = _coverage_compatibility_targets(
@@ -5347,29 +5274,21 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             coverage_campaigns,
         )
         detail: dict[str, object] = {"campaigns": campaigns}
-        detail.update(_campaign_pre_sim_details(outcomes, invocation))
-        hook_lines = _campaign_pre_sim_report_lines(outcomes, invocation)
+        firings, current_keys = _campaign_hook_inputs(outcomes, invocation)
+        detail.update(_campaign_pre_sim_details(firings, current_keys, invocation))
+        hook_lines = _campaign_pre_sim_report_lines(firings, current_keys)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
-        budget_lines = hook_lines
-        keys = getattr(self, "_current_published_pre_sim_keys", None)
-        if (
-            invocation is not None
-            and keys is not None
-            and any(
-                item.get("cycle_count") is not None
-                for outcome in outcomes
-                for item in outcome.observations
-            )
-        ):
-            budget_lines = _campaign_published_hook_lines(outcomes, invocation, frozenset(keys))
-        lines = _campaign_report_lines(
-            outcomes, coverage_campaigns, budget_lines, blocks=lines, **report
+        keys = frozenset(getattr(self, "_current_published_pre_sim_keys", current_keys))
+        budget_lines = (
+            _campaign_pre_sim_report_lines(firings, keys) if keys.issubset(firings) else None
         )
+        lines = _campaign_report_lines(outcomes, coverage_campaigns, budget_lines, **report)
         lines.extend(hook_lines)
         if coverage_targets:
             detail.update(coverage=True, targets=coverage_targets, pending_targets=[])
         return EndpointOutcome(
             exit_code=exit_code,
+            cycle_report_json=self.context.cycle_report_json or "{}",
             criterion_met=exit_code == EXIT_SUCCESS and not threshold_missed,
             detail=detail,
             report_text="\n".join(lines),
