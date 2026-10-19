@@ -260,7 +260,8 @@ def test_reviewer_report_keeps_goal_receipt_immutable_even_when_result_aliases_s
     endpoint._state = DevelopmentState.in_memory()
     endpoint.state.criteria["review_done_rtl_bugs"] = entry
     monkeypatch.setattr(endpoint.state, "save", MagicMock())
-    endpoint._evidence_path = lambda label: tmp_path / f"{label}.json"
+    endpoint._review_evidence_path = tmp_path / "result.json"
+    endpoint._review_evidence_written = False
     result = McpToolResult(exit_code=0, report_text="Review complete", detail=detail)
     returned = endpoint._publish_review_evidence(result, "review_done_rtl_bugs")
     assert str(tmp_path / "result.json") in returned.report_text
