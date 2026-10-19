@@ -761,6 +761,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 return errors[0]
             prepared = prepared_units[target.identity]
         result = prepared.result
+        self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
         family = _lint_eda_tool_family(prepared.resolved.configured_eda_tool)
         start = time.monotonic()
@@ -865,6 +866,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         by construction.
         """
         result.eda_tool = resolved.configured_eda_tool or family
+        self.record_eda_tool(result.target, result.eda_tool)
         hdl_files = [f for f in resolved.files if f.is_hdl and not f.is_include]
         result.files_linted = len(hdl_files)
         result.toplevel = resolved.toplevel
@@ -1034,6 +1036,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         if err is not None:
             return err
         targets = self._get_targets()
+        self.context.set_report_targets([target.selector for target in targets])
         if not targets:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -1134,7 +1137,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
             if relative_log is not None:
                 artifact_block[f"log_{config_result.target}"] = relative_log
         artifacts.merge_artifacts(detail, artifact_block)
-        self._eda_tool = ", ".join(sorted({cr.eda_tool for cr in target_results if cr.eda_tool}))
+        for result in target_results:
+            self.record_eda_tool(result.target, result.eda_tool)
 
         if errored:
             exit_code, summary = _errored_verdict(errored)

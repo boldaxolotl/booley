@@ -2818,3 +2818,33 @@ def test_job_report_lint_findings_targets():
             t: {"warnings": warning_count if i < 2 else 0, "errors": int(i < error_count)}
             for i, t in enumerate(targets)
         }
+
+
+@pytest.mark.parametrize("target", ["lite", "lite,full"])
+def test_invocation_report_records_tools_by_target(tmp_path, state_file, target):
+    flow = LintFlow()
+    flow.parse_args(["--target", target, "--report-dir", str(tmp_path / "reports")])
+    flow.read_state()
+    with (
+        patch.object(
+            flow,
+            "_prepare_lint_command",
+            return_value=(["verilator", "--lint-only"], _stub_resolved("Verilator")),
+        ),
+        patch.object(
+            flow,
+            "_execute",
+            return_value=MagicMock(
+                returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.5
+            ),
+        ),
+    ):
+        result = flow._run()
+    path = flow.context.write_report(result)
+    report = json.loads(path.read_bytes())
+    expected = (
+        {"eda_tool": "Verilator"}
+        if target == "lite"
+        else {"eda_tools": {"lite": "Verilator", "full": "Verilator"}}
+    )
+    assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected

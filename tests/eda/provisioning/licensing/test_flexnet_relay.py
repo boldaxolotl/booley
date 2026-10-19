@@ -103,14 +103,20 @@ async def _half_close_echo(reader: asyncio.StreamReader, writer: asyncio.StreamW
 
 
 def _test_config(
-    upstream_ports: tuple[int, int], *, idle_timeout: float = 1.0, maximum: int = 4
+    upstream_ports: tuple[int, int],
+    *,
+    idle_timeout: float = 1.0,
+    maximum: int = 4,
+    connect_timeout: float = 5.0,
 ) -> RelayConfig:
     return RelayConfig(
         ipaddress.IPv4Address("127.0.0.1"),
         "test-license-host",
         (PortRoute(0, upstream_ports[0]), PortRoute(0, upstream_ports[1])),
         listen_host="127.0.0.1",
-        connect_timeout=0.2,
+        # The 5 s default lets a reachable upstream survive event-loop stalls under
+        # load; a short value made the idle-timeout test see "upstream failed".
+        connect_timeout=connect_timeout,
         idle_timeout=idle_timeout,
         max_connections=maximum,
         health_port=0,
@@ -267,15 +273,19 @@ async def test_unreachable_upstream_fails_closed_without_destination_in_logs(cap
         reservation.close()
         pytest.skip(f"loopback sockets unavailable: {exc}")
     port = reservation.getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port + 1)))
+    # Windows retries a refused loopback connect for about 2 s; a short connect
+    # timeout ends the attempt quickly. Refusal and timeout both log "upstream failed".
+    relay = FlexNetRelay(_test_config((port, port + 1), connect_timeout=0.2))
     caplog.set_level(logging.WARNING)
     try:
         await relay.start()
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-            assert await asyncio.wait_for(reader.read(), timeout=1) == b""
-            writer.close()
-            await writer.wait_closed()
+            try:
+                assert await asyncio.wait_for(reader.read(), timeout=2) == b""
+            finally:
+                writer.close()
+                await writer.wait_closed()
         finally:
             await relay.close()
     finally:

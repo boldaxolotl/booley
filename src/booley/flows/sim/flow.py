@@ -2751,6 +2751,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if isinstance(prepared, EndpointOutcome):
                 return prepared
             targets, resume, selected_targets, test_names_map = prepared
+            if resume is None:
+                self.context.set_report_targets(list(selected_targets))
             if (
                 resume is not None
                 and (refusal := self._refuse_unfinished_coverage_resume(resume)) is not None
@@ -3526,6 +3528,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         if self.args.dry_run:
             return self._preview_campaign_resume(validated, observed)
+        self._record_campaign_tool(validated.manifest)
         return self._execute_campaign_resume(validated, admission, observed)
 
     def _preview_campaign_resume(
@@ -4085,6 +4088,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if prepared.plan is None:
             return _coverage_preflight_findings_outcome(prepared.findings)
         self._coverage_prepared = prepared.plan
+        for plan in prepared.plan.targets:
+            self._record_eda_tool(plan.handle.selector, plan.handle.eda_tool)
         self._coverage_context = context
         return None
 
@@ -4648,9 +4653,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, targets, results, lines, passed, elapsed, resolution_s
     ) -> EndpointOutcome:
         report_text = self._format_summary(results, lines, passed)
-        eda_tools = [result.eda_tool for result in results if result.eda_tool]
-        if eda_tools:
-            self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
+        for result in results:
+            self._record_eda_tool(result.target, result.eda_tool)
         detail = self._legacy_result_detail(results, elapsed, resolution_s)
         self._attach_legacy_artifacts(detail, results)
         return EndpointOutcome(
@@ -4873,6 +4877,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 execution_id=execution_id,
                 prerequisite_documents=prerequisites.get(target, ()),
             )
+            self._record_campaign_tool(plan.manifest)
             requests.append(
                 NewCampaignRunRequest(
                     plan,
@@ -5304,6 +5309,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             required_suite_catalog_backed=catalog_backed,
         )
 
+    def _record_campaign_tool(self, manifest: SimulationCampaignManifest) -> None:
+        """Use the frozen execution recipe, including when execution later fails."""
+        document = manifest.document
+        target = cast(Mapping[str, str], document["target"])
+        workload = cast(Mapping[str, object], document["workload"])
+        eda = cast(Mapping[str, str], workload["eda"])
+        self._record_eda_tool(str(target["selector"]), str(eda["kind"]))
+
     def _campaign_policy(self) -> CampaignPolicy:
         return CampaignPolicy(
             timeout_seconds=self._effective_timeout_ms() / 1000,
@@ -5698,9 +5711,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             EndpointOutcome(report_text="\n".join(lines))
         ).report_text
         print(report_text)
-        eda_tools = [result.eda_tool for result in results if result.eda_tool]
-        if eda_tools:
-            self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
+        for result in results:
+            self._record_eda_tool(result.target, result.eda_tool)
         detail: dict[str, Any] = {
             "mode": self._mode.value,
             "targets": [self._elab_only_detail(result) for result in results],
@@ -6522,6 +6534,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         log_dir = getattr(self, "_run_log_dirs", {}).get(target)
         return log_dir is not None and run_log_is_current(log_dir)
 
+    @property
+    def _target_eda_tools(self) -> dict[str, str | None]:
+        """Standalone probes share the invocation's resolved tool metadata."""
+        return self.context._eda_tools
+
     def _record_eda_tool(self, target: str, eda_tool: str | None) -> None:
         """Remember *target*'s raw resolved EDA tool (e.g. ``"verilator"``).
 
@@ -6530,9 +6547,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         + the run-level ``eda_tool`` key), not parser dispatch. Recorded at
         prepare time, like :meth:`_record_run_log_dir`.
         """
-        if not hasattr(self, "_target_eda_tools"):
-            self._target_eda_tools: dict[str, str] = {}
-        self._target_eda_tools[target] = eda_tool or ""
+        self.record_eda_tool(target, eda_tool)
 
     def _run_log_pointer(self, target: str) -> str | None:
         """Project-relative ``run.log`` path for *target*, or None if unknown.

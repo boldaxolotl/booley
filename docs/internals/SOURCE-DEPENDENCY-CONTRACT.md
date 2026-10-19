@@ -113,11 +113,10 @@ and isolated diagnostics.
 
 The implementation owns record scan and projection limits, newest-record
 selection, conservative process/slot states, exact report/progress lookup,
-available artifact paths, endpoint cache capacity, and successful refresh
-generations. Callers do not construct a cache or coordinate `configure_project`,
-`begin`, `prepare_endpoints`, reads and `complete`. A failed observation does not
-commit its touch generation. Observation never polls, repairs, reaps or writes a
-Job; run identity includes its retained root.
+available artifact paths, and the parsed files retained from the last successful
+refresh. Callers do not construct or coordinate a cache. A failed observation
+leaves the committed parses intact. Observation never polls, repairs, reaps or
+writes a Job; run identity includes its retained root.
 
 `harness.dashboard.jobs.JobReader` owns the higher-level composition. It selects
 roots from the same Goal enumeration that supplied the Dashboard's Goal rows:
@@ -157,12 +156,8 @@ artifact-history limit.
 The former internal `runtime.job_snapshot` module is replaced by the observation
 facade and Dashboard composition. All in-repository consumers migrate together;
 CLI/MCP behavior, persisted record/report layouts and schemas remain unchanged.
-`runtime.job_artifacts.JobArtifactCache` remains a compatibility import for
-standalone cache callers. This compatibility surface exports the class only;
-module-level limits, type aliases and reader helpers are private implementation
-details under `job_observation._artifacts`. The standalone regression suite
-constructs its caches through the compatibility import; fault injection targets
-the implementation module. Dashboard code uses only the observer interface.
+The artifact cache is private to `job_observation._artifacts`; its tests use the
+owning module. Dashboard code uses only the observer interface.
 
 One historical presentation residue remains: the observer's scan-limit diagnostic
 retains the exact Dashboard wording about older interactive sessions being
