@@ -266,7 +266,7 @@ jobs:
     name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     # Complete suites use the same bound as full-python-matrix.yml; shards retain 15m.
-    timeout-minutes: ${{ matrix.mode == 'full' && 20 || 15 }}
+    timeout-minutes: ${{ matrix.mode == 'full' && 30 || 15 }}
     env:
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: 'not native_bwave'

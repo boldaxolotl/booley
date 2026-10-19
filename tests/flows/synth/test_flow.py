@@ -5544,3 +5544,32 @@ def test_earlier_loop_report_survives_representative_saturation(
     if not huge:
         assert "\\feedback" in result.report_text
     assert result.detail["implementation"]["results"]["lite"]["status"]["grade"] == "warn"
+
+
+@pytest.mark.parametrize("targets", ["lite", "lite,full"])
+def test_invocation_report_records_tools_by_target(flow_and_state, tmp_path, targets):
+    flow, _state = flow_and_state
+    flow.parse_args(
+        [
+            "--target",
+            targets,
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    with patch.object(
+        flow,
+        "_execute",
+        return_value=SubprocessResult(returncode=0, stdout="Number of cells: 100\n"),
+    ):
+        result = flow._run()
+    path = flow.context.write_report(result)
+    report = json.loads(path.read_bytes())
+    expected = (
+        {"eda_tool": "yosys"}
+        if targets == "lite"
+        else {"eda_tools": {"lite": "yosys", "full": "yosys"}}
+    )
+    assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected

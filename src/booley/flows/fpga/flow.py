@@ -299,7 +299,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 ),
                 detail={"plan": plan.as_dict()},
             )
-        self._eda_tool = "vivado"
+        for target in targets:
+            self.record_eda_tool(target, "vivado")
         self._execution_role = "candidate"
         self._implementation_reports: dict[str, ImplementationReport] = {}
         self.reserve_invocation_dir()

@@ -291,6 +291,26 @@ def _refresh_report_detail(endpoint: EndpointState, result: EndpointOutcome) -> 
         refresh(result)
 
 
+def _process_resources() -> dict[str, float] | None:
+    """Snapshot process-lifetime CPU and largest reaped process RSS in MiB."""
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        own = resource.getrusage(resource.RUSAGE_SELF)
+        children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    except OSError:
+        logger.warning("Process resource accounting unavailable", exc_info=True)
+        return None
+    divisor = 1024**2 if sys.platform == "darwin" else 1024
+    return {
+        "cpu_user_s": own.ru_utime + children.ru_utime,
+        "cpu_sys_s": own.ru_stime + children.ru_stime,
+        "peak_rss_mb": max(own.ru_maxrss, children.ru_maxrss) / divisor,
+    }
+
+
 def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[str, Any]:
     elapsed_s = round(time.monotonic() - endpoint._start_time, 2)
     passed = result.exit_code == EXIT_SUCCESS
@@ -324,8 +344,14 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
         report["mode"] = mode
-    if endpoint._eda_tool:
+    tools = getattr(endpoint, "_eda_tools", {})
+    if len(tools) > 1 and (endpoint.endpoint_kind == "flow" or any(tools.values())):
+        report["eda_tools"] = dict(tools)
+    elif endpoint._eda_tool:
         report["eda_tool"] = endpoint._eda_tool
+    resources = _process_resources()
+    if resources is not None:
+        report["resources"] = resources
     # Job identity (ADR 0027): the MCP dispatch layer exports the run_id
     # it handed the agent, so a poll can match this report to ITS run
     # instead of trusting the last-writer-wins flat copy — concurrent

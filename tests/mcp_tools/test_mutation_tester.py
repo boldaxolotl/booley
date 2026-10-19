@@ -2176,3 +2176,58 @@ def test_creator_boundary_uses_exact_tb_files_in_shared_directory(tmp_path):
     prompt = endpoint._build_creator_prompt()
     assert "shared/main.cpp" in prompt
     assert "testbench source/include directory" not in prompt
+
+
+@pytest.mark.parametrize("cocotb", [False, True])
+@pytest.mark.parametrize("cached", [False, True])
+def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocotb, cached):
+    import json
+
+    tool = "verilator"
+
+    _patch_cocotb_target(monkeypatch, module="tb_test" if cocotb else None, eda_tool=tool)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+    build = tmp_path / "build"
+    build.mkdir()
+    if cached:
+        (build / ".booley_edalize_eda_tool").write_text(tool)
+    if cached:
+        monkeypatch.setattr(
+            endpoint,
+            "_pinned_sim_command",
+            lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={})),
+        )
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester._target_environment", lambda *_args: {}
+        )
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.launch_environment", lambda *_args: {}
+        )
+    else:
+        prepared = SimpleNamespace(eda_tool=tool, build_root=build, make_argv=("fake-build",))
+        monkeypatch.setattr(endpoint, "_resolve_elab_target", lambda *_args: (object(), prepared))
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.simulation_build_environment", lambda *_args: {}
+        )
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    if cached:
+        endpoint._run_sim_pinned("default", tmp_path, build, "tb")
+    else:
+        endpoint._run_elab("default", tmp_path, build)
+    path = endpoint.write_report(McpToolResult(report_text="mutation result"))
+    assert json.loads(path.read_bytes()).get("eda_tool") == tool
+
+
+def test_mutation_preflight_alone_does_not_report_eda_tool(tmp_path, monkeypatch):
+    import json
+
+    _patch_cocotb_target(monkeypatch, module="tb_test", eda_tool="verilator")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+    endpoint.cocotb_target("default", tmp_path)
+    endpoint._validate_target_runner("default", tmp_path)
+    report = json.loads(endpoint.write_report(McpToolResult()).read_bytes())
+    assert "eda_tool" not in report
+    assert "eda_tools" not in report
