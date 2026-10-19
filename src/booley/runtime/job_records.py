@@ -97,9 +97,6 @@ class JobRecord:
     # Presentation scope of the submitting MCP server. Nested Specialist jobs
     # are real Jobs but must not replace the Developer Agent's heartbeat text.
     display_scope: DisplayScope = DisplayScope.DEVELOPER
-    # Optional durable parent operation. Detached work keeps the same lease so
-    # its later evidence cannot escape the review execution that admitted it.
-    lease_id: str | None = None
     # When the child was first observed actually RUNNING (holding its slot),
     # stamped by the supervising server. ``started_at`` is submit time; with
     # queued admission (ADR 0028) the two can differ by the whole queue wait,
@@ -256,8 +253,6 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
     if record.exit_code is not None:
         require_int(record.exit_code, field="Job exit code")
     DisplayScope.parse(record.display_scope)
-    if record.lease_id is not None:
-        require_str({"lease_id": record.lease_id}, "lease_id")
     started_at = parse_stamp(record.started_at)
     if started_at is None:
         raise BoundaryError("Job started_at must be an RFC 3339 timestamp")

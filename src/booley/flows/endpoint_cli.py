@@ -209,9 +209,6 @@ def cli(endpoint) -> None:
 
 def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
-    from booley.runtime.execution_lease import validate_recording
-
-    validate_recording(getattr(args, "work_dir", None))
     # Ticket context from env vars (set by developer or explicit board validate)
     args.slug = os.environ.get("BOOLEY_SLUG", "")
     state_env = os.environ.get("BOOLEY_STATE_FILE", "")
