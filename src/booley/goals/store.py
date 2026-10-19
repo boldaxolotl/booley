@@ -474,6 +474,8 @@ class GoalStore:
         staging name and renamed into place.
         """
         self._check_create(lock, record)
+        created = replace(record, revision=1)
+        encoded = _validate_encodable(created)
         scan = self.list_records()
         if scan.corrupt:
             raise GoalRecordCorruptError(scan.corrupt)
@@ -481,14 +483,14 @@ class GoalStore:
         if occupant is not None:
             raise WorktreeOccupiedError(occupant)
         self._sweep_stale_staging()
-        return self._publish(replace(record, revision=1))
+        return self._publish(created, encoded)
 
-    def _publish(self, created: GoalRecord) -> GoalRecord:
+    def _publish(self, created: GoalRecord, encoded: bytes) -> GoalRecord:
         target = record_paths(self.booley_dir, created.id).root
         staging = goals_root(self.booley_dir) / f"{STAGING_PREFIX}{created.id}-{uuid.uuid4().hex}"
         staging.mkdir(parents=True)
         try:
-            atomic_replace_bytes(staging / RECORD_FILE, _encode(created))
+            atomic_replace_bytes(staging / RECORD_FILE, encoded)
             save_names(staging, (row.spec for row in created.goals))
             staging.rename(target)
         except OSError as exc:
@@ -531,7 +533,6 @@ class GoalStore:
         if record.state is not GoalState.ENTERING or record.revision != 0:
             raise InvalidRecordUpdateError("a new Goal Record starts as 'entering' at revision 0")
         validate_goal_id(record.id)
-        _validate_encodable(replace(record, revision=1))
 
     def load(self, goal_id: str) -> GoalRecord:
         """Read Goal Record *goal_id*; corrupt content raises, never returns ``None``."""
@@ -581,12 +582,11 @@ class GoalStore:
         if frozen:
             raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
+        encoded = _validate_encodable(saved)
         save_names(
             record_paths(self.booley_dir, record.id).root, (row.spec for row in saved.goals)
         )
-        atomic_replace_bytes(
-            record_paths(self.booley_dir, record.id).record_file, _validate_encodable(saved)
-        )
+        atomic_replace_bytes(record_paths(self.booley_dir, record.id).record_file, encoded)
         return saved
 
     def list_records(self) -> RecordScan:
@@ -665,15 +665,11 @@ def frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
     return ""
 
 
-def _encode(record: GoalRecord) -> bytes:
-    return (json.dumps(record.to_json(), indent=2, sort_keys=True) + "\n").encode("utf-8")
-
-
 def _validate_encodable(record: GoalRecord) -> bytes:
     """Encode *record*, refusing content :meth:`GoalStore.load` would reject."""
-    encoded = _encode(record)
+    encoded = (json.dumps(record.to_json(), indent=2, sort_keys=True) + "\n").encode("utf-8")
     try:
-        GoalRecord.from_json(json.loads(encoded))
+        record.validate()
     except GoalRecordFormatError as exc:
         raise InvalidRecordUpdateError(
             f"Goal Record {record.id} would not load back: {exc}"
