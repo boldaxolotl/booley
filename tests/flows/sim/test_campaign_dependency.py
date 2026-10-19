@@ -262,6 +262,8 @@ def test_dependency_registry_refuses_non_directory_and_excessive_entries(tmp_pat
     ("field", "value", "message"),
     [
         ("$schema", "wrong", "Malformed"),
+        ("truncated", None, "Expecting property name"),
+        ("missing", None, "Malformed"),
         ("dependent_invocation_id", 3, "Malformed"),
         ("origin_invocation", 7, "invalid"),
         ("origin_invocation", "relative/path", "not canonical"),
@@ -283,8 +285,12 @@ def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, mes
         dependent_invocation=dependent,
     )
     document = json.loads(receipt.read_text())
-    document[field] = value
-    receipt.write_text(json.dumps(document), encoding="utf-8")
+    assert len(read_campaign_dependencies(origin)) == 1
+    if field == "missing":
+        del document["campaign_id"]
+    else:
+        document[field] = value
+    receipt.write_text("{" if field == "truncated" else json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
         read_campaign_dependencies(origin)

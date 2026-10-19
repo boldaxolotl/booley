@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
+from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, encode_simulation_campaign_manifest
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import finish_goal
@@ -16,6 +16,7 @@ from booley.goals.lifecycle import LifecycleError
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.mcp.goal_completion import complete_goal, completion_environment
+from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
 from tests.flows.sim.test_campaign_manifest_codec import _manifest_components, _manifest_work
 from tests.goals.conftest import LINT_KEY, bind, campaign_facts, enter_goals, git
 from tests.goals.test_finish import Crash, request
@@ -103,7 +104,11 @@ def classified(
                 + ("0" * 64 if wrong_hash else hashlib.sha256(source.read_bytes()).hexdigest()),
             }
         ],
-        "tool_provenance": {"kind": "fusesoc", "version": "2", "contract_version": "1"},
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": "2",
+            "contract_version": "2" if source_metadata else "1",
+        },
         "cleanup": {"removed": True},
     }
     if real_producer:
@@ -111,9 +116,11 @@ def classified(
     if disclosure_override is not None:
         disclosure = disclosure_override
     source_metadata = source_metadata or disclosure["tool_provenance"]["contract_version"] == "2"
+    if not source_metadata:
+        items = _legacy_manifest(target=target)["work_items"]
     manifest = finalize_manifest(
         {
-            "$schema": "booley.simulation-campaign-manifest/v3"
+            "$schema": MANIFEST_SCHEMA
             if source_metadata
             else "booley.simulation-campaign-manifest/v1",
             "campaign_id": str(uuid4()),
@@ -450,7 +457,7 @@ def test_entirely_ambiguous_producer_cannot_authorize_destination_decoy(layout, 
     # even matching bytes cannot establish the absent source association.
     source, manifest, _ = classified(layout, copyto=destination, disclosure_override=disclosure)
     assert source.read_bytes() == staged.read_bytes()
-    assert json.loads(manifest.read_bytes())["$schema"] == "booley.simulation-campaign-manifest/v3"
+    assert json.loads(manifest.read_bytes())["$schema"] == MANIFEST_SCHEMA
     with pytest.raises(LifecycleError, match="no committed representation"):
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
 

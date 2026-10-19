@@ -1146,3 +1146,22 @@ def test_alias_normalization_precedes_simulation_preparation(
     assert flow.context.args.report_dir == data / (
         "flow-reports" if selection == "default" else "reports"
     )
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_projection_rejects_corrupt_record(tmp_path, error):
+    from booley.flows.sim.acceptance import _campaign_projection
+    from booley.flows.sim.campaign import decode_simulation_projection
+    from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
+
+    document = json.loads(
+        json.dumps({**_campaign_projection(_outcome(tmp_path, _RESET)), "complete": True})
+    )
+    decode_simulation_projection(document, coverage_expected=False)
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["complete"]
+    raw = "{" if error == "truncated" else json.dumps(document)
+    with pytest.raises(ValueError):
+        decode_simulation_projection(json.loads(raw), coverage_expected=False)

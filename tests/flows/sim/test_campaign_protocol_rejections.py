@@ -296,9 +296,9 @@ def test_missing_cocotb_transport_requires_authenticated_process_failure(
 ) -> None:
     from booley.flows.sim.campaign.codec import decode_simulation_result
     from booley.flows.sim.campaign.store import _validate_result_selection
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+    from tests.flows.sim.test_campaign_codec_golden import _legacy_simulation_result
 
-    document = json.loads(_simulation_result("aborted"))
+    document = json.loads(_legacy_simulation_result("aborted"))
     document["observations"][0]["detail"] = {
         "reason": "spawn failed",
         "termination": "adapter_protocol",
@@ -354,9 +354,9 @@ def test_missing_cocotb_transport_requires_real_adapter_guard(
     )
     from booley.flows.sim.campaign.codec import decode_simulation_result
     from booley.flows.sim.campaign.store import _validate_result_selection
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+    from tests.flows.sim.test_campaign_codec_golden import _legacy_simulation_result
 
-    document = json.loads(_simulation_result("aborted"))
+    document = json.loads(_legacy_simulation_result("aborted"))
     path = tmp_path / "adapter.json"
     identity = AdapterTransportIdentity("cocotb", "token", "target", ("smoke",), path)
     termination = "disk_budget" if failure_kind == "infrastructure" else "missing_input"
@@ -431,11 +431,35 @@ def test_cocotb_guard_source_reconciles_bounded_unicode_detail(count: int) -> No
 def test_unfiltered_cocotb_infrastructure_abort_requires_provenance(tmp_path: Path) -> None:
     from booley.flows.sim.campaign.codec import decode_simulation_result
     from booley.flows.sim.campaign.store import _validate_result_selection
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+    from tests.flows.sim.test_campaign_codec_golden import _legacy_simulation_result
 
-    document = json.loads(_simulation_result("aborted"))
+    document = json.loads(_legacy_simulation_result("aborted"))
     document["observations"][0]["test"] = None
     result = decode_simulation_result(canonical_json_bytes(document))
     item = {"kind": "cocotb_batch", "selection": {"kind": "unfiltered", "names": ()}}
     with pytest.raises(SimulationCampaignIntegrityError, match="authenticated"):
         _validate_result_selection(item, result, tmp_path)
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+@pytest.mark.parametrize("kind", ["entries", "retired"])
+def test_child_reader_rejects_corrupt_record(tmp_path, kind, error):
+    from booley.flows.sim.campaign_retention import prune_invocation
+    from tests.flows.sim.test_campaign_phase6 import _publish_retired_child, _retained_invocation
+
+    reports, project_data, store = _retained_invocation(tmp_path)
+    execution_id = _publish_retired_child(project_data, store)
+    control = tmp_path / "control"
+    control.mkdir()
+    valid_reports, valid_project, valid_store = _retained_invocation(control)
+    _publish_retired_child(valid_project, valid_store)
+    prune_invocation(valid_reports, 1)
+    path = store.root / "child-executions" / kind / f"{execution_id}.json"
+    document = json.loads(path.read_bytes())
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["child_execution_id"]
+    path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
+    with pytest.raises(ValueError):
+        prune_invocation(reports, 1)

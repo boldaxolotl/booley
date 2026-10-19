@@ -270,6 +270,13 @@ def test_serial_publication_boundary_resume_matrix(
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
+    from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, RESULT_SCHEMA
+
+    assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
+    for path in store.root.glob("work-items/*/result.json"):
+        result = json.loads(path.read_bytes())
+        assert result["$schema"] == RESULT_SCHEMA
+        assert all("test_run" in observation for observation in result["observations"])
 
 
 def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:

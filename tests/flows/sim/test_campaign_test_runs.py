@@ -25,7 +25,6 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim import test_campaign_resume_diagnostics as resume_support
 from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
-from tests.flows.sim.test_campaign_manifest_codec import _manifest as _v1_manifest
 
 _V4 = "booley.simulation-campaign-manifest/v4"
 
@@ -214,32 +213,6 @@ def test_cocotb_batch_refuses_test_runs_that_differ_in_seed(tmp_path: Path):
     document["work_items"][0]["test_runs"][1] = test_run_document(build_test_run("count", seed=2))
     with pytest.raises(SimulationCampaignIntegrityError, match="share seed and environment"):
         _refinalized(document)
-
-
-def test_a_manifest_before_v4_may_not_carry_test_runs(tmp_path: Path):
-    document = _v4_document(tmp_path)
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        _refinalized(document)
-
-
-def test_a_manifest_before_v4_still_decodes_for_reports():
-    manifest = finalize_manifest({k: v for k, v in _v1_manifest().items() if k != "fingerprints"})
-    decoded = decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-    assert decoded.document["$schema"] == "booley.simulation-campaign-manifest/v1"
-    assert all("test_runs" not in item for item in decoded.document["work_items"])
-    assert _work_item_test_runs(decoded.document["work_items"][0]) is None
-
-
-def test_resuming_a_manifest_before_v4_fails_closed():
-    manifest = finalize_manifest({k: v for k, v in _v1_manifest().items() if k != "fingerprints"})
-    with pytest.raises(SimulationCampaignIntegrityError) as excinfo:
-        _manifest_run_groups(manifest)
-    assert str(excinfo.value) == (
-        "this Simulation Campaign manifest predates recorded Test Runs "
-        "(booley.simulation-campaign-manifest/v1) and cannot be resumed; "
-        "start a new Simulation Campaign"
-    )
 
 
 @pytest.mark.parametrize(

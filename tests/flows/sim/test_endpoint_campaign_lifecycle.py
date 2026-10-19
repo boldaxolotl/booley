@@ -1637,9 +1637,14 @@ def test_legacy_abort_progress_failure_preserves_collected_firings(tmp_path, mon
 def _cocotb_hook_plan(document):
     import hashlib
 
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
     names = ["alpha", "beta"]
     document["work_items"][0].update(
-        kind="cocotb_batch", selection={"kind": "named", "names": names}, arguments=names
+        kind="cocotb_batch",
+        selection={"kind": "named", "names": names},
+        arguments=names,
+        test_runs=_selection_test_runs(names),
     )
     source = b"alpha\nbeta\n"
     document["required_suite"].update(

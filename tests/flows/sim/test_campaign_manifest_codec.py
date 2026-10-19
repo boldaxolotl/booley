@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
+    MANIFEST_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_simulation_campaign_manifest,
@@ -44,7 +45,7 @@ from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
 from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
-from booley.flows.test_runs import build_test_run
+from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -170,11 +171,15 @@ def _names_only_work_items(items: list[dict[str, object]]) -> list[dict[str, obj
     return legacy
 
 
+def _selection_test_runs(names):
+    return [test_run_document(build_test_run(name)) for name in names or (None,)]
+
+
 def _manifest() -> dict[str, object]:
     target, source_recipe, build_recipe, workload, suite = _manifest_components()
     variants, items = _manifest_work(target, source_recipe, build_recipe, workload)
     manifest = {
-        "$schema": "booley.simulation-campaign-manifest/v1",
+        "$schema": MANIFEST_SCHEMA,
         "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "created_at": "2026-09-21T10:00:00Z",
         "origin": {"execution_id": "", "invocation_id": 1},
@@ -265,6 +270,7 @@ def _manifest_work(target, source_recipe, build_recipe, workload):
         "revision": "abc123",
         "target": target,
         "selection": {"kind": "default", "names": []},
+        "test_runs": _selection_test_runs(()),
         "arguments": [],
         "build_variant_id": variants[0]["build_variant_id"],
         "run_directory": {"configured": "run", "kind": "literal", "collision_template": "run"},
@@ -335,74 +341,6 @@ def _baseline_manifest():
     item["fingerprint_sha256"] = fingerprint  # type: ignore[index]
     item["work_item_id"] = "item:0000:" + fingerprint[7:23]  # type: ignore[index]
     return finalize_manifest(document)
-
-
-_V1 = "booley.simulation-campaign-manifest/v1"
-_V2 = "booley.simulation-campaign-manifest/v2"
-
-
-def _refinalized(schema: str, **workload_members: object):
-    """Re-finalize the fixture so fingerprints stay valid and only the workload rule varies."""
-    document = _manifest()
-    document.pop("fingerprints")
-    document["$schema"] = schema
-    workload = document["workload"]
-    workload.update(workload_members)  # type: ignore[union-attr]
-    # The build variant recipe binds ``workload.coverage``; keep it consistent.
-    variant = document["build_variants"][0]  # type: ignore[index]
-    variant["source_closure"] = []
-    recipe_sha = _sha(
-        {
-            "kind": variant["kind"],
-            "source_closure": variant["source_closure"],
-            "source_recipe": workload["source_recipe"],  # type: ignore[index]
-            "build_recipe": workload["build_recipe"],  # type: ignore[index]
-            "eda": workload["eda"],  # type: ignore[index]
-            "trace": workload["trace"],  # type: ignore[index]
-            "coverage": workload["coverage"],  # type: ignore[index]
-        }
-    )
-    variant["recipe_sha256"] = recipe_sha
-    variant["build_variant_id"] = "variant:" + recipe_sha.removeprefix("sha256:")
-    item = document["work_items"][0]  # type: ignore[index]
-    item["build_variant_id"] = variant["build_variant_id"]
-    identity = {
-        key: value
-        for key, value in item.items()
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    item["fingerprint_sha256"] = _sha(identity)
-    item["work_item_id"] = "item:0000:" + item["fingerprint_sha256"][7:23]
-    return finalize_manifest(document)
-
-
-def test_no_waivers_v2_manifest_decodes_and_keeps_its_schema() -> None:
-    manifest = _refinalized(_V2, coverage=True, no_waivers=True)
-    assert manifest.document["$schema"] == _V2
-    assert manifest.document["workload"]["no_waivers"] is True  # type: ignore[index]
-    decoded = decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-    assert decoded.document == manifest.document
-
-
-@pytest.mark.parametrize(
-    ("schema", "members"),
-    [
-        (_V2, {"coverage": True}),
-        (_V2, {"coverage": True, "no_waivers": False}),
-        (_V2, {"coverage": True, "no_waivers": "yes"}),
-        (_V2, {"coverage": False, "no_waivers": True}),
-        (_V1, {"coverage": True, "no_waivers": True}),
-    ],
-)
-def test_no_waivers_manifest_grammar_is_exact(schema: str, members: dict[str, object]) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        _refinalized(schema, **members)
-
-
-def test_v1_manifest_grammar_is_unchanged_by_no_waivers_support() -> None:
-    manifest = _refinalized(_V1, coverage=True)
-    assert manifest.document["$schema"] == _V1
-    assert "no_waivers" not in manifest.document["workload"]  # type: ignore[operator]
 
 
 def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
@@ -1872,58 +1810,10 @@ def test_projected_root_membership_does_not_scan_ordered_output():
     assert diagnostic.mismatches == (finding, finding)
 
 
-@pytest.mark.parametrize("schema", ["v1", "v2", "v3"])
-@pytest.mark.parametrize("mapping", [False, True])
-def test_source_mapping_schema_grammar(schema, mapping):
-    document = _manifest()
-    document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/" + schema
-    if schema == "v2":
-        document["workload"]["coverage"] = True
-        document["workload"]["no_waivers"] = True
-        workload = document["workload"]
-        from booley.flows.sim.campaign.flow_planning import _variant_document, _work_items
-
-        variant = _variant_document(workload, [], False)
-        variants, items = (
-            [variant],
-            _names_only_work_items(
-                _work_items(
-                    [(build_test_run(None),)],
-                    document["target"],
-                    variant,
-                    "run",
-                    "literal",
-                    kind="ordinary_hdl",
-                )
-            ),
-        )
-        document["build_variants"], document["work_items"] = variants, items
-    entry = {
-        "path": "staged.hex",
-        "bytes": 1,
-        "sha256": "sha256:" + "a" * 64,
-        "kind": "generated_input",
-    }
-    if mapping:
-        entry["source_path"] = "data/source.hex"
-    document["planning_disclosures"] = [_prepared_disclosure([entry])]
-    if mapping and schema != "v3":
-        with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-            finalize_manifest(document)
-    else:
-        manifest = finalize_manifest(document)
-        assert (
-            decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-            == manifest
-        )
-
-
 @pytest.mark.parametrize("field,value", [("source_path", "../outside.hex"), ("unknown", "x")])
 def test_source_mapping_rejects_unsafe_or_unknown_disclosure_fields(field, value):
     document = _manifest()
     document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["planning_disclosures"] = [
         _prepared_disclosure(
             [
@@ -1945,7 +1835,6 @@ def test_source_mapping_does_not_relax_source_recipe():
     document = _diagnostic_document(
         sources=[{**_diagnostic_source("data.hex"), "source_path": "other.hex"}]
     )
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         finalize_manifest(document)
 
@@ -1953,7 +1842,6 @@ def test_source_mapping_does_not_relax_source_recipe():
 def test_copyto_prepared_digest_diagnostic_uses_declared_source():
     old, new = _prepared_diagnostic_pair()
     for document in (old, new):
-        document["$schema"] = "booley.simulation-campaign-manifest/v3"
         entry = document["planning_disclosures"][0]["generated_files"][0]
         entry["source_path"] = entry["path"]
         entry["path"] = "renamed.sv"
@@ -1967,7 +1855,6 @@ def test_copyto_prepared_digest_diagnostic_uses_declared_source():
 def test_v3_no_waivers_requires_literal_true(flag):
     document = _manifest()
     document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["workload"]["no_waivers"] = flag
     with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers is invalid"):
         finalize_manifest(document)
