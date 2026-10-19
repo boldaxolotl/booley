@@ -454,6 +454,7 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     pid_file = project / "worker-pids"
     path.write_text(
         "import os, subprocess, sys, time\nfrom pathlib import Path\n"
+        "print('importer timeout diagnostic', flush=True)\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
         f"Path({str(pid_file)!r}).write_text(str(os.getpid()) + ' ' + str(child.pid))\n"
         "time.sleep(120)\n" + path.read_text()
@@ -472,8 +473,9 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     # The production deadline still independently bounds importer startup.
     monkeypatch.setattr(catalog_worker, "time", SimpleNamespace(monotonic=discovery_time))
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match="timed out"):
+    with pytest.raises(RuntimeError, match="timed out") as failure:
         catalog_worker.run_schema_worker({"local_check": path})
+    assert "importer timeout diagnostic" in str(failure.value)
     assert pid_file.exists()
     assert ready_at is not None
     assert ready_at - started < catalog_worker.DISCOVERY_TIMEOUT_SECONDS

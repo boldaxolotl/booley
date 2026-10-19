@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from pydantic import TypeAdapter
 
@@ -37,7 +37,12 @@ def run_schema_worker(
     if not paths:
         return [], []
     cancel = cancel or threading.Event()
-    with tempfile.TemporaryDirectory(prefix="booley-catalog-") as temporary:
+    # Descendants inherit stdout; keep its backing file outside the request tree
+    # so Windows handle teardown cannot prevent that tree's cleanup.
+    with (
+        tempfile.TemporaryDirectory(prefix="booley-catalog-") as temporary,
+        tempfile.TemporaryFile() as output,
+    ):
         directory = Path(temporary)
         request = directory / "request.json"
         result = directory / "result.json"
@@ -56,26 +61,25 @@ def run_schema_worker(
             str(request),
             str(result),
         ]
-        with (directory / "worker.log").open("wb") as output:
-            process = subprocess.Popen(
-                command, stdout=output, stderr=output, env=environment, **new_group_kwargs()
-            )
-            group = capture_process_group(process)
-            try:
-                _wait_for_worker(process, cancel)
-            except RuntimeError as exc:
-                raise RuntimeError(f"{exc}\n{_diagnostic_tail(directory / 'worker.log')}") from exc
-            finally:
-                # Also terminate descendants that outlive a successfully exited importer.
-                terminate_process_group(process, group, grace_seconds=0.2)
+        process = subprocess.Popen(
+            command, stdout=output, stderr=output, env=environment, **new_group_kwargs()
+        )
+        group = capture_process_group(process)
+        try:
+            _wait_for_worker(process, cancel)
+        except RuntimeError as exc:
+            raise RuntimeError(f"{exc}\n{_diagnostic_tail(output)}") from exc
+        finally:
+            # Also terminate descendants that outlive a successfully exited importer.
+            terminate_process_group(process, group, grace_seconds=0.2)
         return _read_result(result)
 
 
-def _diagnostic_tail(path: Path) -> str:
+def _diagnostic_tail(output: BinaryIO) -> str:
     """Retain a bounded importer diagnostic before its temporary log is removed."""
-    with path.open("rb") as stream:
-        stream.seek(max(0, path.stat().st_size - _DIAGNOSTIC_BYTES))
-        return stream.read(_DIAGNOSTIC_BYTES).decode(errors="replace").strip()
+    output.seek(0, os.SEEK_END)
+    output.seek(max(0, output.tell() - _DIAGNOSTIC_BYTES))
+    return output.read(_DIAGNOSTIC_BYTES).decode(errors="replace").strip()
 
 
 def _wait_for_worker(process, cancel: threading.Event) -> None:
