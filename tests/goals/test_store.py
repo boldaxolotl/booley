@@ -6,12 +6,12 @@ import multiprocessing
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -41,22 +41,11 @@ from booley.goals.store import (
 )
 from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 from tests.conftest import symlink_or_skip
+from tests.goals.conftest import git as _git
 
 SHA = "a" * 40
 GIT_TIMEOUT_S = 30
 RACE_TIMEOUT_S = 20
-
-
-def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-c", "user.name=Goal Test", "-c", "user.email=goal@test.invalid", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=GIT_TIMEOUT_S,
-    )
-    return result.stdout.strip()
 
 
 @pytest.fixture
@@ -99,6 +88,12 @@ def _enter(store: GoalStore, work_dir: Path, goal_id: str) -> GoalRecord:
     assert identity is not None
     with store.worktree_lock(identity) as lock:
         return store.create(lock, _record(identity, goal_id, work_dir))
+
+
+def _stored(repo: dict[str, Path], goal_id: str, **kwargs: Any) -> tuple[GoalStore, GoalRecord]:
+    """Build the same store and entering record used by persistence and lock cases."""
+    store = GoalStore(repo["project"], **kwargs)
+    return store, _enter(store, repo["linked"], goal_id)
 
 
 def _save(store: GoalStore, record: GoalRecord, **changes: Any) -> GoalRecord:
@@ -166,8 +161,7 @@ def test_a_damaged_repository_id_is_reported(repo: dict[str, Path]) -> None:
 def test_a_deleted_repository_id_never_lets_a_second_goal_mode_enter(
     repo: dict[str, Path],
 ) -> None:
-    store = GoalStore(repo["project"])
-    _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, _ = _stored(repo, "a-20261006T101500Z")
     (repo["main"] / ".git" / "booley" / "repository-id").unlink()
 
     with pytest.raises(WorktreeIdentityError, match="missing while Goal Records"):
@@ -180,9 +174,12 @@ def test_a_deleted_repository_id_never_lets_a_second_goal_mode_enter(
 # --- Create, load, occupancy --------------------------------------------------------
 
 
-def test_create_publishes_revision_one_and_load_reads_it(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    created = _enter(store, repo["linked"], "fix-uart-20261006T101500Z")
+def test_create_encodes_candidate_once(repo: dict[str, Path]) -> None:
+    with patch.object(
+        GoalRecord, "to_json", autospec=True, side_effect=GoalRecord.to_json
+    ) as encode:
+        store, created = _stored(repo, "fix-uart-20261006T101500Z")
+        assert encode.call_count == 1, "candidate encoded twice"
 
     assert created.revision == 1
     assert store.load(created.id) == created
@@ -194,8 +191,7 @@ def test_create_publishes_revision_one_and_load_reads_it(repo: dict[str, Path]) 
 def test_second_occupying_record_for_one_worktree_is_refused(
     repo: dict[str, Path], alias: Path
 ) -> None:
-    store = GoalStore(repo["project"])
-    first = _enter(store, repo["linked"], "fix-uart-20261006T101500Z")
+    store, first = _stored(repo, "fix-uart-20261006T101500Z")
 
     with pytest.raises(WorktreeOccupiedError) as caught:
         _enter(store, alias, "other-20261006T101600Z")  # same worktree, other spelling
@@ -204,8 +200,7 @@ def test_second_occupying_record_for_one_worktree_is_refused(
 
 
 def test_a_different_worktree_may_enter_alongside(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    _enter(store, repo["linked"], "fix-uart-20261006T101500Z")
+    store, _ = _stored(repo, "fix-uart-20261006T101500Z")
     _enter(store, repo["main"], "other-20261006T101600Z")
     assert len(store.list_active().records) == 2
 
@@ -257,8 +252,7 @@ def test_create_requires_a_new_entering_record_under_its_own_lock(repo: dict[str
 
 
 def test_same_goal_id_from_another_worktree_is_a_store_error(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, _ = _stored(repo, "a-20261006T101500Z")
     # Another worktree publishing the same id in the same second: the rename fails.
     with pytest.raises(GoalStoreError, match="cannot publish"):
         _enter(store, repo["main"], "a-20261006T101500Z")
@@ -322,10 +316,11 @@ def test_concurrent_entries_from_two_processes_yield_one_winner(repo: dict[str, 
 # --- Save --------------------------------------------------------------------------
 
 
-def test_save_is_compare_and_swap_on_revision(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    read = _enter(store, repo["linked"], "a-20261006T101500Z")
-    saved = _save(store, read, state=GoalState.ACTIVE)
+def test_save_does_not_decode_encoded_candidate(repo: dict[str, Path]) -> None:
+    store, read = _stored(repo, "a-20261006T101500Z")
+    with patch.object(GoalRecord, "from_json", wraps=GoalRecord.from_json) as decode:
+        saved = _save(store, read, state=GoalState.ACTIVE)
+        assert decode.call_count == 1, "candidate decoded after encoding"
     assert saved.revision == 2
 
     with pytest.raises(StaleRevisionError, match="revision 2, not the revision 1"):
@@ -346,28 +341,29 @@ def test_save_is_compare_and_swap_on_revision(repo: dict[str, Path]) -> None:
 def test_save_refuses_changes_to_creation_fields(
     repo: dict[str, Path], changes: dict[str, Any]
 ) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     if changes.pop("worktree_change", False):
         changes = {"worktree": WorktreeIdentity(record.worktree.repository, "main")}
     with pytest.raises(InvalidRecordUpdateError, match="cannot change"):
         _save(store, record, **changes)
 
 
-def test_save_refuses_a_record_that_would_not_load_back(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+def test_invalid_save_preserves_names(repo: dict[str, Path]) -> None:
+    store, record = _stored(repo, "a-20261006T101500Z")
     future = RecordedGoal(GoalSpec("lint_clean_a", GoalFamily.LINT, "a", {}, ("x",)), 6)
     with pytest.raises(InvalidRecordUpdateError, match="would not load back"):
         _save(store, record, goals=(future,))
+    named = replace(future, spec=replace(future.spec, display_target="changed"), spec_revision=1)
+    names = record_paths(repo["project"], record.id).root / "goal-names.json"
+    before = names.read_bytes() if names.exists() else None
     with pytest.raises(InvalidRecordUpdateError, match="would not load back"):
-        _save(store, record, protected_digest="md5:x")
+        _save(store, record, goals=(named,), protected_digest="md5:x")
+    assert (names.read_bytes() if names.exists() else None) == before, "invalid save changed names"
     assert store.load(record.id) == record
 
 
 def test_save_refuses_an_unheld_lock(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     with store.record_lock(record.id) as lock:
         pass
     with pytest.raises(GoalStoreError, match="no longer held"):
@@ -378,8 +374,7 @@ def test_save_refuses_an_unheld_lock(repo: dict[str, Path]) -> None:
 
 
 def test_lock_order_is_worktree_then_record(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     with store.worktree_lock(record.worktree), store.record_lock(record.id):
         pass
     with (
@@ -390,51 +385,49 @@ def test_lock_order_is_worktree_then_record(repo: dict[str, Path]) -> None:
         pass
 
 
+@pytest.mark.parametrize("alias_store", [False, True])
 def test_record_lock_is_reentrant_within_one_context(
-    repo: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    repo: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias_store: bool
 ) -> None:
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z", lock_timeout_s=0.2)
+    other = store
+    if alias_store:
+        spelling = tmp_path / "project-alias"
+        symlink_or_skip(spelling, repo["project"], target_is_directory=True)
+        other = GoalStore(spelling, lock_timeout_s=0.2)
     with store.record_lock(record.id) as outer:
 
         def reject_second_acquisition(*_args: object, **_kwargs: object) -> None:
             raise AssertionError("reentry must reuse the held file lock")
 
-        with monkeypatch.context() as patch:
-            patch.setattr("booley.goals.store.wait_for_file_lock", reject_second_acquisition)
-            with store.record_lock(record.id) as inner:
+        with monkeypatch.context() as patcher:
+            patcher.setattr("booley.goals.store.wait_for_file_lock", reject_second_acquisition)
+            with other.record_lock(record.id) as inner:
                 assert inner is outer
-                saved = store.save(inner, replace(record, state=GoalState.ACTIVE))
-        assert outer.held  # leaving the nested block keeps the outer hold
-        store.save(outer, replace(saved, state=GoalState.ABANDONED))
-        # Re-entry does not relax the lock order.
+                saved = other.save(inner, replace(record, state=GoalState.ACTIVE))
+        assert outer.held
+        saved = store.save(outer, replace(saved, state=GoalState.ABANDONED))
         with pytest.raises(LockOrderError), store.worktree_lock(record.worktree):
             pass
+    assert store.load(record.id) == saved
 
 
 def test_a_held_lock_times_out_in_another_thread(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     impatient = GoalStore(repo["project"], lock_timeout_s=0.2)
-    errors: list[BaseException] = []
+    import contextvars
 
     def contend() -> None:
-        try:
-            with impatient.record_lock(record.id):
-                pass
-        except GoalLockTimeoutError as exc:
-            errors.append(exc)
+        with impatient.record_lock(record.id):
+            pass
 
     with store.record_lock(record.id):
-        thread = threading.Thread(target=contend)
-        thread.start()
-        thread.join(timeout=GIT_TIMEOUT_S)
-    assert len(errors) == 1
+        (error,) = _in_copied_context_thread(contend, contextvars.Context())
+    assert isinstance(error, GoalLockTimeoutError)
 
 
 def test_record_lock_never_creates_a_removed_record_directory(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     root = record_paths(repo["project"], record.id).root
     shutil.rmtree(root)
     with pytest.raises(GoalRecordNotFoundError), store.record_lock(record.id):
@@ -445,13 +438,17 @@ def test_record_lock_never_creates_a_removed_record_directory(repo: dict[str, Pa
 # --- Corruption --------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("content", [b"{not json", b"", b"\xff\xfe", b'{"schema": 1}', b"[]"])
+@pytest.mark.parametrize(
+    "content", [b"{not json", b"", b"\xff\xfe", b'{"schema": 1}', b"[]", None]
+)
 def test_corrupt_record_is_reported_not_treated_as_absent(
-    repo: dict[str, Path], content: bytes
+    repo: dict[str, Path], content: bytes | None
 ) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
-    record_file = _corrupt(repo["project"], record.id, content)
+    store, record = _stored(repo, "a-20261006T101500Z")
+    record_file = _corrupt(repo["project"], record.id, content or b"")
+    if content is None:
+        record_file.unlink()
+    assert [item.path.name for item in store.list_records().corrupt] == ["record.json"]
 
     with pytest.raises(GoalRecordCorruptError) as caught:
         store.load(record.id)
@@ -463,8 +460,7 @@ def test_corrupt_record_is_reported_not_treated_as_absent(
 
 
 def test_one_corrupt_record_does_not_hide_a_readable_occupant(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    occupant = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, occupant = _stored(repo, "a-20261006T101500Z")
     other = _enter(store, repo["main"], "b-20261006T101600Z")
     bad = _corrupt(repo["project"], other.id)
 
@@ -479,16 +475,8 @@ def test_one_corrupt_record_does_not_hide_a_readable_occupant(repo: dict[str, Pa
         _enter(store, repo["main"], "c-20261006T101700Z")  # create refuses while any is corrupt
 
 
-def test_record_directory_without_record_file_is_corrupt(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    (repo["project"] / "goals" / "lost-20261006T101500Z").mkdir(parents=True)
-    corrupt = store.list_records().corrupt
-    assert [entry.path.name for entry in corrupt] == ["record.json"]
-
-
 def test_record_naming_another_id_is_corrupt(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     other = record_paths(repo["project"], "b-20261006T101600Z").root
     record_paths(repo["project"], record.id).root.rename(other)
     with pytest.raises(GoalRecordCorruptError, match="names Goal Record a-20261006T101500Z"):
@@ -522,7 +510,7 @@ def _in_copied_context_thread(work: Any, context: Any = None) -> list[object]:
         except Exception as exc:  # noqa: BLE001 — the test inspects the failure
             outcome.append(exc)
 
-    context = context or contextvars.copy_context()
+    context = contextvars.copy_context() if context is None else context
     thread = threading.Thread(target=context.run, args=(run,))
     thread.start()
     thread.join(timeout=GIT_TIMEOUT_S)
@@ -530,8 +518,7 @@ def _in_copied_context_thread(work: Any, context: Any = None) -> list[object]:
 
 
 def test_a_copied_context_thread_contends_instead_of_re_entering(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z", lock_timeout_s=0.2)
 
     def take() -> RecordLock:
         with store.record_lock(record.id) as lock:
@@ -569,8 +556,7 @@ def test_a_copied_context_thread_contends_instead_of_re_entering(repo: dict[str,
 def test_an_asyncio_task_does_not_re_enter_its_parents_lock(repo: dict[str, Path]) -> None:
     import asyncio
 
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z", lock_timeout_s=0.2)
 
     async def child() -> None:
         with store.record_lock(record.id):
@@ -589,8 +575,7 @@ def test_an_asyncio_task_does_not_re_enter_its_parents_lock(repo: dict[str, Path
 
 
 def test_a_released_lock_is_never_honoured_again(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     with store.record_lock(record.id) as first:
         pass
     with store.record_lock(record.id) as second:
@@ -599,29 +584,6 @@ def test_a_released_lock_is_never_honoured_again(repo: dict[str, Path]) -> None:
         with pytest.raises(GoalStoreError, match="no longer held"):
             store.save(first, replace(record, state=GoalState.ACTIVE))
         store.save(second, replace(record, state=GoalState.ACTIVE))
-
-
-def test_a_second_project_spelling_re_enters_the_same_lock(
-    repo: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
-    spelling = tmp_path / "project-alias"
-    symlink_or_skip(spelling, repo["project"], target_is_directory=True)
-    aliased = GoalStore(spelling, lock_timeout_s=0.2)
-
-    with store.record_lock(record.id) as outer:
-
-        def reject_second_acquisition(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("alias reentry must reuse the held file lock")
-
-        with monkeypatch.context() as patch:
-            patch.setattr("booley.goals.store.wait_for_file_lock", reject_second_acquisition)
-            with aliased.record_lock(record.id) as inner:
-                assert inner is outer
-                saved = aliased.save(inner, replace(record, state=GoalState.ACTIVE))
-        assert outer.held
-    assert store.load(record.id) == saved
 
 
 # --- Staging sweep and missing repository id with corrupt records ------------------
@@ -646,8 +608,7 @@ def test_a_staging_directory_vanishing_during_the_sweep_does_not_abort_create(
 
 
 def test_a_missing_repository_id_with_a_corrupt_record_is_refused(repo: dict[str, Path]) -> None:
-    store = GoalStore(repo["project"])
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z")
     bad = _corrupt(repo["project"], record.id)
     id_file = repo["main"] / ".git" / "booley" / "repository-id"
     id_file.unlink()
@@ -663,28 +624,23 @@ def test_a_missing_repository_id_with_a_corrupt_record_is_refused(repo: dict[str
 
 
 def _other_thread_can_lock(store: GoalStore, goal_id: str) -> bool:
-    """Whether a different thread of this process gets the record lock right now."""
-    got: list[bool] = []
+    """Whether a fresh-context thread acquires this record's lock."""
+    import contextvars
 
-    def contend() -> None:
-        try:
-            with store.record_lock(goal_id):
-                got.append(True)
-        except GoalLockTimeoutError:
-            got.append(False)
+    def take() -> bool:
+        with store.record_lock(goal_id):
+            return True
 
-    thread = threading.Thread(target=contend)
-    thread.start()
-    thread.join(timeout=GIT_TIMEOUT_S)
-    return got == [True]
+    (outcome,) = _in_copied_context_thread(take, contextvars.Context())
+    assert outcome is True or isinstance(outcome, GoalLockTimeoutError), outcome
+    return outcome is True
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX-only")
 def test_a_forked_child_unwinding_the_lock_does_not_release_the_parents(
     repo: dict[str, Path],
 ) -> None:
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z", lock_timeout_s=0.2)
     manager = store.record_lock(record.id)
     lock = manager.__enter__()
     try:
@@ -711,8 +667,7 @@ def test_a_forked_child_gets_a_fresh_registry_and_an_unlocked_guard(
 ) -> None:
     from booley.goals import store as store_module
 
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z", lock_timeout_s=0.2)
     with store.record_lock(record.id) as lock:
         store_module._held_record_locks_guard.acquire()  # as if another thread held it at fork
         try:
@@ -743,8 +698,7 @@ def test_a_later_thread_never_passes_for_a_dead_owner(repo: dict[str, Path]) -> 
     Thread identifiers are recycled; the owner is the thread object, which the
     held lock keeps alive, so no later thread can equal it.
     """
-    store = GoalStore(repo["project"], lock_timeout_s=0.2)
-    record = _enter(store, repo["linked"], "a-20261006T101500Z")
+    store, record = _stored(repo, "a-20261006T101500Z", lock_timeout_s=0.2)
     kept: list[Any] = []
 
     def take_and_leave() -> None:
