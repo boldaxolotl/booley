@@ -1495,6 +1495,46 @@ def _prepared_diagnostic_pair():
     return old, new
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        json.loads(line)
+        for line in (Path(__file__).parent / "fixtures/prepared_manifest_pairs.jsonl")
+        .read_text()
+        .splitlines()
+    ],
+    ids=lambda case: case["id"],
+)
+def test_prepared_manifest_pair_corpus(case):
+    from booley.flows.sim.campaign.planning import (
+        SimulationCampaignWorkloadMismatchError,
+        project_workload_mismatches,
+        verify_workload,
+    )
+
+    left, right = [
+        decode_simulation_campaign_manifest(canonical_json_bytes(case[key]))
+        for key in ("expected", "current")
+    ]
+    raw = compare_manifests(left, right)
+    assert canonical_json_bytes(
+        [[item.pointer, item.expected, item.actual, item.message] for item in raw]
+    ) == canonical_json_bytes(case["raw"])
+    assert [manifest_digest(left), manifest_digest(right)] == case["digests"]
+    diagnostic = project_workload_mismatches(left, right, raw)
+    assert project_workload_mismatches(left, right) == diagnostic
+    assert diagnostic.detail == case["detail"]
+    assert diagnostic.report() == case["report"]
+    assert diagnostic.report(verbose=True) == case["verbose_report"]
+    assert diagnostic.report(verbose=True) == diagnostic.report() + case["raw_verbose_suffix"]
+    if case["outcome"] == "accept":
+        verify_workload(left, right)
+    else:
+        with pytest.raises(SimulationCampaignWorkloadMismatchError) as exc:
+            verify_workload(left, right)
+        assert exc.value.diagnostic == diagnostic
+
+
 def test_prepared_path_and_content_equality_collapses_across_multiple_disclosures():
     old, new = _prepared_diagnostic_pair()
     for document in (old, new):
@@ -1655,26 +1695,6 @@ def test_prepared_render_collision_retains_all_colliding_original_leaves():
     assert diagnostic.derived_fingerprint_count == 0
 
 
-@pytest.mark.parametrize("changed", ["recipe_duplicate", "bytes", "hash", "staged"])
-def test_unmatched_prepared_facts_are_named_without_recipe_correspondence(changed):
-    old, new = _prepared_diagnostic_pair()
-    if changed == "recipe_duplicate":
-        for document in (old, new):
-            document["workload"]["source_recipe"]["sources"] *= 2
-            document["build_variants"][0]["source_closure"] *= 2
-    elif changed == "staged":
-        for document in (old, new):
-            document["planning_disclosures"][0]["generated_files"][0]["path"] = "staged/a.sv"
-    else:
-        field, value = ("bytes", 3) if changed == "bytes" else ("sha256", "sha256:" + "c" * 64)
-        new["planning_disclosures"][0]["generated_files"][0][field] = value
-    diagnostic = _project_diagnostics(old, new)
-    expected_path = "staged/a.sv" if changed == "staged" else "a.sv"
-    assert f"prepared source changed: {expected_path}" in diagnostic.mismatch_summary
-    assert not any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
-    assert diagnostic.derived_fingerprint_count == 5
-
-
 @pytest.mark.parametrize("own_count", [1, 2])
 def test_equality_collapsed_occurrences_do_not_affect_own_key_suffixes(own_count):
     old, new = _prepared_diagnostic_pair()
@@ -1696,29 +1716,6 @@ def test_equality_collapsed_occurrences_do_not_affect_own_key_suffixes(own_count
         ]
     )
     assert diagnostic.mismatch_summary[0] == "source changed: a.sv"
-
-
-@pytest.mark.parametrize("changed", ["scratch", "path_layout", "entry_kind"])
-def test_prepared_pair_and_entry_guards_retain_otherwise_collapsible_leaves(changed):
-    old, new = _prepared_diagnostic_pair()
-    if changed == "scratch":
-        new["planning_disclosures"][0]["scratch_inputs"] = [_diagnostic_source("scratch.sv")]
-    elif changed == "entry_kind":
-        new["planning_disclosures"][0]["generated_files"][0]["kind"] = "rtl"
-    else:
-        new["planning_disclosures"][0]["generated_files"].append(
-            {**_diagnostic_source("head.sv"), "kind": "generated_input"}
-        )
-    diagnostic = _project_diagnostics(old, new)
-    original = [
-        item.message
-        for item in diagnostic.mismatches
-        if item.pointer.startswith("/planning_disclosures/")
-    ]
-    assert {"workload changed: " + item for item in original} <= set(diagnostic.mismatch_summary)
-    assert not any(
-        line.startswith("prepared source changed:") for line in diagnostic.mismatch_summary
-    )
 
 
 @pytest.mark.parametrize("side", [0, 1])
@@ -1747,38 +1744,6 @@ def test_distinct_prepared_hash_only_changes_preserve_each_observed_cause():
         "/planning_disclosures/1/generated_files/0/sha256",
     ]
     assert diagnostic.derived_fingerprint_count == 0
-
-
-@pytest.mark.parametrize("side", [0, 1])
-def test_generated_path_duplicates_on_either_side_block_prepared_naming(side):
-    old, new = _prepared_diagnostic_pair()
-    (old, new)[side]["planning_disclosures"][0]["generated_files"] *= 2
-    diagnostic = _project_diagnostics(old, new)
-    original = [
-        item.message
-        for item in diagnostic.mismatches
-        if item.pointer.startswith("/planning_disclosures/")
-    ]
-    assert {"workload changed: " + item for item in original} <= set(diagnostic.mismatch_summary)
-
-
-@pytest.mark.parametrize("changed", ["planner", "kind", "contract", "version"])
-def test_unknown_preparation_metadata_falls_back_but_equal_versions_allow_collapse(changed):
-    old, new = _prepared_diagnostic_pair()
-    for document in (old, new):
-        disclosure = document["planning_disclosures"][0]
-        if changed == "planner":
-            disclosure["planner"] = "unknown"
-        else:
-            field = {"kind": "kind", "contract": "contract_version", "version": "version"}[changed]
-            disclosure["tool_provenance"][field] = (
-                "unavailable" if changed == "version" else "unknown"
-            )
-    diagnostic = _project_diagnostics(old, new)
-    if changed == "version":
-        assert diagnostic.mismatch_summary == ("source changed: a.sv",)
-    else:
-        assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
 
 
 def test_repeated_diagnostic_region_lookups_do_not_rescan_original_findings():
