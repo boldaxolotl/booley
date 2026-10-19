@@ -44,6 +44,7 @@ def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
     from booley.flows.sim.campaign.store import CampaignStore
     from booley.flows.sim.flow import (
         SimulateFlow,
+        _campaign_hook_inputs,
         _campaign_pre_sim_details,
         _campaign_pre_sim_report_lines,
     )
@@ -80,10 +81,14 @@ def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
     )
     assert candidate.aggregate_grade == "pass"
     assert len(collect_pre_sim_firings(candidate.manifest_path)) == 2
-    detail = _campaign_pre_sim_details([candidate, baseline], invocation)
+    detail = _campaign_pre_sim_details(
+        *_campaign_hook_inputs([candidate, baseline], invocation), invocation
+    )
     assert detail["pre_sim_total"] == detail["pre_sim_current"] == 2
     assert set(detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
-    lines = _campaign_pre_sim_report_lines([candidate, baseline], invocation)
+    lines = _campaign_pre_sim_report_lines(
+        *_campaign_hook_inputs([candidate, baseline], invocation)
+    )
     assert "Candidate:" in lines and "Cycle Count baseline:" in lines
     assert len([line for line in lines if line.startswith("pre_run_commands")]) == 2
 
