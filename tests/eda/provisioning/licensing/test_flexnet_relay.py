@@ -110,10 +110,8 @@ def _test_config(
         "test-license-host",
         (PortRoute(0, upstream_ports[0]), PortRoute(0, upstream_ports[1])),
         listen_host="127.0.0.1",
-        # Generous on purpose: loopback connects finish at once, and no test here
-        # waits for this timeout (a refused port fails immediately). A short value
-        # let one event-loop stall under a loaded full run turn a reachable upstream
-        # into "upstream failed", which broke the idle-timeout test's log check.
+        # Allow event-loop stalls under load without misclassifying a reachable
+        # upstream as failed before the idle-timeout test can observe idleness.
         connect_timeout=5.0,
         idle_timeout=idle_timeout,
         max_connections=maximum,
@@ -271,15 +269,22 @@ async def test_unreachable_upstream_fails_closed_without_destination_in_logs(cap
         reservation.close()
         pytest.skip(f"loopback sockets unavailable: {exc}")
     port = reservation.getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port + 1)))
+    config = _test_config((port, port + 1))
+    relay = FlexNetRelay(config)
     caplog.set_level(logging.WARNING)
     try:
         await relay.start()
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-            assert await asyncio.wait_for(reader.read(), timeout=1) == b""
-            writer.close()
-            await writer.wait_closed()
+            try:
+                # Windows may take seconds to refuse a loopback connection.
+                assert (
+                    await asyncio.wait_for(reader.read(), timeout=config.connect_timeout + 1)
+                    == b""
+                )
+            finally:
+                writer.close()
+                await writer.wait_closed()
         finally:
             await relay.close()
     finally:
