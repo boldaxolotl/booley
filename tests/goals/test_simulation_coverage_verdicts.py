@@ -24,32 +24,14 @@ pytestmark = pytest.mark.timeout(120)
 @pytest.mark.parametrize("simulation", ["pass", "fail"])
 @pytest.mark.parametrize("coverage", ["pass", "fail"])
 def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, coverage):
-    root: Path = layout.worktree
-    project(root)
-    core = root / "counter.core"
-    core.write_text(core.read_text().replace("sim_0", "top"))
-    (root / ".booley/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
-    git(root, "add", "counter.core", "rtl/counter.sv")
-    git(root, "commit", "-m", "simulation recipe")
-    record = enter_goal_mode(
-        EntryRequest(
-            work_dir=root,
-            slug="verdicts",
-            goals=parse_goal_args(
-                [
-                    {"family": "SIM", "target": "top"},
-                    {
-                        "family": "COVERAGE",
-                        "target": "top",
-                        "tests": "all",
-                        "metrics": {"line": 100},
-                    },
-                ]
-            ),
-        ),
-        entry_environment(layout),
-    ).record
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    root, record = _enter(
+        layout,
+        monkeypatch,
+        [
+            {"family": "SIM", "target": "top"},
+            {"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}},
+        ],
+    )
     adapter = GoalFlowExecution(bind(layout))
     result = SimulateFlow(
         coverage_execution=lambda *_args: NativeExecution(

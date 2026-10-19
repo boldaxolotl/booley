@@ -595,7 +595,14 @@ def test_saved_package_renders_frozen_test_runs_without_stored_ledger(layout):
     facts = json.loads(Path(result["package"]).read_bytes())
     (goal,) = facts["goals"]
     for row in [goal["selected_observation"], *goal["original_observations"]]:
-        row["detail"]["test_run_ledger"] = "obsolete"
+        row["detail"]["test_run_ledger"] = {
+            "schema": "booley.goal-test-run-ledger/v1",
+            "runs": [
+                {"name": run.name, "fingerprint": run.fingerprint, "outcome": "failed"}
+                for run in (A, B)
+            ],
+            "source_evidence": [],
+        }
     package = GoalCompletionPackage.from_json(facts)
     text = render_goal_briefing(package)
     assert "Test Runs: a@1 passed, b@1 passed" in text

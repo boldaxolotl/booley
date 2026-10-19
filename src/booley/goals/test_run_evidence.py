@@ -244,8 +244,7 @@ def judged_change(
     frozen runs that produced the metric (:meth:`GoalTestRuns.measured_by`).
     A change that does not measure the metric never supplies a verdict. When
     it adds nothing to the Goal's selected observation, that observation is
-    recorded again (:func:`_restated`); otherwise the change is recorded with
-    its matching runs' outcomes and the Goal is unmet.
+    recorded again, subject to the same history defects; otherwise the Goal is unmet.
     """
     key = goal.spec.key
     resolution = record.test_run_resolution(key)
@@ -261,7 +260,8 @@ def judged_change(
     if not measured:
         selected = _selected(key, history, here)
         if selected is not None and _adds_nothing(selected, outcomes, scope, frozen, history):
-            return _restated(change, selected)
+            change = _restated(change, selected)
+            detail, measured = change.detail, True
     defect = requirement_defect(resolution)
     if defect is None and scope.accumulates:
         defect = outcome_defect(outcomes)

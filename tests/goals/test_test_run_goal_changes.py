@@ -315,8 +315,6 @@ def test_approved_change_omits_old_ledger_and_preserves_sibling_history(layout):
         _evidence_file(layout, row["sequence"]).write_text(json.dumps(row), encoding="utf-8")
     approved = proposal(layout, env)
     approve(layout, env, approved.proposal.id)
-    from tests.goals.test_proposals import observations
-
     rows = observations(layout)
     assert all(
         "test_run_ledger" not in row["detail"]

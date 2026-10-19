@@ -282,7 +282,8 @@ def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
     assert "a@1" in status.reason
 
     # The rerun folds every row, the intervening failure included: it stays sticky.
-    _record(two, "run-c", passing)
+    _record(two, "run-c", passing, extra={"test_run_outcomes_only": True})
+    assert not DevelopmentState.load(_state_file(two)).criteria[SIM_KEY].met
     assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
 
