@@ -202,13 +202,21 @@ def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
         "sha256:" + "a" * 64
     )
     # The old path now points at another Project; purge must not follow it there.
-    other = tmp_path / "other-root"  # an unremembered Project with its own images
-    other.mkdir()
+    other = _remember(tmp_path / "other-root")  # a remembered Project with its own images
     keeper_host.tags[f"{project_image_name(other)}:latest"] = "sha256:" + "c" * 64
     deleted.symlink_to(other, target_is_directory=True)
-    grants = (SimpleNamespace(project_root=str(deleted)),) if grant else ()
+    grants = (
+        (
+            SimpleNamespace(
+                project_root=str(deleted), kind="vivado", installation=None, license_profile=None
+            ),
+        )
+        if grant
+        else ()
+    )
     monkeypatch.setattr(project_inventory, "_authority_grants", lambda: grants)
-    assert _run(_parser().parse_args(["projects", "forget", str(deleted)])) == 2
+    never = tmp_path / "never-remembered"
+    assert _run(_parser().parse_args(["projects", "forget", str(never)])) == 2
     assert "not remembered" in capsys.readouterr().err
     flags = ["projects", "forget", "--purge", str(deleted), "--json"]
     assert _run(_parser().parse_args(flags)) == (2 if grant else 0)
@@ -219,6 +227,7 @@ def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
             f"{project_image_name_for_identity(str(deleted))}:latest"
         ]
     assert f"{project_image_name(other)}:latest" in keeper_host.tags
+    assert str(other) in [entry.project_root for entry in project_inventory.project_inventory()]
 
 
 def test_forget_reports_leftover_listing_failure_after_forgetting(
@@ -326,12 +335,11 @@ class FakeDocker:
             )
         if args[:2] == ["image", "rm"]:
             # Only the Project's own keeper or managed image tags are ever released.
-            assert len(args) == 3 and (
-                args[2].startswith("booley-issued-") or "-booley-sandbox-" in args[2]
-            )
-            if args[2] == self.fail_remove:
+            assert args[2] == "--no-prune" and len(args) == 4
+            assert args[3].startswith("booley-issued-") or "-booley-sandbox-" in args[3]
+            if args[3] == self.fail_remove:
                 return subprocess.CompletedProcess(args, 1, "", "removal denied")
-            self.tags.pop(args[2], None)
+            self.tags.pop(args[3], None)
             return subprocess.CompletedProcess(args, 0, "", "")
         raise AssertionError(args)
 

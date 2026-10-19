@@ -81,18 +81,16 @@ def forget_project(
 ) -> Path:
     """Forget one exact remembered Project path.
 
-    With ``allow_forgotten``, an absolute root that is no longer remembered
-    (including a deleted directory) is accepted as-is so its leftovers can be
-    cleaned; the live-Grant guard still applies.
+    With ``allow_forgotten``, an absolute root is taken exactly as written,
+    whether remembered or not (including a deleted directory), so its leftovers
+    can be cleaned; the live-Grant guard still applies.
     """
     with _locked_roots() as roots:
-        try:
-            identity = _remembered_identity(project_root, roots)
-        except ProjectInventoryError:
-            if not (allow_forgotten and project_root.is_absolute()):
-                raise
+        if allow_forgotten and project_root.is_absolute():
             # Never follow symlinks: the path may now point at another Project.
             identity = os.path.normpath(str(project_root))
+        else:
+            identity = _remembered_identity(project_root, roots)
         if any(grant.project_root == identity for grant in _authority_grants()):
             raise ProjectInventoryError(
                 f"cannot forget {identity}: revoke its live Project Grant first"

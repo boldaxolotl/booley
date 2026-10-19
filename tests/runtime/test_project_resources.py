@@ -69,14 +69,15 @@ class FakeHost:
     def _remove_or_count_layers(self, args: list[str]) -> str:
         if args[:2] == ["image", "inspect"]:
             return f"{self.layers.get(args[-1], 1)}\n"
-        self.removals.append(args[2])
+        self.removals.append(args[-1])
         if args[0] == "volume":
             if self.fail_volume_rm:
                 raise subprocess.TimeoutExpired(args, 30)
-            del self.volumes[args[2]]
+            del self.volumes[args[-1]]
             return ""
-        image = next(i for i, ref, _size in self.images if ref == args[2])
-        self.images = [row for row in self.images if row[1] != args[2]]
+        assert args[2] == "--no-prune"
+        image = next(i for i, ref, _size in self.images if ref == args[-1])
+        self.images = [row for row in self.images if row[1] != args[-1]]
         if all(ref.endswith("<none>") for i, ref, _size in self.images if i == image):
             # Docker reclaims the bytes once their last tag goes.
             self.images = [row for row in self.images if row[0] != image]
@@ -246,3 +247,32 @@ def test_purge_failure_names_progress_and_a_rerun_finishes(
     assert project_resources.purge(root).removed == (
         f"booley-claude-state-{project_name_id(root)}",
     )
+
+
+def test_purge_fails_when_a_recorded_image_removal_is_refused(
+    tmp_path: Path, host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = str(tmp_path / "chip")
+    _purge_host(host, root, str(tmp_path / "other"), monkeypatch)
+    refusal = f"{_id('5')}: deferred (daemon refused)"
+    monkeypatch.setattr(project_resources, "cleanup_owned_images", lambda _root: (refusal,))
+    with pytest.raises(RuntimeError, match=r"daemon refused.*run the purge again"):
+        project_resources.purge(root)
+
+
+def test_retained_record_of_a_replaced_root_stays_readable(tmp_path: Path, host: FakeHost) -> None:
+    from tests.harness.test_image_lifecycle import FakeDocker
+
+    root = tmp_path / "chip"
+    root.mkdir()
+    image_lifecycle.record_owned_images(root, "t1", {}, (_id("5"), _id("6")))
+    root.rmdir()
+    (tmp_path / "elsewhere").mkdir()
+    root.symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    docker = FakeDocker({_id("5"): (_id("5"), {}), _id("6"): (_id("6"), {})})
+    docker.used_image_ids = frozenset({_id("6")})
+
+    kept = image_lifecycle.cleanup_owned_images(str(root), docker=docker)
+
+    assert kept == (f"{_id('6')}: retained (container)",)
+    assert image_lifecycle.owned_image_ids(str(root)) == (_id("6"),)

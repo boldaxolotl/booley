@@ -179,7 +179,8 @@ def _release_own_tags(identity: str, removed: list[str]) -> set[str]:
     ]
     layers = {image: _layer_count(image) for image, _reference in tags}
     for _image, reference in sorted(tags, key=lambda row: (-layers[row[0]], row[1])):
-        _lines(["image", "rm", reference])  # non-force: other tags keep the bytes
+        # Non-force, no-prune: other tags keep the bytes, untagged parents stay.
+        _lines(["image", "rm", "--no-prune", reference])
         removed.append(reference)
     return {image for image, _reference in tags}
 
@@ -206,6 +207,8 @@ def purge(identity: str) -> PurgeResult:
             if not _volume_in_use(volume):
                 _lines(["volume", "rm", volume])
                 removed.append(volume)
+        if failed := [line for line in kept if ": deferred (" in line]:
+            raise RuntimeError("could not remove recorded images: " + "; ".join(failed))
     except (RuntimeError, ValueError) as exc:  # ValueError: malformed Docker output
         done = ", ".join(removed) or "nothing"
         raise RuntimeError(f"{exc}; already removed: {done}; run the purge again") from exc

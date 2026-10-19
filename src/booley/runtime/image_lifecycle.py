@@ -586,7 +586,8 @@ def cleanup_owned_images(
                 remaining.append(image)
                 retained.append(f"{image}: deferred ({exc})")
         if remaining:
-            transaction = path.name.removeprefix(_owned_prefix(root)).removesuffix(".json")
+            transaction = path.name.removeprefix(_owned_prefix_for_identity(str(root)))
+            transaction = transaction.removesuffix(".json")
             store.atomic_write_text(
                 path.name,
                 json.dumps(
