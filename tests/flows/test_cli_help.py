@@ -141,15 +141,6 @@ def test_projection_isolation(flow_type: type[BuiltinFlow], human_first: bool) -
     expected = json.loads((Path(__file__).parent / "fixtures/builtin_schemas.json").read_text())[
         flow.name
     ]
-    legacy = present_command(human_parser(build_parser(flow), durations=True), flow)
-    groups = shared_help(flow.name, target_required=flow.target_required)
-    project_help(legacy, groups + flow.argument_adapter.help_groups)
-    human = build_parser(flow, human=True)
-    assert human.format_help() == legacy.format_help()
-    fields = ("option_strings", "dest", "type", "default", "nargs", "metavar", "help")
-    assert [(type(a), *(getattr(a, f) for f in fields)) for a in human._actions] == [
-        (type(a), *(getattr(a, f) for f in fields)) for a in legacy._actions
-    ]
     parsers = []
     for _ in range(2):
         for human in (human_first, not human_first):
@@ -159,6 +150,15 @@ def test_projection_isolation(flow_type: type[BuiltinFlow], human_first: bool) -
             assert flow_schema(flow) == expected
     assert parsers[0].format_help() == parsers[2].format_help()
     assert parsers[1].format_help() == parsers[3].format_help()
+    legacy = present_command(human_parser(build_parser(flow), durations=True), flow)
+    groups = shared_help(flow.name, target_required=flow.target_required)
+    project_help(legacy, groups + flow.argument_adapter.help_groups)
+    human = build_parser(flow, human=True)
+    assert human.format_help() == legacy.format_help()
+    fields = ("option_strings", "dest", "type", "default", "nargs", "metavar", "help")
+    assert [(type(a), *(getattr(a, f) for f in fields)) for a in human._actions] == [
+        (type(a), *(getattr(a, f) for f in fields)) for a in legacy._actions
+    ]
     with invocation_context(transport=True):
         transport = build_cli_parser(flow)
     assert "--work-dir" in transport._option_string_actions
