@@ -16,7 +16,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TypeVar, cast
@@ -131,6 +131,12 @@ class SharedBuildRecovery:
     result: BundleBuildResult
     bundle: SimulatorBundle | None
     build_execution: Mapping[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreSimReadSnapshot:
+    attempt: SimulationAttempt
+    firings: tuple[PreSimFiring, ...]
 
 
 def _is_link(path: Path) -> bool:
@@ -496,39 +502,27 @@ class CampaignStore:
 
     def verify_result_evidence(self, attempt_directory: Path, result: SimulationResult) -> None:
         """Authenticate private or shared build chains before result commit."""
+        snapshot = self._read_pre_sim_snapshot(
+            attempt_directory, self.read_attempt(attempt_directory)
+        )
+        self._verify_result_snapshot(attempt_directory, result, snapshot)
+
+    def _verify_result_snapshot(self, attempt_directory, result, snapshot) -> None:
         document = result.document
-        attempt = decode_simulation_attempt(
-            self._read(attempt_directory / "attempt.json", limit=RECORD_MAX_BYTES)
-        )
+        attempt = snapshot.attempt
         _validate_result_attempt_binding(attempt, result)
-        references: list[Mapping[str, object]] = list(
-            cast(tuple[Mapping[str, object], ...], document["evidence"])
-        )
-        snapshot = document["executable_snapshot"]
-        if isinstance(snapshot, Mapping):
-            references.append(cast(Mapping[str, object], snapshot["manifest"]))
+        references = list(cast(tuple[Mapping[str, object], ...], document["evidence"]))
+        executable = document["executable_snapshot"]
+        if isinstance(executable, Mapping):
+            references.append(cast(Mapping[str, object], executable["manifest"]))
         for binding in cast(tuple[Mapping[str, object], ...], document["runtime_inputs"]):
             references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
         for reference in references:
-            self._authenticate_reference(attempt_directory, reference)
+            if reference["kind"] != "pre_sim_commands":
+                self._authenticate_reference(attempt_directory, reference)
         hook_refs = [ref for ref in references if ref["kind"] == "pre_sim_commands"]
-        actual_refs = self.pre_sim_references(attempt_directory)
-        if hook_refs != actual_refs:
+        if hook_refs != [firing.reference for firing in snapshot.firings]:
             raise SimulationCampaignIntegrityError("Pre-Sim Commands result references disagree")
-        if actual_refs:
-            manifest = self.load_manifest()
-            item = next(
-                item
-                for item in manifest.document["work_items"]
-                if item["work_item_id"] == document["work_item_id"]
-            )
-            decoder = PreSimFiringDecoder(manifest)
-            for reference in actual_refs:
-                decoder.decode(
-                    self._read(attempt_directory / reference["path"], limit=MANIFEST_MAX_BYTES),
-                    item,
-                    attempt,
-                )
         build_reference, build_result, bundle = self._verify_build_chain(
             attempt_directory, document, attempt
         )
@@ -548,18 +542,47 @@ class CampaignStore:
 
     def pre_sim_references(self, directory: Path) -> list[dict[str, object]]:
         """Read contained immutable sidecars in their ordinal order."""
+        return [
+            _reference(
+                path, self._read(path, limit=MANIFEST_MAX_BYTES), directory.name.split("-", 1)[1]
+            )
+            for path in self._pre_sim_paths(directory)
+        ]
+
+    @staticmethod
+    def _pre_sim_paths(directory: Path) -> list[Path]:
         root = directory / "pre-sim"
         if root.is_symlink() or (root.exists() and not root.is_dir()):
             raise SimulationCampaignIntegrityError("invalid Pre-Sim Commands evidence directory")
         paths = sorted(root.glob("*.json"))
         if len(paths) > 4096:
             raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
-        return [
-            _reference(
-                path, self._read(path, limit=MANIFEST_MAX_BYTES), directory.name.split("-", 1)[1]
+        return paths
+
+    def _read_pre_sim_snapshot(self, directory, attempt, manifest=None, item=None):
+        paths = self._pre_sim_paths(directory)
+        firings = []
+        if paths:
+            manifest = manifest or self.load_manifest()
+            item = item or next(
+                item
+                for item in manifest.document["work_items"]
+                if item["work_item_id"] == attempt.document["work_item_id"]
             )
-            for path in paths
-        ]
+            decoder = PreSimFiringDecoder(manifest)
+            for path in paths:
+                _require_safe_parents(path, directory)
+                raw = self._read(path, limit=MANIFEST_MAX_BYTES)
+                firings.append(
+                    PreSimFiring(
+                        self.manifest_path,
+                        path,
+                        MappingProxyType(_reference(path, raw, directory.name.split("-", 1)[1])),
+                        decoder.decode(raw, item, attempt),
+                        False,
+                    )
+                )
+        return _PreSimReadSnapshot(attempt, tuple(firings))
 
     def collect_pre_sim_firings(self) -> tuple[PreSimFiring, ...]:
         """Read the bounded prerequisite DAG through its storage owner."""
@@ -606,34 +629,46 @@ class CampaignStore:
         self._scan_manifest(manifest, _manifest_sha256(manifest), pre_sim_receiver=firings.extend)
         return tuple(firings)
 
-    def reauthenticate_pre_sim_firing(self, firing: PreSimFiring) -> None:
+    def reauthenticate_pre_sim_firings(self, firings: tuple[PreSimFiring, ...]) -> None:
         """Recheck prior reporting evidence without accepting a terminal result."""
         manifest = self.load_manifest()
-        if _manifest_sha256(manifest) != firing.document["manifest_sha256"]:
-            raise SimulationCampaignIntegrityError("prior hook manifest changed")
-        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-        item = next((item for item in items if item["work_item_id"] == firing.key[1]), None)
-        if item is None or firing.manifest_path != self.manifest_path:
-            raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
-        directory = firing.path.parent.parent
-        _require_safe_parents(directory, self.root)
-        if directory.parent != self._work_item_directory(item) / "attempts":
-            raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
-        current = self._read_attempt_pre_sim_firings(manifest, item, directory, None)
-        if not any(
-            candidate.key == firing.key
-            and candidate.path == firing.path
-            and candidate.reference == firing.reference
-            for candidate in current
-        ):
-            raise SimulationCampaignIntegrityError("prior hook reference changed")
+        digest = _manifest_sha256(manifest)
+        items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
+        snapshots = {}
+        for firing in firings:
+            if digest != firing.document["manifest_sha256"]:
+                raise SimulationCampaignIntegrityError("prior hook manifest changed")
+            item = items.get(firing.key[1])
+            if item is None or firing.manifest_path != self.manifest_path:
+                raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
+            directory = firing.path.parent.parent
+            if directory not in snapshots:
+                _require_safe_parents(directory, self.root)
+                if directory.parent != self._work_item_directory(item) / "attempts":
+                    raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
+                snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, None)
+                snapshots[directory] = snapshot.firings if snapshot is not None else ()
+            if not any(
+                candidate.key == firing.key
+                and candidate.path == firing.path
+                and candidate.reference == firing.reference
+                for candidate in snapshots[directory]
+            ):
+                raise SimulationCampaignIntegrityError("prior hook reference changed")
 
     def read_pre_sim_firings(
         self, manifest: SimulationCampaignManifest | None = None
     ) -> tuple[PreSimFiring, ...]:
         """Authenticate every retained attempt, including interrupted and older attempts."""
+        return tuple(
+            firing
+            for snapshot in self._read_pre_sim_snapshots(manifest).values()
+            for firing in snapshot.firings
+        )
+
+    def _read_pre_sim_snapshots(self, manifest=None) -> dict[Path, _PreSimReadSnapshot]:
         manifest = manifest or self.load_manifest()
-        firings: list[PreSimFiring] = []
+        snapshots = {}
         for item in cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]):
             work_root = self._work_item_directory(item)
             terminal = None
@@ -643,59 +678,38 @@ class CampaignStore:
                     self._read(result_path, limit=RECORD_MAX_BYTES)
                 )
             for directory in self._attempt_directories(work_root / "attempts"):
-                firings.extend(
-                    self._read_attempt_pre_sim_firings(manifest, item, directory, terminal)
-                )
-        return tuple(firings)
+                snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, terminal)
+                if snapshot is not None:
+                    snapshots[directory] = snapshot
+        return snapshots
 
-    def _read_attempt_pre_sim_firings(
-        self, manifest, item, directory, terminal
-    ) -> tuple[PreSimFiring, ...]:
-        firings = []
+    def _read_attempt_pre_sim_snapshot(self, manifest, item, directory, terminal):
         if not (directory / "attempt.json").exists():
-            return ()
-        attempt = decode_simulation_attempt(
-            self._read(directory / "attempt.json", limit=RECORD_MAX_BYTES)
-        )
-        references = self.pre_sim_references(directory)
+            return None
+        attempt = self.read_attempt(directory)
         if (
             directory.name
             != f"{attempt.document['attempt_ordinal']:04d}-{attempt.document['attempt_id']}"
         ):
             raise SimulationCampaignIntegrityError("hook attempt directory owner disagrees")
-        if len(references) > 4096:
-            raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
-        decoder = PreSimFiringDecoder(manifest)
-        for ordinal, reference in enumerate(references, start=1):
-            path = directory / cast(str, reference["path"])
-            raw = self._read(path, limit=MANIFEST_MAX_BYTES)
-            if _reference(path, raw, attempt.document["attempt_id"]) != reference:
-                raise SimulationCampaignIntegrityError(
-                    "Pre-Sim Commands sidecar changed during read"
-                )
-            document = decoder.decode(raw, item, attempt)
-            if document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
+        snapshot = self._read_pre_sim_snapshot(directory, attempt, manifest, item)
+        completed = (
+            terminal is not None
+            and terminal.document["attempt_id"] == attempt.document["attempt_id"]
+        )
+        for ordinal, firing in enumerate(snapshot.firings, start=1):
+            if firing.document["ordinal"] != ordinal or firing.path.name != f"{ordinal:04d}.json":
                 raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
-            completed = (
-                terminal is not None
-                and terminal.document["attempt_id"] == attempt.document["attempt_id"]
-            )
-            if completed and reference not in terminal.document["evidence"]:
+            if completed and firing.reference not in terminal.document["evidence"]:
                 raise SimulationCampaignIntegrityError(
                     "terminal hook lacks authenticated reference"
                 )
-            if completed:
-                _validate_result_attempt_binding(attempt, terminal)
-            firings.append(
-                PreSimFiring(
-                    self.manifest_path,
-                    path,
-                    MappingProxyType(reference),
-                    document,
-                    completed,
-                )
+        if completed and snapshot.firings:
+            _validate_result_attempt_binding(attempt, terminal)
+            snapshot = replace(
+                snapshot, firings=tuple(replace(f, terminal=True) for f in snapshot.firings)
             )
-        return tuple(firings)
+        return snapshot
 
     def _verify_build_chain(
         self,
@@ -851,9 +865,9 @@ class CampaignStore:
         *,
         pre_sim_receiver: Callable[[tuple[PreSimFiring, ...]], None] | None = None,
     ) -> CampaignRecovery:
-        firings = self.read_pre_sim_firings(manifest)
+        snapshots = self._read_pre_sim_snapshots(manifest)
         if pre_sim_receiver is not None:
-            pre_sim_receiver(firings)
+            pre_sim_receiver(tuple(f for snapshot in snapshots.values() for f in snapshot.firings))
         expected_workload = cast(Mapping[str, str], manifest.document["fingerprints"])[
             "workload_sha256"
         ]
@@ -861,7 +875,7 @@ class CampaignStore:
         target = cast(Mapping[str, str], manifest.document["target"])
         target_identity = f"{target['vlnv']}#{target['name']}"
         recovered = tuple(
-            self._scan_item(item, manifest_sha256, expected_workload, target_identity)
+            self._scan_item(item, manifest_sha256, expected_workload, target_identity, snapshots)
             for item in items
         )
         return CampaignRecovery(recovered)
@@ -872,6 +886,7 @@ class CampaignStore:
         manifest_sha256: str,
         workload_sha256: str,
         target_identity: str,
+        snapshots: dict[Path, _PreSimReadSnapshot],
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
@@ -884,7 +899,10 @@ class CampaignStore:
             attempt_path = attempt_directory / "attempt.json"
             if not attempt_path.exists() and not _is_link(attempt_path):
                 continue
-            attempt = decode_simulation_attempt(self._read(attempt_path, limit=RECORD_MAX_BYTES))
+            snapshot = snapshots.get(attempt_directory)
+            attempt = (
+                snapshot.attempt if snapshot is not None else self.read_attempt(attempt_directory)
+            )
             document = attempt.document
             if (
                 document["work_item_id"] != work_item_id
@@ -906,6 +924,7 @@ class CampaignStore:
                 workload_sha256,
                 attempts,
                 decoded_attempts,
+                snapshots.get(attempts[-1]) if attempts else None,
             )
             _validate_result_selection(
                 work_item, result, attempts[-1], target_identity=target_identity
@@ -956,6 +975,7 @@ class CampaignStore:
         workload_sha256: str,
         attempts: tuple[Path, ...],
         decoded_attempts: list[SimulationAttempt],
+        snapshot: _PreSimReadSnapshot | None,
     ) -> SimulationResult:
         result = decode_simulation_result(self._read(path, limit=RECORD_MAX_BYTES))
         document = result.document
@@ -977,7 +997,10 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError(
                 "result does not bind the final published attempt"
             )
-        self.verify_result_evidence(attempts[-1], result)
+        if snapshot is None:
+            self.verify_result_evidence(attempts[-1], result)
+        else:
+            self._verify_result_snapshot(attempts[-1], result, snapshot)
         return result
 
     @staticmethod
