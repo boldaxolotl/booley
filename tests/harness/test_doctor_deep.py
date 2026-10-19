@@ -94,13 +94,13 @@ def test_invalid_or_legacy_state_is_due(tmp_path, content):
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("completed_at", "invalid"),
-        ("image_id", "tag:latest"),
+        ("completed_at", 1),
+        ("image_id", False),
         ("completion_order_ns", True),
-        ("completion_order_ns", -1),
-        ("complete", False),
-        ("booley_version", "bad\ntext"),
-        ("reasons", ["unbounded/arbitrary/text"]),
+        ("complete", "true"),
+        ("booley_version", []),
+        ("reasons", [1]),
+        ("failure_count", None),
     ],
 )
 def test_corrupt_success_never_establishes_currency(tmp_path, field, value):
@@ -274,18 +274,52 @@ def test_plain_run_preserves_deep_state_and_never_runs_deep(tmp_path, monkeypatc
     assert result.clean is healthy
 
 
-def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypatch, capsys):
-    _stub_orchestration(tmp_path, monkeypatch)
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("clean", [False, True])
+def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypatch, saved, clean):
+    from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+
+    if saved:
+        assert deep.record_deep_attempt(tmp_path, _attempt())
+    path = deep.deep_stamp_path(tmp_path)
+    before = path.read_bytes() if saved else None
+    previous = deep.load_deep_state(tmp_path)
+    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(
-        doctor, "_run_deep_phase", lambda *_args: deep.DeepAttemptSummary((), (), IMAGE)
+        sandbox_artifact,
+        "observe_execution",
+        lambda *_args, **_kw: sandbox_artifact.SandboxArtifact(
+            IMAGE, "container", booley.__version__, ""
+        ),
     )
-    monkeypatch.setattr(deep, "record_deep_attempt", lambda *_args: False)
-    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
-    assert result.clean and result.exit_code == 0
-    assert not result.deep_status.current and result.deep_status.storage_failed
-    output = capsys.readouterr().out
-    assert "deep evidence storage failed" in output
-    assert "deep Doctor current" not in output
+    publication = Mock(side_effect=OSError("publication failed"))
+    monkeypatch.setattr(Path, "replace", publication)
+    messages = Mock()
+    monkeypatch.setattr(doctor, "info", messages)
+    findings = () if clean else (DiagnosticFinding(Severity.FAIL, "design failure"),)
+    original = doctor.DoctorRunResult({}, findings, 0 if clean else 1)
+    result = doctor._report_deep_currency(
+        tmp_path,
+        SimpleNamespace(booley_dir=tmp_path),
+        original,
+        deep.DeepAttemptSummary((), (), IMAGE),
+        True,
+    )
+    assert result.deep_status.current is saved
+    publication.assert_called_once()
+    assert deep.load_deep_state(tmp_path) == previous
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert result.clean is clean and result.exit_code == original.exit_code
+    assert result.diagnostics == original.diagnostics
+    assert [call.args[0] for call in messages.call_args_list] == [
+        "deep result was not saved",
+        result.deep_status.render(),
+    ]
+    document = result.deep_status.to_document()
+    assert set(document) == {"status", "last_success", "reasons"}
+    assert document["status"] == ("current" if saved else "due")
+    assert all(set(reason) == {"code", "message", "checks"} for reason in document["reasons"])
 
 
 @pytest.mark.parametrize("writer", ["automatic", "manual"])
@@ -367,27 +401,6 @@ def test_interruption_during_publication_preserves_record_and_releases_lock(tmp_
             deep.record_deep_attempt(tmp_path, _attempt(2, deep.DeepOutcome.FAILED))
     assert deep.deep_stamp_path(tmp_path).read_bytes() == before
     assert deep.record_deep_attempt(tmp_path, _attempt(3))
-
-
-def test_unsaved_failure_is_due_in_this_invocation_without_erasing_history():
-    success = _attempt()
-    failure = _attempt(2, deep.DeepOutcome.FAILED)
-    state = deep.DeepState(success, success)
-    status = deep.evaluate_deep_status(
-        state, version=booley.__version__, image_id=IMAGE, unsaved_attempt=failure
-    )
-    assert not status.current and status.storage_failed
-    assert status.last_success == success
-    assert _codes(status) == ["latest-attempt-not-qualified", "latest-attempt-incomplete"]
-    assert state.latest_completed_attempt == success
-
-
-def test_unsaved_success_cannot_establish_current_for_new_inputs():
-    status = deep.evaluate_deep_status(
-        deep.DeepState(), version=booley.__version__, image_id=IMAGE, unsaved_attempt=_attempt()
-    )
-    assert not status.current and status.storage_failed
-    assert status.last_success is None
 
 
 @pytest.mark.parametrize(
@@ -508,71 +521,6 @@ def test_waivers_never_supply_missing_execution(tmp_path, monkeypatch, missing, 
     assert ("latest-attempt-not-qualified" in codes) is (not waived)
 
 
-@pytest.mark.parametrize(
-    "warning_ids",
-    [
-        tuple(f"check-{i}" for i in range(70)),
-        ("a" * 193,),
-        (*tuple(f"check-{i}" for i in range(64)), "a" * 193),
-    ],
-)
-def test_health_blocker_bounds_preserve_readable_evidence(tmp_path, warning_ids):
-    attempt = deep.DeepAttemptSummary((), (), IMAGE).attempt(
-        version=booley.__version__, clean=False, failure_count=0, blocking_warning_ids=warning_ids
-    )
-    assert deep.record_deep_attempt(tmp_path, attempt)
-    loaded = deep.load_deep_state(tmp_path).latest_completed_attempt
-    assert loaded == attempt
-    assert loaded.blocking_warning_count == len(warning_ids)
-    assert len(loaded.blocking_warning_ids) <= 64
-    if any(len(identity) > 192 for identity in warning_ids):
-        assert "warning-identity-unavailable" in loaded.blocking_warning_ids
-    rendered = deep.evaluate_deep_status(
-        deep.load_deep_state(tmp_path), version=booley.__version__, image_id=IMAGE
-    ).render()
-    assert "failed" not in rendered
-    if len(warning_ids) > 64:
-        assert "additional warning blocker" in rendered
-    else:
-        assert "warning-identity-unavailable" in rendered
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("failure_count", True),
-        ("failure_count", -1),
-        ("failure_count", None),
-        ("blocking_warning_count", True),
-        ("blocking_warning_count", -1),
-        ("blocking_warning_count", 0),
-        ("blocking_warning_ids", ["bad/id"]),
-        ("blocking_warning_ids", ["a" * 193]),
-        ("blocking_warning_ids", ["x"] * 65),
-    ],
-)
-def test_invalid_health_details_rejected_on_write_and_read(tmp_path, field, value):
-    from booley.core.boundary import BoundaryError
-
-    attempt = deep.DeepAttemptSummary((), (), IMAGE).attempt(
-        version=booley.__version__,
-        clean=False,
-        failure_count=0,
-        blocking_warning_ids=("warning.id",),
-    )
-    assert deep.record_deep_attempt(tmp_path, attempt)
-    path = deep.deep_stamp_path(tmp_path)
-    document = json.loads(path.read_text())
-    document["latest_completed_attempt"][field] = value
-    path.write_text(json.dumps(document))
-    assert deep.load_deep_state(tmp_path) == deep.DeepState()
-    with pytest.raises(BoundaryError):
-        deep.record_deep_attempt(
-            tmp_path,
-            replace(attempt, **{field: tuple(value) if isinstance(value, list) else value}),
-        )
-
-
 @pytest.mark.parametrize("reasons", [(), ("sim.selftest.bad",)])
 def test_legacy_failed_health_is_unknown_and_never_migrated(tmp_path, reasons):
     attempt = replace(_attempt(2, deep.DeepOutcome.FAILED), reasons=reasons)
@@ -683,3 +631,70 @@ def test_frozen_legacy_reader_and_merger_retain_success_with_new_warning_record(
     assert not deep.evaluate_deep_status(
         merged, version=booley.__version__, image_id=IMAGE
     ).current
+
+
+@pytest.mark.parametrize("slot", [None, "last_success", "latest_completed_attempt"])
+def test_missing_record_fields_are_due(tmp_path, slot):
+    assert deep.load_deep_state(tmp_path) == deep.DeepState()
+    assert deep.record_deep_attempt(tmp_path, _attempt())
+    path = deep.deep_stamp_path(tmp_path)
+    document = json.loads(path.read_text())
+    if slot is None:
+        del document["last_success"]["image_id"]
+    else:
+        del document[slot]
+    path.write_text(json.dumps(document))
+    assert deep.load_deep_state(tmp_path) == deep.DeepState()
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"attempt_id": "unrestricted/id"},
+        {"booley_version": "unrestricted/version"},
+        {"image_id": "tag:latest"},
+        {"completion_order_ns": -1},
+        {"complete": False},
+        {"outcome": "incomplete"},
+        {"reasons": ["unrestricted/reason"] * 65},
+        {"failure_count": -1, "blocking_warning_count": 0, "blocking_warning_ids": []},
+        {"failure_count": 0, "blocking_warning_count": 2**40, "blocking_warning_ids": ["x"]},
+        {"failure_count": 0, "blocking_warning_count": 0, "blocking_warning_ids": ["x", "x"]},
+    ],
+)
+def test_typed_published_record_is_trusted(tmp_path, updates):
+    assert deep.record_deep_attempt(tmp_path, _attempt())
+    path = deep.deep_stamp_path(tmp_path)
+    document = json.loads(path.read_text())
+    document["last_success"].update(updates)
+    path.write_text(json.dumps(document))
+    state = deep.load_deep_state(tmp_path)
+    assert state.last_success is not None
+    for field, value in updates.items():
+        assert getattr(state.last_success, field) == (
+            tuple(value) if isinstance(value, list) else value
+        )
+
+
+def test_warning_display_keeps_first_eight_sorted_ids(tmp_path):
+    ids = ("unrestricted/id", *tuple(f"warning-{i}" for i in range(10)), "warning-0")
+    attempt = deep.DeepAttemptSummary((), (), IMAGE).attempt(
+        version=booley.__version__, clean=False, failure_count=0, blocking_warning_ids=ids
+    )
+    assert attempt.blocking_warning_ids == tuple(sorted(set(ids)))[:8]
+    assert attempt.blocking_warning_count == len(ids)
+    assert deep.record_deep_attempt(tmp_path, attempt)
+    assert deep.load_deep_state(tmp_path).latest_completed_attempt == attempt
+
+
+def test_typed_timestamp_uses_unknown_display_when_unparseable(tmp_path):
+    assert deep.record_deep_attempt(tmp_path, _attempt())
+    path = deep.deep_stamp_path(tmp_path)
+    document = json.loads(path.read_text())
+    document["last_success"]["completed_at"] = "invalid"
+    path.write_text(json.dumps(document))
+    status = deep.evaluate_deep_status(
+        deep.load_deep_state(tmp_path), version=booley.__version__, image_id=IMAGE
+    )
+    assert status.current
+    assert status.render() == f"deep Doctor current (Booley {booley.__version__}, unknown)"
