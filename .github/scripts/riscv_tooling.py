@@ -17,7 +17,7 @@ For the ``Tests`` workflow it selects the **tooling source**: ``registry``
 reuses the published digest, ``local`` builds the stage in CI, and
 ``local-compat-fallback`` records a published image that failed the composed
 candidate's quick compatibility check. The JSON source record is the evidence
-the run's duration budget and the #568 savings report are derived from.
+the run's duration budget is derived from.
 
 Runs from a plain checkout before Booley is installed; it imports only
 stdlib-only modules under ``src/``.

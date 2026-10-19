@@ -609,14 +609,7 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     firings = read_pre_sim_firings(store.manifest_path)
     assert firings[0].document["test_names"] == names
     detail = _campaign_pre_sim_details(
-        [
-            SimpleNamespace(
-                pre_sim_firings=firings,
-                producer_invocation_directory=invocation.absolute(),
-                current_pre_sim_keys=frozenset(f.key for f in firings),
-            )
-        ],
-        invocation,
+        {f.key: f for f in firings}, frozenset(f.key for f in firings), invocation
     )
     assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16 * 1024
     assert detail["pre_sim_runs"][0]["test_count"] == 4000

@@ -1909,3 +1909,33 @@ def test_fpga_baseline_materializes_project_topologies(tmp_path, monkeypatch, to
     assert flow.args.work_dir == root
     assert flow._target_handles is candidate_handles
     assert roots and all(not path.exists() for path in roots)
+
+
+@pytest.mark.parametrize("targets", ["default", "default,other"])
+def test_invocation_report_records_tools_by_target(tmp_path, state_file, targets):
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    flow.parse_args(
+        [
+            "--target",
+            targets,
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    with patch.object(
+        flow,
+        "_run_single_target",
+        return_value=FpgaMetrics(lut_count=1, ff_count=1, wns_ns=0.1, whs_ns=0.1),
+    ):
+        result = flow._run()
+    path = flow.context.write_report(result)
+    report = json.loads(path.read_bytes())
+    expected = (
+        {"eda_tool": "vivado"}
+        if targets == "default"
+        else {"eda_tools": {"default": "vivado", "other": "vivado"}}
+    )
+    assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected

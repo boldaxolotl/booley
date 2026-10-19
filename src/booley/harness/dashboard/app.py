@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
 # "Recent" lists this many newest results; "All" lists everything the snapshot retains.
 RECENT_JOBS = 50
+# An orphaned process is known dead even though its Job record never finalized.
+_REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 HELP = (
     "1-9 stable session shortcuts · arrows select rows\n"
     "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
@@ -304,20 +306,41 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
     ):
         if stamp:
             rows.append(ResultLine(label, format_clock(stamp, now=now)))
-    tool = literal(report.get("eda_tool") or report.get("tool") or job.eda_tool)
+    tool = job.recorded_tools
+    if job.state not in _REPORT_DETAIL_STATES:
+        tool = tool or job.eda_tool
+    elif not tool and (
+        report.get("flow")
+        or (job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"})
+    ):
+        tool = "not recorded by this Flow"
     if tool:
         rows.append(ResultLine("EDA tool", tool))
     if job.stage:
         rows.append(ResultLine("Stage", literal(job.stage)))
+    rows.extend(_job_resources(job))
+    return rows
+
+
+def _job_resources(job: JobView) -> list[ResultLine]:
+    if job.state in _REPORT_DETAIL_STATES:
+        if job.report is None:
+            return [ResultLine("", "resources not recorded (no report)", "unavailable")]
+        resources = job.recorded_resources
+        if resources is None:
+            return []
+        cpu, peak = resources
+        return [
+            ResultLine("CPU time", f"{cpu:g}s"),
+            ResultLine("Peak memory (largest process)", f"{peak:g} MiB"),
+        ]
     parts = []
     if job.cpu_percent is not None:
         parts.append(f"CPU {job.cpu_percent:.1f}% of one core")
     for label, value in (("Memory", job.memory), ("Peak memory", job.peak_memory)):
         if value is not None:
             parts.append(f"{label}: {_measure(value)}")
-    if parts:
-        rows.append(ResultLine("Resources", " · ".join(parts)))
-    return rows
+    return [ResultLine("Resources", " · ".join(parts))] if parts else []
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:

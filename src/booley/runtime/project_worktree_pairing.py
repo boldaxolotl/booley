@@ -88,7 +88,10 @@ def _refuse_registered(source: Path, nested: Path) -> None:
         if line.startswith("worktree ") and Path(line[len("worktree ") :]).resolve() == target:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
-                f"remove it with `git -C {source} worktree remove --force {nested}` first"
+                "in the same Sandbox, preserve needed work and evidence first "
+                "(see docs/user/USAGE.md), then remove it with "
+                f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
+                f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
 
 
@@ -266,20 +269,41 @@ def validate_project_pairing(source: Path | None, name: str) -> None:
         _require_base(source, f"booley-worktree/{name}")
 
 
-def worktree_removal_instructions(project_root: Path, worktree: Path, name: str) -> str:
-    """Format absolute inner/outer removal and explicit Project branch cleanup."""
+def worktree_removal_instructions(
+    project_root: Path, worktree: Path, name: str, *, paired: bool = True
+) -> str:
+    """Format removal in the Sandbox namespace available to this command."""
     root, outer = project_root.resolve(), worktree.resolve()
     source = root / BOOLEY_DIR_NAME
 
     def quote(path: Path) -> str:
         return shlex.quote(str(path))
 
-    return (
-        f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove {quote(outer / BOOLEY_DIR_NAME)}\n"
-        f"Then remove the outer worktree: git -C {quote(root)} worktree remove {quote(outer)}\n"
-        f"To reuse the name, delete the Project branch after preserving its commits: "
-        f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
+    kind = "Paired Checkout" if paired else "Snapshot"
+    steps = [
+        f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
+        "WARNING: usable host removal commands are unavailable; "
+        "these absolute paths are Sandbox paths.",
+        "First preserve needed evidence and other ignored/untracked files outside "
+        "this worktree (see docs/user/USAGE.md).",
+        "Then clean dirty/untracked files, including a Snapshot's copied files; "
+        "inspect locks before unlocking or forcing removal.",
+    ]
+    if paired:
+        steps.append(
+            f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove "
+            f"{quote(outer / BOOLEY_DIR_NAME)}"
+        )
+    steps.append(
+        f"{'Then remove' if paired else 'Remove'} the outer worktree: "
+        f"git -C {quote(root)} worktree remove {quote(outer)}"
     )
+    if paired:
+        steps.append(
+            "Optional, to reuse the name, delete the Project branch after preserving its commits: "
+            f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
+        )
+    return "\n".join(steps)
 
 
 def remove_creation_lock(project_root: Path, name: str) -> None:

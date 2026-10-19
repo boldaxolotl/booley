@@ -44,8 +44,20 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
+| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; standalone frontends use the scalar. Specialists omit these keys when they run no EDA tool. |
+| `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
+| `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
+
+Final resource accounting is a process-lifetime snapshot shared by numbered and
+flat reports. CPU sums the endpoint and its waited-for children; peak memory
+is the **largest process**, not a simultaneous process-tree total. Detached or
+unwaited children are excluded. `elapsed_s` remains wall time.
+
+Repeated in-process calls can include earlier work; resumed Campaigns account
+only for the resuming process. Unsupported or failed accounting omits `resources`
+without preventing report publication (failures are logged). Older reports may
+also omit it; consumers must not substitute zeros.
 
 ## Progress
 
@@ -242,7 +254,18 @@ and enclosing Simulation Campaign together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
-has been written. A coverage threshold miss exits `0` when execution succeeds.
+has been written. A Target with an authenticated Coverage Campaign also has
+`coverage_metrics`: native metric name →
+`{percent: number|null, threshold: number|null, met: bool|null}`, taken from
+the same evaluated Coverage Campaign as `coverage.json`. `met` compares the
+exact metric ratio with its floor, independent of the aggregate Criterion
+verdict (`criterion_key` / `criterion_met`). No floor: `threshold` and `met`
+are null. No eligible points: `percent` is null, and a configured floor gets
+`met: false`. Unscored Campaigns give an empty map. `coverage_overall: number`
+is reserved for a producer-supplied overall percentage; no producer supplies
+one, so the field is absent.
+
+A coverage threshold miss exits `0` when execution succeeds.
 For an acceptance-bound invocation with one evaluated Criterion,
 `criterion_met` is false on that miss; unbound reports omit Criterion fields
 while retaining the per-Target evaluation.
@@ -293,7 +316,26 @@ produce. An interrupted cleanup is safe to retry with the same arguments.
 
 ## `lint`
 
-`lint_report.json`:
+Job report `detail` includes a bounded findings preview:
+
+| Field | Type and contents |
+|---|---|
+| `findings` | Up to 20 findings: distinct in-scope warnings in order, then Target errors in report order. |
+| `findings_total` | Integer: distinct in-scope warnings plus Target errors, before truncation. |
+| `findings_truncated` | Boolean: `findings_total > 20`. |
+| `findings_by_target` | Multiple Targets only: every selected Target → `{warnings: int, errors: int}`, zeros included. |
+
+Every finding has string `severity`, `message`, and `target` (even for a
+single Target), plus `rule`, `file`, and `line`. Warnings have
+`severity: "warning"`, string `rule` and `file`, and `line: int`. Errors have
+`severity: "error"` and null `rule`, `file`, and `line`. A warning shared by
+several Targets shows its first reporting Target in the preview but counts
+toward each contributing Target in `findings_by_target` (after deduplication
+and scope filtering, truncated findings included), so per-Target warning
+counts can sum past the distinct total. Errors count once per Target, without
+deduplication.
+
+`lint_report.json` is the full record:
 
 | Field | Contents |
 |---|---|
