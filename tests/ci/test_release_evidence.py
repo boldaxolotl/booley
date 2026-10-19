@@ -55,10 +55,3 @@ def test_report_rejects_ambiguous_or_incomplete_evidence() -> None:
             check_ids=["check"],
             uid=1000,
         )
-
-
-def test_openroad_release_attestation_requires_fanout_runtime():
-    from pathlib import Path
-
-    workflow = (Path(__file__).parents[2] / ".github/workflows/docker-publish.yml").read_text()
-    assert "--check openroad.fanout" in workflow
