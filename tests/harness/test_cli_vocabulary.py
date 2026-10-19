@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -68,24 +69,8 @@ def test_duration_grammar(value, milliseconds):
 @pytest.mark.parametrize(
     "value",
     [
-        "",
-        "0",
-        "0h0m0s",
-        "-1",
-        "+1",
-        "1.5",
-        "1ms",
-        "NaN",
-        "inf",
-        " 1s",
-        "1s ",
-        "1h 2m",
-        "1m1h",
-        "1s1s",
-        "1H",
-        "s",
-        "1h2",
-        "1" * 4097,
+        *("", "0", "0h0m0s", "-1", "+1", "1.5", "1ms", "NaN", "inf"),
+        *(" 1s", "1s ", "1h 2m", "1m1h", "1s1s", "1H", "s", "1h2", "1" * 4097),
     ],
 )
 def test_invalid_duration(value):
@@ -138,12 +123,7 @@ def assert_controls(parser, *, timeout=False):
         assert option not in parser.format_help()
     # A shared destination must not acquire another visible spelling.
     shared = {controls["--project"].dest, "timeout_ms", "dry_run", "verbose", "json"}
-    approved = {
-        "-C",
-        "--project",
-        "--project-root",
-        "-p",
-        "--work-dir",
+    approved = {"-C", "--project", "--project-root", "-p", "--work-dir"} | {
         "--timeout",
         "--timeout-ms",
         "--dry-run",
@@ -173,18 +153,8 @@ def test_recursive_command_inventory():
         "cleanup": {"prepare", "record", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
         "worktree": {"new"},
-        "feedback": {
-            "add",
-            "friction",
-            "say",
-            "win",
-            "triage",
-            "filed",
-            "list",
-            "report",
-            "export",
-            "redact",
-        },
+        "feedback": {"add", "friction", "say", "win", "triage", "filed"}
+        | {"list", "report", "export", "redact"},
     }
     actual = {route for route, _ in routes if len(route) > 1 and route[0] in nested}
     expected = {
@@ -328,12 +298,18 @@ def test_extractor_preserves_values_and_boundaries():
         (["--timeout-ms", "5000"], 5000),
         (["--timeout-ms", "1"], 1),
         ([], None),
+        (["--timeout", "5s", "-q"], 5000),
+        (["--timeout", "5s", "--quiet"], 5000),
     ],
 )
-def test_flow_timeout_boundary(projects, options, expected, capsys):
-    request = parse_request(LintFlow(), ["--target", "demo", *options])
+def test_builtin_control_matrix(projects, options, expected, capsys):
+    flow = LintFlow()
+    before = flow_schema(flow)
+    request = parse_request(flow, ["--project", "../b", "--target", "demo", *options])
+    assert request.work_dir == projects[1]
+    assert flow_schema(flow) == before
     assert request.timeout_ms == expected
-    assert not any(key.startswith("_cli_") for key in vars(request))
+    assert not any(key.startswith(("_cli_", "_console")) for key in vars(request))
     assert bool(capsys.readouterr().err) == ("--timeout-ms" in options)
 
 
@@ -352,9 +328,6 @@ def test_duplicate_timeout(options):
 
 def test_transport_schema_and_cli_remain_unchanged(projects, monkeypatch, capsys):
     flow = LintFlow()
-    before = flow_schema(flow)
-    parse_request(flow, ["--project", "../b", "--target", "demo", "--timeout", "5s"])
-    assert flow_schema(flow) == before
     monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
     request = parse_request(
         flow, ["--work-dir", str(projects[1]), "--target", "demo", "--timeout-ms", "1"]
@@ -376,7 +349,7 @@ def test_scoped_selection_restores_and_has_no_synthetic_alias(projects, capsys):
     assert "deprecated" not in capsys.readouterr().err
 
 
-def test_plugin_owned_options_and_transport_are_preserved():
+def test_plugin_controls(projects):
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--work-dir", type=Path, default=Path.cwd())
     parser.add_argument("--project", choices=["short", "long"])
@@ -386,6 +359,11 @@ def test_plugin_owned_options_and_transport_are_preserved():
     assert args.project == "short" and args.timeout == "long"
     assert "-C" not in parser._option_string_actions
     normalize_endpoint_args(args)
+    with invocation_context(projects[1]):
+        projected = human_parser(parser, durations=False)
+        with pytest.raises(SystemExit):
+            projected.parse_args(["--work-dir", str(projects[0])])
+        assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
 
 
 def dispatch(argv, monkeypatch):
@@ -526,17 +504,6 @@ def test_cheat_help_advertises_path_and_new_section_only():
     assert "--project-files" in help_text
 
 
-def test_colliding_plugin_cannot_override_outer_checkout(projects):
-    parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("--work-dir", type=Path, default=projects[0])
-    parser.add_argument("--project", choices=["short", "long"])
-    with invocation_context(projects[1]):
-        projected = human_parser(parser, durations=False)
-        with pytest.raises(SystemExit):
-            projected.parse_args(["--work-dir", str(projects[0])])
-        assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
-
-
 def test_bare_cheat_alias_warns_once_per_invocation(capsys):
     args = command(["cheat", "--project", "--project"])
     assert args.project
@@ -577,22 +544,6 @@ def test_human_main_alias_notice_overrides_inherited_transport_marker(
     assert "--project-root is deprecated" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("quiet", ["-q", "--quiet"])
-def test_human_flow_progress_flags_preserve_project_and_duration_vocabulary(
-    projects, quiet, capsys
-):
-    flow = LintFlow()
-    before = flow_schema(flow)
-    request = parse_request(
-        flow, ["--target", "demo", "--project", "../b", "--timeout", "5s", quiet]
-    )
-    assert request.work_dir == projects[1]
-    assert request.timeout_ms == 5000
-    assert not any(key.startswith(("_cli_", "_console")) for key in vars(request))
-    assert flow_schema(flow) == before
-    assert capsys.readouterr().err == ""
-
-
 def test_canonical_synth_help_uses_initialized_project(
     projects: list[Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -612,3 +563,14 @@ def test_canonical_synth_help_uses_initialized_project(
     positions = [output.index(title) for title in titles]
     assert positions == sorted(positions)
     assert list(projects[0].joinpath(".booley").iterdir()) == []
+
+
+def test_builtin_parser_constructs_without_transport_projection():
+    flows = [
+        cli._load_mcp_tool_class(info)() for info in discover_mcp_tools() if info.kind == "flow"
+    ]
+    assert {flow.name for flow in flows} == {"sim", "lint", "synth", "fpga"}
+    with patch("booley.flows.cli_selection.human_parser", wraps=human_parser) as spy:
+        for flow in flows:
+            build_parser(flow, human=True)
+    assert spy.call_count == 0, "built-in construction used transport projection"

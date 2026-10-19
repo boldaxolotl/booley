@@ -36,15 +36,19 @@ def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.Argument
         target_required=flow.target_required,
         accepts_target=flow.accepts_target,
         target_help=target_help,
+        human=human,
     )
-    flow.argument_adapter.add_common_args(parser)
+    flow.argument_adapter.add_common_args(parser, human=human)
     flow.argument_adapter.add_args(parser)
     if human:
+        from booley.flows.cli_arguments import add_human_options
         from booley.flows.cli_help import present_command, project_help, shared_help
-        from booley.flows.cli_selection import human_parser
+        from booley.flows.cli_selection import apply_project_selection
 
+        add_human_options(parser)
+        apply_project_selection(parser)
         groups = shared_help(flow.name, target_required=flow.target_required)
-        presented = present_command(human_parser(parser, durations=True), flow)
+        presented = present_command(parser, flow)
         return project_help(presented, groups + flow.argument_adapter.help_groups)
     return parser
 

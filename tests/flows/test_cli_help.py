@@ -15,8 +15,8 @@ import pytest
 
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_cli_parser, build_parser
-from booley.flows.cli_help import FlowHelpFormatter, shared_help
-from booley.flows.cli_selection import invocation_context, normalize_endpoint_args
+from booley.flows.cli_help import FlowHelpFormatter, present_command, project_help, shared_help
+from booley.flows.cli_selection import human_parser, invocation_context, normalize_endpoint_args
 from booley.flows.endpoint_cli import normalize_target_arg
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
@@ -140,6 +140,15 @@ def test_projection_isolation(flow_type: type[BuiltinFlow], human_first: bool) -
     flow = flow_type()
     expected = json.loads((Path(__file__).parent / "fixtures/builtin_schemas.json").read_text())[
         flow.name
+    ]
+    legacy = present_command(human_parser(build_parser(flow), durations=True), flow)
+    groups = shared_help(flow.name, target_required=flow.target_required)
+    project_help(legacy, groups + flow.argument_adapter.help_groups)
+    human = build_parser(flow, human=True)
+    assert human.format_help() == legacy.format_help()
+    fields = ("option_strings", "dest", "type", "default", "nargs", "metavar", "help")
+    assert [(type(a), *(getattr(a, f) for f in fields)) for a in human._actions] == [
+        (type(a), *(getattr(a, f) for f in fields)) for a in legacy._actions
     ]
     parsers = []
     for _ in range(2):

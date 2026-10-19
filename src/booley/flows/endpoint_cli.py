@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from booley.core.boundary import require_str_value
+from booley.flows.cli_arguments import add_project_args
 from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     ExecutionResult,
@@ -67,18 +68,14 @@ def add_common_args(
     target_required: bool,
     accepts_target: bool,
     target_help: str,
+    human: bool = False,
 ) -> None:
     """Add args shared by all endpoints.
 
     Ticket context (slug, state-file, report-dir) comes from env vars
     set by the developer.  Endpoints work without them (human mode).
     """
-    parser.add_argument(
-        "--work-dir",
-        type=Path,
-        default=Path.cwd(),
-        help="Working directory (worktree root)",
-    )
+    add_project_args(parser, human=human)
     parser.add_argument(
         "--report-dir",
         type=_report_dir_arg,

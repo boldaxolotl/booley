@@ -23,7 +23,6 @@ from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.base import EXIT_ERROR
-from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import DuplicateTargetError
@@ -123,64 +122,12 @@ def test_duplicate_target_fails_before_start_event_or_admission(
 
 
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_builtin_schema_exposes_one_canonical_timeout(
-    flow_type: type[BooleyFlow],
-    _name: str,
-    _default_ms: int,
+@pytest.mark.parametrize("option,expected", [("--timeout-ms", 2500), ("--timeout", 2500000)])
+def test_builtin_timeout_conversion(
+    flow_type: type[BooleyFlow], _name: str, _default_ms: int, option: str, expected: int
 ) -> None:
-    schema = flow_schema(flow_type())
-    properties = schema["properties"]
-
-    assert schema["additionalProperties"] is False
-    assert properties["timeout_ms"]["type"] == "integer"
-    assert properties["timeout_ms"]["minimum"] == 1
-    assert "timeout" not in properties
-    assert "_legacy_timeout_ms" not in properties
-    assert properties["dry_run"]["type"] == "boolean"
-
-
-@pytest.mark.parametrize(("flow_type", "name", "_default_ms"), BUILTINS)
-def test_builtin_schema_keeps_target_as_comma_separated_scalar(
-    flow_type: type[BuiltinFlow],
-    name: str,
-    _default_ms: int,
-) -> None:
-    schema = flow_schema(flow_type())
-    target = schema["properties"]["target"]
-
-    assert target["type"] == "string"
-    assert "items" not in target
-    assert "CLI flag may be repeated" in target["description"]
-    assert "target" not in schema.get("required", [])
-
-
-def test_fpga_schema_exposes_portable_profile_vocabulary() -> None:
-    properties = flow_schema(FpgaImplFlow())["properties"]
-
-    assert properties["ppa_profile"]["enum"] == ["compact", "balanced", "max_frequency"]
-    assert "synth" not in properties
-    assert "pnr" not in properties
-
-
-@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_builtin_parsers_accept_canonical_timeout(
-    flow_type: type[BooleyFlow],
-    _name: str,
-    _default_ms: int,
-) -> None:
-    args = flow_type().parse_args(["--target", "demo", "--timeout-ms", "2500"])
-
-    assert args.timeout_ms == 2500
-
-
-@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_human_timeout_is_converted_once(
-    flow_type: type[BooleyFlow],
-    _name: str,
-    _default_ms: int,
-) -> None:
-    args = flow_type().parse_args(["--target", "demo", "--timeout", "2500"])
-    assert args.timeout_ms == 2500000
+    args = flow_type().parse_args(["--target", "demo", option, "2500"])
+    assert args.timeout_ms == expected
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "nan", "words"])
