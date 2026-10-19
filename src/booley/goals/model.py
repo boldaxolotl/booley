@@ -36,7 +36,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
-from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from booley.core.boundary import (
@@ -45,6 +44,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_list,
+    require_positive_int,
     require_sha256_digest,
     require_str_value,
     require_uuid4,
@@ -923,43 +923,20 @@ class GoalRecord:
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json``."""
         return {
+            **vars(self),
             "schema": RECORD_SCHEMA_VERSION,
-            "id": self.id,
-            "revision": self.revision,
             "state": self.state.value,
             "worktree": self.worktree.to_json(),
-            "worktree_path": self.worktree_path,
-            "branch": self.branch,
-            "original_ref": self.original_ref,
-            "base_sha": self.base_sha,
-            "branch_created": self.branch_created,
-            "session_key": self.session_key,
-            "entered_at": self.entered_at,
-            "ended_at": self.ended_at,
             "goals": [goal.to_json() for goal in self.goals],
             "goalsets_used": list(self.goalsets_used),
-            "default_skipped": self.default_skipped,
-            "skip_reason": self.skip_reason,
-            "protected_digest": self.protected_digest,
             "protected_paths": list(self.protected_paths),
-            "protected_head_digest": self.protected_head_digest,
             "declared_protected_inputs": None
             if self.declared_protected_inputs is None
             else self.declared_protected_inputs.to_json(),
-            "validated_head": self.validated_head,
-            "package_digest": self.package_digest,
-            "finish_attempt_digest": self.finish_attempt_digest,
-            "failure": self.failure,
-            "paired_project_base_sha": self.paired_project_base_sha,
-            "input_topology_digest": self.input_topology_digest,
             "input_paths": None if self.input_paths is None else dict(self.input_paths),
             "project_snapshot": None
             if self.project_snapshot is None
             else dict(self.project_snapshot),
-            "publication_floor": self.publication_floor,
-            "finish_operation": self.finish_operation,
-            "end_instruction_quote": self.end_instruction_quote,
-            "abandon_operation": self.abandon_operation,
             "test_run_resolutions": resolutions_to_json(self.test_run_resolutions),
         }
 
@@ -967,28 +944,51 @@ class GoalRecord:
     def from_json(cls, raw: object) -> GoalRecord:
         """Parse ``record.json`` content, raising :class:`GoalRecordFormatError`."""
         mapping = _record_mapping(raw, "record")
-        unknown = sorted(set(mapping) - set(_RECORD_KEYS) - set(_RECORD_DEFAULTS))
+        unknown = sorted(set(mapping) - {item.name for item in fields(cls)} - {"schema"})
         if unknown:
             raise GoalRecordFormatError(
                 f"record has unknown fields {unknown}; it was written by a newer Booley"
             )
-        mapping = {**_RECORD_DEFAULTS, **mapping}
-        _require_keys(mapping, set(_RECORD_KEYS) | set(_RECORD_DEFAULTS), "record")
+        _require_keys(mapping, set(_RECORD_KEYS), "record", exact=False)
         schema = _record_positive_int(mapping["schema"], "record.schema")
         if schema != RECORD_SCHEMA_VERSION:
             raise GoalRecordFormatError(f"record.schema {schema} is not supported")
         record = cls(**_identity_fields(mapping), **_lifecycle_fields(mapping))
-        if not 0 <= record.publication_floor <= record.revision:
+        record.validate()
+        return record
+
+    def validate(self) -> None:
+        """Check mutable record value invariants before publication and after decoding."""
+        _record_positive_int(self.revision, "record.revision")
+        _record_nonnegative_int(self.publication_floor, "publication_floor")
+        _record_commit(self.base_sha, "record.base_sha")
+        for name in ("paired_project_base_sha", "validated_head"):
+            value = getattr(self, name)
+            if value is not None:
+                _record_commit(value, f"record.{name}")
+        record_timestamp(self.entered_at, "record.entered_at")
+        if self.ended_at is not None:
+            record_timestamp(self.ended_at, "record.ended_at")
+        for name in (
+            "protected_digest",
+            "protected_head_digest",
+            "package_digest",
+            "finish_attempt_digest",
+        ):
+            _record_opt_digest(getattr(self, name), f"record.{name}")
+        _record_opt_digest(self.input_topology_digest, "input_topology_digest")
+        if self.abandon_operation is not None:
+            require_uuid4(self.abandon_operation, field="abandon_operation")
+        if not 0 <= self.publication_floor <= self.revision:
             raise GoalRecordFormatError("publication_floor must be within record revisions")
-        stale = [goal.spec.key for goal in record.goals if goal.spec_revision > record.revision]
+        stale = [goal.spec.key for goal in self.goals if goal.spec_revision > self.revision]
         if stale:
             raise GoalRecordFormatError(
                 "record.goals have specification revisions newer than the record"
             )
-        orphans = sorted(set(record.test_run_resolutions) - {g.spec.key for g in record.goals})
+        orphans = sorted(set(self.test_run_resolutions) - {g.spec.key for g in self.goals})
         if orphans:
             raise GoalRecordFormatError(f"test_run_resolutions {orphans} name no Goal")
-        return record
 
 
 # Fields every ``record.json`` of this schema version carries.
@@ -1004,35 +1004,6 @@ _RECORD_KEYS = (
     "base_sha",
     "entered_at",
 )
-# Optional fields and the JSON value an older record without them loads as.
-_RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
-    {
-        "branch_created": False,
-        "session_key": None,
-        "ended_at": None,
-        "goals": [],
-        "goalsets_used": [],
-        "default_skipped": False,
-        "skip_reason": None,
-        "protected_digest": None,
-        "protected_paths": [],
-        "protected_head_digest": None,
-        "declared_protected_inputs": None,
-        "validated_head": None,
-        "package_digest": None,
-        "finish_attempt_digest": None,
-        "failure": None,
-        "paired_project_base_sha": None,
-        "input_topology_digest": None,
-        "input_paths": None,
-        "project_snapshot": None,
-        "publication_floor": 0,
-        "finish_operation": None,
-        "end_instruction_quote": None,
-        "abandon_operation": None,
-        "test_run_resolutions": {},
-    }
-)
 
 
 def _identity_fields(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -1044,72 +1015,60 @@ def _identity_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         raise GoalRecordFormatError(f"record.state {state_name!r} is unknown") from None
     return {
         "id": _record_str(mapping["id"], "record.id"),
-        "revision": _record_positive_int(mapping["revision"], "record.revision"),
+        "revision": mapping["revision"],
         "state": state,
         "worktree": WorktreeIdentity.from_json(mapping["worktree"], where="record.worktree"),
         "worktree_path": _record_str(mapping["worktree_path"], "record.worktree_path"),
         "branch": _record_str(mapping["branch"], "record.branch"),
         "original_ref": _record_str(mapping["original_ref"], "record.original_ref"),
-        "base_sha": _record_commit(mapping["base_sha"], "record.base_sha"),
-        "branch_created": _record_bool(mapping["branch_created"], "record.branch_created"),
-        "session_key": _record_opt_str(mapping["session_key"], "record.session_key"),
-        "entered_at": record_timestamp(mapping["entered_at"], "record.entered_at"),
-        "paired_project_base_sha": _record_opt_commit(
-            mapping["paired_project_base_sha"], "record.paired_project_base_sha"
+        "base_sha": mapping["base_sha"],
+        "branch_created": _record_bool(
+            mapping.get("branch_created", False), "record.branch_created"
         ),
+        "session_key": _record_opt_str(mapping.get("session_key"), "record.session_key"),
+        "entered_at": mapping["entered_at"],
+        "paired_project_base_sha": mapping.get("paired_project_base_sha"),
     }
 
 
 def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
     """Fields that entry, Goal changes, and Finish update."""
-    goals = _record_list(mapping["goals"], "record.goals")
-    ended_at = mapping["ended_at"]
-    validated_head = mapping["validated_head"]
+    goals = _record_list(mapping.get("goals", []), "record.goals")
     return {
-        "ended_at": None if ended_at is None else record_timestamp(ended_at, "record.ended_at"),
+        "ended_at": mapping.get("ended_at"),
         "goals": tuple(
             RecordedGoal.from_json(goal, where=f"record.goals[{index}]")
             for index, goal in enumerate(goals)
         ),
-        "goalsets_used": tuple(_record_str_list(mapping["goalsets_used"], "record.goalsets_used")),
-        "default_skipped": _record_bool(mapping["default_skipped"], "record.default_skipped"),
-        "skip_reason": _record_opt_str(mapping["skip_reason"], "record.skip_reason"),
-        "protected_digest": _record_opt_digest(
-            mapping["protected_digest"], "record.protected_digest"
+        "goalsets_used": tuple(
+            _record_str_list(mapping.get("goalsets_used", []), "record.goalsets_used")
         ),
+        "default_skipped": _record_bool(
+            mapping.get("default_skipped", False), "record.default_skipped"
+        ),
+        "skip_reason": _record_opt_str(mapping.get("skip_reason"), "record.skip_reason"),
+        "protected_digest": mapping.get("protected_digest"),
         "protected_paths": tuple(
-            _record_str_list(mapping["protected_paths"], "record.protected_paths")
+            _record_str_list(mapping.get("protected_paths", []), "record.protected_paths")
         ),
-        "protected_head_digest": _record_opt_digest(
-            mapping["protected_head_digest"], "record.protected_head_digest"
+        "protected_head_digest": mapping.get("protected_head_digest"),
+        "declared_protected_inputs": _record_declared_inputs(
+            mapping.get("declared_protected_inputs")
         ),
-        "declared_protected_inputs": _record_declared_inputs(mapping["declared_protected_inputs"]),
-        "validated_head": (
-            None
-            if validated_head is None
-            else _record_commit(validated_head, "record.validated_head")
-        ),
-        "package_digest": _record_opt_digest(mapping["package_digest"], "record.package_digest"),
-        "finish_attempt_digest": _record_opt_digest(
-            mapping["finish_attempt_digest"], "record.finish_attempt_digest"
-        ),
-        "failure": _record_opt_str(mapping["failure"], "record.failure"),
-        "input_topology_digest": _record_opt_digest(
-            mapping["input_topology_digest"], "input_topology_digest"
-        ),
-        "input_paths": _record_input_paths(mapping["input_paths"]),
-        "project_snapshot": _record_project_snapshot(mapping["project_snapshot"]),
-        "publication_floor": _record_nonnegative_int(
-            mapping["publication_floor"], "publication_floor"
-        ),
-        "finish_operation": _record_opt_str(mapping["finish_operation"], "finish_operation"),
-        "abandon_operation": None
-        if mapping["abandon_operation"] is None
-        else require_uuid4(mapping["abandon_operation"], field="abandon_operation"),
+        "validated_head": mapping.get("validated_head"),
+        "package_digest": mapping.get("package_digest"),
+        "finish_attempt_digest": mapping.get("finish_attempt_digest"),
+        "failure": _record_opt_str(mapping.get("failure"), "record.failure"),
+        "input_topology_digest": mapping.get("input_topology_digest"),
+        "input_paths": _record_input_paths(mapping.get("input_paths")),
+        "project_snapshot": _record_project_snapshot(mapping.get("project_snapshot")),
+        "publication_floor": mapping.get("publication_floor", 0),
+        "finish_operation": _record_opt_str(mapping.get("finish_operation"), "finish_operation"),
+        "abandon_operation": mapping.get("abandon_operation"),
         "end_instruction_quote": _record_opt_str(
-            mapping["end_instruction_quote"], "end_instruction_quote"
+            mapping.get("end_instruction_quote"), "end_instruction_quote"
         ),
-        "test_run_resolutions": _record_resolutions(mapping["test_run_resolutions"]),
+        "test_run_resolutions": _record_resolutions(mapping.get("test_run_resolutions", {})),
     }
 
 
@@ -1182,12 +1141,9 @@ def _record_bool(raw: object, where: str) -> bool:
 
 def _record_positive_int(raw: object, where: str) -> int:
     try:
-        value = require_int(raw, field=where)
+        return require_positive_int(raw, field=where)
     except BoundaryError as exc:
         raise GoalRecordFormatError(str(exc)) from None
-    if value < 1:
-        raise GoalRecordFormatError(f"{where} must be a positive integer, got {value}")
-    return value
 
 
 def _record_nonnegative_int(raw: object, where: str) -> int:
@@ -1217,18 +1173,15 @@ def _record_project_snapshot(raw: object) -> dict[str, str | None] | None:
     snapshot = _record_mapping(raw, "project_snapshot")
     if set(snapshot) != set(PROJECT_SNAPSHOT_NAMES):
         raise GoalRecordFormatError("project_snapshot has unexpected configuration names")
-    result: dict[str, str | None] = {}
-    for name, value in snapshot.items():
+    for value in snapshot.values():
         if value is not None and not isinstance(value, str):
             raise GoalRecordFormatError("project_snapshot must contain hex strings or null")
-        text = value
-        if text is not None:
+        if value is not None:
             try:
-                bytes.fromhex(text)
+                bytes.fromhex(value)
             except ValueError as exc:
                 raise GoalRecordFormatError("project_snapshot must contain hex bytes") from exc
-        result[name] = text
-    return result
+    return snapshot
 
 
 def _record_resolutions(raw: object) -> dict[str, TestRunResolution]:
@@ -1243,10 +1196,6 @@ def _record_commit(raw: object, where: str) -> str:
     if not _COMMIT.fullmatch(value):
         raise GoalRecordFormatError(f"{where} must be a full commit id, got {value!r}")
     return value
-
-
-def _record_opt_commit(raw: object, where: str) -> str | None:
-    return None if raw is None else _record_commit(raw, where)
 
 
 def _record_opt_digest(raw: object, where: str) -> str | None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import fields, make_dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -108,17 +108,17 @@ def test_a_save_cannot_change_or_remove_frozen_test_runs(goal_mode: SimpleNamesp
 
 
 def test_record_of_this_version_is_refused_by_a_reader_without_the_field(
-    goal_mode: SimpleNamespace, monkeypatch: Any
+    goal_mode: SimpleNamespace,
 ) -> None:
     """An older Booley knows no ``test_run_resolutions`` and must not drop it on save."""
-    from booley.goals import model
-
     raw = json.loads(record_paths(goal_mode.control, goal_mode.record.id).record_file.read_bytes())
     assert "test_run_resolutions" in raw
-    older = {k: v for k, v in model._RECORD_DEFAULTS.items() if k != "test_run_resolutions"}
-    monkeypatch.setattr(model, "_RECORD_DEFAULTS", older)
+    older = make_dataclass(
+        "OlderRecord",
+        [(item.name, Any) for item in fields(GoalRecord) if item.name != "test_run_resolutions"],
+    )
     with pytest.raises(GoalRecordFormatError, match="written by a newer Booley"):
-        GoalRecord.from_json(raw)
+        GoalRecord.from_json.__func__(older, raw)
 
 
 def test_record_written_before_this_field_loads_with_no_resolutions(
