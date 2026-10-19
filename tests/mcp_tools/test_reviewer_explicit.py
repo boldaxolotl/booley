@@ -706,9 +706,9 @@ def test_done_verify_keeps_non_corrective_findings_and_completion_metadata(
     after = DevelopmentState.load(project / "state.json").criteria["review_rtl_bugs_done"].detail
     assert observation in after["issue_list"] and len(after["issue_list"]) == 2
     assert after["pending"] == [] and after["resolved"][0]["status"] == "fixed"
-    (receipt_path,) = verifier._evidence_path("unused").parent.glob(
-        f"{verifier._review_run_id}-receipt-*.json"
-    )
+    receipt_path = Path(result.detail["audit_evidence"])
+    assert after["audit_evidence"] == after["artifacts"]["reviewer_evidence"] == str(receipt_path)
+    assert result.detail["artifacts"]["reviewer_evidence"] == str(receipt_path)
     receipt_detail = json.loads(receipt_path.read_text())["detail"]
     for field in (
         "receipt_id",

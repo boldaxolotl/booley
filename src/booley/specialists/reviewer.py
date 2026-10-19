@@ -1650,6 +1650,7 @@ object, even after calling the capability.
         self._resolved_scope = None
         self._goal_target_surface = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
+        self._review_evidence_written = False
         try:
             if error := self._prepare_invocation():
                 return error
@@ -1661,34 +1662,27 @@ object, even after calling the capability.
             return prepared
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview()
+        self._review_evidence_path = (
+            resolve_booley_dir(Path(self.args.work_dir))
+            / "reviewer-evidence"
+            / f"{self._review_run_id}.json"
+        )
         self._sampled_contract = self._review_contract_detail()
         result = self._execute_review(prepared)
         return self._publish_review_evidence(result, prepared)
 
-    def _evidence_path(self, label: str) -> Path:
-        directory = resolve_booley_dir(Path(self.args.work_dir)) / "reviewer-evidence"
-        return directory / f"{self._review_run_id or uuid4().hex}-{label}.json"
-
-    def _write_review_evidence(self, detail: dict[str, Any], label: str) -> Path:
-        path = self._evidence_path(label)
-        atomic_write_json(path, detail)
-        return path
-
-    def _attach_review_evidence(self, detail: dict[str, Any], exit_code: int, label: str) -> Path:
+    def _attach_review_evidence(self, detail: dict[str, Any], exit_code: int) -> Path:
         """Publish evidence before any Criterion can advertise the outcome."""
         for name in ("filtered", "rejected"):
             detail.setdefault(name, [])
-        path = self._evidence_path(label)
+        path = self._review_evidence_path
         detail["audit_evidence"] = str(path)
-        for name in ("filtered", "rejected"):
-            detail[name] = [
-                {**row, "evidence": row.get("evidence") or str(path)} for row in detail[name]
-            ]
         detail["artifacts"] = {
             **detail.get("artifacts", {}),
             "reviewer_evidence": str(path),
         }
         atomic_write_json(path, {"exit_code": exit_code, "detail": detail})
+        self._review_evidence_written = True
         return path
 
     def _record_review_detail(self, crit_key: str, met: bool, detail: dict[str, Any]) -> None:
@@ -1711,9 +1705,7 @@ object, even after calling the capability.
                 if field in prior:
                     detail[field] = deepcopy(prior[field])
             criterion_met = prior_entry.met
-        self._attach_review_evidence(
-            detail, EXIT_SUCCESS if met else EXIT_FAILURE, f"receipt-{uuid4().hex}"
-        )
+        self._attach_review_evidence(detail, EXIT_SUCCESS if met else EXIT_FAILURE)
         self.set_criterion(crit_key, criterion_met, detail=detail)
 
     def _publish_review_evidence(self, result: McpToolResult, crit_key: str) -> McpToolResult:
@@ -1732,7 +1724,9 @@ object, even after calling the capability.
             result.detail = dict(prior)
         if self._acceptance_current is not None:
             result.detail = deepcopy(result.detail)
-        path = self._attach_review_evidence(result.detail, result.exit_code, "result")
+        path = self._review_evidence_path
+        if not self._review_evidence_written or result.exit_code == EXIT_ERROR:
+            self._attach_review_evidence(result.detail, result.exit_code)
         if (
             result.exit_code == EXIT_ERROR
             and self.state
@@ -1765,9 +1759,8 @@ object, even after calling the capability.
         )
 
     def _audit_detail(self) -> dict[str, Any]:
-        """Attach active audit history and archived receipt references to an outcome."""
-        prior = self._get_prior_detail(self._criterion_key()) or {}
-        return {**self._audit, "receipt_history": prior.get("receipt_history", [])}
+        """Attach the active audit rows to an outcome."""
+        return dict(self._audit)
 
     def _prepare_review_run(self) -> str | McpToolResult:
         """Validate source, criterion, and specification inputs."""
