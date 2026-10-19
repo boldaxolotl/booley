@@ -440,6 +440,7 @@ class FlowMechanics:
             if observer is not None:
                 observer.log_path_known(
                     log_dir / "run.log",
+                    target=target,
                     temporary=getattr(self, "_execution_role", "candidate") == "baseline",
                 )
         except OSError:
