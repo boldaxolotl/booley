@@ -45,12 +45,12 @@ class FlowSession(EndpointState):
         self.non_persisting_dry_run = flow.non_persisting_dry_run
         self.announce_success_report = flow.announce_success_report
         self._simulation_campaign_outcomes: tuple[object, ...] = ()
-        self._simulation_report_outcomes: tuple[object, ...] = ()
+        self.cycle_report_json: str | None = None
         flow.begin_invocation()
 
     def reset_report_metadata(self) -> None:
         """Clear invocation-local Simulation metadata before admission gates."""
-        self._simulation_report_outcomes = ()
+        self.cycle_report_json = None
         self._automatic_target_notice = ""
         self._automatic_target_notice_published = False
         self.flow._prepared_target_selection = None
@@ -59,6 +59,10 @@ class FlowSession(EndpointState):
     @property
     def args(self) -> FlowRequest:
         return super().args
+
+    def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
+        outcome.cycle_report_json = self.cycle_report_json or "{}"
+        return outcome
 
     def _run(self) -> EndpointOutcome:
         return self.flow._run()
