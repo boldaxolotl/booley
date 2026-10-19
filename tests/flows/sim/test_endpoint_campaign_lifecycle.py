@@ -1923,3 +1923,8 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     assert firing.document["stdout_tail"] == "hook-out\n"
     assert firing.document["stderr_tail"] == "hook-err\n"
     assert "rc=0" in result.detail["pre_sim_lines"][0]
+    terminal = json.loads((firing.path.parents[3] / "result.json").read_text())
+    assert terminal["state"] == "blocked_by_build"
+    build = json.loads((firing.path.parent.parent / "private-build/build-result.json").read_text())
+    assert build["state"] == "design_failure"
+    assert build["observation"]["detail"]["text"] == "compiler tail"
