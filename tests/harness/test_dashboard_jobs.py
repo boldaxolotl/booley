@@ -88,11 +88,13 @@ def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path
             path.write_bytes(json.dumps(data).encode())
             os.utime(path, (100 + index, 100 + index))
     before = files(tmp_path)
-    cache = job_artifacts.JobArtifactCache()
+    cache = job_artifacts.JobArtifactCache(tmp_path)
+    cache.begin()
     for run, kind in (("3", "report"), ("3", "progress"), ("0", "progress")):
         found = cache.find(root, "sim", run, kind)
         assert found is not None
         assert found[0]["run_id"] == run
+    cache.complete()
     assert cache.diagnostics
     assert files(tmp_path) == before
 
