@@ -1,6 +1,5 @@
 """Real Git attribute projection isolation and persisted-proof compatibility."""
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,15 +11,23 @@ from booley.goals.committed_export import export_tree, materializations_unchange
 from booley.goals.finish import finish_goal
 from booley.goals.input_identity import root_bindings
 from booley.goals.lifecycle import LifecycleError
+from booley.runtime.git_attributes_policy import (
+    GITATTRIBUTES_RULE,
+    has_attribute_policy,
+    local_policy_owned,
+)
+from booley.runtime.pinned_history import raw_git
 from tests.conftest import symlink_or_skip
 from tests.goals.conftest import enter_goals, git
 from tests.goals.test_committed_export import raw_blob, repository
 from tests.goals.test_finish import environment, publication_layout, request
 from tests.goals.test_managed_attributes import managed_attributes
+
+# Explicit re-export makes this pytest fixture available to the moved cases.
+from tests.goals.test_managed_attributes import projection as projection  # noqa: PLC0414
 from tests.goals.test_status import publish
 
 pytestmark = [pytest.mark.timeout(120), pytest.mark.usefixtures("isolated_git_attributes")]
-OLD_NAMES = ("text", "eol", "filter", "working-tree-encoding")
 
 
 def source(tmp_path, rule="", name="rtl.txt", content=b"$Id$\n", attribute_path=".gitattributes"):
@@ -117,38 +124,12 @@ def test_committed_builtins_match_checkout_oracle_and_record_all_names(tmp_path,
     assert attributes(root, pin, [b"rtl.txt"], policy=byte_policy(root))[b"rtl.txt"][rule] == "set"
 
 
-def test_shadow_always_disables_system_attributes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("managed", [False, True])
+def test_shadow_always_disables_system_attributes(tmp_path, monkeypatch, managed):
     root, _, _ = source(tmp_path)
     monkeypatch.delenv("GIT_ATTR_NOSYSTEM", raising=False)
-    with shadow_repository(root, b"") as (_, env):
+    with shadow_repository(root, managed) as (_, env):
         assert env["GIT_ATTR_NOSYSTEM"] == "1"
-
-
-def test_legacy_literal_four_attribute_digest_revalidates_with_six_name_safety(tmp_path):
-    root, pin, scratch = source(tmp_path)
-    rows = export(root, pin, scratch)
-    rows[0]["policy"].pop("checkout_attributes", None)
-    # Literal from the original four-name canonical encoding, captured before the fix.
-    rows[0]["attributes_digest"] = (
-        "9d3d678bea8779e406018feea3bb42138648765646a48090d38bb6f4d8c663c2"
-    )
-    proof, roots = capture(root, rows)
-    assert materializations_unchanged(proof, roots)
-    (root / ".git/info/attributes").write_bytes(b"*.txt ident\n")
-    with pytest.raises(LifecycleError, match="attributes changed during finish"):
-        materializations_unchanged(proof, roots)
-
-
-def test_legacy_nondefault_four_attribute_digest_revalidates(tmp_path):
-    root, pin, scratch = source(tmp_path, rule="text eol=crlf")
-    rows = export(root, pin, scratch)
-    rows[0]["policy"].pop("checkout_attributes")
-    # Original canonical four-name payload with text=set and eol=crlf for rtl.txt.
-    rows[0]["attributes_digest"] = (
-        "179b11f4aafdf7a633da9adcb46731d47d1f01df796aef6096c1ad5107f94575"
-    )
-    proof, roots = capture(root, rows)
-    assert materializations_unchanged(proof, roots)
 
 
 def test_unknown_marker_fails_closed(tmp_path):
@@ -298,7 +279,7 @@ def test_finish_ignored_effective_attributes_refuse_then_restore(layout):
 
 def test_nonstealth_finish_ignores_foreign_repository_selectors(layout, tmp_path, monkeypatch):
     layout = publication_layout(layout)
-    managed = managed_attributes(layout.worktree).read_bytes()
+    managed_attributes(layout.worktree)
     foreign = repository(tmp_path / "foreign")
     git(foreign, "config", "maintenance.auto", "false")
     git(foreign, "config", "gc.auto", "0")
@@ -315,10 +296,7 @@ def test_nonstealth_finish_ignores_foreign_repository_selectors(layout, tmp_path
     result = finish_goal(request(layout), environment(layout))
     assert result["status"] == "finished"
     proof = json.loads(Path(result["package"]).read_bytes())["input_proof"]
-    assert (
-        proof["committed_materializations"][0]["policy"]["info_attributes_sha256"]
-        == hashlib.sha256(managed).hexdigest()
-    )
+    assert proof["committed_materializations"][0]["policy"]["managed_rule"] == GITATTRIBUTES_RULE
     assert before == {
         str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
     }
@@ -376,19 +354,6 @@ def test_worktree_config_user_attributes_refuse(tmp_path, rule):
         export(linked, pin, scratch)
 
 
-def test_legacy_previously_unrecorded_ident_policy_now_fails_closed(tmp_path):
-    root, pin, scratch = source(tmp_path)
-    rows = export(root, pin, scratch)
-    rows[0]["policy"].pop("checkout_attributes")
-    rows[0]["attributes_digest"] = (
-        "9d3d678bea8779e406018feea3bb42138648765646a48090d38bb6f4d8c663c2"
-    )
-    (root / ".git/info/attributes").write_bytes(b"*.txt ident\n")
-    proof, roots = capture(root, rows)
-    with pytest.raises(LifecycleError, match="attributes changed during finish"):
-        materializations_unchanged(proof, roots)
-
-
 def test_removed_pinned_attribute_path_with_untracked_overlay_refuses(tmp_path):
     root, base, scratch = source(tmp_path, rule="ident")
     git(root, "rm", ".gitattributes")
@@ -429,3 +394,30 @@ def test_init_and_pinned_history_use_shared_inherited_environment(tmp_path, monk
     assert not REPOSITORY_SELECTION_VARIABLES.intersection(_read_only_git_env())
     observed = Path(os.fsdecode(raw_git(root, "rev-parse", "--show-toplevel").strip()))
     assert observed.samefile(root)
+
+
+def test_recovery_ambient_drift_has_a_distinct_message(projection):
+    root, project = projection
+    proof, roots = project()
+    (root / ".git/info/attributes").write_bytes(b"* text eol=crlf\n")
+    with pytest.raises(LifecycleError, match="input attributes changed during finish"):
+        materializations_unchanged(proof, roots)
+
+
+@pytest.mark.parametrize("separator", [b"\x0b", b"\x0c"])
+def test_non_git_whitespace_is_policy_not_a_comment_or_blank(projection, separator):
+    root, project = projection
+    content = separator + b"#x eol=crlf\n"
+    assert all(
+        has_attribute_policy(value) and local_policy_owned(value)
+        for value in (separator + b"\n", content)
+    )
+    info = managed_attributes(root)
+    info.write_bytes(info.read_bytes() + content)
+    name = separator + b"#x"
+    assert (
+        raw_git(root, "check-attr", "-z", "eol", "--", os.fsdecode(name))
+        == name + b"\0eol\0crlf\0"
+    )
+    with pytest.raises(LifecycleError, match="unsupported ambient input attributes;"):
+        project()
