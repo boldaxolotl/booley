@@ -306,11 +306,34 @@ def test_prepare_resets_report_only_metadata_before_early_gate(monkeypatch):
     previous = (object(),)
     context._simulation_report_outcomes = previous
     context._simulation_campaign_outcomes = previous
+    context.record_eda_tool("previous", "verilator")
     rejected = EndpointOutcome(exit_code=2)
 
     def gate():
+        assert context._eda_tool is None
+        assert context._eda_tools == {}
+        assert context._args is None
         assert context._simulation_report_outcomes == ()
         assert context._simulation_campaign_outcomes is previous
+        return rejected
+
+    monkeypatch.setattr(context, "_apply_pre_state_gate", gate)
+    assert prepare_execution(context) is rejected
+
+
+@pytest.mark.parametrize("target", ["sim_core", "sim_core, sim_other", ["sim_core", "sim_other"]])
+def test_prepare_early_gate_keeps_unresolved_report_target_cardinality(monkeypatch, target):
+    from booley.flows.endpoint_session import prepare_execution
+
+    context = SimulateFlow().context
+    context._args = SimpleNamespace(target=target)
+    context.record_eda_tool("previous", "verilator")
+    rejected = EndpointOutcome(exit_code=2)
+    selected = ["sim_core"] if target == "sim_core" else ["sim_core", "sim_other"]
+
+    def gate():
+        assert context._eda_tool is None
+        assert context._eda_tools == dict.fromkeys(selected)
         return rejected
 
     monkeypatch.setattr(context, "_apply_pre_state_gate", gate)

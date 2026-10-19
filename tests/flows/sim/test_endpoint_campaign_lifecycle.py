@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -904,6 +905,8 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
         )
     )
     assert resumed.exit_code == result.exit_code
+    report = json.loads((destination / "sim.json").read_bytes())
+    assert report.get("eda_tool") == plan.manifest.document["workload"]["eda"]["kind"]
     checkpoint = json.loads(next(destination.glob("sim/[0-9]*/progress.json")).read_text())
     assert checkpoint["complete"] is True
     assert checkpoint["completed_targets"] == ["sim"]
@@ -1891,3 +1894,74 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
     final = json.loads((reports / "sim/1/progress.json").read_text())
     assert final["completed_targets"] == ["sim_a"]
     assert final["observation_health"]["error"] == "OSError: advisory checkpoint unavailable"
+
+
+def completed_campaign_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, reports: Path | None = None
+) -> dict[str, Any]:
+    """Produce an actual endpoint report with a deterministic fake EDA executable."""
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.test_endpoint_reporting import fake_accounting
+
+    fake_accounting(monkeypatch)
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    reports = reports or tmp_path / "reports"
+    result = flow.execute(SimRequest(target="sim_a", work_dir=project, report_dir=reports))
+    assert result.exit_code == 0, result.outcome.report_text
+    return json.loads((reports / "sim.json").read_bytes())
+
+
+def test_completed_campaign_report_records_tool_and_resources(tmp_path, monkeypatch):
+    report = completed_campaign_report(tmp_path, monkeypatch)
+    assert report.get("eda_tool") == "icarus"
+    assert report.get("resources") == {"cpu_user_s": 3.75, "cpu_sys_s": 0.75, "peak_rss_mb": 256}
+
+
+@pytest.mark.parametrize("mode", ["simulate", "elab_only"])
+def test_campaign_report_records_tools_by_target(tmp_path, monkeypatch, mode):
+    from booley.flows.sim.request import SimRequest
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
+    result = flow.execute(
+        SimRequest(
+            target="sim_a,sim_b", mode=mode, work_dir=project, report_dir=tmp_path / "reports"
+        )
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+    report = json.loads((tmp_path / "reports/sim.json").read_bytes())
+    assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": "icarus"}
+    assert "eda_tool" not in report
+
+
+def test_coverage_campaign_report_records_tool(tmp_path, monkeypatch):
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
+
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    )
+    assert result.exit_code == 0
+    assert json.loads((reports / "sim.json").read_bytes()).get("eda_tool") == "verilator"
+
+
+def test_partial_campaign_planning_keeps_known_and_unknown_tools(tmp_path, monkeypatch):
+    from booley.flows.sim.request import SimRequest
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
+    original = flow._ordinary_campaign_plan
+
+    def plan(target, *args, **kwargs):
+        if target == "sim_b":
+            raise ValueError("second Target unavailable")
+        return original(target, *args, **kwargs)
+
+    monkeypatch.setattr(flow, "_ordinary_campaign_plan", plan)
+    result = flow.execute(
+        SimRequest(target="sim_a,sim_b", work_dir=project, report_dir=tmp_path / "reports")
+    )
+    assert result.exit_code == 2
+    report = json.loads((tmp_path / "reports/sim.json").read_bytes())
+    assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": None}

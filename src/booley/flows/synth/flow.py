@@ -1271,7 +1271,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         # test drives this method directly without going through _run).
         # The builtin flow is fixed: Yosys drives synthesis (plus the configured
         # STA timing engine). Recorded for run/report observability.
-        self._eda_tool = "yosys"
+        if getattr(self, "_execution_role", "candidate") == "candidate":
+            self.record_eda_tool(target, "yosys")
 
         # FuseSoC resolution happens in-process now (decision 4); a setup failure
         # becomes an infra error for this target, not an unhandled crash of the
