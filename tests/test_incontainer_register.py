@@ -8,10 +8,12 @@ import os
 import re
 import sys
 import tomllib
+from itertools import product
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
+import tomli
 
 from booley.harness import incontainer_register as entry
 from booley.mcp import (
@@ -940,6 +942,9 @@ def test_codex_invalid_interactive_config_never_writes(tmp_path, existing):
         "items = [\n[1, 2],\n[3]\n]\n# retain array\n",
         'description = """\n[features]\nmcp_2026_07_28 = false\n"""\n',
         "features.other=true\nfeatures.mcp_2026_07_28=false\n",
+        "notice.other=true\n",
+        "notice.hide_full_access_warning=false\n",
+        '["notice"] # retain header\nother=true\n',
         '["features"] # flags\n"mcp_2026_07_28"=false # deliberate override\n',
         '["mcp_servers"."booley"] # stale\ncommand="old"\n["other"] # retain header\nx=1',
         'model="existing"',
@@ -1131,166 +1136,83 @@ def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_
     assert path.read_text() == existing
 
 
-def _assert_inline_owned_body(body, table, original):
-    import tomli
+_CODEX_INLINE_FORMS = [
+    (
+        '{\n # before\n "KEY"=false, # after\n other=true,\n}',
+        "{\n # before\n KEY=false, # after\n other=true,\n}",
+    ),
+    "{\n other=true, # trailing\n}",
+    "{\n # comment-only\n}",
+    "{\n}",
+    ('{\n other = {text="a,b=}", values=[1,2]}\n}', "{\n other=true\n}"),
+    (
+        '{\n "other".flag=true, # between\n nested={text="{a,b}", values=[1,2]},\n}',
+        '{\n "other".flag=true,\n}',
+    ),
+    '{\n "KEY"=false # no comma\n}',
+    "{\n # before, keep this\n other=true,\n}",
+    "{\n # before, keep this\n KEY=false,\n}",
+    "{\n KEY=false, # after, keep this\n}",
+    "{\n # x, KEY=false\n}",
+    "{\n other=true, # trailing, x\n}",
+]
 
-    key = "mcp_2026_07_28" if table == "features" else "hide_full_access_warning"
-    old = tomli.loads("value=" + original)["value"]
-    expected = re.sub(rf'^(\s*"?{key}"?\s*=\s*)false\b', r"\1true", original, flags=re.MULTILINE)
-    if key in old:
-        assert f"{table}={expected}" in body
-    else:
-        separator = "," if old else ""
-        pattern = (
-            rf"(?m)^{table}=\{{\s*{key}\s*=\s*true" + re.escape(separator + original[1:-1]) + r"\}"
-        )
-        assert re.search(pattern, body), body
 
-
-@pytest.mark.parametrize("preference", [None, True, False])
-@pytest.mark.parametrize("ending", ["\n", "\r\n"])
 @pytest.mark.parametrize(
-    "features,notice",
-    [
-        (
-            '{\n # before\n "mcp_2026_07_28"=false, # after\n other=true,\n}',
-            "{\n # before\n hide_full_access_warning=false, # after\n other=true,\n}",
-        ),
-        ("{\n other=true, # trailing\n}", "{\n other=true, # trailing\n}"),
-        ("{\n # comment-only\n}", "{\n # comment-only\n}"),
-        ("{\n}", "{\n}"),
-        ('{\n other = {text="a,b=}", values=[1,2]}\n}', "{\n other=true\n}"),
-        (
-            '{\n "other".flag=true, # between\n nested={text="{a,b}", values=[1,2]},\n}',
-            '{\n "other".flag=true,\n}',
-        ),
-        (
-            '{\n "mcp_2026_07_28"=false # no comma\n}',
-            '{\n "hide_full_access_warning"=false # no comma\n}',
-        ),
-        ("{\n # before, keep this\n other=true,\n}", "{\n # before, keep this\n other=true,\n}"),
-        (
-            "{\n # before, keep this\n mcp_2026_07_28=false,\n}",
-            "{\n # before, keep this\n hide_full_access_warning=false,\n}",
-        ),
-        (
-            "{\n mcp_2026_07_28=false, # after, keep this\n}",
-            "{\n hide_full_access_warning=false, # after, keep this\n}",
-        ),
-        ("{\n # x, mcp_2026_07_28=false\n}", "{\n # x, hide_full_access_warning=false\n}"),
-        ("{\n other=true, # trailing, x\n}", "{\n other=true, # trailing, x\n}"),
-    ],
+    "form,preference,ending,mode",
+    list(product(_CODEX_INLINE_FORMS, (None, True, False), ("\n", "\r\n"), ("migration",)))
+    + [("{\n KEY=true,\n}", False, e, "current") for e in ("\n", "\r\n")]
+    + [(f, False, "\n", "notice") for f in (_CODEX_INLINE_FORMS[i] for i in (7, 8, 10))],
 )
-def test_toml11_full_registration_preserves_choices_and_body_bytes(
-    tmp_path, monkeypatch, preference, ending, features, notice
-):
+def test_codex_registration_syntax(tmp_path, monkeypatch, form, preference, ending, mode):
+    features, notice = (form, form) if isinstance(form, str) else form
+    features = features.replace("KEY", "mcp_2026_07_28")
+    notice = notice.replace("KEY", "hide_full_access_warning")
     choice = (
         ""
         if preference is None
         else f'"suppress_unstable_features_warning"={str(preference).lower()} # choice\n'
     )
     unrelated = 'other = {\n # untouched\n text="comma, brace}",\n values=[1,2],\n}\n'
-    source = (choice + unrelated + f"features={features}\nnotice={notice}").replace("\n", ending)
-    choice = choice.replace("\n", ending)
-    unrelated = unrelated.replace("\n", ending)
-    features = features.replace("\n", ending)
-    notice = notice.replace("\n", ending)
+    if mode != "migration":
+        choice = "suppress_unstable_features_warning=false\n"
+        unrelated = "" if mode == "notice" else "other={\n x=true,\n}\n"
+        features = "{\n mcp_2026_07_28=true,\n}"
+    source = choice + unrelated + f"features={features}\nnotice={notice}"
+    if mode == "current":
+        source = f'{choice}features={features}\napproval_policy="never"\nsandbox_mode="danger-full-access"\nweb_search="disabled"\nnotice={notice}\n{unrelated}{reg.codex_section()}'
+    source = source.replace("\n", ending)
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_bytes(source.encode())
-    monkeypatch.setattr(reg, "deploy_skills", lambda *args: 0)
-    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: 0)
-    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: "none")
-    assert "codex:written" in reg.register("codex", home=tmp_path)
-    body = path.read_bytes().decode()
-    assert choice in body and unrelated in body
-    import tomli
-
-    parsed = tomli.loads(body)
-    assert parsed["suppress_unstable_features_warning"] is (
-        True if preference is None else preference
-    )
-    assert parsed["features"]["mcp_2026_07_28"] is True
-    assert parsed["notice"]["hide_full_access_warning"] is True
-    for table, original in (("features", features), ("notice", notice)):
-        old = tomli.loads("value=" + original)["value"]
-        if "other" in old:
-            assert parsed[table]["other"] == old["other"]
-        _assert_inline_owned_body(body, table, original)
-    for fragment in ("# before", "# after", "# trailing", "# comment-only"):
-        if fragment in source:
-            assert fragment in body
-    before = path.read_bytes()
-    assert "codex:current" in reg.register("codex", home=tmp_path)
-    assert path.read_bytes() == before
-
-
-@pytest.mark.parametrize("ending", ["\n", "\r\n"])
-def test_toml11_already_current_is_byte_identical(tmp_path, monkeypatch, ending):
-    source = (
-        "suppress_unstable_features_warning=false\nfeatures={\n mcp_2026_07_28=true,\n}\n"
-        'approval_policy="never"\nsandbox_mode="danger-full-access"\nweb_search="disabled"\n'
-        "notice={\n hide_full_access_warning=true,\n}\nother={\n x=true,\n}\n"
-        + reg.codex_section()
-    ).replace("\n", ending)
-    path = reg.codex_config_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    path.write_bytes(source.encode())
-    monkeypatch.setattr(reg, "deploy_skills", lambda *args: 0)
-    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: 0)
-    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: "none")
-    assert reg.upsert_codex(path) is False
-    assert "codex:current" in reg.register("codex", home=tmp_path)
-    assert path.read_bytes() == source.encode()
-
-
-@pytest.mark.parametrize(
-    "notice",
-    [
-        "{\n # before, keep this\n other=true,\n}",
-        "{\n # before, keep this\n hide_full_access_warning=false,\n}",
-        "{\n # x, hide_full_access_warning=false\n}",
-    ],
-)
-def test_toml11_notice_comment_comma_completes_full_registration(tmp_path, monkeypatch, notice):
-    import tomli
-
-    path = reg.codex_config_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        "suppress_unstable_features_warning=false\nfeatures={\n mcp_2026_07_28=true,\n}\nnotice="
-        + notice
-    )
     calls = []
-    monkeypatch.setattr(reg, "deploy_skills", lambda *args: calls.append("skills") or 0)
-    monkeypatch.setattr(reg, "deploy_host_skills", lambda *args: calls.append("host") or 0)
-    monkeypatch.setattr(
-        reg, "apply_stored_credential", lambda *args: calls.append("credential") or "none"
-    )
-    try:
-        result = reg.register("codex", home=tmp_path)
-    except ValueError:
-        assert calls == [], "valid comment caused partial registration: " + str(calls)
-        raise
-    assert result.startswith("codex:written")
-    assert calls == ["skills", "host", "credential"]
-    body = path.read_text()
-    assert tomli.loads(body)["notice"]["hide_full_access_warning"] is True
-    _assert_inline_owned_body(body, "notice", notice)
-    before = path.read_bytes()
-    assert reg.register("codex", home=tmp_path).startswith("codex:current")
-    assert path.read_bytes() == before
-
-
-def test_codex_permission_writer_validates_notice_before_publication(tmp_path, monkeypatch):
-    path = reg.codex_config_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    source = "suppress_unstable_features_warning=false\nnotice={}\n"
-    path.write_text(source)
-    monkeypatch.setattr(reg, "_upsert_codex_full_access_notice", lambda source: source)
-    with pytest.raises(ValueError, match=re.escape(str(path))):
-        reg._apply_codex_permission_mode(tmp_path)
-    assert path.read_text() == source
+    effects = ("deploy_skills", "deploy_host_skills", "apply_stored_credential")
+    for name in effects:
+        monkeypatch.setattr(reg, name, lambda *args, name=name: calls.append(name) or 0)
+    status = "current" if mode == "current" else "written"
+    assert reg.register("codex", home=tmp_path).startswith(f"codex:{status}")
+    assert calls == list(effects)
+    body = path.read_bytes().decode()
+    assert choice.replace("\n", ending) in body and unrelated.replace("\n", ending) in body
+    if mode == "current":
+        assert body == source and reg.upsert_codex(path) is False
+    parsed = tomli.loads(body)
+    assert parsed["suppress_unstable_features_warning"] == (preference is not False)
+    for table, template in (("features", features), ("notice", notice)):
+        original = template.replace("\n", ending)
+        key = "mcp_2026_07_28" if table == "features" else "hide_full_access_warning"
+        old = tomli.loads("value=" + original)["value"]
+        assert parsed[table] == {**old, key: True}
+        if key in old:
+            expected = re.sub(
+                rf'^(\s*"?{key}"?\s*=\s*)false\b', r"\1true", original, flags=re.MULTILINE
+            )
+            assert f"{table}={expected}" in body
+        else:
+            tail = ("," if old else "") + original[1:]
+            assert re.search(rf"(?m)^{table}=\{{\s*{key}\s*=\s*true" + re.escape(tail), body)
+    assert "codex:current" in reg.register("codex", home=tmp_path)
+    assert path.read_bytes().decode() == body
 
 
 @pytest.mark.parametrize("app", ["claude", "codex"])
@@ -1326,3 +1248,127 @@ def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch
     assert "SYNTHETIC" not in str(caught.value)
     assert login.read_bytes() == before
     assert settings.read_bytes() == settings_before
+
+
+@pytest.mark.parametrize("operation", ["permission", "register"])
+def test_codex_permission_writer_parses_once(tmp_path, monkeypatch, operation):
+    import tomli
+
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir()
+    source = 'model="existing"\nnotice.other=true\nother={time=12:34, escaped="\\e\\x41"}\n'
+    path.write_text(source)
+    reg._codex_toml_parser()
+    editor = reg._codex_editor() if hasattr(reg, "_codex_editor") else None
+    calls = []
+
+    def counted(function, legacy=False):
+        def wrapped(*args, **kwargs):
+            start = len(calls)
+            result = function(*args, **kwargs)
+            if legacy:
+                del calls[start:]
+            else:
+                calls.append(args[0])
+            return result
+
+        return wrapped
+
+    with monkeypatch.context() as counting:
+        counting.setattr(tomli, "loads", counted(tomli.loads))
+        if editor is not None:
+            counting.setattr(editor, "parse", counted(editor.parse))
+            prepare = Mock(wraps=reg._prepare_codex_permissions)
+            counting.setattr(reg, "_prepare_codex_permissions", prepare)
+        for name in ("upsert_codex", "_prepare_codex_mcp"):
+            if hasattr(reg, name):
+                counting.setattr(reg, name, counted(getattr(reg, name), legacy=True))
+        for name in ("deploy_skills", "deploy_host_skills"):
+            counting.setattr(reg, name, lambda *args: 0)
+        counting.setattr(reg, "apply_stored_credential", lambda *args: "none")
+        if operation == "register":
+            reg.register("codex", home=tmp_path)
+        else:
+            reg._apply_codex_permission_mode(tmp_path)
+    assert len(calls) == 1, f"permission document parsed {len(calls)} times"
+    if editor is not None:
+        prepare.assert_called_once()
+    result = tomli.loads(path.read_text())
+    assert result["notice"]["hide_full_access_warning"] is True
+    assert result["other"] == tomli.loads(source)["other"]
+
+
+@pytest.mark.parametrize("failure", ["missing", "broken-import", "broken-probe", "incompatible"])
+def test_codex_editor_failure_precedes_registration(tmp_path, monkeypatch, failure):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text('model="existing"\n')
+    calls = []
+    publish = Mock(wraps=reg._publish_codex_config)
+
+    def parse(*args):
+        if failure == "broken-probe":
+            raise RuntimeError("broken editor probe")
+        raise ValueError("TOML1.0-only editor")
+
+    real_import = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        if name == "tomlkit" and failure == "broken-import":
+            raise ImportError("partial editor installation")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(reg, "_publish_codex_config", publish)
+    for name in ("deploy_skills", "deploy_host_skills", "apply_stored_credential"):
+        monkeypatch.setattr(reg, name, lambda *args: calls.append(args) or 0)
+    monkeypatch.setattr(builtins, "__import__", importing)
+    monkeypatch.setitem(
+        sys.modules, "tomlkit", None if failure == "missing" else SimpleNamespace(parse=parse)
+    )
+    editor = getattr(reg, "_codex_editor", None)
+    if editor:
+        editor.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match=r"installation.*tomlkit>=0\.15\.2") as error:
+            reg.register("codex", home=tmp_path)
+        assert "repair this file" not in str(error.value)
+        publish.assert_not_called()
+        assert calls == []
+        assert path.read_text() == 'model="existing"\n'
+    finally:
+        if editor:
+            editor.cache_clear()
+
+
+@pytest.mark.parametrize("existing", [None, 'broken="', "notice=true\n"])
+def test_codex_permission_boundary_preserves_private_or_invalid_file(tmp_path, existing):
+    path = reg.codex_config_path(tmp_path)
+    if existing is not None:
+        path.parent.mkdir()
+        path.write_text(existing)
+        with pytest.raises(ValueError, match=re.escape(str(path))):
+            reg._apply_codex_permission_mode(tmp_path)
+        assert path.read_text() == existing
+    else:
+        assert reg._apply_codex_permission_mode(tmp_path) == "written"
+        assert path.stat().st_mode & 0o777 == 0o600
+        before = path.read_bytes()
+        assert reg._apply_codex_permission_mode(tmp_path) == "current"
+        assert path.read_bytes() == before
+
+
+def test_codex_credential_failure_does_not_publish_permissions(tmp_path, monkeypatch):
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text('approval_policy="on-request"\n')
+    for name in ("deploy_skills", "deploy_host_skills"):
+        monkeypatch.setattr(reg, name, lambda *args: 0)
+
+    def credential(*args):
+        raise ValueError("credential policy conflict")
+
+    monkeypatch.setattr(reg, "apply_stored_credential", credential)
+    with pytest.raises(ValueError, match="credential policy conflict"):
+        reg.register("codex", home=tmp_path)
+    assert tomllib.loads(path.read_text())["approval_policy"] == "on-request"
+    assert reg.upsert_codex(path) is False

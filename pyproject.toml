@@ -57,6 +57,7 @@ dependencies = [
     "textual>=8.0",
     # Codex accepts TOML 1.1, including multiline inline tables.
     "tomli>=2.4.0",
+    "tomlkit>=0.15.2",
     "pywin32>=300; sys_platform == 'win32'",
 ]
 
