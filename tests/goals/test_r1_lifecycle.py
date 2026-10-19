@@ -130,7 +130,7 @@ def test_recovery_caller_retry_survives_prior_terminal_response_gap_and_reentry(
             "replacement",
             parse_goal_args([{"family": "LINT", "target": "top"}]),
         ),
-        EntryEnvironment(complete.control),
+        EntryEnvironment(complete.control, routing_guidance="Explicit test routing guidance."),
     ).record
     occupant = GoalStore(complete.control).load(complete.record.id).to_json()
     result = finish_goal(recovery, environment(complete))
@@ -363,7 +363,12 @@ def publish_legacy_attempt(complete, call):
     from booley.goals.finish_presentation import html_bytes
     from booley.goals.lifecycle import bind_operation
     from booley.goals.proposals import digest, encode
-    from booley.runtime.pinned_history import PinnedPublication, publish_pinned, raw_git
+    from booley.runtime.pinned_history import (
+        PinnedPublication,
+        publication_pack,
+        publish_pinned,
+        raw_git,
+    )
 
     frozen, directory = legacy_attempt(complete, call)
     content = bytes.fromhex(frozen["summary_hex"])
@@ -391,19 +396,6 @@ def publish_legacy_attempt(complete, call):
             .strip()
             .decode()
         )
-        operation.write_sealed(
-            "publication",
-            {
-                "mode": "100644",
-                "repository": frozen["inputs"]["roots"]["rtl"],
-                "worktree": frozen["worktree"],
-                "branch": frozen["branch"],
-                "pin": frozen["inputs"]["rtl_pin"],
-                "path": frozen["path"],
-                "operation_id": call.operation_id,
-                "blob": blob,
-            },
-        )
         publication = PinnedPublication(
             frozen["inputs"]["rtl_pin"], frozen["branch"], frozen["path"], blob
         )
@@ -411,7 +403,16 @@ def publish_legacy_attempt(complete, call):
             complete.worktree,
             publication,
             "legacy exact publication",
-            lambda commit: operation.write_sealed("intended-commit", {"commit": commit}),
+            lambda commit: operation.write_sealed(
+                "publication",
+                {
+                    "blob": blob,
+                    "commit": commit,
+                    "pack_hex": publication_pack(
+                        complete.worktree, replace(publication, intended_commit=commit)
+                    ).hex(),
+                },
+            ),
         )
     return frozen, destination, content
 

@@ -194,7 +194,10 @@ For any other missing MCP tool:
    `[specialists.<name>].enabled` is not `false`.
 2. For a custom MCP tool, fix Python syntax and make `name` and `description` literal
    class attributes so AST discovery can read them.
-3. Restart the Sandbox after adding or renaming the file.
+3. Request a fresh MCP tool list, or use the client's tool-list change
+   notification channel. Installing, renaming, removing, or editing custom
+   endpoint files and capability settings updates the running server without
+   restarting the Sandbox.
 4. Check whether the MCP server was deliberately narrowed for a Specialist or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
@@ -264,9 +267,23 @@ itself is fine and still queryable.
 ## Installation fails with `externally-managed-environment`
 
 Recent distributions ship Python as an *externally managed* environment
-(PEP 668), where system Python refuses user package installation. Follow the
-README's Ubuntu/Debian pipx preparation, run `pipx ensurepath`, reopen your
-terminal, then run `pipx install booley-rtl` and `booley bootstrap`.
+(PEP 668), where system Python refuses user package installation. On Ubuntu or
+Debian, install pipx from the distribution package; a pip-installed pipx fails
+there because stock Python has no `ensurepip` until the `python3-venv` package,
+which the `pipx` package depends on, is installed:
+
+```bash
+sudo apt install pipx
+pipx ensurepath
+```
+
+Reopen your terminal, then install Booley and prepare the host:
+
+```bash
+pipx install booley-rtl
+booley bootstrap
+```
+
 If you already have uv, use `uv tool install booley-rtl` instead.
 These persistent isolated wheel installs can own host state. Source/editable
 checkouts and temporary or ephemeral installs remain ineligible.
@@ -756,6 +773,49 @@ then releases only that root's keeper when no container uses its immutable image
 An in-use keeper remains, but forgetting succeeds; Docker inspection or removal
 failure preserves the inventory entry for retry. A present forgotten Project
 whose keeper was released needs `booley init` before session reuse.
+
+Forget also lists the Docker resources the Project leaves behind, with sizes:
+
+- images named by the Project's own Sandbox Image tags, or recorded as built
+  for it, marked `in-use` (a container uses it), `shared` (a tag outside the
+  Project also names it), or `unused`. An untagged image that still shows the
+  Project's repository name but has no build record is marked `unrecorded`;
+- the Project's agent state volumes, marked `in-use` or `unused`. A state
+  volume holds a copy of the agent's login and the agent's history;
+- containers and networks still labelled for the Project, marked `labelled`.
+
+Forget removes none of the listed resources; it only deletes untagged images
+recorded as built for the Project once nothing uses them, before it lists the
+rest. If Docker cannot list them, the root stays
+forgotten and the command reports the error and the keeper outcome.
+
+An untagged image with neither a build record nor the Project's repository
+name can't be traced to any Project, so forget doesn't list it.
+`docker image prune` reclaims every dangling image on the host, from any Project.
+
+To remove the listed resources, run `booley projects forget --purge <project>`
+with the exact absolute root. Purge never follows a symlink in that path. It
+works on a remembered root and on one that is already forgotten or deleted; a
+live Grant for the root refuses it. Purge removes:
+
+- every tag of the Project's own Sandbox Image family and its keeper, unless a
+  container uses the image. Removal never forces and never prunes untagged
+  parent images, so a tag outside the Project keeps its bytes;
+- untagged images recorded as built for the Project, once nothing needs them;
+- the Project's unused state volumes, including the login copy and agent
+  history inside them.
+
+`booley init` and `booley init --force` record the images a rebuild
+supersedes and remove them after the Session keeper moves to the new image.
+An image a container uses, or that another tag still names, stays and init
+names it with the reason.
+
+Purge prints a `Removed:` line for each removal and a `Kept:` line, with the
+reason, for each recorded image it had to keep. It keeps `in-use`,
+`unrecorded`, and `labelled` entries and lists them afterwards. Remove an
+`unrecorded` image yourself with `docker image rm <id>`
+once you are sure no other Project needs it. If a removal fails, the error
+names what was already removed; run the same command again to finish.
 
 To reclaim keepers from Projects forgotten before this behavior was available:
 

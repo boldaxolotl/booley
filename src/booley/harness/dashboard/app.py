@@ -25,12 +25,21 @@ from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_a
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
+from booley.harness.dashboard.results import (
+    ReportPresentation,
+    ResultLine,
+    configuration,
+    literal,
+    present_report,
+    project_facts,
+    proposal_summary,
+)
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
-from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.timefmt import format_age, format_clock, format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
@@ -82,27 +91,6 @@ class Navigation:
     selected: str = ""
 
 
-def _age(stamp: str, now: float) -> str:
-    try:
-        seconds = max(0, int(now - parse_timestamp(stamp).timestamp()))
-        return f"{seconds // 3600}h {seconds % 3600 // 60}m"
-    except ValueError:
-        return "—"
-
-
-def _duration(stamp: str, now: float) -> str:
-    """Compact age of a recent state: seconds, then minutes, then hours."""
-    try:
-        seconds = max(0, int(now - parse_timestamp(stamp).timestamp()))
-    except ValueError:
-        return "—"
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m"
-    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
-
-
 def _sentence(text: str) -> str:
     """Capitalize only the first letter; tool names keep their case."""
     return text[:1].upper() + text[1:]
@@ -113,7 +101,11 @@ def activity_label(activity: Activity, now: float) -> str:
     if activity.state == UNKNOWN:
         return "activity unknown"
     tool = f" ({activity.tool})" if activity.state == WAITING_TOOL and activity.tool else ""
-    return f"{activity.state}{tool} · {_duration(activity.since, now)}"
+    try:
+        elapsed = now - parse_timestamp(activity.since).timestamp()
+    except ValueError:
+        elapsed = None
+    return f"{activity.state}{tool} · {format_duration(elapsed)}"
 
 
 def _measure(value: int | float | None) -> str:
@@ -180,10 +172,11 @@ def _goal_text(goal: GoalDetail) -> Text:
     return text
 
 
-def _elapsed(job: JobView, now: float | None = None) -> str:
+def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
+    """Extract an interval, freezing terminal Jobs even without an end stamp."""
     if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
         reported = as_float((job.report or {}).get("elapsed_s"))
-        return f"{reported:g}s" if reported is not None and reported >= 0 else "unavailable"
+        return reported if reported is not None and reported >= 0 else None
     try:
         start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
         end = (
@@ -191,15 +184,15 @@ def _elapsed(job: JobView, now: float | None = None) -> str:
             if job.record.ended_at
             else (time.time() if now is None else now)
         )
-        return f"{max(0, end - start):.0f}s"
+        return max(0, end - start)
     except ValueError:
-        return "unavailable"
+        return None
 
 
 def _connection_label(row: SessionRow, now: float) -> str:
     if row.process_state == ProcessState.RUNNING:
         return "connected"
-    return f"last seen {_age(row.last_call_at, now)} ago · connection unknown"
+    return f"last seen {format_age(row.last_call_at, now=now)} · connection unknown"
 
 
 def _owner_label(
@@ -238,117 +231,151 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
         outcome = f"exit {job.record.exit_code} · design verdict {(job.report or {}).get('passed', 'unavailable')}"
     else:
         outcome = "resources unavailable"
+    elapsed = job_elapsed_seconds(job, now)
     return (
         f"{_job_label(job)} · {job.record.endpoint} · {DashboardApp._target(job)} · {owner} · "
-        f"{job.state} · {_elapsed(job, now)} · {job.stage or 'stage —'} · {outcome}"
+        f"{job.state} · {format_duration(elapsed) if elapsed is not None else 'unavailable'} · {job.stage or 'stage —'} · {outcome}"
     )
 
 
-def _job_tool_lines(job: JobView) -> list[str]:
-    report = job.report or {}
-    tool = job.recorded_tools
-    if job.state not in _REPORT_DETAIL_STATES:
-        return [f"EDA tool: {tool or job.eda_tool or '—'}"]
-    expected = bool(isinstance(report.get("flow"), str) and report["flow"]) or (
-        job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"}
+def _job_presentation(job: JobView) -> ReportPresentation:
+    report = dict(job.report or {})
+    report["exit_code"] = job.record.exit_code
+    report["argv"] = job.record.argv
+    endpoint = job.record.endpoint
+    report["flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool"] = endpoint
+    return present_report(report)
+
+
+def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
+    return "\n".join(
+        f"{row.label}: {row.value}".rstrip() if row.label else row.value for row in rows
     )
-    return [f"EDA tool: {tool or 'not recorded by this Flow'}"] if tool or expected else []
 
 
-def _job_resource_lines(job: JobView) -> list[tuple[str, bool]]:
-    if job.state not in _REPORT_DETAIL_STATES:
-        return [
-            (
-                f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
-                False,
-            )
-        ]
+def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
+    """Compact result, independent acceptance, execution and published artifacts."""
+    result = _job_presentation(job)
+    rows = [result.flow_result]
+    if result.criterion is not None:
+        rows.append(result.criterion)
+    elapsed = job_elapsed_seconds(job, now)
+    duration = format_duration(elapsed) if elapsed is not None else "unavailable"
+    rows.append(
+        ResultLine("Execution", f"{job.state} · {result.execution.value} · elapsed {duration}")
+    )
+    rows.extend(
+        (
+            ResultLine("Job", f"{_job_label(job)} · {job.record.endpoint}"),
+            ResultLine("Run ID", job.record.run_id),
+        )
+    )
+    rows.extend(configuration(job.record.argv))
+    rows.extend(_job_metadata(job, now=now))
+    rows.extend(result.result_rows)
     if job.report is None:
-        return [("resources not recorded (no report)", True)]
-    resources = job.recorded_resources
-    if resources is None:
-        return []
-    cpu, peak = resources
-    return [(f"CPU time: {cpu:g}s · Peak memory (largest process): {peak:g} MiB", False)]
-
-
-def _job_detail_document(
-    job: JobView, *, now: float | None = None
-) -> tuple[str, tuple[tuple[int, int], ...]]:
-    rec, report = job.record, job.report or {}
-    paths = job_paths(job)
-    before = [
-        f"{_job_label(job)} · {rec.endpoint}",
-        f"Run ID: {rec.run_id}",
-        f"Execution: {job.state} · exit {rec.exit_code}",
-        f"Design verdict: {report.get('passed', 'unavailable')}",
-        f"Flow configuration: {' '.join(rec.argv) or '—'}",
-        *_job_tool_lines(job),
-        f"Start: {rec.run_started_at or rec.started_at} · End: {rec.ended_at or '—'}",
-        f"Elapsed: {_elapsed(job, now)}",
-        f"Stage: {job.stage or '—'}",
-    ]
-    lines = (
-        [(line, False) for line in before]
-        + _job_resource_lines(job)
-        + [
-            (f"Result: {report.get('summary', report.get('detail', 'unavailable'))}", False),
-            ("Metrics / failure details: " + _reported_metrics(report), False),
-            ("Artifacts:\n" + ("\n".join(paths) or "—"), False),
+        rows = [
+            replace(row, value="Summary unavailable · no report")
+            if row.value == "Summary unavailable"
+            else row
+            for row in rows
         ]
-    )
-    spans = []
-    offset = 0
-    for line, dim in lines:
-        if dim:
-            spans.append((offset, offset + len(line)))
-        offset += len(line) + 1
-    return "\n".join(line for line, _dim in lines), tuple(spans)
+    report = str(job.report_path) if job.report_path is not None else None
+    artifacts = [path for path in dict.fromkeys(job.artifacts) if path != report]
+    if artifacts:
+        rows.append(ResultLine("Artifacts", ""))
+        rows.extend(ResultLine("", path) for path in artifacts[:3])
+        if len(artifacts) > 3:
+            rows.append(ResultLine("", f"{len(artifacts) - 3} more artifacts in report"))
+    if report:
+        rows.extend((ResultLine("Report", ""), ResultLine("", report)))
+    return rows
 
 
 def job_detail(job: JobView, *, now: float | None = None) -> str:
-    """Execution outcome and design verdict remain distinct; no inline logs."""
-    return _job_detail_document(job, now=now)[0]
+    """Render the shared Job rows as plain text."""
+    return _line_text(_job_rows(job, now=now))
+
+
+def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]:
+    report = job.report or {}
+    rows = []
+    for label, stamp in (
+        ("Start", job.record.run_started_at or job.record.started_at),
+        ("End", job.record.ended_at),
+    ):
+        if stamp:
+            rows.append(ResultLine(label, format_clock(stamp, now=now)))
+    tool = job.recorded_tools
+    if job.state not in _REPORT_DETAIL_STATES:
+        tool = tool or job.eda_tool
+    elif not tool and (
+        report.get("flow")
+        or (job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"})
+    ):
+        tool = "not recorded by this Flow"
+    if tool:
+        rows.append(ResultLine("EDA tool", tool))
+    if job.stage:
+        rows.append(ResultLine("Stage", literal(job.stage)))
+    rows.extend(_job_resources(job))
+    return rows
+
+
+def _job_resources(job: JobView) -> list[ResultLine]:
+    if job.state in _REPORT_DETAIL_STATES:
+        if job.report is None:
+            return [ResultLine("", "resources not recorded (no report)", "unavailable")]
+        resources = job.recorded_resources
+        if resources is None:
+            return []
+        cpu, peak = resources
+        return [
+            ResultLine("CPU time", f"{cpu:g}s"),
+            ResultLine("Peak memory (largest process)", f"{peak:g} MiB"),
+        ]
+    parts = []
+    if job.cpu_percent is not None:
+        parts.append(f"CPU {job.cpu_percent:.1f}% of one core")
+    for label, value in (("Memory", job.memory), ("Peak memory", job.peak_memory)):
+        if value is not None:
+            parts.append(f"{label}: {_measure(value)}")
+    return [ResultLine("Resources", " · ".join(parts))] if parts else []
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """The report and artifact paths published for one Job, each shown on its own line."""
-    report = (str(job.report_path),) if job.report_path is not None else ()
-    return (*report, *job.artifacts)
+    """Visible deduplicated side artifacts first, exact report last."""
+    report = str(job.report_path) if job.report_path is not None else None
+    artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
+    return (*artifacts, report) if report else artifacts
 
 
 def _job_summary(job: JobView, now: float) -> str:
     """Compact overview form: Flow, Target and elapsed time."""
-    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {_elapsed(job, now)}"
+    elapsed = job_elapsed_seconds(job, now)
+    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
 
 
-def _reported_metrics(report: dict[str, Any]) -> str:
-    structured = {"metrics", "counts", "failure_reason", "issues", "conditions"}
-    metadata = {"run_id", "invocation_id", "exit_code", "elapsed_s", "schema", "schema_version"}
-    fields = {
-        key: value
-        for key, value in report.items()
-        if key in structured
-        or (key not in metadata and type(value) in {int, float} and as_float(value) is not None)
-    }
-    return json.dumps(fields, indent=2)[:8000]
-
-
-def _evidence_detail(goal: GoalDetail) -> str:
+def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
     frozen = "".join(f"{line}\n" for line in goal.test_runs)
     if goal.evidence is None:
         return frozen + "Last check: unavailable · Evidence unavailable"
-    facts = goal.evidence
-    return (
-        frozen
-        + f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
-        + "Observations: "
-        + json.dumps(observation_facts(facts).get("observations", {}), indent=2)[:8000]
-        + "\nImmutable derivation provenance: "
-        + json.dumps([observation_facts(row) for row in goal.provenance], indent=2)[:8000]
-        + "\nAvailable evidence paths:\n"
-        + ("\n".join(goal.artifacts) or "—")
-    )
+    facts = observation_facts(goal.evidence)
+    recorded = goal.evidence.get("recorded_at")
+    checked = format_clock(recorded, now=now) if recorded is not None else "unavailable"
+    lines = [
+        f"Last check: {checked}",
+        "Observations:",
+        _line_text(project_facts(facts)),
+        "Immutable derivation provenance:",
+    ]
+    for row in goal.provenance[:5]:
+        lines.append(_line_text(project_facts(observation_facts(row))))
+    if len(goal.provenance) > 5:
+        lines.append(f"{len(goal.provenance) - 5} more provenance records in evidence")
+    if goal.artifacts:
+        lines.extend(("Available evidence paths:", *goal.artifacts))
+    return frozen + "\n".join(lines)
 
 
 class DashboardApp(App[None]):
@@ -557,9 +584,9 @@ class DashboardApp(App[None]):
         )
         return (
             f"{self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch unavailable'} · "
-            f"{'Goal Mode' if goal else 'Interactive'} · {connection} · uptime {_age(row.started_at, self.snapshot.observed_at)}\n"
+            f"{'Goal Mode' if goal else 'Interactive'} · {connection} · Started {format_age(row.started_at, now=self.snapshot.observed_at)}\n"
             f"{_sentence(self._activity_label(facts.key))} · {warning}\nLast Booley call: {last.tool if last else '—'} "
-            f"· {_age(row.last_call_at, self.snapshot.observed_at)} ago\nSession key: {facts.key}"
+            f"· {format_age(row.last_call_at, now=self.snapshot.observed_at)}\nSession key: {facts.key}"
         ), goal
 
     def _activity_label(self, key: str) -> str:
@@ -687,7 +714,7 @@ class DashboardApp(App[None]):
             activities.extend(
                 (
                     "proposal:" + view.proposal.id,
-                    "Pending proposal: " + json.dumps(proposal_presentation(view)),
+                    "Pending proposal: " + proposal_summary(proposal_presentation(view)),
                 )
                 for view in goal.status.proposals
                 if view.state == "pending" and not view.closed_by_abandonment
@@ -696,7 +723,7 @@ class DashboardApp(App[None]):
             (
                 "job:" + json.dumps(job.key),
                 f"Running Job: {_job_label(job)} · {job.record.endpoint} · {self._target(job)} · {job.state}"
-                f" · {_elapsed(job, self.snapshot.observed_at)}",
+                f" · {format_duration(job_elapsed_seconds(job, self.snapshot.observed_at))}",
             )
             for job in self.snapshot.jobs.jobs
             if self._owned_by(job, self.navigation.session)
@@ -712,7 +739,10 @@ class DashboardApp(App[None]):
         )
         if session:
             activities.extend(
-                ("call:" + str(index), f"Booley call: {call.tool} · {call.outcome} · {call.at}")
+                (
+                    "call:" + str(index),
+                    f"Booley call: {call.tool} · {call.outcome} · {format_clock(call.at, now=self.snapshot.observed_at)}",
+                )
                 for index, call in enumerate(session.calls[-10:])
             )
         return activities
@@ -773,7 +803,7 @@ class DashboardApp(App[None]):
         branch = facts.branch or (goal.record.branch if goal and goal.record else "")
         return (
             f"{self.shortcuts.get(facts.key, '·')} · {self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch —'} · "
-            f"{'Goal Mode' if goal else 'Interactive'} · {_age(row.started_at, self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
+            f"{'Goal Mode' if goal else 'Interactive'} · Started {format_age(row.started_at, now=self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
             + summary
             + warning
             + (" · " + running if running else "")
@@ -866,9 +896,11 @@ class DashboardApp(App[None]):
         )
         if view is None:
             return "Proposal unavailable"
-        return json.dumps(proposal_presentation(view), indent=2) + "\nApproval remains in chat."
+        return (
+            _line_text(project_facts(proposal_presentation(view))) + "\nApproval remains in chat."
+        )
 
-    def _detail_content(self) -> tuple[str, tuple[str, ...]]:
+    def _detail_content(self) -> tuple[str | Text, tuple[str, ...]]:
         """Detail text for the current view and the published paths it may link."""
         view = self.navigation.view
         if view in {"jobs", "job"}:
@@ -880,7 +912,7 @@ class DashboardApp(App[None]):
                 return "Goal data unavailable", ()
             return (
                 f"{goal.presentation.label}\n{goal.state}\nRequirement: {goal.presentation.requirement}\n{goal.presentation.detail}\n"
-                + _evidence_detail(goal)
+                + _evidence_detail(goal, now=self.snapshot.observed_at)
             ), goal.artifacts
         if view == "help":
             return HELP, ()
@@ -896,28 +928,35 @@ class DashboardApp(App[None]):
         aside.display = dedicated or (nav.view == "jobs" and self.size.width >= 120)
         self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
-        rendered = linked_text(detail, paths)
-        job = self._selected_job() if nav.view in {"job", "jobs"} else None
-        if job is not None:
-            body, spans = _job_detail_document(job, now=self.snapshot.observed_at)
-            prefix = len(detail) - len(body)
-            for start, end in spans:
-                rendered.stylize("dim", prefix + start, prefix + end)
-        self.query_one("#detail", Static).update(rendered)
+        self.query_one("#detail", Static).update(linked_text(detail, paths))
 
-    def _job_detail(self, job: JobView) -> str:
-        return (
-            "Owner: "
-            + _owner_label(
-                job,
-                self.snapshot.sessions,
-                self.snapshot.observed_at,
-                self.snapshot.session_handles,
+    def _job_detail(self, job: JobView) -> Text:
+        rows = _job_rows(job, now=self.snapshot.observed_at)
+        owner = [
+            ResultLine(
+                "Owner",
+                _owner_label(
+                    job,
+                    self.snapshot.sessions,
+                    self.snapshot.observed_at,
+                    self.snapshot.session_handles,
+                ),
             )
-            + (f"\nSession key: {job.record.session_key}" if job.record.session_key else "")
-            + "\n"
-            + job_detail(job, now=self.snapshot.observed_at)
-        )
+        ]
+        if job.record.session_key:
+            owner.append(ResultLine("Session key", job.record.session_key))
+        offset = next(index for index, row in enumerate(rows) if row.label == "Job")
+        rows[offset:offset] = owner
+        detail = Text()
+        for index, row in enumerate(rows):
+            if index:
+                detail.append("\n")
+            if row.label:
+                detail.append(row.label + ":", style=_CHROME)
+                if row.value:
+                    detail.append(" ")
+            detail.append(row.value, style=SEMANTIC_STYLE.get(row.semantic, ""))
+        return detail
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self.navigation = replace(self.navigation, selected=self._selected_key())

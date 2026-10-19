@@ -71,15 +71,36 @@ def declared_runtime_inputs(resolved: ResolvedTarget) -> tuple[str, ...]:
     )
 
 
+def iter_runtime_inputs(inputs: Iterable[TargetInput]) -> Iterator[tuple[TargetInput, str]]:
+    """Yield each source inspection and its declared relative copyto destination."""
+    for item in inputs:
+        copyto = item.attributes.get("copyto")
+        if item.file_type.lower() == "user" and copyto and not Path(str(copyto)).is_absolute():
+            yield item, str(copyto)
+
+
 def preview_runtime_inputs(inputs: Iterable[TargetInput]) -> tuple[str, ...]:
     """Return declared ``copyto`` destinations before FuseSoC resolution."""
-    return tuple(
-        str(copyto)
-        for item in inputs
-        if item.file_type.lower() == "user"
-        and (copyto := item.attributes.get("copyto"))
-        and not Path(str(copyto)).is_absolute()
-    )
+    return tuple(copyto for _item, copyto in iter_runtime_inputs(inputs))
+
+
+def runtime_input_matches(source: Path, destination: Path) -> bool:
+    """Whether the destination preserves the declared input bytes."""
+    return destination.is_file() and filecmp.cmp(source, destination, shallow=False)
+
+
+def destination_parent_conflict(run_cwd: Path, relative: Path) -> str | None:
+    """Describe an existing parent that cannot hold a runtime input."""
+    current = run_cwd
+    for component in relative.parts[:-1]:
+        current /= component
+        if current.is_symlink():
+            return f"run input destination contains a symlink: {relative}"
+        if not current.exists():
+            return None
+        if not current.is_dir():
+            return f"run input destination parent is not a directory: {relative}"
+    return None
 
 
 def _safe_child(root: Path, relative: Path, *, label: str) -> Path:
@@ -160,9 +181,9 @@ def _stage_one(run: Path, item: _RuntimeInput, overlay_root: Path) -> tuple[Path
     if _is_owned_link(destination, item.relative, overlay_root):
         return _replace_owned_link(destination, item.overlay)
     if destination.exists() or destination.is_symlink():
-        if destination.is_file() and filecmp.cmp(item.source, destination, shallow=False):
-            return None
-        raise RuntimeInputError(f"run input conflicts with an existing path: {item.relative}")
+        if not runtime_input_matches(item.source, destination):
+            raise RuntimeInputError(f"run input conflicts with an existing path: {item.relative}")
+        return None
     destination.symlink_to(item.overlay)
     return destination, destination.readlink()
 
@@ -289,8 +310,8 @@ def _materialize_campaign_input(
     required = {"declaration_id", "source_artifact_path", "destination"}
     if set(declaration) != required:
         raise RuntimeInputError("runtime input declaration has unexpected fields")
-    source_relative = _safe_relative(declaration["source_artifact_path"])
-    destination_relative = _safe_relative(declaration["destination"])
+    source_relative = safe_runtime_relative(declaration["source_artifact_path"])
+    destination_relative = safe_runtime_relative(declaration["destination"])
     source = bundle_root / source_relative
     if source.is_symlink() or not source.is_file():
         raise RuntimeInputError(f"declared runtime input is missing: {source_relative}")
@@ -325,9 +346,9 @@ def _expose_campaign_input(
     if owned_run_directory and destination.resolve(strict=False) == authoritative.resolve():
         return "copy", True
     if destination.exists() or destination.is_symlink():
-        if destination.is_file() and filecmp.cmp(authoritative, destination, shallow=False):
-            return "identical_existing", False
-        raise RuntimeInputError(f"run input conflicts with an existing path: {relative}")
+        if not runtime_input_matches(authoritative, destination):
+            raise RuntimeInputError(f"run input conflicts with an existing path: {relative}")
+        return "identical_existing", False
     shutil.copyfile(authoritative, destination, follow_symlinks=False)
     return "copy", True
 
@@ -338,22 +359,17 @@ def _prepare_destination_parent(
     owned_directories: list[Path],
 ) -> None:
     """Create and remember only missing literal-cwd parent directories."""
+    if conflict := destination_parent_conflict(run_cwd, destination):
+        raise RuntimeInputError(conflict)
     current = run_cwd
     for component in destination.parts[:-1]:
         current /= component
-        if current.is_symlink():
-            raise RuntimeInputError(f"run input destination contains a symlink: {destination}")
-        if current.exists():
-            if not current.is_dir():
-                raise RuntimeInputError(
-                    f"run input destination parent is not a directory: {destination}"
-                )
-            continue
-        current.mkdir()
-        owned_directories.append(current)
+        if not current.exists():
+            current.mkdir()
+            owned_directories.append(current)
 
 
-def _safe_relative(value: str) -> Path:
+def safe_runtime_relative(value: str) -> Path:
     path = Path(value)
     if (
         not value
@@ -379,7 +395,11 @@ __all__ = [
     "RuntimeInputBinding",
     "RuntimeInputError",
     "declared_runtime_inputs",
+    "destination_parent_conflict",
+    "iter_runtime_inputs",
     "materialize_campaign_runtime_inputs",
     "materialize_runtime_inputs",
     "preview_runtime_inputs",
+    "runtime_input_matches",
+    "safe_runtime_relative",
 ]

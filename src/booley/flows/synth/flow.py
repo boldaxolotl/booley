@@ -57,6 +57,7 @@ from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
+from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -66,7 +67,7 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
 )
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
@@ -298,7 +299,6 @@ class SynthMetrics:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
-    fanout_policy: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Normalize string-compatible construction at the metrics interface."""
@@ -320,8 +320,6 @@ class SynthMetrics:
             "reg2reg_slack_ns": self.reg2reg_slack_ns,
             "reg2reg_fmax_mhz": self.reg2reg_fmax_mhz,
         }
-        if self.fanout_policy is not None and self.synth_mode == SynthMode.PHYSICAL:
-            detail["fanout_policy"] = self.fanout_policy
         if self.estimated_fmax_mhz is not None:
             detail["estimated_fmax_mhz"] = self.estimated_fmax_mhz
         return detail
@@ -587,19 +585,6 @@ def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
     return latches, comb_loops, multi_driven
 
 
-def _parse_fanout_policy(output: str) -> tuple[dict[str, Any] | None, str]:
-    """Keep malformed external metadata within the boundary failure report."""
-    from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-    policies = re.findall(r"^OPENROAD_FANOUT_POLICY: (.+)$", output, re.MULTILINE)
-    if not policies:
-        return None, ""
-    try:
-        return parse_policy(policies[-1]), ""
-    except (ValueError, TypeError):
-        return None, "malformed native fanout policy"
-
-
 def _parse_synth_output(
     output: str,
     elapsed_s: float,
@@ -624,13 +609,7 @@ def _parse_synth_output(
     process_count = _parse_process_count(output)
     latches, comb_loops, multi_driven = _detect_critical_conditions(output)
     peak_matches = re.findall(r"Peak RSS:\s*([\d.]+)\s*MB", output, re.IGNORECASE)
-    fanout_policy = None
-    infra_error = ""
-    if mode.runs_openroad:
-        fanout_policy, infra_error = _parse_fanout_policy(output)
     return SynthMetrics(
-        fanout_policy=fanout_policy,
-        infra_error=infra_error,
         area_um2=area_um2,
         area_source=area_source,
         area_kge=area_kge,
@@ -751,7 +730,6 @@ def _first_valid_display(
 
 
 _BASELINE_DETAIL_FIELDS = (
-    "fanout_policy",
     "area_um2",
     "area_source",
     "area_kge",
@@ -761,7 +739,6 @@ _BASELINE_DETAIL_FIELDS = (
     "estimated_fmax_mhz",
 )
 _REPORT_QOR_FIELDS = (
-    "fanout_policy",
     "area_kge",
     "area_um2",
     "area_source",
@@ -775,7 +752,6 @@ _REPORT_QOR_FIELDS = (
     "reg2reg_fmax_mhz",
 )
 _REPORT_BASELINE_FIELDS = (
-    "fanout_policy",
     "area_kge",
     "area_um2",
     "area_source",
@@ -1029,7 +1005,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
         "frontend, synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
         "recipe knobs belong in the selected .core Target's flow_options. "
-        "Target max_fanout remains active across PPA profile overrides. "
         "Per-call flags can override ppa_profile, flatten, frontend, and expert "
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement and verdict "
@@ -1362,6 +1337,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         announce_unit(f"{role}: synthesis", target=target)
         observe_logs(
             [plan.build_dir / name for name in ("sv2v.log", "yosys.log", "openroad.log")],
+            target=target,
             temporary=role == "baseline",
         )
         start = time.monotonic()
@@ -1624,48 +1600,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """Interpret a boundary result from its freshness-gated artifacts."""
         outcome, output = self._read_boundary_output(plan, proc_result)
         metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
-        if metrics.infra_error:
-            output += "\nBOOLEY_INPUT_ERROR: " + metrics.infra_error
         self._apply_boundary_completion(metrics, outcome, proc_result, output)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
-        if metrics.fanout_policy is not None and metrics.ppa_complete:
-            self._preserve_fanout(target, plan.build_dir, metrics)
 
         return metrics, output
-
-    def _preserve_fanout(self, target: str, build_dir: Path, metrics: SynthMetrics) -> None:
-        """Publish only complete invocation-owned native point evidence."""
-        assert metrics.fanout_policy is not None
-        worst = metrics.fanout_policy.get("worst_check")
-        if worst is not None:
-            worst.pop("native_check_artifact", None)
-        destination = None
-        created = False
-        try:
-            invocation = self.reserve_invocation_dir()
-            if invocation is None:
-                return
-            root = Path(getattr(self, "_project_root", None) or self.args.work_dir)
-            role = getattr(self, "_execution_role", "candidate")
-            components = ("artifacts", f"synth_{synth_target_report_slug(target)}", "fanout", role)
-            destination = invocation.joinpath(*components)
-            created = not destination.exists()
-            for name in ("worst.rpt", "policy.json"):
-                artifacts.publish_file(
-                    invocation,
-                    (*components, name),
-                    build_dir / "reports" / "fanout" / name,
-                    work_dir=root,
-                )
-        except (OSError, ValueError):
-            if created and destination is not None:
-                shutil.rmtree(destination, ignore_errors=True)
-            logger.warning(
-                "could not publish numbered synth fanout evidence for %s", target, exc_info=True
-            )
-            return
-        if worst is not None:
-            worst["native_check_artifact"] = posix_relpath(destination, root)
 
     def _artifact_dirs(self, target: str, synth_mode: SynthMode | None) -> dict[str, str]:
         """The directories holding *target*'s synth artifacts, by role.
@@ -2354,6 +2292,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                         tgt,
                         metrics,
                         baseline_results.get(tgt),
+                        human=True,
                     )
                 )
         return current_results
@@ -2711,6 +2650,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         tgt: str,
         cur: SynthMetrics,
         base: SynthMetrics | None,
+        *,
+        human: bool = False,
     ) -> str:
         """Format one target's area/timing/elapsed line."""
         area_str = self._fmt_area(cur.area_kge)
@@ -2719,23 +2660,30 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             if cur.synth_mode is SynthMode.LOGICAL
             else self._fmt_timing(_worst_critical_path_ps(cur))
         )
-        elapsed_str = f"{cur.elapsed_s:.1f}s"
+        elapsed_str = format_duration(cur.elapsed_s) if human else f"{cur.elapsed_s:.1f}s"
         if base:
             area_delta = self._compute_delta_pct(cur.area_kge, base.area_kge)
             timing_delta = self._compute_delta_pct(
                 _worst_critical_path_ps(cur),
                 _worst_critical_path_ps(base),
             )
-            return (
+            line = (
                 f"[synth] {tgt:<10}"
                 f"{area_str} {self._fmt_delta(area_delta):>20}   "
                 f"{timing_str} {self._fmt_delta(timing_delta):>20}   "
                 f" {elapsed_str}{self._format_status_suffix(cur)}"
             )
+        else:
+            line = (
+                f"[synth] {tgt:<10}"
+                f"{area_str}   {timing_str}    {elapsed_str}"
+                f"{self._format_status_suffix(cur)}"
+            )
+
         return (
-            f"[synth] {tgt:<10}"
-            f"{area_str}   {timing_str}    {elapsed_str}"
-            f"{self._format_status_suffix(cur)}"
+            ProgressText(line, record_text=self._format_config_line(tgt, cur, base))
+            if human
+            else line
         )
 
     @staticmethod

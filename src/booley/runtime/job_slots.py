@@ -73,7 +73,7 @@ from booley.runtime.pid import (
     is_pid_alive,
     observe_process,
 )
-from booley.runtime.timefmt import rfc3339_from_epoch
+from booley.runtime.timefmt import format_duration, rfc3339_from_epoch
 
 __all__ = ["SlotCaps", "parse_caps"]
 
@@ -335,13 +335,13 @@ def _argv_label(argv: list[str]) -> str:
 
 
 def _describe_holder(tok: SlotToken, now: float) -> str:
-    """Render one holder as ``pid 123 (sim), held 10m12s``."""
+    """Render one holder as ``pid 123 (sim), held 10m 12s``."""
     label = _argv_label(tok.argv) or tok.role
     started = parse_stamp(tok.promoted_at) or parse_stamp(tok.created_at)
     if started is None:
         return f"pid {tok.pid} ({label})"
-    held = max(0, int(now - started))
-    return f"pid {tok.pid} ({label}), held {held // 60}m{held % 60:02d}s"
+    held = now - started
+    return f"pid {tok.pid} ({label}), held {format_duration(held)}"
 
 
 _default_pid_alive = is_pid_alive

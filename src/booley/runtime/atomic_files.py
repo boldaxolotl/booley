@@ -6,6 +6,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from booley.runtime.filesystem_utils import replace_file
+
 
 class WriteOnceConflictError(RuntimeError):
     """A write-once path already contains different bytes."""
@@ -49,7 +51,7 @@ def atomic_replace_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> No
     """Publish complete bytes at *path* with one atomic replacement."""
     temporary = _staged_bytes(path, content, mode)
     try:
-        temporary.replace(path)
+        replace_file(temporary, path)
         fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)

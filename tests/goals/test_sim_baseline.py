@@ -416,7 +416,9 @@ def test_sim_goal_added_by_approved_change_schedules_at_original_base(layout, mo
 
     record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     (layout.worktree / "rtl.v").write_bytes(b"module changed; endmodule\n")
-    env = ChangeEnvironment(EntryEnvironment(layout.control))
+    env = ChangeEnvironment(
+        EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance.")
+    )
     proposal = create_proposal(
         env,
         record.id,
@@ -488,6 +490,7 @@ def test_automatic_entry_launches_without_running_simulation(layout):
         schedule_baselines=lambda record: schedule_sim_baselines(
             layout.control, record, launch=launch
         ),
+        routing_guidance="Explicit test routing guidance.",
     )
     record = enter_goal_mode(
         EntryRequest(
@@ -514,7 +517,11 @@ def test_entry_launch_error_never_rolls_back_goal_mode(layout):
         EntryRequest(
             layout.worktree, "report-only", parse_goal_args([{"family": "SIM", "target": "top"}])
         ),
-        EntryEnvironment(layout.control, schedule_baselines=broken),
+        EntryEnvironment(
+            layout.control,
+            schedule_baselines=broken,
+            routing_guidance="Explicit test routing guidance.",
+        ),
     ).record
     assert record.state is GoalState.ACTIVE
 
@@ -666,6 +673,29 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
     assert not list(layout.control.glob(".baseline-wt-*"))
 
 
+def test_baseline_request_publication_tolerates_a_windows_reader(tmp_path, monkeypatch):
+    path = tmp_path / "request.json"
+    write_document(path, {"schema": "booley.sim-baseline/v1", "status": "pending"})
+    replace_path = Path.replace
+    blocked = False
+
+    def replace_after_reader_closes(source, destination):
+        nonlocal blocked
+        if destination == path and not blocked:
+            blocked = True
+            error = PermissionError("request reader has the destination open")
+            error.winerror = 5
+            raise error
+        return replace_path(source, destination)
+
+    monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
+    complete = {"schema": "booley.sim-baseline/v1", "status": "complete"}
+    write_document(path, complete)
+
+    assert read_document(path) == complete
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def test_unversioned_protected_program_is_captured_with_executable_state(layout):
     hook = layout.worktree / ".booley/hooks/build.py"
     hook.parent.mkdir()
@@ -726,7 +756,7 @@ def test_second_real_entry_on_same_base_reuses_baseline_without_launch(baseline)
     (other / ".booley/tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
     second = enter_goal_mode(
         EntryRequest(other, "second-real", parse_goal_args([{"family": "SIM", "target": "top"}])),
-        EntryEnvironment(baseline.control),
+        EntryEnvironment(baseline.control, routing_guidance="Explicit test routing guidance."),
     ).record
     _schedule(baseline, second)
     assert second.protected_digest == baseline.record.protected_digest

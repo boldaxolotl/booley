@@ -40,7 +40,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | Field | Contents |
 |---|---|
 | `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
-| `exit_code`, `passed` | The overall result. |
+| `exit_code`, `passed` | Execution result: `passed` means exit `0`, independently of Criterion satisfaction. |
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
@@ -254,7 +254,10 @@ and enclosing Simulation Campaign together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
-has been written.
+has been written. A coverage threshold miss exits `0` when execution succeeds.
+For an acceptance-bound invocation with one evaluated Criterion,
+`criterion_met` is false on that miss; unbound reports omit Criterion fields
+while retaining the per-Target evaluation.
 
 New coverage builds also publish `declarations/inventory.json`, registered as
 artifact kind `declaration_inventory` with `contract_version:
@@ -313,6 +316,10 @@ produce. An interrupted cleanup is safe to retry with the same arguments.
 | `target_results[]` | Per Target: `target`, `eda_tool`, raw `warnings` count (before deduplication and `--scope`), `files_linted`, `toplevel`, `toplevel_linted`, `duration_s`, `error`, and `log`. |
 | `artifacts` | The report and per-Target logs. |
 
+The invocation `report.json` puts `targets`, `eda_tools`, `total_warnings`,
+and artifact references in `detail`. Individual `warnings[]` and
+`target_results[]` remain in `lint_report.json`, rather than in that Job detail.
+
 ## `synth`
 
 `synth_<target>.json` (a qualified selector becomes a sanitized file name with
@@ -325,7 +332,6 @@ a hash suffix):
 | `yosys_complete`, `timing_complete`, `structural_checks_complete`, `ppa_complete`, `peak_rss_mb` | Which stages finished, and peak memory. |
 | `area_um2`, `area_source`, `area_kge`, `cells` | Area and cell count. |
 | `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. Logical mode reports `estimated_fmax_mhz` instead. |
-| `fanout_policy` | Physical mode only: the fanout limit that repair used (below). |
 | `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical`. |
 | `total_warnings`, `warning_summary` | Warning count, plus `unique_warnings` and counts grouped by tool, category, and disposition, with a few sample messages. |
 | `baseline`, `delta_pct`, `timing_delta_pct` | With `--baseline`: the baseline's metrics and the deltas. `baseline.ref` is the compared revision. |
@@ -334,19 +340,6 @@ a hash suffix):
 | `run_evidence`, `baseline_run_evidence` | Source and recipe provenance for each side. |
 | `failure_output`, `io_bound_critical` | A failure excerpt, and whether the critical path runs through I/O. |
 | `artifacts` | The report, run log, build directory, and timing directory. |
-
-`fanout_policy` fields:
-
-| Field | Meaning |
-|---|---|
-| `configured_max_fanout` | The Target's `max_fanout`, or null. |
-| `suppression_reason` | `authored_sdc_fanout` when an SDC fanout limit replaced the setting, else null. |
-| `design_rule` | The design-wide limit: `scope` (`current_design`), `max_fanout`, and `source` (`sdc`, `setting`, or `booley_default`). `booley_default` has a null `max_fanout`: no limit. |
-| `status` | `observed`, or `no_applicable_driver` when the design has no fanout check. |
-| `worst_check` | The driver with the least fanout slack: `pin`, `max_fanout`, `source` (as above, plus `library`), `selection` (`minimum_slack`), and `analysis_mode` (`default`). Null with `no_applicable_driver`. `native_check_artifact`, when present, is the directory holding OpenROAD's `worst.rpt` and `policy.json` for this run. |
-
-`worst_check` describes one driver, not every net. Limits are OpenROAD's
-single-precision values, so an SDC limit of `20.1` reads `20.100000381469727`.
 
 Actionable warnings set `grade: "warn"` but keep `passed: true`. Known-benign
 warnings are still counted, with a rationale. `artifacts.log` has every raw
@@ -369,6 +362,10 @@ message.
 | `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
 | `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
 | `artifacts` | The report, run log, and build, synthesis, and implementation directories. |
+
+The invocation `report.json` keeps per-Target metrics in
+`detail.implementation.results.<target>.metrics`, alongside `status` and
+`conditions`. The top-level `metrics` above belongs to the per-Target side report.
 
 The baseline and candidate may use different PPA profiles, but a comparison is
 refused when their measurement recipes differ.

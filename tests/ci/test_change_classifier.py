@@ -479,6 +479,23 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
 
 @pytest.mark.parametrize(
     "path",
+    ["website/docs/index.md", "website/docs/stylesheets/terminal.css", "website/mkdocs.yml"],
+)
+def test_project_site_changes_run_the_site_contract_tests(tmp_path: Path, path: str) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "project site change")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["docs"] == "true"
+    assert outputs["python_tests"] == "true"
+    assert outputs["full"] == "false"
+    assert {"docs-check", "test"} <= _required(outputs)
+
+
+@pytest.mark.parametrize(
+    "path",
     [
         "tests/bwave/test_contract.py",
         "src/booley/bwave/cli.py",
@@ -866,16 +883,3 @@ def test_demo_evidence_and_fixture_inputs_select_riscv_validation_without_git(pa
     from ci_changes import classify
 
     assert "riscv_image" in classify([path])
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        ".github/scripts/verify_openroad_fanout.py",
-        "tests/docker/openroad_fanout_acceptance.py",
-    ],
-)
-def test_fanout_native_paths_use_existing_release_runtime_prefixes(path):
-    from ci_changes import classify
-
-    assert {"release_sensitive", "standard_image"} <= classify([path])

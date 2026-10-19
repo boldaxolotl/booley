@@ -36,6 +36,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from time import monotonic
 from urllib.parse import unquote, urlsplit
@@ -47,10 +48,8 @@ if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
 
 from commit_msg_utils import (
-    StealthPolicy,
     allowed_authors,
     identity_allowed,
-    source_checkout_policy_owner,
     stealth_enabled,
     stealth_policy,
 )
@@ -319,26 +318,27 @@ class _Inspection(_Protocol):
         requested = list(dict.fromkeys(ids))
         if not requested:
             return {}
-        raw = self.git(["cat-file", "--batch"], data=("\n".join(requested) + "\n").encode())
-        offset = 0
+        batch = BytesIO(
+            self.git(["cat-file", "--batch"], data=("\n".join(requested) + "\n").encode())
+        )
         result = {}
         for oid in requested:
-            end = raw.find(b"\n", offset)
-            if end < 0:
+            line = batch.readline()
+            if not line.endswith(b"\n"):
                 raise InspectionError("truncated Git object batch")
-            header = raw[offset:end].decode("ascii").split()
-            offset = end + 1
+            header = line.decode("ascii").split()
             if header == [oid, "missing"]:
                 result[oid] = None
                 continue
             if len(header) != 3 or header[0] != oid or not header[2].isdigit():
                 raise InspectionError("malformed Git object batch")
             size = int(header[2])
-            if offset + size >= len(raw) or raw[offset + size] != 10:
+            if size >= len(batch.getbuffer()) - batch.tell():
                 raise InspectionError("truncated Git object contents")
-            result[oid] = (header[1], raw[offset : offset + size])
-            offset += size + 1
-        if offset != len(raw):
+            result[oid] = (header[1], batch.read(size))
+            if batch.read(1) != b"\n":
+                raise InspectionError("truncated Git object contents")
+        if batch.read(1):
             raise InspectionError("unexpected Git object batch trailer")
         return result
 
@@ -697,17 +697,16 @@ def _batch_trees(inspection, commits):
     result = {sha: [] for sha in commits}
     framed = set()
     current = None
-    offset = 0
-    while offset < len(fields) - 1:
-        field = fields[offset]
-        offset += 1
+    fields = iter(fields[:-1])
+    for field in fields:
         if not field.startswith(b":"):
             current = field.decode("ascii")
             if current not in result:
                 raise InspectionError("unexpected changed-tree commit frame")
             framed.add(current)
             continue
-        if current is None or offset >= len(fields) - 1:
+        raw_path = next(fields, None)
+        if current is None or raw_path is None:
             raise InspectionError("missing changed-tree frame or path")
         metadata = field.decode("ascii").split()
         if (
@@ -716,8 +715,7 @@ def _batch_trees(inspection, commits):
             or not inspection.oid(metadata[3])
         ):
             raise InspectionError("malformed changed-tree entry")
-        path = fields[offset].decode("utf-8", "replace")
-        offset += 1
+        path = raw_path.decode("utf-8", "replace")
         if not path or path.startswith("/") or ".." in Path(path).parts:
             raise InspectionError("invalid committed path")
         if metadata[1] != "000000":
@@ -771,36 +769,6 @@ def _inspect_commits(inspection, commits, allowlist, booley_dir, policy):
     return offenders
 
 
-# Identity fields first, one per line, then the message last — the message is
-# the only multi-line field, so putting it at the end makes the split
-# unambiguous without needing a separator that could occur inside a name.
-_COMMIT_FORMAT = "%an%n%ae%n%cn%n%ce%n%B"
-_IDENTITY_FIELDS = 4
-
-
-def _commit_facts(sha: str) -> tuple[str, str, str, str, str] | None:
-    """``(author_name, author_email, committer_name, committer_email, message)``.
-
-    None when Git cannot read the commit; callers refuse incomplete inspection.
-    """
-    result = subprocess.run(
-        ["git", "log", "-1", f"--format={_COMMIT_FORMAT}", sha],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=10,
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    lines = result.stdout.split("\n")
-    if len(lines) < _IDENTITY_FIELDS + 1:
-        return None
-    author_name, author_email, committer_name, committer_email = lines[:_IDENTITY_FIELDS]
-    message = "\n".join(lines[_IDENTITY_FIELDS:])
-    return author_name, author_email, committer_name, committer_email, message
-
-
 def _repository_root() -> Path | None:
     """Return the current repository root, or ``None`` when Git cannot."""
     try:
@@ -830,75 +798,6 @@ def _guard_booley_dir(repository_root: Path) -> Path | None:
     except (ImportError, FileNotFoundError):
         hook_dir = hook_file.parent
         return hook_dir.parent if hook_dir.name == "hooks" else None
-
-
-def _changed_tree_entries(sha: str) -> list[_TreeEntry] | None:
-    """Changed non-deleted entries in *sha*, read from committed trees."""
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "diff-tree",
-                "--root",
-                "-m",
-                "-r",
-                "--no-commit-id",
-                "--no-renames",
-                "--raw",
-                "-z",
-                sha,
-            ],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-
-    fields = result.stdout.split(b"\0")
-    if fields and fields[-1] == b"":
-        fields.pop()
-    if len(fields) % 2:
-        return None
-    entries: list[_TreeEntry] = []
-    for offset in range(0, len(fields), 2):
-        metadata = fields[offset].decode("ascii", errors="replace").split()
-        if len(metadata) != 5 or not metadata[0].startswith(":"):
-            return None
-        mode, object_id = metadata[1], metadata[3]
-        if mode != "000000":
-            path = fields[offset + 1].decode("utf-8", errors="replace")
-            entries.append(_TreeEntry(mode, object_id, path))
-    return entries
-
-
-def _symlink_target(entry: _TreeEntry) -> tuple[str | None, str | None]:
-    """Return a committed symlink target and an inspection error, if any."""
-    try:
-        size_result = subprocess.run(
-            ["git", "cat-file", "-s", entry.object_id],
-            capture_output=True,
-            text=True,
-            encoding="ascii",
-            timeout=10,
-            check=False,
-        )
-        size = int(size_result.stdout.strip()) if size_result.returncode == 0 else -1
-        if size < 0 or size > _MAX_SYMLINK_TARGET_BYTES:
-            return None, f"cannot safely inspect symlink target: {entry.path}"
-        blob_result = subprocess.run(
-            ["git", "cat-file", "blob", entry.object_id],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None, f"cannot inspect symlink target: {entry.path}"
-    if blob_result.returncode != 0:
-        return None, f"cannot inspect symlink target: {entry.path}"
-    return blob_result.stdout.decode("utf-8", errors="replace"), None
 
 
 def _inside_project_state(path: Path, booley_dir: Path | None) -> bool:
@@ -931,79 +830,30 @@ def _inside_checkout_or_runtime_project_state(
     return inside_checkout_state or _inside_project_state(path, booley_dir)
 
 
-def _tree_offenses(
-    sha: str,
-    repository_root: Path,
-    booley_dir: Path | None,
-    policy: StealthPolicy,
-) -> list[str]:
-    entries = _changed_tree_entries(sha)
-    if entries is None:
-        return ["cannot inspect changed tracked paths"]
-
-    return _entry_offenses(entries, repository_root, booley_dir, policy)
-
-
-def _entry_offenses(entries, repository_root, booley_dir, policy, targets=None):
+def _entry_offenses(entries, repository_root, booley_dir, policy, targets):
     offenses: list[str] = []
     for entry in entries:
-        path_leaks = policy.find_banned(entry.path)
         tracked_path = repository_root / entry.path
-        if path_leaks:
-            offenses.append(
-                f"tracked path has banned terms ({', '.join(sorted(set(path_leaks)))}): "
-                f"{entry.path}"
+        inspected = [("tracked path", entry.path, tracked_path, entry.path)]
+        if entry.mode == _SYMLINK_MODE:
+            target = targets[entry.object_id]
+            inspected.append(
+                (
+                    "symlink target",
+                    target,
+                    tracked_path.parent / target,
+                    f"{entry.path} -> {target}",
+                )
             )
-        if _inside_checkout_or_runtime_project_state(tracked_path, repository_root, booley_dir):
-            offenses.append(f"tracked path exposes project state: {entry.path}")
-        if entry.mode != _SYMLINK_MODE:
-            continue
-        target, error = (
-            _symlink_target(entry) if targets is None else (targets[entry.object_id], None)
-        )
-        if error:
-            offenses.append(error)
-            continue
-        assert target is not None
-        target_leaks = policy.find_banned(target)
-        target_path = tracked_path.parent / target
-        if target_leaks:
-            offenses.append(
-                f"symlink target has banned terms ({', '.join(sorted(set(target_leaks)))}): "
-                f"{entry.path} -> {target}"
-            )
-        if _inside_checkout_or_runtime_project_state(target_path, repository_root, booley_dir):
-            offenses.append(f"symlink target exposes project state: {entry.path} -> {target}")
+        for kind, text, path, display in inspected:
+            leaks = policy.find_banned(text)
+            if leaks:
+                offenses.append(
+                    f"{kind} has banned terms ({', '.join(sorted(set(leaks)))}): {display}"
+                )
+            if _inside_checkout_or_runtime_project_state(path, repository_root, booley_dir):
+                offenses.append(f"{kind} exposes project state: {display}")
     return list(dict.fromkeys(offenses))
-
-
-def _commit_offenses(
-    sha: str,
-    allowlist: list[str],
-    *,
-    repository_root: Path | None = None,
-    booley_dir: Path | None = None,
-    policy: StealthPolicy | None = None,
-) -> list[str]:
-    """Human-readable reasons this commit must not be pushed (empty = fine)."""
-    root = repository_root or _repository_root()
-    if source_checkout_policy_owner(root):
-        return []
-
-    active_policy = policy or stealth_policy(root)
-    if not active_policy.enabled:
-        return []
-
-    facts = _commit_facts(sha)
-    if facts is None:
-        return ["cannot inspect commit facts"]
-    offenses = _fact_offenses(facts, allowlist, active_policy)
-    if root is None:
-        offenses.append("cannot resolve repository root to inspect tracked metadata")
-    else:
-        state = booley_dir if booley_dir is not None else _guard_booley_dir(root)
-        offenses.extend(_tree_offenses(sha, root, state, active_policy))
-    return offenses
 
 
 def _fact_offenses(facts, allowlist, active_policy):

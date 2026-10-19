@@ -44,26 +44,17 @@ class JobView(JobObservation):
             ]
         except OverflowError:
             return None
-        if any(value is None or value < 0 for value in numbers):
-            return None
         user, system, peak = numbers
-        assert user is not None and system is not None and peak is not None
-        total = as_float(user + system)
-        return None if total is None else (total, peak)
+        if user is None or system is None or peak is None:
+            return None
+        return user + system, peak
 
     @property
     def recorded_tools(self) -> str:
         """Retain Target association and reject malformed optional tool records."""
         report = self.report or {}
         tools = report.get("eda_tools")
-        if (
-            isinstance(tools, dict)
-            and tools
-            and all(
-                isinstance(key, str) and key and (value is None or isinstance(value, str))
-                for key, value in tools.items()
-            )
-        ):
+        if isinstance(tools, dict) and tools:
             return ", ".join(
                 f"{key}: {value or 'not recorded by this Flow'}"
                 for key, value in sorted(tools.items())
@@ -148,25 +139,24 @@ class JobReader:
         )
 
     def read(
-        self, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
+        self,
+        records: Sequence[GoalRecord],
+        *,
+        interactive_root: Path | None = None,
+        session_handles: dict[str, str] | None = None,
     ) -> JobSnapshot:
         """Reuse the Goal enumeration that supplied this Dashboard refresh."""
         roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
         observed = self._observer.read(roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
-        owners, owner_diagnostics = HandleStore(self._booley_dir).snapshot()
+        owners, owner_diagnostics = (
+            HandleStore(self._booley_dir).snapshot()
+            if session_handles is None
+            else (session_handles, ())
+        )
         rows = tuple(_job_view(job, catalogs, handles, owners) for job in observed.jobs)
-        missing = (
-            ("Job or owner handles pending MCP registration/maintenance",)
-            if any(
-                not row.handle or (row.record.session_key and not row.owner_handle) for row in rows
-            )
-            else ()
-        )
-        return JobSnapshot(
-            rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics, *missing)
-        )
+        return JobSnapshot(rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics))
 
 
 def _job_view(

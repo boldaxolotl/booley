@@ -16,7 +16,6 @@ from typing import NamedTuple
 from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 from booley.flows.synth.timing import StaTimingConfig
 
-from .fanout import policy_tcl
 from .reporting import (
     perclock_timing_tcl,
     reg2reg_timing_tcl,
@@ -158,7 +157,6 @@ def write_openroad_script(
     *,
     target: str,
     source_sdc_paths: tuple[Path, ...],
-    fanout_report_dir: Path | None = None,
 ) -> Path:
     """Write the Tcl script driving OpenROAD placement + repair + timing report.
 
@@ -190,13 +188,6 @@ def write_openroad_script(
     pre_rpt = (report_dir / "pre_repair.rpt").as_posix()
     pre_csv = (report_dir / "pre_repair.csv.rpt").as_posix()
     pre_repair_block = _pre_repair_snapshot_tcl(config, pre_rpt, pre_csv)
-    fanout_block = policy_tcl(
-        fanout_report_dir or work_dir / "reports" / "fanout", config.max_fanout
-    )
-    fanout_block = fanout_block.replace(
-        "booley_fanout::initialize\n",
-        "set _fanout_boundary_code [catch {\nbooley_fanout::initialize\n",
-    )
     read_sdc = "\n".join(f"read_sdc {{{path.as_posix()}}}" for path in sdc_paths)
     source_names = ", ".join(path.as_posix() for path in source_sdc_paths)
     error_message = _tcl_quoted(
@@ -209,14 +200,7 @@ read_lef {{{pdk.stdcell_lef.as_posix()}}}
 read_liberty {{{liberty.as_posix()}}}
 read_verilog {{{sta_netlist.as_posix()}}}
 link_design {design_name}
-{fanout_block}set _fanout_sdc_code [catch {{
 {read_sdc}
-booley_fanout::authored_done
-}} _fanout_sdc_result _fanout_sdc_options]
-if {{$_fanout_sdc_code}} {{
-  booley_fanout::cleanup
-  return -options $_fanout_sdc_options $_fanout_sdc_result
-}}
 if {{[llength [all_clocks]] == 0}} {{ error "{error_message}" }}
 foreach _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
 puts "BOOLEY_STAGE: floorplan"
@@ -236,12 +220,6 @@ place_pins -hor_layers {_PIN_HOR_LAYER} -ver_layers {_PIN_VER_LAYER}
 puts "BOOLEY_STAGE: global_placement"
 global_placement -density {density:.3f} -pad_left {_GP_PAD_SITES} -pad_right {_GP_PAD_SITES}
 estimate_parasitics -placement
-booley_fanout::checkpoint
-}} _fanout_boundary_result _fanout_boundary_options]
-booley_fanout::cleanup
-if {{$_fanout_boundary_code}} {{
-  return -options $_fanout_boundary_options $_fanout_boundary_result
-}}
 puts "BOOLEY_STAGE: repair_design"
 repair_design
 repair_tie_fanout -separation 5 LOGIC0_X1/Z

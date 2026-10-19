@@ -138,7 +138,14 @@ def test_entering_record_is_refused(layout: SimpleNamespace) -> None:
         goals=parse_goal_args([{"family": "LINT", "target": "top"}]),
     )
     with pytest.raises(_Crash):
-        enter_goal_mode(request, EntryEnvironment(booley_dir=layout.control, on_boundary=crash))
+        enter_goal_mode(
+            request,
+            EntryEnvironment(
+                booley_dir=layout.control,
+                on_boundary=crash,
+                routing_guidance="Explicit test routing guidance.",
+            ),
+        )
 
     with pytest.raises(GoalBindingError, match="is entering"):
         bind_run(_store(layout), layout.worktree, "run-1")

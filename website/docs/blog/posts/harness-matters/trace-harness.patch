@@ -1,0 +1,57 @@
+diff --git a/src/integration/tb/test_caliptra_top_tb.cpp b/src/integration/tb/test_caliptra_top_tb.cpp
+index 34d6e674..26f08f51 100644
+--- a/src/integration/tb/test_caliptra_top_tb.cpp
++++ b/src/integration/tb/test_caliptra_top_tb.cpp
+@@ -38,21 +38,32 @@ int main(int argc, char** argv) {
+ 
+   // init trace dump
+ #if VM_TRACE
+-  Verilated::traceEverOn(true);
++  bool trace_enabled = false;
++  for (int index = 1; index < argc; ++index) {
++    trace_enabled = trace_enabled || std::string(argv[index]) == "+trace";
++  }
+   #if VM_TRACE_VCD
+-    VerilatedVcdC* tfp = new VerilatedVcdC;
+-    tb->trace (tfp, 24);
+-    tfp->open ("sim.vcd");
++    VerilatedVcdC* tfp = nullptr;
+   #elif VM_TRACE_FST
+-    VerilatedFstC* tfp = new VerilatedFstC;
+-    tb->trace (tfp, 24);
+-    tfp->open ("sim.fst");
++    VerilatedFstC* tfp = nullptr;
+   #endif
++  if (trace_enabled) {
++    Verilated::traceEverOn(true);
++    #if VM_TRACE_VCD
++      tfp = new VerilatedVcdC;
++      tb->trace (tfp, 4);
++      tfp->open ("sim.vcd");
++    #elif VM_TRACE_FST
++      tfp = new VerilatedFstC;
++      tb->trace (tfp, 4);
++      tfp->open ("sim.fst");
++    #endif
++  }
+ #endif
+   // Simulate
+   while(!Verilated::gotFinish()){
+ #if VM_TRACE
+-      tfp->dump (main_time);
++      if (tfp) tfp->dump (main_time);
+ #endif
+       main_time += 1;
+       // Toggle every 5ns (timescale precision is 100ps)
+@@ -57,7 +65,10 @@ int main(int argc, char** argv) {
+   }
+ 
+ #if VM_TRACE
+-  tfp->close();
++  if (tfp) {
++    tfp->close();
++    delete tfp;
++  }
+ #endif
+ 
+   std::cout << "\nVerilatorTB: End of sim" << std::endl;

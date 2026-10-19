@@ -336,15 +336,19 @@ def compute_source_size_budget(scope_files: list[str], work_dir: Path) -> dict:
     source_bytes = 0
     source_lines = 0
     readable_files = 0
+    files = []
     for rel in scope_files:
         path = Path(rel) if Path(rel).is_absolute() else work_dir / rel
         source = path.read_bytes()
         readable_files += 1
         source_bytes += len(source)
-        source_lines += source.count(b"\n") + int(bool(source) and not source.endswith(b"\n"))
+        lines = source.count(b"\n") + int(bool(source) and not source.endswith(b"\n"))
+        source_lines += lines
+        files.append({"path": rel, "source_lines": lines, "source_bytes": len(source)})
     formula_count = max(MIN_COUNT, min(MAX_COUNT, round(math.sqrt(source_lines or 1))))
 
     return {
+        "files": files,
         "method": "language_neutral_source_size",
         "readable_files": readable_files,
         "source_lines": source_lines,
@@ -1020,13 +1024,14 @@ replacement must differ, and every proposal must remain a single source edit.
         """Resolve the mutation count (int | "auto").
 
         Returns ``(count, source_size_budget, formula_count, auto_mode)`` and emits the
-        matching progress line for either the auto-scaled or fixed-count path.
+        matching progress line.
         """
         if self.args.count == "auto":
             source_size_budget = compute_source_size_budget(scope_files, work_dir)
             formula_count = source_size_budget["formula_count"]
             timeout = self.timeout_seconds()
             budget_cap = max(3, timeout // 150)
+            source_size_budget.update(timeout_seconds=timeout, budget_cap=budget_cap)
             count = min(formula_count, budget_cap)
             auto_mode = True
         else:
@@ -1110,8 +1115,14 @@ replacement must differ, and every proposal must remain a single source edit.
             f"scope={len(plan.scope_files)} file(s); top={plan.tb_top}; "
             f"count={plan.count}; min_detected={plan.min_detected}"
         )
-        return self._dry_run_result(
-            summary=summary,
+        lines = (
+            self._auto_count_explanation(plan, budget)
+            if plan.auto_mode
+            else [f"count source: fixed; count={plan.count} (not auto-derived)"]
+        )
+        lines.append(summary)
+        result = self._dry_run_result(
+            summary="\n".join(lines),
             detail={
                 "target": plan.target,
                 "scope": plan.scope_files,
@@ -1123,6 +1134,24 @@ replacement must differ, and every proposal must remain a single source edit.
                 "source_size_budget": budget,
             },
         )
+        result.display_lines = lines
+        result.summary = summary
+        return result
+
+    def _auto_count_explanation(self, plan: MutationRunPlan, budget: dict) -> list[str]:
+        """Render the source formula and time cap that resolved this preview's count."""
+        total = budget["source_lines"]
+        files = [
+            f"  {f['path']}: {f['source_lines']} lines ({f['source_bytes']} bytes)"
+            for f in budget["files"]
+        ]
+        return [
+            "source-size breakdown (source lines drive the count):",
+            *files,
+            f"total: {total} lines -> clamp(round(sqrt({total} or 1)), 3, 25) = {plan.formula_count}",
+            f"time cap: max(3, {budget['timeout_seconds']}s // 150) = {budget['budget_cap']}",
+            f"count (auto): min({plan.formula_count}, {budget['budget_cap']}) = {plan.count}",
+        ]
 
     @staticmethod
     def _validate_count(count: int, min_detected: int) -> McpToolResult | None:

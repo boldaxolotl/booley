@@ -59,11 +59,12 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.target_parameters import vlogparam_specs
+from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent
@@ -361,7 +362,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             )
             if len(targets) > 1:
                 self.emit_completion(
-                    self._format_config_line(tgt, metrics, baseline_results.get(tgt))
+                    self._format_config_line(tgt, metrics, baseline_results.get(tgt), human=True)
                 )
         return current_results
 
@@ -762,7 +763,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         role = getattr(self, "_execution_role", "candidate")
         self._open_run_log(target, prepared.work_root)
         announce_unit(f"{role}: Vivado running", target=target)
-        observe_logs(list(getattr(prepared, "console_logs", ())), temporary=role == "baseline")
+        observe_logs(
+            list(getattr(prepared, "console_logs", ())),
+            target=target,
+            temporary=role == "baseline",
+        )
 
     def _run_single_target(self, target: str) -> FpgaMetrics:
         """Configure, run, and interpret Vivado inside the Sandbox."""
@@ -1468,7 +1473,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         return detail
 
     @staticmethod
-    def _format_config_line(cfg: str, cur: FpgaMetrics, base: FpgaMetrics | None) -> str:
+    def _format_config_line(
+        cfg: str, cur: FpgaMetrics, base: FpgaMetrics | None, *, human: bool = False
+    ) -> str:
         parts = [
             f"{cur.lut_count:,} LUTs" if cur.lut_count is not None else "-- LUTs",
             f"{cur.ff_count:,} FFs" if cur.ff_count is not None else "-- FFs",
@@ -1489,7 +1496,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             if len(cur.per_clock) > 1:
                 label += f" (worst: {worst.clock})"
             parts.append(label)
-        parts.append("cached" if cur.cached else f"{cur.elapsed_s:.1f}s")
+        parts.append(
+            "cached"
+            if cur.cached
+            else (format_duration(cur.elapsed_s) if human else f"{cur.elapsed_s:.1f}s")
+        )
         if base:
             deltas = []
             for label, cur_val, base_val in (
@@ -1509,7 +1520,12 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             suffix = " ERROR"
         elif not cur.passed:
             suffix = " FAIL"
-        return f"[fpga] {cfg:<16}" + "   ".join(parts) + suffix
+        line = f"[fpga] {cfg:<16}" + "   ".join(parts) + suffix
+        return (
+            ProgressText(line, record_text=FpgaImplFlow._format_config_line(cfg, cur, base))
+            if human
+            else line
+        )
 
     @staticmethod
     def _format_critical_line(cfg: str, cur: FpgaMetrics) -> str:

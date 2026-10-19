@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from argparse import Namespace
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -245,6 +248,7 @@ def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None
     elif command == "auth":
         from booley.harness import auth_cmd
 
+        monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
         monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
     else:
         from booley.runtime import issuance_invalidation
@@ -368,6 +372,135 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
 
     assert tlr._session_up(tlr._build_parser().parse_args(["session", "up"]), tmp_path) == 0
     assert events == ["observe", "up"]
+
+
+def _health_project_views(tmp_path: Path, *, force_copy: bool) -> tuple[Path, Path, Path]:
+    host = tmp_path / "host-project"
+    directory = host / ".booley"
+    directory.mkdir(parents=True)
+    (directory / "booley.toml").write_text("[project]\nname = 'unit'\n")
+    (host / "design.core").write_text("authored core")
+    sandbox = tmp_path / "work"
+    try:
+        if force_copy:
+            raise PermissionError("exercise hosts without symlink privileges")
+        sandbox.symlink_to(host, target_is_directory=True)
+    except OSError:
+        shutil.copytree(host, sandbox)
+    return host, sandbox, directory
+
+
+def _healthy_session_probe(calls):
+    from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+    from booley.harness import doctor
+
+    calls.append("probe")
+    print("healthy probe")
+    return doctor.DoctorRunResult(
+        counts={"pass": 1, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
+        findings=(DiagnosticFinding(Severity.PASS, "healthy"),),
+        exit_code=0,
+    )
+
+
+def _fix_session_health_clock(monkeypatch):
+    import booley
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 16, 12, tzinfo=UTC)
+
+    monkeypatch.setattr(booley, "__version__", "1.2.3")
+    monkeypatch.setattr(health, "datetime", FixedClock)
+    monkeypatch.setattr(health, "utc_now_rfc3339", lambda: "2026-10-16T12:00:00Z")
+
+
+@pytest.fixture
+def mounted_health_project(tmp_path, monkeypatch, request):
+    from booley.harness import auto_doctor, doctor
+    from booley.runtime import session_runtime
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    host, sandbox, directory = _health_project_views(
+        tmp_path, force_copy=getattr(request, "param", False)
+    )
+    _fix_session_health_clock(monkeypatch)
+    calls, starts = [], []
+
+    def run(trigger):
+        if not sandbox.is_symlink():
+            shutil.copytree(
+                directory,
+                sandbox / ".booley",
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("doctor"),
+            )
+        reset_cache()
+        result = auto_doctor.run_if_due(sandbox, trigger=trigger)
+        if result is not None and not sandbox.is_symlink():
+            for path_fn in (health.report_path, health.transcript_path):
+                target = path_fn(directory)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path_fn(sandbox / ".booley"), target)
+        reset_cache()
+        return result
+
+    def ensure(*_args, **_kwargs):
+        started = not starts
+        starts.append(started)
+        if started:
+            assert run("session-start") is not None
+        return session_runtime.EnsureResult("session", False, started)
+
+    monkeypatch.setattr(
+        doctor, "run_doctor_result", lambda *_a, **_kw: _healthy_session_probe(calls)
+    )
+    monkeypatch.setattr(
+        doctor, "observe_deep_status", lambda *_a, **_kw: MagicMock(render=lambda: "deep")
+    )
+    monkeypatch.setattr(session_runtime, "ensure", ensure)
+    try:
+        yield host, sandbox, directory, calls, starts, run
+    finally:
+        reset_cache()
+
+
+def test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(
+    mounted_health_project, capsys
+):
+    host, sandbox, directory, calls, starts, run = mounted_health_project
+    args = tlr._build_parser().parse_args(["session", "up"])
+    assert tlr._session_up(args, host) == 0
+    capsys.readouterr()
+    upgrade_before = (directory / "runtime" / "upgrade_review.json").read_bytes()
+    paths = (health.report_path(directory), health.transcript_path(directory))
+    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
+    assert tlr._session_up(args, host) == 0
+    assert "Doctor inputs changed" not in capsys.readouterr().err, (
+        "unchanged second session up must not report input drift"
+    )
+    assert calls == ["probe"]
+    assert starts == [True, False]
+    assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
+    assert (directory / "runtime" / "upgrade_review.json").read_bytes() == upgrade_before
+    assert run("adapter-current") is None
+    assert calls == ["probe"]
+    for view in (host, sandbox):
+        (view / ".booley" / "booley.toml").write_text("[project]\nname = 'edited'\n")
+    assert "booley.toml" in health.due_reason(host)
+    assert "booley.toml" in health.due_reason(sandbox)
+    assert tlr._session_up(args, host) == 0
+    assert "booley.toml" in capsys.readouterr().err
+    assert run("config-change") is not None
+    assert calls == ["probe", "probe"]
+    assert health.due_reason(host) is None
+
+
+@pytest.mark.parametrize("mounted_health_project", [True], indirect=True)
+def test_session_up_with_copied_mount_view(mounted_health_project, capsys):
+    test_session_up_does_not_repeat_doctor_for_unchanged_mount_view(mounted_health_project, capsys)
 
 
 def test_due_session_start_does_not_report_persisted_doctor_findings(
@@ -1556,3 +1689,109 @@ def test_auth_status_cli_refuses_corrupt_owned_project(
     captured = capsys.readouterr()
     assert "agents run on" not in captured.out
     assert "[XX]" in captured.out
+
+
+def _auth_cli_environment(tmp_path, monkeypatch, argv):
+    from io import StringIO
+
+    monkeypatch.chdir(tmp_path)
+    for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_IN_CONTAINER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "private-config"))
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", *argv])
+    monkeypatch.setattr(sys, "stdin", StringIO("sk-ant-oat01-synthetic-cli\n"))
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    reset_cache()
+
+
+def test_auth_token_stdin_outside_project_stores_and_explains_pickup(
+    tmp_path, monkeypatch, capsys
+):
+    from booley.harness import init_cmd
+    from booley.runtime import auth_token
+
+    _auth_cli_environment(tmp_path, monkeypatch, ["--token-stdin"])
+    init = Mock(side_effect=AssertionError("outside auth must not initialize"))
+    monkeypatch.setattr(init_cmd, "run_init", init)
+    try:
+        result = tlr._dispatch_main()
+    except (SystemExit, RuntimeError, FileNotFoundError) as exc:
+        result = exc
+    assert result == 0, "auth incorrectly requires a Project"
+    assert auth_token.token_path().read_text().strip() == "sk-ant-oat01-synthetic-cli"
+    output = capsys.readouterr().out
+    assert "session up" in output and "init --seed" in output
+    init.assert_not_called()
+
+
+def test_auth_nested_checkout_does_not_inherit_ancestor_project(tmp_path, monkeypatch):
+    from booley.harness import auth_cmd
+    from booley.runtime import session_runtime
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="subscription"\n')
+    child = tmp_path / "nested"
+    (child / ".git").mkdir(parents=True)
+    (child / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    _auth_cli_environment(child, monkeypatch, [])
+    runtime = Mock(return_value=0)
+    host = Mock(return_value=SimpleNamespace(returncode=0))
+    reseed = Mock(return_value=True)
+    monkeypatch.setattr(session_runtime, "run_project_command", runtime)
+    monkeypatch.setattr(auth_cmd.shutil, "which", lambda _: "/synthetic/claude")
+    original_run = auth_cmd.subprocess.run
+
+    def run(command, *args, **kwargs):
+        if tuple(command) == ("claude", "setup-token"):
+            return host(command, *args, **kwargs)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(auth_cmd.subprocess, "run", run)
+    monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: "sk-ant-oat01-synthetic-nested")
+    monkeypatch.setattr(auth_cmd, "_reseed_spec", reseed)
+    result = tlr._dispatch_main()
+    assert not runtime.called, "uninitialized nested checkout inherited ancestor Sandbox"
+    assert result == 0
+    host.assert_called_once()
+    assert not reseed.called or reseed.call_args.args == (None,)
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_auth_ordinary_subdirectory_uses_owning_project(tmp_path, monkeypatch, external):
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    data = tmp_path / "external" if external else project / ".booley"
+    data.mkdir()
+    if external:
+        (project / "booley.toml").write_text('[project]\ndir="../external"\n')
+    child = project / "src"
+    child.mkdir()
+    _auth_cli_environment(child, monkeypatch, ["--token-stdin"])
+    if external:
+        monkeypatch.setenv("BOOLEY_DIR", str(data))
+    roots = []
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
+    assert tlr._dispatch_main() == 0
+    assert roots == [project]
+
+
+def test_auth_nested_checkout_ignores_ancestor_config_override(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    data = tmp_path / "external"
+    data.mkdir()
+    (tmp_path / "booley.toml").write_text('[project]\ndir="external"\n')
+    child = tmp_path / "nested"
+    (child / ".git").mkdir(parents=True)
+    (child / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    _auth_cli_environment(child, monkeypatch, ["--token-stdin"])
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    roots = []
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
+    assert tlr._dispatch_main() == 0
+    assert roots == [None]

@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from booley.config.host_config import HostConfigError, SandboxHostPolicy, load_host_policy
+from booley.config.host_config import (
+    HostConfigError,
+    SandboxHostPolicy,
+    host_config_path,
+    load_host_policy,
+)
 from booley.harness import host_sidecars, nangate_pdk
 from booley.harness.image_lifecycle import (
     HostImageScope,
@@ -30,7 +35,12 @@ from booley.harness.setup.skills import (
     reconcile_host_skills,
 )
 from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
-from booley.runtime.host_install import current_host_installation, host_install_error
+from booley.runtime.host_install import (
+    HostInstallationError,
+    current_host_installation,
+    host_install_error,
+    inspect_host_installation,
+)
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import (
     QA_SKILL_NAMES,
@@ -66,6 +76,7 @@ class BootstrapFinding:
     resource: str
     state: BootstrapState
     detail: str
+    remedy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +103,140 @@ class BootstrapResult:
         if any(finding.state is BootstrapState.PENDING for finding in self.findings):
             return 1 if self.intent is Intent.CHECK else 2
         return 0
+
+
+def inspect_bootstrap(*, verbose: bool = False, include_images: bool = True) -> BootstrapResult:
+    """Collect complete read-only readiness for the Bootstrap CLI."""
+    findings: list[BootstrapFinding] = []
+    policy = _inspect_bootstrap_policy(findings)
+    installation = _inspect_installation()
+    findings.append(installation)
+    prerequisites = _prerequisite_findings()
+    findings.extend(prerequisites)
+    findings.append(_reconcile_vscode_dev_containers(Intent.CHECK))
+    findings.append(
+        BootstrapFinding(
+            "skills",
+            BootstrapState.ERROR,
+            f"cannot inspect canonical skill links: {installation.detail}",
+            remedy="",
+        )
+        if installation.state is BootstrapState.ERROR
+        else _inspect_skills()
+    )
+    try:
+        _append_qa_finding(findings, Intent.CHECK, False, False)
+    except HostInstallationError as exc:
+        findings.append(_qa_warning(str(exc)))
+    findings.append(_inspect_nangate())
+    if not include_images:
+        return BootstrapResult(Intent.CHECK, tuple(findings), policy)
+    docker = next(item for item in prerequisites if item.resource == "docker")
+    return _inspect_bootstrap_images(findings, policy, docker, verbose=verbose)
+
+
+def _inspect_bootstrap_policy(findings: list[BootstrapFinding]) -> SandboxHostPolicy | None:
+    try:
+        policy = _load_bootstrap_policy(findings)
+    except (HostConfigError, OSError, UnicodeError) as exc:
+        policy = None
+        findings.append(
+            BootstrapFinding(
+                "host-config",
+                BootstrapState.ERROR,
+                f"cannot inspect host config {host_config_path()} as UTF-8 TOML: {exc}",
+            )
+        )
+    else:
+        findings.append(
+            BootstrapFinding("host-config", BootstrapState.CURRENT, "host policy is valid")
+        )
+    return policy
+
+
+def _inspect_installation() -> BootstrapFinding:
+    installation = inspect_host_installation(skills_dir())
+    state = (
+        BootstrapState.ERROR
+        if installation.error
+        else BootstrapState.PENDING
+        if installation.pending
+        else BootstrapState.CURRENT
+    )
+    return BootstrapFinding(
+        "host-install",
+        state,
+        installation.error
+        or (
+            "canonical host installation is not recorded"
+            if installation.pending
+            else "canonical installation is current"
+        ),
+        remedy="",
+    )
+
+
+def _inspect_skills() -> BootstrapFinding:
+    source = skills_dir()
+    try:
+        if not source.is_dir():
+            return BootstrapFinding(
+                "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
+            )
+        reconciliations = reconcile_host_skills(source, dry_run=True, allow_retarget=True)
+    except OSError as exc:
+        return BootstrapFinding(
+            "skills", BootstrapState.ERROR, f"cannot read skills at {source}: {exc}"
+        )
+    return _skill_reconciliation_finding(Intent.CHECK, reconciliations, qa=False)
+
+
+def _inspect_nangate() -> BootstrapFinding:
+    root = nangate_pdk.cache_root()
+    inspection = nangate_pdk.inspect_cache(root)
+    if inspection.errors:
+        return BootstrapFinding(
+            "nangate45", BootstrapState.ERROR, "; ".join((*inspection.errors, *inspection.pending))
+        )
+    if inspection.pending:
+        return BootstrapFinding(
+            "nangate45",
+            BootstrapState.PENDING,
+            _nangate_license_notice() + " " + "; ".join(inspection.pending),
+        )
+    return BootstrapFinding("nangate45", BootstrapState.CURRENT, f"verified cache at {root}")
+
+
+def _inspect_bootstrap_images(
+    findings: list[BootstrapFinding],
+    policy: SandboxHostPolicy | None,
+    docker: BootstrapFinding,
+    *,
+    verbose: bool,
+) -> BootstrapResult:
+    if docker.state is BootstrapState.ERROR:
+        findings.extend(
+            BootstrapFinding(
+                resource,
+                BootstrapState.ERROR,
+                f"inspection blocked by Docker: {docker.detail}",
+                remedy="restore Docker daemon access",
+            )
+            for resource in (
+                "base-image",
+                "proxy-image",
+                "reaper-image",
+                "network",
+                "proxy",
+                "reaper",
+            )
+        )
+        return BootstrapResult(Intent.CHECK, tuple(findings), policy)
+    base, finding = _reconcile_base_image(Intent.CHECK, verbose=verbose)
+    findings.append(finding)
+    sidecars = host_sidecars.inspect_sidecars(policy)
+    findings.extend(_sidecar_finding(item) for item in sidecars.findings)
+    return BootstrapResult(Intent.CHECK, tuple(findings), policy, base)
 
 
 def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent mutations.
@@ -575,11 +720,7 @@ def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
         state = BootstrapState.CHANGED if secured else BootstrapState.CURRENT
         action = "secured config root and verified" if secured else "verified"
         return BootstrapFinding("nangate45", state, f"{action} cache at {root}")
-    license_notice = (
-        "Nangate45 is an optional upstream download for non-commercial use; "
-        "comparison with other libraries is restricted. "
-        f"Terms: {nangate_pdk.LICENSE_ID}."
-    )
+    license_notice = _nangate_license_notice()
     if intent is Intent.CHECK:
         detail = f"{license_notice} " + "; ".join(issues)
         return BootstrapFinding("nangate45", BootstrapState.PENDING, detail)
@@ -589,6 +730,14 @@ def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
         return BootstrapFinding("nangate45", BootstrapState.ERROR, f"{license_notice} {exc}")
     return BootstrapFinding(
         "nangate45", BootstrapState.CHANGED, f"{license_notice} Downloaded cache to {root}"
+    )
+
+
+def _nangate_license_notice() -> str:
+    return (
+        "Nangate45 is an optional upstream download for non-commercial use; "
+        "comparison with other libraries is restricted. "
+        f"Terms: {nangate_pdk.LICENSE_ID}."
     )
 
 
@@ -641,4 +790,4 @@ def _sidecar_finding(finding: host_sidecars.SidecarFinding) -> BootstrapFinding:
         host_sidecars.SidecarState.CHANGED: BootstrapState.CHANGED,
         host_sidecars.SidecarState.ERROR: BootstrapState.ERROR,
     }[finding.state]
-    return BootstrapFinding(finding.resource, state, finding.detail)
+    return BootstrapFinding(finding.resource, state, finding.detail, finding.remedy)

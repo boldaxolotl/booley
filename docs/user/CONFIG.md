@@ -236,6 +236,13 @@ Forget then releases that root's issued-image keeper tag when no container uses
 its immutable image; an in-use keeper is retained while the root is forgotten.
 Docker inspection or removal failure preserves the inventory entry for retry.
 If a present root's keeper was released, run `booley init` before using it again.
+Forget then lists what the Project still holds in Docker, with sizes: images
+named by its own tags or recorded as built for it, its agent state volumes, and
+containers or networks labelled for it. Each entry says whether a container
+uses it or another tag shares it. Forget removes none of the listed resources. A state volume
+holds a copy of the agent's login and the agent's history.
+`booley projects forget --purge <project>` also removes the unused ones; it
+accepts a root that is already forgotten or deleted, unless a live Grant holds it.
 For keepers left by earlier forgotten Projects, preview with
 `booley projects prune-keepers`, then apply that exact preview with
 `booley projects prune-keepers --confirm <digest>`.
@@ -440,6 +447,9 @@ edge. The usual real fix is re-pinning the cocotb ↔ simulator pair; see
 [Baking the cocotb stack into the image](#baking-the-cocotb-stack-into-the-image).
 
 ### Sim working directory (`[flows.sim].run_cwd`)
+
+The [working-directory decision](../adr/0075-keep-project-root-as-default-simulation-cwd.md)
+records why Project Root remains the default and how `copyto:` inputs fit it.
 
 Some testbenches `$readmemh` vectors or firmware via paths relative to the
 process working directory (`data/…`, `../fw/…`). Booley runs the sim from the
@@ -751,7 +761,6 @@ targets:
       advanced_settings_openroad:
         utilization_pct: 50
         placement_density: 0.80
-        # max_fanout: 50
     filesets: [rtl, timing_constraints, synth_memory]
     parameters: [SYNTH_MEMORY_SURROGATE]
     toplevel: top
@@ -789,6 +798,11 @@ set_output_delay -clock clk_i 0.0 [all_outputs]
 set_false_path -from [get_ports mode_i]
 ```
 
+Physical fanout limits come from OpenROAD's defaults, the library, or the
+Project's SDC. OpenROAD uses an implicit maximum fanout of 50 when neither the
+library nor the SDC sets a limit. For very large nets, set a suitable limit in
+the Target's SDC: `set_max_fanout <n> [current_design]`.
+
 For normal use, change `ppa_profile`; select `synth_mode: logical` only when the
 fast mapped-area / approximate-frequency trade-off is intentional. Profiles are
 EDA-tool-independent intent and can be translated by a future Genus backend as
@@ -808,14 +822,6 @@ the Target defaults for one MCP tool call. Expert per-call flags override one
 backend setting after the profile is selected. An explicit per-call profile
 starts from that clean built-in profile (it does not inherit Target-level
 advanced-setting overrides); per-call expert flags can then refine it.
-
-`advanced_settings_openroad.max_fanout` is the exception: it is a design rule,
-not a PPA setting, so a per-call profile keeps it. It is an optional positive
-integer that limits fanout during physical repair. An SDC that sets its own
-fanout limit replaces the setting, and tighter library limits always apply.
-With no limit from any of the three, Booley repairs no fanout. The report's
-[`fanout_policy`](../internals/FLOW_REPORTS.md#synth) names the limit that
-applied and where it came from.
 
 `balanced` is the default. Select a profile explicitly for stable PPA.
 `compact` uses default liberty mapping and 40%/0.65 controls. Every profile uses
@@ -1570,6 +1576,11 @@ A few conventions worth calling out in that example:
   configured `run_cwd`; the temporary entry is removed after the run. An identical
   file already present there is preserved, while a different file at the same path
   is an input-setup error rather than being overwritten.
+  Doctor warns about differing declared inputs at the Project Root or a literal
+  `run_cwd`, naming the Target, source and destination. Rename the `copyto`
+  destination, remove the checked-in copy, or choose a literal `run_cwd` without
+  the collision. Identical files and templated `run_cwd` produce no collision
+  warning.
   A missing declared `$readmemh` destination is a staging/infrastructure error;
   an undeclared path is a `missing_input` design failure with a fileset hint.
 - **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley

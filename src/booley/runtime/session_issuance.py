@@ -312,6 +312,33 @@ def _stamp_store() -> PrivateStore:
     )
 
 
+def validate_auth_reseed_storage(project_root: Path) -> None:
+    """Admit Project-owned and conditional issuance storage without mutation."""
+    from booley.config.eda import EdaConfigError
+    from booley.eda.provisioning import authority
+    from booley.eda.provisioning.configuration import load_eda_config
+
+    authorized_project_data_source(project_root)
+    store = _stamp_store()
+    # Validate each existing prefix even if the final stamp directory is absent.
+    for root in (store.root.parent, store.root):
+        PrivateStore(
+            root, store.anchor, store.subject, store.error_type
+        ).validate_existing_directory()
+    try:
+        enabled = flow_enabled("fpga", project_root)
+        eda_requirements.inspect_build_requirements(project_root, vivado_enabled=enabled)
+        if enabled and "vivado" in load_eda_config(project_root):
+            authority.validate_existing_issuance_storage()
+    except (
+        FlowConfigError,
+        EdaConfigError,
+        eda_requirements.SessionRequirementsError,
+        authority.AuthorityError,
+    ) as exc:
+        raise RuntimeSpecError(str(exc)) from exc
+
+
 def _legacy_stamp_path(project_root: str) -> Path:
     identity = hashlib.sha256(project_root.encode()).hexdigest()
     return config_dir() / "eda" / "session-specs" / f"{identity}.json"

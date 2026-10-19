@@ -17,6 +17,7 @@ from booley.runtime.docker_capacity import (
     DockerBuildRequest,
     ensure_docker_build_capacity,
 )
+from booley.runtime.timefmt import format_duration
 
 HEARTBEAT_INTERVAL_S = 60.0
 _QUEUE_SIZE = 256
@@ -145,7 +146,9 @@ class _ProgressState:
     def heartbeat(self, now: float) -> None:
         if now - self.last_visible < HEARTBEAT_INTERVAL_S:
             return
-        _emit(self.output, f"  * [{self.image} build] elapsed: {now - self.started:.1f}s")
+        _emit(
+            self.output, f"  * [{self.image} build] elapsed: {format_duration(now - self.started)}"
+        )
         self.last_visible = now
 
 

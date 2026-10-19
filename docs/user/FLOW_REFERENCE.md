@@ -30,8 +30,8 @@ Help groups shared controls under **Common**, reporting under **Output**, then
 Flow-specific options. Synth's **Expert: ABC** and **Expert: OpenROAD** sections
 come last and remain visible in ordinary `--help`. Boolean override pairs share
 one help entry; leaving them unset preserves Target/profile/backend resolution.
-Each option explains omission behavior. Required Target flags have no default;
-Simulation discovery and manifest-owned resume settings have their own rules.
+Each option explains omission behavior. Omitted Target selection follows the
+eligible Target cardinality rule below; Simulation resume restores manifest selection.
 
 ### Live progress and logs
 
@@ -42,6 +42,14 @@ the Flow, Target, current work unit, invocation elapsed time, command elapsed
 time, and age of the last observed output. It fits the terminal when resized.
 Elapsed time advances during silent work; it is neither a percentage nor proof
 that the EDA process is healthy. EDA tools may buffer their output.
+
+TTY status and independent completion messages use adaptive durations: `59s`,
+`1m 00s`, `1h 00m`, `1d 00h`. Every positive subsecond value uses one decimal
+(`0.0s`, `0.4s`, or rounded `1.0s`); nonpositive durations display `0s`.
+Last-output ages use `just now` below five seconds, then `5s ago`, `1m ago`,
+`1h ago`, or `1d ago`. Redirected newline records keep their existing elapsed
+seconds tokens and UTC prefixes. JSON, report document bytes, and printed
+report excerpts keep their existing representation.
 
 Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
 records without terminal escapes or carriage-return rewrites. For example:
@@ -107,8 +115,11 @@ captured transcript should pass `--quiet`.
 
 ### Choosing Targets
 
-Every run needs `--target`; there is no project-wide default. (The one exception
-is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
+For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
+exactly one eligible Target, and that selection is announced. With zero or multiple
+eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
+`sim --resume-from` takes its Target from the Campaign it resumes, independent
+of the current catalog.
 
 - `booley targets` lists all Targets; `booley targets --for <flow>` lists
   the ones a Flow can drive.
@@ -781,17 +792,20 @@ booley flow synth --target synth_soc --baseline main   # compare with another re
 
 **Constraints.** Physical synthesis (the Target's `synth_mode`) needs a
 `file_type: SDC` fileset in the Target that creates at least one clock; Booley
-adds no timing constraints of its own; its one generated design rule is the
-fanout limit ([`max_fanout`](CONFIG.md#asic-synthesis-flowssynth)). Logical
-synthesis skips STA and needs no
-SDC. Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
+adds no timing constraints of its own. Logical synthesis skips STA and needs no
+SDC. Physical fanout limits come from OpenROAD's defaults, the library, or the
+Project's SDC. OpenROAD uses an implicit maximum fanout of 50 when neither the
+library nor the SDC sets a limit. For very large nets, set a suitable limit in
+the Target's SDC: `set_max_fanout <n> [current_design]`.
+
+Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
 
 Everyday options:
 
 | Option | Effect |
 |---|---|
 | `--baseline <git-ref>` | Compare with the baseline Target at another revision (the two Targets may differ). |
-| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings except `max_fanout`; expert flags below still apply on top. |
+| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings; expert flags below still apply on top. |
 | `--flatten` / `--no-flatten` | Override the Target's hierarchy flattening. |
 | `--frontend <sv2v\|slang>` | Override the Target's RTL frontend, mainly for diagnosis. |
 

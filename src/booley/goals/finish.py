@@ -24,6 +24,7 @@ from booley.goals.completion_history import (
     retained_outputs,
     validate_canonical_ownership,
 )
+from booley.goals.ended_records import schedule_ended_cleanup
 from booley.goals.finish_presentation import freeze_presentation, frozen_response, html_bytes
 from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
 from booley.goals.generated_artifacts import (
@@ -86,10 +87,10 @@ from booley.runtime.job_wait import active_jobs
 from booley.runtime.pinned_history import (
     PinnedPublication,
     proves_publication,
+    publication_pack,
     publish_pinned,
     raw_git,
     require_branch,
-    restore_publication_blob,
     restore_publication_objects,
     synchronize_index,
     tree_rows,
@@ -130,6 +131,16 @@ class FinishEnvironment:
 
 
 def finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, Any]:
+    """Finish or abandon, then delete ended Goal Records nothing refers to any more.
+
+    The cleanup runs after every lock is released and never changes the result.
+    """
+    result = _finish_goal(request, env)
+    schedule_ended_cleanup(env.changes.store, request.work_dir)
+    return result
+
+
+def _finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, Any]:
     """Bind first, then resume the exact operation or freeze a new validated attempt."""
     store = env.changes.store
     from booley.goals.lifecycle import archived_result
@@ -496,14 +507,15 @@ def recover_finish(operation: LifecycleOperation, env: FinishEnvironment) -> dic
     """Recognize exact own effects before generic dirtiness; retain every prior attempt."""
     frozen = _read_attempt(operation)
     record = operation.store.load(operation.request.record_id)
-    content = bytes.fromhex(frozen["summary_hex"])
     destination = operation.root / frozen["path"]
-    owned = _require_destination(destination, content)
+    owned = _require_destination(destination, bytes.fromhex(frozen["summary_hex"]))
     publication = _publication_intent(operation, frozen)
     head = require_branch(operation.root, frozen["branch"])
-    if legacy_materialization_buffers(frozen):
-        return _recover_legacy(operation, record, frozen, publication, head, owned, env)
     try:
+        if legacy_materialization_buffers(frozen):
+            raise InputSelectionError(
+                "legacy publication requires a fresh operation for unpublished materialization buffers"
+            )
         current = select_inputs(record, operation.root)
     except InputSelectionError as exc:
         return _recover_identity_mismatch(
@@ -514,7 +526,7 @@ def recover_finish(operation: LifecycleOperation, env: FinishEnvironment) -> dic
         raise LifecycleError("finish topology/worktree identity changed; reconcile before retry")
     require_branch(operation.root, frozen["branch"])
     publication = _publication_intent(operation, frozen)
-    own_head = _owns_publication_head(operation.root, current.rtl_pin, publication)
+    own_head = publication is not None and current.rtl_pin == publication.intended_commit
     if current.project_pin != expected["project_pin"] or (
         current.rtl_pin != expected["rtl_pin"] and not own_head
     ):
@@ -543,14 +555,6 @@ def recover_finish(operation: LifecycleOperation, env: FinishEnvironment) -> dic
     return _finish_terminal(operation, record, frozen, env)
 
 
-def _owns_publication_head(root: Path, head: str, publication: PinnedPublication | None) -> bool:
-    return (
-        publication is not None
-        and head == publication.intended_commit
-        and proves_publication(root, head, publication)
-    )
-
-
 def _recover_identity_mismatch(
     operation: LifecycleOperation,
     record: GoalRecord,
@@ -566,7 +570,7 @@ def _recover_identity_mismatch(
         from booley.goals.finish_attempt import validate_local_artifacts
         from booley.runtime.project_repositories import paired_project_repository
 
-        if not owned or not proves_publication(operation.root, head, publication):
+        if not owned:
             raise LifecycleError("substituted participant has unproved publication effects")
         validate_local_artifacts(frozen, operation, required=True)
         if not _control_binding_unchanged(operation, frozen):
@@ -628,10 +632,8 @@ def _revalidate_publication(
     if publication is not None and _original_input_bindings(operation, frozen):
         head = require_branch(operation.root, frozen["branch"])
         destination = operation.root / frozen["path"]
-        if (
-            head == publication.intended_commit
-            and _require_destination(destination, bytes.fromhex(frozen["summary_hex"]))
-            and proves_publication(operation.root, head, publication)
+        if head == publication.intended_commit and _require_destination(
+            destination, bytes.fromhex(frozen["summary_hex"])
         ):
             from booley.goals.finish_attempt import validate_local_artifacts
 
@@ -673,37 +675,6 @@ def _original_input_bindings(operation: LifecycleOperation, frozen: dict[str, An
     except InputIdentityError:
         return False
     return True
-
-
-def _recover_legacy(
-    operation: LifecycleOperation,
-    record: GoalRecord,
-    frozen: dict[str, Any],
-    publication: PinnedPublication | None,
-    head: str,
-    owned: bool,
-    env: FinishEnvironment,
-) -> dict[str, Any]:
-    """Preserve proven historical publication; require a private-capture recipe before new effects."""
-    if publication is not None and head == publication.intended_commit:
-        return _recover_identity_mismatch(
-            operation,
-            record,
-            frozen,
-            publication,
-            head,
-            owned,
-            env,
-            "legacy publication participant requires revalidation",
-        )
-    if head != frozen["inputs"]["rtl_pin"]:
-        raise LifecycleError("legacy participant has foreign/unclassified publication effects")
-    return _revalidation(
-        operation,
-        record,
-        "unpublished legacy attempt contains private materialization buffers; "
-        "start a fresh finish operation for the hash-only public package",
-    )
 
 
 def _finish_terminal(
@@ -772,112 +743,47 @@ def _publication_intent(
     operation: LifecycleOperation, frozen: dict[str, Any]
 ) -> PinnedPublication | None:
     path = operation.directory / "publication.json"
-    present = path.exists() or path.with_name("publication.authority.json").exists()
-    commit = operation.directory / "intended-commit.json"
-    if not present:
-        if commit.exists() or commit.with_name("intended-commit.authority.json").exists():
-            raise LifecycleError("intended commit has no bound publication intent")
+    if not path.exists() and not path.with_name("publication.authority.json").exists():
         return None
     if frozen["skip_publication"] is not None:
         raise LifecycleError("skipped publication has an unexpected Git intent")
-    value = operation.read_sealed("publication")
-    expected = {
-        "mode": "100644",
-        "repository": frozen["inputs"]["roots"]["rtl"],
-        "worktree": frozen["worktree"],
-        "branch": frozen["branch"],
-        "pin": frozen["inputs"]["rtl_pin"],
-        "path": frozen["path"],
-        "operation_id": operation.request.operation_id,
-    }
-    if set(value) != {*expected, "blob"} or {key: value.get(key) for key in expected} != expected:
-        raise LifecycleError("publication intent differs from the frozen operation")
-    return _validated_publication_objects(
-        operation, frozen, require_str_value(value["blob"], field="publication blob")
-    )
-
-
-def _validated_publication_objects(
-    operation: LifecycleOperation, frozen: dict[str, Any], blob: str
-) -> PinnedPublication:
-    intended, recipe = _read_commit_recipe(operation)
+    saved = operation.read_sealed("publication")
+    if set(saved) != {"blob", "commit", "pack_hex"}:
+        raise LifecycleError("invalid publication journal")
+    intended = require_str_value(saved["commit"], field="publication commit")
     publication = PinnedPublication(
-        frozen["inputs"]["rtl_pin"], frozen["branch"], frozen["path"], blob, intended
+        frozen["inputs"]["rtl_pin"],
+        frozen["branch"],
+        frozen["path"],
+        require_str_value(saved["blob"], field="publication blob"),
+        intended,
     )
     content = bytes.fromhex(frozen["summary_hex"])
     try:
-        if raw_git(operation.root, "cat-file", "blob", blob) != content:
+        if raw_git(operation.root, "cat-file", "blob", publication.blob) != content:
             raise LifecycleError("publication blob differs from the frozen summary")
-        if intended is not None:
-            validate_pin(operation.root, intended)
+        validate_pin(operation.root, intended)
     except FileCommitError as exc:
-        _restore_missing_publication(operation, frozen, publication, content, recipe, exc)
-    if intended is not None and not proves_publication(operation.root, intended, publication):
+        if not _original_input_bindings(operation, frozen) or require_branch(
+            operation.root, frozen["branch"]
+        ) not in {publication.pin, publication.intended_commit}:
+            raise LifecycleError(
+                "publication recovery requires original physical inputs and branch pin"
+            ) from exc
+        try:
+            pack = bytes.fromhex(require_str_value(saved["pack_hex"], field="publication pack"))
+            restore_publication_objects(operation.root, publication, content, pack)
+        except (ValueError, FileCommitError) as error:
+            raise LifecycleError(f"invalid publication recovery: {error}") from error
+    if not proves_publication(operation.root, intended, publication):
         raise LifecycleError("intended commit differs from its frozen publication")
     return publication
-
-
-def _read_commit_recipe(operation: LifecycleOperation) -> tuple[str | None, bytes | None]:
-    commit = operation.directory / "intended-commit.json"
-    if not commit.exists() and not commit.with_name("intended-commit.authority.json").exists():
-        return None, None
-    saved = operation.read_sealed("intended-commit")
-    if set(saved) not in ({"commit"}, {"commit", "raw_commit_hex"}):
-        raise LifecycleError("invalid intended commit journal")
-    intended = require_str_value(saved["commit"], field="intended publication commit")
-    if "raw_commit_hex" not in saved:
-        return intended, None
-    try:
-        recipe = bytes.fromhex(require_str_value(saved["raw_commit_hex"], field="commit recipe"))
-    except ValueError as exc:
-        raise LifecycleError("invalid exact publication commit recipe") from exc
-    if (
-        raw_git(operation.root, "hash-object", "-t", "commit", "--stdin", input_bytes=recipe)
-        .strip()
-        .decode("ascii")
-        != intended
-    ):
-        raise LifecycleError("saved publication commit bytes differ from their original OID")
-    return intended, recipe
-
-
-def _restore_missing_publication(
-    operation: LifecycleOperation,
-    frozen: dict[str, Any],
-    publication: PinnedPublication,
-    content: bytes,
-    recipe: bytes | None,
-    error: FileCommitError,
-) -> None:
-    if recipe is None and publication.intended_commit is not None:
-        raise LifecycleError(
-            "publication objects unavailable; legacy hash-only journal cannot "
-            "reconstruct the exact commit: " + str(error)
-        ) from error
-    if not _original_input_bindings(operation, frozen):
-        raise LifecycleError(
-            "publication object recovery requires original physical input bindings"
-        ) from error
-    if require_branch(operation.root, frozen["branch"]) not in {
-        publication.pin,
-        publication.intended_commit,
-    }:
-        raise LifecycleError(
-            "publication object recovery requires its original branch pin"
-        ) from error
-    if publication.intended_commit is None:
-        restore_publication_blob(operation.root, publication.blob, content)
-    else:
-        assert recipe is not None
-        restore_publication_objects(operation.root, publication, content, recipe)
 
 
 def _publish(
     operation: LifecycleOperation, frozen: dict[str, Any], env: FinishEnvironment
 ) -> None:
-    source = operation.directory / "SUMMARY.md"
-    publication = _prepare_publication(operation, frozen, env, source)
-    assert publication is not None
+    publication = _prepare_publication(operation, frozen)
     content = bytes.fromhex(frozen["summary_hex"])
     destination = operation.root / frozen["path"]
     _require_destination(destination, content)
@@ -890,10 +796,13 @@ def _publish(
 
     def journal(commit: str) -> None:
         operation.write_sealed(
-            "intended-commit",
+            "publication",
             {
+                "blob": publication.blob,
                 "commit": commit,
-                "raw_commit_hex": raw_git(operation.root, "cat-file", "commit", commit).hex(),
+                "pack_hex": publication_pack(
+                    operation.root, replace(publication, intended_commit=commit)
+                ).hex(),
             },
         )
 
@@ -911,34 +820,25 @@ def _publish(
 
 
 def _prepare_publication(
-    operation: LifecycleOperation, frozen: dict[str, Any], env: FinishEnvironment, source: Path
-) -> PinnedPublication | None:
+    operation: LifecycleOperation, frozen: dict[str, Any]
+) -> PinnedPublication:
     publication = _publication_intent(operation, frozen)
     if publication is None:
         blob = (
-            raw_git(operation.root, "hash-object", "-w", "--no-filters", "--", str(source))
+            raw_git(
+                operation.root,
+                "hash-object",
+                "-w",
+                "--no-filters",
+                "--stdin",
+                input_bytes=bytes.fromhex(frozen["summary_hex"]),
+            )
             .strip()
             .decode("ascii")
         )
-        if raw_git(operation.root, "cat-file", "blob", blob) != bytes.fromhex(
-            frozen["summary_hex"]
-        ):
-            raise LifecycleError("literal publication blob differs from frozen summary")
-        operation.write_sealed(
-            "publication",
-            {
-                "blob": blob,
-                "mode": "100644",
-                "repository": frozen["inputs"]["roots"]["rtl"],
-                "worktree": frozen["worktree"],
-                "branch": frozen["branch"],
-                "pin": frozen["inputs"]["rtl_pin"],
-                "path": frozen["path"],
-                "operation_id": operation.request.operation_id,
-            },
+        publication = PinnedPublication(
+            frozen["inputs"]["rtl_pin"], frozen["branch"], frozen["path"], blob
         )
-        env.checkpoint("publication-intent")
-        publication = _publication_intent(operation, frozen)
     return publication
 
 

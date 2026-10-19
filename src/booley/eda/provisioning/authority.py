@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import stat
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -144,6 +145,22 @@ def load_state(*, allow_missing: bool = True) -> AuthorityState:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AuthorityError(f"EDA authority registry is unreadable: {exc}") from exc
     return _decode_state(raw)
+
+
+def validate_existing_issuance_storage() -> None:
+    """Admit existing registry/lock paths without opening or repairing the lock."""
+    load_state()
+    lock = state_dir() / "authority.lock"
+    if lock.is_symlink():
+        raise AuthorityError(f"EDA authority lock must not be a symlink: {lock}")
+    try:
+        info = lock.stat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(info.st_mode):
+        raise AuthorityError(f"EDA authority lock must be a regular file: {lock}")
+    if os.name != "nt" and info.st_uid != os.getuid():
+        raise AuthorityError(f"EDA authority lock must be owned by current user: {lock}")
 
 
 def register_installation(name: str, kind: str, source: Path) -> Installation:

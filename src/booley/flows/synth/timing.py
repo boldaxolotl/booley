@@ -25,7 +25,6 @@ class StaTimingConfig(NamedTuple):
     gate_cloning: bool = False
     setup_margin_ns: float = 0.0
     repair_tns_percent: float | None = None
-    max_fanout: int | None = None
 
 
 DEFAULT_STA_UTILIZATION_PCT = 40.0

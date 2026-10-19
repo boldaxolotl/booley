@@ -1,4 +1,4 @@
-"""Tests for heartbeat: fmt_elapsed and Heartbeat timer."""
+"""Tests for the shared-duration Heartbeat timer."""
 
 from __future__ import annotations
 
@@ -12,36 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.runtime.heartbeat import Heartbeat, fmt_elapsed
-
-# ---------------------------------------------------------------------------
-# fmt_elapsed
-# ---------------------------------------------------------------------------
-
-
-class TestFmtElapsed:
-    def test_seconds_only(self):
-        assert fmt_elapsed(5.0) == "5.0s"
-
-    def test_seconds_fractional(self):
-        assert fmt_elapsed(0.5) == "0.5s"
-
-    def test_minutes_and_seconds(self):
-        assert fmt_elapsed(65.0) == "1m 5.0s"
-
-    def test_exact_minute(self):
-        assert fmt_elapsed(60.0) == "1m 0.0s"
-
-    def test_hours(self):
-        assert fmt_elapsed(3661) == "1h 1m 1s"
-
-    def test_zero(self):
-        assert fmt_elapsed(0.0) == "0.0s"
-
-    def test_large_hours(self):
-        result = fmt_elapsed(7200 + 1800 + 30)
-        assert result == "2h 30m 30s"
-
+from booley.runtime.heartbeat import Heartbeat
 
 # ---------------------------------------------------------------------------
 # Heartbeat class
@@ -285,3 +256,17 @@ class TestTouchReaperHeartbeat:
         from booley.docker.reaper import HEARTBEAT_PATH
 
         assert HEARTBEAT_PATH == REAPER_HEARTBEAT_PATH
+
+
+def test_timer_uses_shared_adaptive_duration(monkeypatch):
+    from booley.runtime import heartbeat
+
+    rendered = []
+    timer = Heartbeat("build", interval=0, render=lambda *row: rendered.append(row))
+    timer._start = 1000000
+    monkeypatch.setattr(heartbeat.time, "monotonic", lambda: 1003661)
+    monkeypatch.setattr(heartbeat, "touch_reaper_heartbeat", lambda: None)
+    waits = iter((False, True))
+    monkeypatch.setattr(timer._stop_event, "wait", lambda _interval: next(waits))
+    timer._run()
+    assert rendered == [("build", "1h 01m", "")]

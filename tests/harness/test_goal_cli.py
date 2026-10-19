@@ -118,6 +118,8 @@ def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, cap
 
 
 PREFIX = "No Goal Mode is active here. Active Goal Modes in this Project:\n"
+# The ended record the fixture's helpers leave: no end time, Summary, or Review Package.
+LAST_ENDED = "\n\nLast ended Goal Mode in this worktree: {} ({})"
 
 
 def second_goal(mode, monkeypatch):
@@ -177,6 +179,9 @@ def test_goal_status_complete_bytes(
     expected = baseline_render_status(views, short=detail)
     if caller in {"main", "outside", "abandoned"}:
         expected = PREFIX + expected
+    if caller == "abandoned":
+        # The worktree's own ended record follows the Project's active Goal Modes.
+        expected += LAST_ENDED.format(goal_mode.record.id, "abandoned")
     monkeypatch.chdir(location)
     args = Namespace(goal_command="status", short=detail is True, long=detail is False)
     assert _cmd_goal(args, goal_mode.main) == 0
@@ -216,7 +221,10 @@ def test_no_occupying_goal_bytes(
         == 0
     )
     captured = capsys.readouterr()
-    assert (captured.out, captured.err) == ("No active Goal Mode.\n", "")
+    expected = "No active Goal Mode."
+    if caller == "occupant":
+        expected += LAST_ENDED.format(goal_mode.record.id, state)
+    assert (captured.out, captured.err) == (expected + "\n", "")
 
 
 @pytest.mark.parametrize("error", ["corrupt", "identity", "unrelated"])

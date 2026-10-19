@@ -62,6 +62,7 @@ class SidecarFinding:
     resource: str
     state: SidecarState
     detail: str
+    remedy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +188,127 @@ def reconcile_sidecars(
     return SidecarResult(tuple(findings))
 
 
+def inspect_sidecars(
+    policy: SandboxHostPolicy | None,
+    *,
+    booley_root: Path | None = None,
+) -> SidecarResult:
+    """Inspect every independent sidecar resource for Bootstrap CLI only."""
+    docker = _docker_adapter()
+    try:
+        specs = _image_specs(booley_root)
+    except (SidecarError, OSError) as exc:
+        findings = [SidecarFinding("sidecar-images", SidecarState.ERROR, str(exc))]
+    else:
+        findings = [_reconcile_image(spec, Intent.CHECK, docker) for spec in specs]
+    findings.append(_inspect_bootstrap_network(docker))
+    if policy is None:
+        findings.extend(
+            SidecarFinding(
+                resource,
+                SidecarState.ERROR,
+                "cannot inspect desired container state without valid host policy",
+                remedy="repair host config",
+            )
+            for resource in ("proxy", "reaper")
+        )
+    else:
+        fingerprint = policy_fingerprint(policy)
+        findings.extend(
+            _inspect_bootstrap_container(spec, fingerprint, docker)
+            for spec in _container_specs(policy, fingerprint)
+        )
+    return SidecarResult(tuple(findings))
+
+
+def _container_specs(
+    policy: SandboxHostPolicy,
+    fingerprint: str,
+) -> tuple[_ContainerSpec, ...]:
+    return (
+        _ContainerSpec(
+            "proxy",
+            legacy.PROXY_CONTAINER,
+            legacy.PROXY_IMAGE,
+            "egress-proxy",
+            tuple(_proxy_run_args(policy, fingerprint)),
+            legacy.EGRESS_NETWORK,
+        ),
+        _ContainerSpec(
+            "reaper",
+            legacy.REAPER_CONTAINER,
+            legacy.REAPER_IMAGE,
+            "reaper",
+            tuple(_reaper_run_args(policy, fingerprint)),
+        ),
+    )
+
+
+def _inspect_bootstrap_container(
+    spec: _ContainerSpec,
+    fingerprint: str,
+    docker: _DockerPort,
+) -> SidecarFinding:
+    try:
+        state = _inspect_container(spec.name, docker)
+        _verify_container_ownership(spec.name, spec.role, state)
+        image = _inspect_image(spec.image, docker)
+        current = image is not None and _container_matches(state, image[0], fingerprint)
+        if state.exists and not current:
+            _require_idle_sessions(spec.name, docker)
+        if image is None:
+            return SidecarFinding(
+                spec.resource,
+                SidecarState.PENDING,
+                f"{spec.name} needs missing image {spec.image}",
+            )
+        network_ready = spec.required_network is None or spec.required_network in state.networks
+        if current and state.running and network_ready:
+            return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
+        return SidecarFinding(
+            spec.resource,
+            SidecarState.PENDING,
+            _container_pending_detail(spec, state, image[0], fingerprint),
+        )
+    except SidecarError as exc:
+        return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
+
+
+def _require_idle_sessions(resource: str, docker: _DockerPort) -> None:
+    active = _active_sessions(docker)
+    if active:
+        raise SidecarError(
+            f"cannot replace stale {resource} while active Booley Sessions exist: "
+            f"{_active_session_summary(active)}; shut down each listed Project "
+            "and retry `booley bootstrap`"
+        )
+
+
+def _inspect_bootstrap_network(docker: _DockerPort) -> SidecarFinding:
+    try:
+        state = _inspect_network(docker)
+        if state.current:
+            return SidecarFinding(
+                "network", SidecarState.CURRENT, f"{legacy.EGRESS_NETWORK} is current"
+            )
+        if state.exists:
+            _require_idle_sessions(legacy.EGRESS_NETWORK, docker)
+            foreign = tuple(
+                name for name in state.attached_names if name != legacy.PROXY_CONTAINER
+            )
+            if foreign:
+                raise SidecarError(
+                    f"cannot replace stale {legacy.EGRESS_NETWORK}; detach foreign containers "
+                    f"after checking ownership: {', '.join(foreign)}"
+                )
+            proxy = _inspect_container(legacy.PROXY_CONTAINER, docker)
+            _verify_container_ownership(legacy.PROXY_CONTAINER, "egress-proxy", proxy)
+        detail = "has stale routing policy" if state.exists else "is missing"
+        return SidecarFinding("network", SidecarState.PENDING, f"{legacy.EGRESS_NETWORK} {detail}")
+    except SidecarError as exc:
+        return SidecarFinding("network", SidecarState.ERROR, str(exc))
+
+
 def _reconcile_containers(
     policy: SandboxHostPolicy,
     intent: Intent,
@@ -194,14 +316,7 @@ def _reconcile_containers(
 ) -> tuple[SidecarFinding, ...]:
     """Reconcile the proxy/reaper container suffix after images and network."""
     fingerprint = policy_fingerprint(policy)
-    proxy_spec = _ContainerSpec(
-        "proxy",
-        legacy.PROXY_CONTAINER,
-        legacy.PROXY_IMAGE,
-        "egress-proxy",
-        tuple(_proxy_run_args(policy, fingerprint)),
-        legacy.EGRESS_NETWORK,
-    )
+    proxy_spec, reaper_spec = _container_specs(policy, fingerprint)
     proxy = _reconcile_container(
         proxy_spec,
         fingerprint,
@@ -211,13 +326,7 @@ def _reconcile_containers(
     if proxy.state is SidecarState.ERROR:
         return (proxy,)
     reaper = _reconcile_container(
-        _ContainerSpec(
-            "reaper",
-            legacy.REAPER_CONTAINER,
-            legacy.REAPER_IMAGE,
-            "reaper",
-            tuple(_reaper_run_args(policy, fingerprint)),
-        ),
+        reaper_spec,
         fingerprint,
         intent,
         docker,
@@ -555,25 +664,10 @@ def _reconcile_container(
         if current and state.running and not network_missing:
             return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
         if intent is Intent.CHECK:
-            expected_state = {
-                "exists": True,
-                "image_identity": image_state[0],
-                "source_fingerprint": fingerprint,
-                "running": True,
-                "required_network_present": True,
-            }
-            actual_state = {
-                "exists": state.exists,
-                "image_identity": state.image_id if state.exists else None,
-                "source_fingerprint": (state.labels or {}).get(LABEL_POLICY_FINGERPRINT),
-                "running": state.running,
-                "required_network_present": not network_missing,
-            }
             return SidecarFinding(
                 spec.resource,
                 SidecarState.PENDING,
-                f"{spec.name} is missing, stopped, or stale: "
-                + format_differences(expected_state, actual_state),
+                _container_pending_detail(spec, state, image_state[0], fingerprint),
             )
         _apply_container(spec.name, state, current, list(spec.run_args), docker)
         _ensure_container_network(spec.name, spec.required_network, docker)
@@ -601,6 +695,30 @@ def _container_matches(state: _ContainerState, image_id: str, fingerprint: str) 
         and state.image_id == image_id
         and (state.labels or {}).get(LABEL_POLICY_FINGERPRINT) == fingerprint
     )
+
+
+def _container_pending_detail(
+    spec: _ContainerSpec,
+    state: _ContainerState,
+    image_identity: str,
+    fingerprint: str,
+) -> str:
+    expected = {
+        "exists": True,
+        "image_identity": image_identity,
+        "source_fingerprint": fingerprint,
+        "running": True,
+        "required_network_present": True,
+    }
+    actual = {
+        "exists": state.exists,
+        "image_identity": state.image_id if state.exists else None,
+        "source_fingerprint": (state.labels or {}).get(LABEL_POLICY_FINGERPRINT),
+        "running": state.running,
+        "required_network_present": spec.required_network is None
+        or spec.required_network in state.networks,
+    }
+    return f"{spec.name} is missing, stopped, or stale: " + format_differences(expected, actual)
 
 
 def _apply_container(

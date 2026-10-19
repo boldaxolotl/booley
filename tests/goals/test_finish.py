@@ -125,9 +125,6 @@ def test_committed_summary_is_on_worktree_branch_and_main_does_not_move(layout):
         pytest.param("finishing", marks=pytest.mark.timeout(150), id="finishing"),
         pytest.param("local-artifacts", marks=pytest.mark.timeout(150), id="local-artifacts"),
         pytest.param(
-            "publication-intent", marks=pytest.mark.timeout(120), id="publication-intent"
-        ),
-        pytest.param(
             "destination-materialized",
             marks=pytest.mark.timeout(150),
             id="destination-materialized",
@@ -151,6 +148,7 @@ def test_every_publication_crash_boundary_recovers_exactly_once(layout, boundary
 
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop))
+    git(complete.worktree, "prune", "--expire=now")
     result = finish_goal(call, environment(complete))
     assert result["status"] == "finished"
     assert git(complete.worktree, "rev-parse", "HEAD^1") == before
@@ -166,7 +164,7 @@ def test_ignored_nonstealth_is_explicitly_local(complete):
         EntryRequest(
             complete.worktree, "again", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(complete.control),
+        EntryEnvironment(complete.control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(complete)
     result = finish_goal(request(complete), environment(complete))
@@ -257,7 +255,7 @@ def test_replacement_entry_does_not_receive_old_retry_or_abandon(complete):
         EntryRequest(
             complete.worktree, "new", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(complete.control),
+        EntryEnvironment(complete.control, routing_guidance="Explicit test routing guidance."),
     ).record
     before = record_paths(complete.control, next_record.id).record_file.read_bytes()
     assert finish_goal(call, environment(complete)) == result
@@ -384,7 +382,7 @@ def test_recovery_refuses_substituted_immutable_publication_proof(layout, tamper
     call = request(complete)
 
     def stop(name):
-        if name == "publication-intent":
+        if name == "commit-journaled":
             raise Crash()
 
     with pytest.raises(Crash):
@@ -643,7 +641,7 @@ def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_pat
         EntryRequest(
             layout.worktree, "next", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
-        EntryEnvironment(layout.control),
+        EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance."),
     ).record
     publish(layout)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"

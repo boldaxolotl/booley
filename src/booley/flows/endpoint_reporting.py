@@ -33,6 +33,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def automatic_target_notice(flow: str, target: str) -> str:
+    """Format the announcement for one implicitly selected canonical Target."""
+    return f"{flow}: --target omitted; selected Target {target}."
+
+
 class _BufferWitness:
     """Byte-level tee for :attr:`_StdoutWitness.buffer`.
 
@@ -518,7 +523,18 @@ def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
 
 def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
     """Publish one CLI verdict without coupling it to durable persistence."""
-    if not endpoint._console_publication_requested or not result.report_text:
+    if not endpoint._console_publication_requested:
+        return
+    _publish_console_verdict(endpoint, result)
+    notice = getattr(endpoint, "_automatic_target_notice", "")
+    if notice and not getattr(endpoint, "_automatic_target_notice_published", False):
+        print(notice, file=sys.stderr, flush=True)
+        endpoint._automatic_target_notice_published = True
+
+
+def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -> None:
+    """Publish the original verdict body before any invocation notice."""
+    if not result.report_text:
         return
     witness = endpoint._stdout_witness
     already_shown = witness is not None and witness.saw(result.report_text)

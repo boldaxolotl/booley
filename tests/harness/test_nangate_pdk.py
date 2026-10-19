@@ -123,3 +123,58 @@ def test_sandbox_sources_do_not_redistribute_nangate_files() -> None:
     assert "COPY src/booley/data/docker/pdk" not in dockerfile
     pdk_root = docker_root / "pdk"
     assert not pdk_root.exists() or not any(path.is_file() for path in pdk_root.rglob("*"))
+
+
+@pytest.mark.parametrize("failure", ["member", "license", "parent"])
+def test_cache_inspection_keeps_access_failures_separate(tmp_path, monkeypatch, failure):
+    member = _item("member", "member", b"ok")
+    monkeypatch.setattr(nangate_pdk, "FILES", (member,))
+    (tmp_path / "member").write_bytes(b"ok")
+    license_path = tmp_path / nangate_pdk.LICENSE_FILENAME
+    license_path.write_bytes(nangate_pdk._license_bytes())
+    original_open, original_stat = Path.open, Path.stat
+    target = license_path if failure == "license" else tmp_path / "member"
+
+    def denied_open(path, *args, **kwargs):
+        if path == target and failure != "parent":
+            raise PermissionError("injected read denial")
+        return original_open(path, *args, **kwargs)
+
+    def denied_stat(path, *args, **kwargs):
+        if path.parent == tmp_path and failure == "parent":
+            raise PermissionError("injected parent search denial")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_open)
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    result = nangate_pdk.inspect_cache(tmp_path)
+    assert result.errors and not result.pending
+    assert str(target) in result.errors[0]
+    assert "restore read access" in result.errors[0]
+
+
+def test_cache_inspection_missing_and_checksum_are_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr(nangate_pdk, "FILES", (_item("member", "member", b"right"),))
+    assert nangate_pdk.inspect_cache(tmp_path).pending
+    assert not nangate_pdk.inspect_cache(tmp_path).errors
+    (tmp_path / "member").write_bytes(b"wrong")
+    assert "checksum mismatch for member" in nangate_pdk.inspect_cache(tmp_path).pending
+
+
+def test_legacy_cache_validation_keeps_read_error_text(tmp_path, monkeypatch):
+    member = _item("member", "member", b"ok")
+    monkeypatch.setattr(nangate_pdk, "FILES", (member,))
+    path = tmp_path / "member"
+    path.write_bytes(b"ok")
+    (tmp_path / nangate_pdk.LICENSE_FILENAME).write_bytes(nangate_pdk._license_bytes())
+    original = Path.open
+
+    def denied(path_to_open, *args, **kwargs):
+        if path_to_open == path:
+            raise PermissionError("denied")
+        return original(path_to_open, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    assert nangate_pdk.validation_errors(tmp_path) == ("cannot read member: denied",), (
+        "preserve legacy cache diagnostics"
+    )

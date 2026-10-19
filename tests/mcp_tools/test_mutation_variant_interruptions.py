@@ -110,16 +110,15 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
         staged.write_bytes(source.read_bytes())
         name = str(staged.relative_to(build_dir))
         edam = build_dir / "dut.eda.yml"
+        entry = {"name": name, "core": "acme:test:dut:1", "file_type": "systemVerilogSource"}
         edam.write_text(
             yaml.safe_dump(
                 {
                     "cores": {"acme:test:dut:1": {"core_file": str(core)}},
-                    "files": [{"name": name, "core": "acme:test:dut:1"}],
+                    "files": [entry],
                 }
             )
         )
-        (build_dir / "Makefile").write_text("iverilog -c dut.scr\n")
-        (build_dir / "dut.scr").write_text(name)
         resolved = types.SimpleNamespace(build_root=build_dir, edam_path=edam)
         materialize_build_mutation(mutation[0], mutation[1], root, resolved)
         assert b"a - b" in staged.read_bytes()

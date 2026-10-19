@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -13,119 +12,46 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _DEFAULT_JOB_POLL_WAIT_SECONDS = 240.0
-_INTERACTIVE_HIDDEN_REASONS: dict[str, str] = {}
-
-
-_INTERACTIVE_MCP_EXCLUDED = frozenset(_INTERACTIVE_HIDDEN_REASONS)
-
-
 _STATUS_MCP_TOOL_NAME = "booley_status"
-
-
-_STATUS_MCP_TOOL_DESCRIPTION = "Show whether Booley Interactive Mode is ready in this tab."
-
-
 _COVERAGE_EVIDENCE_TOOL_NAME = "coverage_evidence"
-
-
-_COVERAGE_EVIDENCE_TOOL_DESCRIPTION = (
-    "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
-    "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' "
-    "to page through RTL sources with no native records, and view='points' for filtered exact "
-    "Coverage Points and view='source' for verified excerpts associated with previously "
-    "returned point_refs."
-)
-
-
 _REPORT_MCP_TOOL_NAME = "booley_report"
-
-
-_REPORT_MCP_TOOL_DESCRIPTION = (
-    "Fetch the most recent completed run report for a Booley endpoint (e.g. "
-    "sim) from disk — including after a client-side timeout, when the "
-    "inline MCP result was lost but the run finished server-side. Pass the "
-    "optional 'endpoint' argument to target a specific endpoint's latest report; "
-    "omit it for the most recent report across all endpoints."
-)
-
-
-_POLL_MCP_TOOL_NAME = "booley_poll"
-
+POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Check on a long-running endpoint (sim / fpga / synth / reviewer / "
-    "mutation_tester / coverage_analyst) that was "
-    "started in the background. When such an endpoint takes longer than "
-    "the inline wait, its call returns a 'run_id' instead of the result; pass "
-    "that run_id here to get the current status. Pass 'wait_seconds' (0-270) to "
-    "long-poll: the call blocks up to that long for the run to finish, turning "
-    "a poll-loop into one blocking call; if the run is still going afterwards "
-    "it returns 'RUNNING' — call again to keep waiting. Prefer few long polls "
-    "over many short ones. Claude and Codex: omit 'wait_seconds' to use the "
-    "Sandbox's configured poll window. Codex: if its programmatic exec "
-    "yields while this MCP call is still running, keep waiting on the same "
-    "running cell in short slices; do not start another booley_poll call. When the "
-    "run finishes it returns the full result (EXIT_CODE + report), exactly as "
-    "the original call would have. Safe to call across a server restart: the "
-    "job is tracked on disk, so a poll always returns a definite answer."
+    "Check on a long-running endpoint (sim / fpga / synth / reviewer / mutation_tester / "
+    "coverage_analyst) that was started in the background. When such an endpoint takes "
+    "longer than the inline wait, its call returns a 'run_id' instead of the result; pass "
+    "that run_id here to get the current status. Pass 'wait_seconds' (0-270) to long-poll: "
+    "the call blocks up to that long for the run to finish, turning a poll-loop into one "
+    "blocking call; if the run is still going afterwards it returns 'RUNNING' — call again "
+    "to keep waiting. Prefer few long polls over many short ones. Claude and Codex: omit "
+    "'wait_seconds' to use the Sandbox's configured poll window. Codex: if its programmatic "
+    "exec yields while this MCP call is still running, keep waiting on the same running cell"
+    " in short slices; do not start another booley_poll call. When the run finishes it "
+    "returns the full result (EXIT_CODE + report), exactly as the original call would have. "
+    "Safe to call across a server restart: the job is tracked on disk, so a poll always "
+    "returns a definite answer."
 )
-
-
 _CANCEL_MCP_TOOL_NAME = "booley_cancel"
-
-
-_CANCEL_MCP_TOOL_DESCRIPTION = (
-    "Cancel a QUEUED or RUNNING background job (pass the run_id a submit or "
-    "poll reported). Running process groups receive SIGTERM, then SIGKILL after "
-    "a bounded grace period. Polling the run_id afterwards reports the distinct "
-    "CANCELLED terminal outcome."
-)
-
-
 _TARGETS_MCP_TOOL_NAME = "booley_targets"
-
-
-_TARGETS_MCP_TOOL_DESCRIPTION = (
-    "List the project's FuseSoC .core Targets — the values a Booley Flow's "
-    "'target' argument accepts (ADR 0030). Cheap .core-YAML enumeration, no "
-    "fusesoc run: per Target it reports the copy-pasteable selector "
-    "(vlnv#name when the bare name is ambiguous), flow (sim/lint/generic), "
-    "declared EDA tool, cocotb module, declared toplevel, which Doctor Flows the "
-    "Target selects via flow_options.booley.doctor, and which Booley Flows could drive it. "
-    "Optional filters: 'for_flow' (one of synth, fpga, sim, lint) "
-    "keeps only Targets that Flow could drive; "
-    "'glob' matches the bare name or vendor:library:name#target (e.g. "
-    "'soc*', '*#lint'). Returns JSON."
-)
-
-
 _SLEEP_MCP_TOOL_NAME = "booley_sleep"
-
-
-_SLEEP_MCP_TOOL_DESCRIPTION = (
-    "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold "
-    "this MCP tool call open for 'seconds' server-side, then return timing "
-    "details. Exists to measure the MCP client's MCP-tool-call kill ceiling "
-    "(ADR 0027) — it does no RTL work and is intended for timing diagnostics."
-)
 
 
 _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bwave",
         "description": (
-            "RTL debug helper for simulation traces: investigate with it, "
-            "not just confirm fixes. If the sim report does not localize a "
-            "failure, or a reproducer unexpectedly passes, query a current "
-            "trace (or rerun `sim` with `trace: true`) before acting on an RTL "
-            "hypothesis. Walk the wrong value backwards cycle by cycle through "
-            "its data, valid, select, and handshake drivers to the first "
-            "divergent signal; for a passing reproducer, verify the suspected "
-            "trigger actually occurred. Confirm the mechanism in the trace "
-            "before editing RTL. Prefer B-Wave over $display prints; use prints "
-            "only if B-Wave cannot capture the evidence, and say why. Diagnose "
-            "compile errors from compiler output. Queries need no GUI; for "
-            "humans, open a scoped, grouped view and relay omitted-signal "
+            "RTL debug helper for simulation traces: investigate with it, not just confirm "
+            "fixes. If the sim report does not localize a failure, or a reproducer "
+            "unexpectedly passes, query a current trace (or rerun `sim` with `trace: true`) "
+            "before acting on an RTL hypothesis. Walk the wrong value backwards cycle by "
+            "cycle through its data, valid, select, and handshake drivers to the first "
+            "divergent signal; for a passing reproducer, verify the suspected trigger "
+            "actually occurred. Confirm the mechanism in the trace before editing RTL. "
+            "Prefer B-Wave over $display prints; use prints only if B-Wave cannot capture "
+            "the evidence, and say why. Diagnose compile errors from compiler output. "
+            "Queries need no GUI; for humans, open a scoped, grouped view and relay "
+            "omitted-signal "
             'warnings. First call extra_args=["skill"], then '
             'extra_args=["--help"] for syntax.'
         ),
@@ -148,11 +74,7 @@ def _find_mcp_tool_class_in_module(
     mod: object,
     source_label: str,
 ) -> tuple[type, object, dict] | None:
-    """Find an McpTool/BooleyFlow/Specialist subclass in *mod*, instantiate it, and extract its schema.
-
-    Returns (cls, instance, schema) or None if nothing found.
-    Logs and skips classes whose schema extraction fails.
-    """
+    """Extract the first endpoint class, instance and schema, logging extraction failures."""
     from booley.flows.base import BooleyFlow, BuiltinFlow
     from booley.mcp.base import McpTool
     from booley.mcp.flow_adapter import flow_schema
@@ -203,9 +125,7 @@ def _mcp_tool_def_from_class(
     return result
 
 
-def _import_module_safe(
-    fqn: str,
-) -> tuple[object | None, str | None]:
+def _import_module_safe(fqn: str) -> tuple[object | None, str | None]:
     """Import *fqn* and return (module, None) or (None, error_msg)."""
     import importlib
     import traceback
@@ -226,10 +146,7 @@ def _import_and_extract(
     *,
     import_prefix: str = "booley.mcp",
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Import a single endpoint module and extract its schema.
-
-    Returns (mcp_tool_def, error_msg). error_msg is None on success.
-    """
+    """Return an endpoint definition or its import/extraction error."""
     fqn = f"{import_prefix}.{module_name}"
     mod, err = _import_module_safe(fqn)
     if err is not None:
@@ -255,33 +172,37 @@ def _import_and_extract(
     )
 
 
-def _status_mcp_tool_def() -> dict[str, Any] | None:
+def _status_mcp_tool_def() -> dict[str, Any]:
     """Return the synthetic Interactive Mode status MCP tool definition."""
     return {
         "name": _STATUS_MCP_TOOL_NAME,
-        "description": _STATUS_MCP_TOOL_DESCRIPTION,
-        "schema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
+        "description": "Show whether Booley Interactive Mode is ready in this tab.",
+        "schema": {"type": "object", "properties": {}, "additionalProperties": False},
     }
 
 
-def _report_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic report-fetch MCP tool definition (or None if hidden)."""
-    definition: dict[str, Any] = {
+def _report_mcp_tool_def() -> dict[str, Any]:
+    """Return the synthetic report-fetch MCP tool definition."""
+    return {
         "name": _REPORT_MCP_TOOL_NAME,
-        "description": _REPORT_MCP_TOOL_DESCRIPTION,
+        "description": (
+            "Fetch the most recent completed run report for a Booley endpoint (e.g. sim) from disk —"
+            " including after a client-side timeout, when the inline MCP result was lost but the run"
+            " finished server-side. Pass the optional 'endpoint' argument to target a specific "
+            "endpoint's latest report; omit it for the most recent report across all endpoints."
+        ),
         "schema": {
             "type": "object",
             "properties": {
+                "work_dir": {
+                    "type": "string",
+                    "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
+                },
                 "endpoint": {
                     "type": "string",
                     "description": (
-                        "Endpoint name to fetch the latest report for "
-                        "(e.g. 'sim'). Omit for the most recent report "
-                        "across all endpoints."
+                        "Endpoint name to fetch the latest report for (e.g. 'sim'). Omit for"
+                        " the most recent report across all endpoints."
                     ),
                 },
             },
@@ -289,17 +210,11 @@ def _report_mcp_tool_def() -> dict[str, Any] | None:
         },
     }
 
-    definition["schema"]["properties"]["work_dir"] = {
-        "type": "string",
-        "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
-    }
-    return definition
 
-
-def _poll_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic poll MCP tool definition (or None if hidden)."""
+def _poll_mcp_tool_def() -> dict[str, Any]:
+    """Return the synthetic poll MCP tool definition."""
     return {
-        "name": _POLL_MCP_TOOL_NAME,
+        "name": POLL_MCP_TOOL_NAME,
         "description": _POLL_MCP_TOOL_DESCRIPTION,
         "schema": {
             "type": "object",
@@ -313,11 +228,10 @@ def _poll_mcp_tool_def() -> dict[str, Any] | None:
                     "minimum": 0,
                     "maximum": 270,
                     "description": (
-                        "Long-poll: block up to this many seconds for the run "
-                        "to finish before answering (clamped to 0-270; longer "
-                        "would die at the HTTP layer's ~300s cap). 0 answers "
-                        "with the current status immediately. Omit to use the "
-                        "server default wait "
+                        "Long-poll: block up to this many seconds for the run to finish "
+                        "before answering (clamped to 0-270; longer would die at the HTTP "
+                        "layer's ~300s cap). 0 answers with the current status immediately. "
+                        "Omit to use the server default wait "
                         f"(BOOLEY_MCP_JOB_POLL_WAIT_SECONDS, "
                         f"{_DEFAULT_JOB_POLL_WAIT_SECONDS:g}s)."
                     ),
@@ -329,17 +243,15 @@ def _poll_mcp_tool_def() -> dict[str, Any] | None:
     }
 
 
-def _cancel_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic cancel MCP tool definition (or None if hidden).
-
-    Visible wherever poll is (always): any server that can hand back a
-    run_id for a queued or running job must let the caller stop it. Like poll it
-    only manages job state — it cannot invoke an endpoint or recurse — so it is
-    exempt from the recursion-safety allowlists.
-    """
+def _cancel_mcp_tool_def() -> dict[str, Any]:
+    """Return the job cancellation tool, exposed wherever polling is available."""
     return {
         "name": _CANCEL_MCP_TOOL_NAME,
-        "description": _CANCEL_MCP_TOOL_DESCRIPTION,
+        "description": (
+            "Cancel a QUEUED or RUNNING background job (pass the run_id a submit or poll reported). "
+            "Running process groups receive SIGTERM, then SIGKILL after a bounded grace period. "
+            "Polling the run_id afterwards reports the distinct CANCELLED terminal outcome."
+        ),
         "schema": {
             "type": "object",
             "properties": {
@@ -354,13 +266,22 @@ def _cancel_mcp_tool_def() -> dict[str, Any] | None:
     }
 
 
-def _targets_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the synthetic targets-listing MCP tool definition (or None if hidden)."""
+def _targets_mcp_tool_def() -> dict[str, Any]:
+    """Return the synthetic targets-listing MCP tool definition."""
     from booley.targets.target_surface import TARGET_AWARE_FLOWS
 
     return {
         "name": _TARGETS_MCP_TOOL_NAME,
-        "description": _TARGETS_MCP_TOOL_DESCRIPTION,
+        "description": (
+            "List the project's FuseSoC .core Targets — the values a Booley Flow's 'target' argument"
+            " accepts (ADR 0030). Cheap .core-YAML enumeration, no fusesoc run: per Target it "
+            "reports the copy-pasteable selector (vlnv#name when the bare name is ambiguous), flow "
+            "(sim/lint/generic), declared EDA tool, cocotb module, declared toplevel, which Doctor "
+            "Flows the Target selects via flow_options.booley.doctor, and which Booley Flows could "
+            "drive it. Optional filters: 'for_flow' (one of synth, fpga, sim, lint) keeps only "
+            "Targets that Flow could drive; 'glob' matches the bare name or "
+            "vendor:library:name#target (e.g. 'soc*', '*#lint'). Returns JSON."
+        ),
         "schema": {
             "type": "object",
             "properties": {
@@ -381,9 +302,8 @@ def _targets_mcp_tool_def() -> dict[str, Any] | None:
                 "work_dir": {
                     "type": "string",
                     "description": (
-                        "Optional worktree root to enumerate instead of the "
-                        "session workspace (same validation as the Booley Flows' "
-                        "work_dir)."
+                        "Optional worktree root to enumerate instead of the session "
+                        "workspace (same validation as the Booley Flows' work_dir)."
                     ),
                 },
             },
@@ -392,13 +312,19 @@ def _targets_mcp_tool_def() -> dict[str, Any] | None:
     }
 
 
-def _coverage_evidence_tool_def() -> dict[str, Any] | None:
+def _coverage_evidence_tool_def() -> dict[str, Any]:
     """Return the bound Coverage Analyst evidence-tool definition."""
     from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 
     return {
         "name": _COVERAGE_EVIDENCE_TOOL_NAME,
-        "description": _COVERAGE_EVIDENCE_TOOL_DESCRIPTION,
+        "description": (
+            "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
+            "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' to page "
+            "through RTL sources with no native records, and view='points' for filtered exact "
+            "Coverage Points and view='source' for verified excerpts associated with previously "
+            "returned point_refs."
+        ),
         "schema": {
             "type": "object",
             "properties": {
@@ -429,11 +355,16 @@ def _coverage_evidence_tool_def() -> dict[str, Any] | None:
     }
 
 
-def _sleep_mcp_tool_def() -> dict[str, Any] | None:
-    """Return the diagnostic sleep MCP tool definition (or None if hidden)."""
+def _sleep_mcp_tool_def() -> dict[str, Any]:
+    """Return the diagnostic sleep MCP tool definition."""
     return {
         "name": _SLEEP_MCP_TOOL_NAME,
-        "description": _SLEEP_MCP_TOOL_DESCRIPTION,
+        "description": (
+            "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold this MCP "
+            "tool call open for 'seconds' server-side, then return timing details. Exists to measure"
+            " the MCP client's MCP-tool-call kill ceiling (ADR 0027) — it does no RTL work and is "
+            "intended for timing diagnostics."
+        ),
         "schema": {
             "type": "object",
             "properties": {
@@ -486,8 +417,6 @@ class Exposure:
 def tool_visible(
     name: str,
     exposure: Exposure,
-    *,
-    interactive_excluded: frozenset[str] = _INTERACTIVE_MCP_EXCLUDED,
 ) -> bool:
     from booley.targets.flow_names import canonical
 
@@ -496,7 +425,7 @@ def tool_visible(
         return name in exposure.nested
     if exposure.explicit is not None:
         return name in exposure.explicit
-    return not exposure.interactive or name not in interactive_excluded
+    return True
 
 
 def status_visible(exposure: Exposure) -> bool:
@@ -530,24 +459,12 @@ def coverage_visible(exposure: Exposure) -> bool:
     )
 
 
-def assemble_tool_definitions(
-    endpoint_definitions: Sequence[dict[str, Any]],
-    supplemental_definitions: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Combine already-visible definitions without applying another exposure gate."""
-    return sorted(
-        [*endpoint_definitions, *supplemental_definitions], key=lambda item: item["name"]
-    )
-
-
-def _default_interactive_definitions() -> list[dict[str, Any]]:
-    from booley.mcp.goal_tools import goal_tool_defs
-    from booley.mcp.registry import discover_mcp_tools
-
-    exposure = Exposure()
-    endpoints = []
-    errors = []
-    for info in discover_mcp_tools():
+def discover_builtin_definitions(
+    discovered: Sequence[Any], exposure: Exposure
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Extract visible builtins, retaining discovery failures for the caller."""
+    definitions, errors = [], []
+    for info in discovered:
         path = Path(info.path)
         if path.is_absolute():
             continue
@@ -556,10 +473,20 @@ def _default_interactive_definitions() -> list[dict[str, Any]]:
         if error:
             errors.append(error)
         if definition is not None and tool_visible(definition["name"], exposure):
-            endpoints.append(definition)
-    if errors:
-        raise RuntimeError("Interactive builtin discovery incomplete: " + "; ".join(errors))
-    supplemental = [tool for tool in _BWAVE_MCP_TOOLS if tool_visible(tool["name"], exposure)]
+            definitions.append(definition)
+    return definitions, errors
+
+
+def visible_definitions(
+    exposure: Exposure, endpoint_definitions: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Assemble supplemental tools with already-filtered endpoints, preserving objects."""
+    from booley.mcp.goal_tools import goal_tool_defs
+
+    definitions = [
+        *endpoint_definitions,
+        *(tool for tool in _BWAVE_MCP_TOOLS if tool_visible(tool["name"], exposure)),
+    ]
     for visible, builder in (
         (status_visible(exposure), _status_mcp_tool_def),
         (report_visible(exposure), _report_mcp_tool_def),
@@ -570,10 +497,23 @@ def _default_interactive_definitions() -> list[dict[str, Any]]:
         (exposure.debug, _sleep_mcp_tool_def),
     ):
         if visible:
-            supplemental.append(builder())
+            definitions.append(builder())
     if goals_visible(exposure):
-        supplemental.extend({**definition, "is_goal": True} for definition in goal_tool_defs())
-    return assemble_tool_definitions(endpoints, supplemental)
+        definitions.extend(goal_tool_defs())
+    return sorted(definitions, key=lambda item: item["name"])
+
+
+def _default_interactive_definitions() -> list[dict[str, Any]]:
+    from booley.mcp.goal_tools import GOAL_TOOL_NAMES
+    from booley.mcp.registry import discover_mcp_tools
+
+    endpoints, errors = discover_builtin_definitions(discover_mcp_tools(), Exposure())
+    if errors:
+        raise RuntimeError("Interactive builtin discovery incomplete: " + "; ".join(errors))
+    return [
+        {**tool, "is_goal": True} if tool["name"] in GOAL_TOOL_NAMES else tool
+        for tool in visible_definitions(Exposure(), endpoints)
+    ]
 
 
 def partition_work_dir(
@@ -591,40 +531,9 @@ def partition_work_dir(
     return tuple(accepting), tuple(nonaccepting)
 
 
-_GUIDANCE_LOCK = threading.RLock()
-
-
 @cache
-def _cached_default_inventory() -> (
-    tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]] | None
-):
-    """Cache installed builtin guidance once, including a safe degraded result."""
-    try:
-        return partition_work_dir(_default_interactive_definitions())
-    except Exception:
-        # Guidance is advisory: unavailable schemas must not break Goal transitions.
-        logger.warning(
-            "Interactive MCP guidance unavailable; using advertised-schema fallback", exc_info=True
-        )
-        return None
-
-
-def default_interactive_work_dir_inventory() -> (
-    tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]] | None
-):
-    """Return the process-static inventory, serializing its first discovery."""
-    with _GUIDANCE_LOCK:
-        return _cached_default_inventory()
-
-
-def reset_guidance_cache() -> None:
-    """Reset process-static guidance discovery for isolated tests."""
-    with _GUIDANCE_LOCK:
-        _cached_default_inventory.cache_clear()
-
-
 def work_dir_guidance() -> str:
-    """Compose Goal routing text with the default Interactive schema inventory."""
+    """Compose Goal routing text from the installed default Interactive schemas."""
     from booley.goals.rules import work_dir_guidance as render_guidance
 
-    return render_guidance(default_interactive_work_dir_inventory())
+    return render_guidance(partition_work_dir(_default_interactive_definitions()))

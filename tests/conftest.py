@@ -365,3 +365,18 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     signal = {"schema": SCHEMA, "key": key, "state": state, "at": at}
     path.write_text(json.dumps(signal | ({"tool": tool} if tool else {})), encoding="utf-8")
     return path
+
+
+@pytest.fixture(autouse=True)
+def _inline_ended_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep cleanup deterministic; worker tests explicitly restore the process launcher."""
+    from booley.goals import ended_records
+    from booley.goals.store import GoalStore
+
+    monkeypatch.setattr(
+        ended_records,
+        "_launch_cleanup",
+        lambda booley_dir, repo_dir: ended_records.sweep_ended_records(
+            GoalStore(booley_dir), repo_dir
+        ),
+    )

@@ -79,3 +79,143 @@ def test_detect_host_timezone_falls_back_to_offset(monkeypatch):
 
     monkeypatch.setattr(timefmt, "datetime", FixedDatetime)
     assert timefmt.detect_host_timezone() == "-03:30"
+
+
+def _display_helper(name):
+    helper = getattr(timefmt, name, None)
+    assert callable(helper), f"missing shared {name}"
+    return helper
+
+
+def test_adaptive_duration_boundaries():
+    duration = _display_helper("format_duration")
+    cases = [
+        (-1, "0s"),
+        (-0.0, "0s"),
+        (0, "0s"),
+        (0.0001, "0.0s"),
+        (0.012, "0.0s"),
+        (0.4, "0.4s"),
+        (0.96, "1.0s"),
+        (0.999, "1.0s"),
+        (1, "1s"),
+        (1.99, "1s"),
+        (59, "59s"),
+        (59.999, "59s"),
+        (60, "1m 00s"),
+        (60.1, "1m 00s"),
+        (3599, "59m 59s"),
+        (3599.999, "59m 59s"),
+        (3600, "1h 00m"),
+        (3600.1, "1h 00m"),
+        (86399, "23h 59m"),
+        (86399.999, "23h 59m"),
+        (86400, "1d 00h"),
+        (86400.1, "1d 00h"),
+        (176461, "2d 01h"),
+    ]
+    for value, expected in cases:
+        assert duration(value) == expected, value
+
+
+def test_relative_age_boundaries():
+    age = _display_helper("format_age")
+    for seconds, expected in [
+        (-1, "just now"),
+        (0, "just now"),
+        (0.4, "just now"),
+        (4.999, "just now"),
+        (5, "5s ago"),
+        (5.001, "5s ago"),
+        (59, "59s ago"),
+        (59.999, "59s ago"),
+        (60, "1m ago"),
+        (3599, "59m ago"),
+        (3600, "1h ago"),
+        (86399, "23h ago"),
+        (86400, "1d ago"),
+        (86400.1, "1d ago"),
+    ]:
+        assert age(100000 - seconds, now=100000, tz=UTC) == expected, seconds
+
+
+def test_clock_calendar_buckets():
+    clock = _display_helper("format_clock")
+    now = datetime(2026, 10, 8, 15, 0, tzinfo=UTC)
+    for instant, expected in [
+        ("2026-10-08T14:44:03Z", "14:44:03"),
+        ("2026-10-03T14:44:03Z", "Oct 03 14:44"),
+        ("2025-10-03T14:44:03Z", "2025-10-03 14:44"),
+    ]:
+        assert clock(instant, now=now, tz=UTC) == expected
+        parsed = timefmt.parse_timestamp(instant)
+        assert clock(parsed, now=now.timestamp(), tz=UTC) == expected
+        assert clock(parsed.timestamp(), now=now, tz=UTC) == expected
+    assert timefmt.format_human_date(now) == "08 OCT 2026"
+
+
+def test_display_invalid_and_skew():
+    duration = _display_helper("format_duration")
+    age = _display_helper("format_age")
+    clock = _display_helper("format_clock")
+    for value in (None, True, False, "bad", float("nan"), float("inf"), -float("inf"), 10**1000):
+        assert duration(value) == "unknown"
+        assert age(value, now=1000, tz=UTC) == "unknown"
+        assert clock(value, now=1000, tz=UTC) == "unknown"
+    for value in (datetime(2026, 10, 8), "2026-10-08T12:00:00", 1e100):
+        assert age(value, now=1000, tz=UTC) == "unknown"
+        assert clock(value, now=1000, tz=UTC) == "unknown"
+    assert age(1001, now=1000, tz=UTC) == "just now"
+    assert age(1000, now=True, tz=UTC) == "unknown"
+    assert clock(1000, now="bad", tz=UTC) == "unknown"
+
+
+def _new_york_2026():
+    from io import BytesIO
+    from struct import pack
+    from zoneinfo import ZoneInfo
+
+    # A TZif v1 fixture keeps both 2026 transitions independent of host tzdata.
+    transitions = [
+        int(datetime(2026, 3, 8, 7, tzinfo=UTC).timestamp()),
+        int(datetime(2026, 11, 1, 6, tzinfo=UTC).timestamp()),
+    ]
+    header = b"TZif\0" + bytes(15) + pack(">6i", 0, 0, 0, 2, 2, 8)
+    records = pack(">2i", *transitions) + b"\x01\x00"
+    records += pack(">ibb", -18000, 0, 0) + pack(">ibb", -14400, 1, 4)
+    return ZoneInfo.from_file(BytesIO(header + records + b"EST\0EDT\0"), key="America/New_York")
+
+
+def test_clock_local_rollover_and_dst(monkeypatch):
+    clock = _display_helper("format_clock")
+    tz = _new_york_2026()
+    before_spring = datetime(2026, 3, 8, 6, 30, tzinfo=UTC).astimezone(tz)
+    after_spring = datetime(2026, 3, 8, 7, 30, tzinfo=UTC).astimezone(tz)
+    assert (before_spring.hour, before_spring.utcoffset()) == (1, timedelta(hours=-5))
+    assert (after_spring.hour, after_spring.utcoffset()) == (3, timedelta(hours=-4))
+    now = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+    before_fold = datetime(2026, 11, 1, 5, 30, tzinfo=UTC).astimezone(tz)
+    after_fold = now.astimezone(tz)
+    assert (before_fold.hour, before_fold.fold, before_fold.utcoffset()) == (
+        1,
+        0,
+        timedelta(hours=-4),
+    )
+    assert (after_fold.hour, after_fold.fold, after_fold.utcoffset()) == (
+        1,
+        1,
+        timedelta(hours=-5),
+    )
+    assert clock("2026-11-01T05:30:00Z", now=now, tz=tz) == "01:30:00"
+    age = _display_helper("format_age")
+    assert age("2026-11-01T05:30:00Z", now=now, tz=tz) == "1h ago"
+    east = timezone(timedelta(hours=4))
+    now = datetime(2026, 10, 3, 21, 0, tzinfo=UTC)
+    assert clock("2026-10-03T20:30:00Z", now=now, tz=east) == "00:30:00"
+    assert clock("2026-10-03T19:59:00Z", now=now, tz=east) == "Oct 03 23:59"
+    assert (
+        clock("2025-12-31T22:00:00Z", now=datetime(2026, 1, 1, 1, tzinfo=UTC), tz=east)
+        == "02:00:00"
+    )
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    assert clock("2026-10-03T20:30:00Z", now=now) == "00:30:00"

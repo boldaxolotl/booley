@@ -300,7 +300,7 @@ def tag_image(source: str, target: str) -> None:
 def remove_image_tag(target: str) -> None:
     """Release one tag without force; Docker may reclaim otherwise unreferenced bytes."""
     try:
-        result = _run_docker(["image", "rm", target], timeout=30)
+        result = _run_docker(["image", "rm", "--no-prune", target], timeout=30)
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         raise RuntimeError(f"cannot remove issued Sandbox Image keeper: {exc}") from exc
     if result.returncode == 0:
@@ -330,14 +330,20 @@ def issued_image_tags() -> list[str]:
     )
 
 
-def _strict_docker(args: list[str]) -> str:
+def strict_docker(
+    args: list[str],
+    *,
+    context: str = "cannot observe issued Sandbox Image keepers",
+    timeout: int = 30,
+) -> str:
+    """Run one Docker command, raising ``RuntimeError`` with *context* on any failure."""
     try:
-        result = _run_docker(args, timeout=30)
+        result = _run_docker(args, timeout=timeout)
     except (subprocess.SubprocessError, OSError) as exc:
-        raise RuntimeError(f"cannot observe issued Sandbox Image keepers: {exc}") from exc
+        raise RuntimeError(f"{context}: {exc}") from exc
     if result.returncode != 0:
         raise RuntimeError(
-            "cannot observe issued Sandbox Image keepers: "
+            f"{context}: "
             + (result.stderr.strip() or result.stdout.strip() or "Docker command failed")
         )
     return result.stdout
@@ -352,7 +358,7 @@ def validated_image_id(value: str) -> str:
 
 def issued_image_tags_strict() -> tuple[str, ...]:
     """List exact keeper tags, raising when the daemon observation is incomplete."""
-    output = _strict_docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
+    output = strict_docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
     tags = set()
     for line in output.splitlines():
         if not line or line != line.strip() or len(line.split(":")) < 2:
@@ -364,13 +370,13 @@ def issued_image_tags_strict() -> tuple[str, ...]:
 
 def container_image_ids_strict() -> frozenset[str]:
     """Observe immutable images of ALL containers, including stopped and foreign ones."""
-    output = _strict_docker(["container", "ls", "--all", "--quiet", "--no-trunc"])
+    output = strict_docker(["container", "ls", "--all", "--quiet", "--no-trunc"])
     ids = output.splitlines()
     if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in ids):
         raise RuntimeError("malformed Docker container listing during keeper inspection")
     images = set()
     for container in ids:
-        image = _strict_docker(["container", "inspect", container, "--format", "{{.Image}}"])
+        image = strict_docker(["container", "inspect", container, "--format", "{{.Image}}"])
         images.add(validated_image_id(image.strip()))
     return frozenset(images)
 

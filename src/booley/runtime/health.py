@@ -18,6 +18,7 @@ from typing import Any
 from booley.audit import health as policy
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
+from booley.core.boundary import as_dict
 from booley.runtime import doctor_stamp
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import contains, resolve_booley_dir
@@ -29,6 +30,19 @@ _REPORT_NAME = "last.json"
 _TRANSCRIPT_NAME = "last.log"
 _ANNOUNCEMENTS_NAME = "announcements.json"
 _ANNOUNCE_LOCK_NAME = "announcements.lock"
+_INPUT_LABELS = {
+    "booley_toml_sha256": "booley.toml",
+    "doctor_waivers_sha256": "doctor-waivers.toml",
+    "devcontainer_json_sha256": "devcontainer.json",
+    "tests.toml_sha256": "tests.toml",
+    "configs.toml_sha256": "configs.toml",
+    "AGENTS.md_sha256": "Booley Directory AGENTS.md",
+    "root_AGENTS.md_identity": "Project Root AGENTS.md",
+    "root_CLAUDE.md_identity": "Project Root CLAUDE.md",
+    "core_files_sha256": "authored .core files",
+    "booley_version": "Booley version",
+    "upgrade_review_sha256": "upgrade review",
+}
 
 
 def state_dir(booley_dir: Path) -> Path:
@@ -67,24 +81,21 @@ def _path_identity(path: Path) -> str | None:
 
 def _core_digest(project_root: Path, booley_dir: Path) -> str:
     """Hash authored core descriptions without scanning runtime worktrees."""
-    roots = [project_root, booley_dir / "cores"]
+    roots = [("project", project_root), ("booley-cores", booley_dir / "cores")]
     entries: list[tuple[str, Path]] = []
-    for root in roots:
+    for origin, root in roots:
         if not root.is_dir():
             continue
         for path in root.rglob("*.core"):
-            if root == project_root and contains(path.parent, booley_dir=booley_dir) is not None:
+            if origin == "project" and contains(path.parent, booley_dir=booley_dir) is not None:
                 continue
-            try:
-                label = str(path.relative_to(root))
-            except ValueError:
-                label = str(path)
-            entries.append((f"{root.name}/{label}", path))
+            label = path.relative_to(root).as_posix()
+            entries.append((f"{origin}/{label}", path))
     digest = hashlib.sha256()
     for label, path in sorted(entries):
-        digest.update(label.encode())
+        digest.update(label.encode() + b"\0")
         value = _sha256_or_none(path) or "unreadable"
-        digest.update(value.encode())
+        digest.update(value.encode() + b"\0")
     return digest.hexdigest()
 
 
@@ -124,6 +135,19 @@ def _parse_time(value: object) -> datetime | None:
         return None
 
 
+def _input_change_reason(recorded: object, current: dict[str, Any]) -> str:
+    """Name only known inputs from a compatible persisted fingerprint."""
+    generic = "Doctor inputs changed"
+    recorded = as_dict(recorded)
+    if recorded is None or recorded.keys() != current.keys():
+        return generic
+    names = [label for key, label in _INPUT_LABELS.items() if recorded[key] != current[key]]
+    shown = names[:3]
+    if len(names) > 3:
+        shown.append(f"+{len(names) - 3} more")
+    return f"{generic}: {', '.join(shown)}" if shown else generic
+
+
 def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSnapshot | None:
     """Read one report, validate its health interpretation, then assess its freshness.
 
@@ -136,13 +160,15 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
         if document is None:
             return None
         diagnostics = policy.parse_diagnostics(document)
+        current = compute_fingerprint(booley_dir, project_root)
         due = policy.freshness_reason(
             diagnostics,
-            inputs_changed=document.get("fingerprint")
-            != compute_fingerprint(booley_dir, project_root),
+            inputs_changed=document.get("fingerprint") != current,
             checked_at=_parse_time(document.get("checked_at")),
             now=now or datetime.now(tz=UTC),
         )
+        if due == "Doctor inputs changed":
+            due = _input_change_reason(document.get("fingerprint"), current)
     except (OSError, ValueError):
         return None
     finding_hash = str(document.get("finding_hash") or _finding_hash(diagnostics))
