@@ -3185,9 +3185,14 @@ def test_opt_out_migration_init_failure_summary(tmp_path, monkeypatch, capsys, f
     capsys.readouterr()
     config.write_text("[stealth]\nenabled = false\n")
     if failure == "root":
-        monkeypatch.setattr(
-            line_endings, "_create_attributes", lambda *args: "injected root failure"
-        )
+        original_link = line_endings.os.link
+
+        def link(staged, target):
+            if target == tmp_path / ".gitattributes":
+                raise OSError("injected root failure")
+            return original_link(staged, target)
+
+        monkeypatch.setattr(line_endings.os, "link", link)
     else:
         original = Path.unlink
 
