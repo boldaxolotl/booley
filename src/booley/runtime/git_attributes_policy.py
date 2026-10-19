@@ -23,13 +23,6 @@ def has_attribute_policy(content: bytes) -> bool:
     return any(_policy_lines(content))
 
 
-def is_null_attributes_path(root: Path, path: Path) -> bool:
-    """Match Git's null device with platform-native path case semantics."""
-    return os.path.normcase(str(path)) == os.path.normcase(
-        str(resolved_attribute_path(root, os.devnull))
-    )
-
-
 def has_managed_attributes(content: bytes, *, replayable: bool = False) -> bool:
     """Recognize the managed rule, optionally requiring init-compatible extra content."""
     lines = list(_policy_lines(content))
