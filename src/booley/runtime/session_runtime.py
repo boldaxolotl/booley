@@ -34,7 +34,6 @@ from booley.core.differences import format_differences
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
-from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 if TYPE_CHECKING:
@@ -383,12 +382,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
         return
     if spec_image == expected:
         return
-    if not is_local_image_id(spec_image):
-        comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
-    elif project_image.is_managed_sandbox_image(workspace, expected):
-        comparison = idk.compare_issued_selection(spec_image, expected, project_root=workspace)
-    else:
-        comparison = idk.compare_issued_reference(spec_image, expected)
+    comparison = idk.compare_issued_image(spec_image, expected, project_root=workspace)
     if comparison.status is image_identity.Status.MATCH:
         logger.debug(
             "[sandbox].image tag %r moved to an equivalent Sandbox Image; "
