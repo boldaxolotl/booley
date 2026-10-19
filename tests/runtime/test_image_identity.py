@@ -178,7 +178,7 @@ _SELECTION_CASES = {
 )
 def test_final_selection_rules(changes, stamps, flavor, expected):
     fields = {
-        "role": "project-overlay",
+        "role": "wheel-overlay" if "parent" in changes else "project-overlay",
         "inputs": "inputs",
         "recipe": "recipe",
         "parent_kind": "registry-digest" if "parent" in changes else "local-image-id",
