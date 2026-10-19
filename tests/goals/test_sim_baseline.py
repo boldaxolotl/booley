@@ -874,3 +874,23 @@ def test_initialized_directory_policy_runs_baseline_and_reports_transition(
     assert checkouts == [scratch]
     assert not scratch.exists()
     assert policy.read_bytes() == before
+
+
+def test_current_transition_uses_history_fold(baseline):
+    from booley.goals.sim_transitions import goal_transitions
+
+    _record(baseline, "failed", [run_row(SMOKE_RUN, "fail")])
+    _record(baseline, "passed", [run_row()])
+    history = _history(baseline)
+    for row in history:
+        row["detail"].pop("test_run_ledger", None)
+    rows = goal_transitions(
+        baseline.control,
+        baseline.record,
+        sim_goals(baseline.record)[0],
+        history[-1],
+        history,
+        baseline.worktree,
+        DEFAULT_RESOLVERS,
+    )
+    assert rows[0]["current"] == "failed"

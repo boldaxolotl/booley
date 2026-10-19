@@ -20,9 +20,10 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.test_runs import build_test_run
-from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY, REASON_FAILED, REASON_INCOMPLETE
+from booley.goals.test_run_evidence import REASON_FAILED, REASON_INCOMPLETE
 from tests.goals.conftest import enter_goals, run_row
 from tests.goals.test_test_run_evidence import (
+    _contributors,
     _edit_rtl,
     _evidence_file,
     _outcomes,
@@ -94,10 +95,10 @@ def test_outcomes_only_pass_keeps_a_measured_verdict_and_a_failure_unmeets_it(
     assert again["cycles"] == 800 and OUTCOMES_ONLY_DETAIL_KEY not in again
     assert _status(cycle, CYCLE_KEY).status == "met"
     # A failure of the frozen run at the same contents is sticky, measured or not.
-    failed = _record(
+    _record(
         cycle, "run-3", [run_row(PINNED, "fail")], key=CYCLE_KEY, met=False, extra=OUTCOMES_ONLY
     )
-    assert _outcomes(failed) == {"smoke@7": "failed"}
+    assert _outcomes(cycle, CYCLE_KEY) == {"smoke@7": "failed"}
     status = _status(cycle, CYCLE_KEY)
     assert status.status == "unmet" and status.reason.startswith(REASON_FAILED)
     _record(cycle, "run-4", [run_row(PINNED)], key=CYCLE_KEY, extra=_cycles(800))
@@ -123,8 +124,8 @@ def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_cam
 ) -> None:
     key = coverage.key
     rows = [run_row(STRESS, "fail")]
-    failed = _record(coverage, "run-1", rows, key=key, met=False, extra=OUTCOMES_ONLY)
-    assert _outcomes(failed) == {"stress@5": "failed", "smoke@1": "missing"}
+    _record(coverage, "run-1", rows, key=key, met=False, extra=OUTCOMES_ONLY)
+    assert _outcomes(coverage, coverage.key) == {"stress@5": "failed", "smoke@1": "missing"}
     # A failing or missing run is never why a coverage Goal is unmet: it is not measured yet.
     status = _status(coverage, key)
     assert status.status == "unmet" and "did not measure the Goal" in status.reason
@@ -134,8 +135,8 @@ def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_cam
     campaign = [run_row(STRESS), run_row("smoke")]
     detail = _record(coverage, "run-2", campaign, key=key, met=True)
     # Its ledger holds its own runs' outcomes; the earlier failure is not folded in.
-    assert _outcomes(detail) == {"stress@5": "passed", "smoke@1": "passed"}
-    assert detail[LEDGER_DETAIL_KEY]["source_evidence"] == []
+    assert _outcomes(coverage, coverage.key) == {"stress@5": "passed", "smoke@1": "passed"}
+    assert _contributors(coverage, key) == []
     assert "goal_contract_violation" not in detail
     assert _status(coverage, key).status == "stale"  # this bare detail has no coverage stamp
 
@@ -147,7 +148,7 @@ def test_coverage_floors_decide_a_campaign_whose_test_runs_failed(
     campaign = [run_row(STRESS, "fail"), run_row("smoke")]
     met = _record(coverage, "run-1", campaign, key=key, met=True)
     assert "goal_contract_violation" not in met
-    assert _outcomes(met) == {"stress@5": "failed", "smoke@1": "passed"}
+    assert _outcomes(coverage, coverage.key) == {"stress@5": "failed", "smoke@1": "passed"}
     status = _status(coverage, key)
     assert status.status == "stale" and "goal-test-run-" not in status.reason
     # The failing run is still shown, with the command that runs it again.
@@ -171,7 +172,7 @@ def test_run_that_does_not_measure_coverage_restates_the_measurement(
         coverage, "run-2", [run_row(STRESS, grade)], key=key, met=False, extra=OUTCOMES_ONLY
     )
     assert again["evaluation"] == "kept" and OUTCOMES_ONLY_DETAIL_KEY not in again
-    assert _outcomes(again) == {"stress@5": "passed", "smoke@1": "passed"}
+    assert _outcomes(coverage, coverage.key) == {"stress@5": "passed", "smoke@1": "passed"}
     state = DevelopmentState.load(_state_file(coverage))
     assert state.criteria[key].met is True
     # Status recomputes the ledger and finds nothing outdated, failed or incomplete.
@@ -192,14 +193,14 @@ def test_run_that_does_not_measure_coverage_restates_nothing_before_a_measuremen
     _record(coverage, "run-1", first, key=key, met=False, extra=OUTCOMES_ONLY)
     # No campaign measured the Goal yet, so a later ordinary run shows its own outcomes.
     later = _record(coverage, "run-2", [run_row("smoke")], key=key, met=False, extra=OUTCOMES_ONLY)
-    assert _outcomes(later) == {"stress@5": "missing", "smoke@1": "passed"}
+    assert _outcomes(coverage, coverage.key) == {"stress@5": "missing", "smoke@1": "passed"}
     assert "did not measure" in later["goal_contract_violation"]
     status = _status(coverage, key)
     assert status.status == "unmet" and "did not measure the Goal" in status.reason
     assert _shown(status) == {"stress@5": "missing", "smoke@1": "passed"}
 
 
-def test_run_that_does_not_measure_coverage_never_restates_evidence_without_a_ledger(
+def test_run_that_does_not_measure_coverage_never_restates_evidence_without_test_runs(
     coverage: SimpleNamespace,
 ) -> None:
     """An older Booley's met observation is no measurement: it must not be recorded again."""
@@ -207,7 +208,11 @@ def test_run_that_does_not_measure_coverage_never_restates_evidence_without_a_le
     campaign = [run_row(STRESS), run_row("smoke")]
     detail = _record(coverage, "run-1", campaign, key=key, met=True)
     # Rewrite the observation and its projection as the previous version stored them.
-    old = {name: value for name, value in detail.items() if name != LEDGER_DETAIL_KEY}
+    old = {
+        name: value
+        for name, value in detail.items()
+        if name not in {"test_run_ledger", "test_runs"}
+    }
     evidence, path = _evidence_file(coverage, 1), _state_file(coverage)
     row = json.loads(evidence.read_text(encoding="utf-8"))
     row["detail"] = old
@@ -229,7 +234,7 @@ def test_coverage_verdict_needs_exactly_the_frozen_runs_in_the_same_change(
     # A superset campaign passed both frozen runs but merged coverage over a third run.
     superset = [run_row(STRESS), run_row("smoke"), run_row(build_test_run("stress", seed=6))]
     detail = _record(coverage, "run-1", superset, key=key, met=True)
-    assert set(_outcomes(detail).values()) == {"passed"}
+    assert set(_outcomes(coverage, coverage.key).values()) == {"passed"}
     assert "did not measure" in detail["goal_contract_violation"]
     status = _status(coverage, key)
     assert status.status == "unmet" and "did not measure the Goal" in status.reason
