@@ -44,8 +44,20 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
+| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; standalone frontends use the scalar. Specialists omit these keys when they run no EDA tool. |
+| `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
+| `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
+
+Final resource accounting is a process-lifetime snapshot shared by numbered and
+flat reports. CPU sums the endpoint and its waited-for children; peak memory
+is the **largest process**, not a simultaneous process-tree total. Detached or
+unwaited children are excluded. `elapsed_s` remains wall time.
+
+Repeated in-process calls can include earlier work; resumed Campaigns account
+only for the resuming process. Unsupported or failed accounting omits `resources`
+without preventing report publication (failures are logged). Older reports may
+also omit it; consumers must not substitute zeros.
 
 ## Progress
 

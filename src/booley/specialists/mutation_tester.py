@@ -1758,6 +1758,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
         configured_tool = prepared.eda_tool
+        self.record_eda_tool(target, configured_tool)
         rel = posix_relpath(prepared.build_root, work_dir)
         (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
         (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(configured_tool, encoding="utf-8")
@@ -2198,6 +2199,9 @@ replacement must differ, and every proposal must remain a single source edit.
             test_name=test_name,
             cocotb_tests=cocotb_tests,
         )
+        marker = build_path / _EDALIZE_EDA_TOOL_MARKER
+        if marker.is_file():
+            self.record_eda_tool(target, marker.read_text(encoding="utf-8").strip())
         return subprocess.run(
             cmd,
             cwd=work_dir,

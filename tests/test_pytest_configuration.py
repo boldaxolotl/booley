@@ -452,12 +452,12 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Bound full suites at twenty minutes and shard/compatibility legs at fifteen."""
+    """Bound full suites at thirty minutes and shard/compatibility legs at fifteen."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 20 || 15 }}"
-    assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 20
+    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 15 }}"
+    assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 30
 
     pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
     assert pytest_steps

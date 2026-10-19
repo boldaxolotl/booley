@@ -3146,3 +3146,20 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
     else:
         assert flow.state.criteria["elab_pass_lite"].met is met
     assert flow.state._file_path is None
+
+
+def test_legacy_report_preserves_per_target_tool_identity(tmp_path):
+    import json
+
+    from booley.flows.sim.flow import TargetResult
+
+    flow = _make_flow(tmp_path, config="lite,full")
+    results = [
+        TargetResult("lite", eda_tool="Verilator", passed=True),
+        TargetResult("full", eda_tool="icarus", passed=True),
+    ]
+    with flow.context.publication_resources:
+        outcome = flow._legacy_endpoint_outcome(["lite", "full"], results, [], True, 0, 0)
+        report = json.loads(flow.context.write_report(outcome).read_bytes())
+    assert report.get("eda_tools") == {"lite": "Verilator", "full": "icarus"}
+    assert "eda_tool" not in report
