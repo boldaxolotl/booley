@@ -224,6 +224,8 @@ class LifecycleResult:
     cleanup: ImageCleanup = field(default_factory=ImageCleanup)
     wheel_source_fingerprint: str | None = None
     wheel_sha256: str | None = None
+    # Prior IDs of the Project's own tags that this adoption moved, now owned for cleanup.
+    superseded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

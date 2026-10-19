@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -30,10 +32,13 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.paths import docker_data_dir
+from booley.runtime.project_resources import own_tag_snapshot, record_superseded_images
 from booley.runtime.version_attribution import VersionOrigin
 
 if TYPE_CHECKING:
     from booley.harness.setup.common import InitContext
+
+logger = logging.getLogger(__name__)
 
 BASE_IMAGE = runtime_lifecycle.BASE_IMAGE
 FLAVOR_RECIPES = runtime_lifecycle.FLAVOR_RECIPES
@@ -823,8 +828,16 @@ def reconcile_planned(
     ):
         return runtime_lifecycle.planned_result(observed, _docker_adapter())
     prepared = prepare(observed, verbose=verbose)
+    identity = str(scope.project_root.resolve())
     try:
-        return commit(prepared)
+        before = own_tag_snapshot(identity)
+        result = commit(prepared)
     except BaseException:
         abort(prepared)
         raise
+    try:
+        superseded = record_superseded_images(identity, before)
+    except (RuntimeError, OSError) as exc:  # adoption succeeded; only cleanup is lost
+        logger.warning("superseded Sandbox Images will stay: %s", exc)
+        return result
+    return replace(result, superseded=superseded)

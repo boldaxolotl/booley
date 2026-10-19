@@ -805,6 +805,11 @@ live Grant for the root refuses it. Purge removes:
 - the Project's unused state volumes, including the login copy and agent
   history inside them.
 
+`booley init` and `booley init --force` record the images a rebuild
+supersedes and remove them after the Session keeper moves to the new image.
+An image a container uses, or that another tag still names, stays and init
+names it with the reason.
+
 Purge prints a `Removed:` line for each removal and a `Kept:` line, with the
 reason, for each recorded image it had to keep. It keeps `in-use`,
 `unrecorded`, and `labelled` entries and lists them afterwards. Remove an
