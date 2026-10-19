@@ -308,7 +308,7 @@ def test_atomic_attributes_creation_failure_leaves_no_partial_file(tmp_path: Pat
 
     def fail_attributes(staged, target):
         if target == tmp_path / ".gitattributes":
-            raise OSError("simulated link failure")
+            raise OSError("link failed")
         return real_link(staged, target)
 
     with patch.object(os, "link", new=fail_attributes):
@@ -318,10 +318,7 @@ def test_atomic_attributes_creation_failure_leaves_no_partial_file(tmp_path: Pat
     assert action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
     assert action.target.path == tmp_path / ".gitattributes" and not action.target.local
     assert action.state is LineEndingActionState.FAILED
-    assert (
-        action.detail
-        == f"could not atomically publish {action.target.path}: simulated link failure"
-    )
+    assert action.detail == f"could not atomically publish {action.target.path}: link failed"
     assert report.status is LineEndingStatus.UNSAFE
     assert not (tmp_path / ".gitattributes").exists()
     assert not list(tmp_path.glob(".booley-eol-*"))
@@ -336,7 +333,7 @@ def test_atomic_attributes_update_failure_preserves_original_file(tmp_path: Path
 
     def fail_attributes(staged: Path, target: Path):
         if target == tmp_path / ".gitattributes":
-            raise OSError("simulated attributes publication failure")
+            raise OSError("replace failed")
         return real_replace(staged, target)
 
     with patch.object(Path, "replace", new=fail_attributes):
@@ -346,29 +343,43 @@ def test_atomic_attributes_update_failure_preserves_original_file(tmp_path: Path
     assert action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
     assert action.target.path == tmp_path / ".gitattributes" and not action.target.local
     assert action.state is LineEndingActionState.FAILED
-    assert (
-        action.detail
-        == f"could not atomically publish {action.target.path}: simulated attributes publication failure"
-    )
+    assert action.detail == f"could not atomically publish {action.target.path}: replace failed"
     assert report.status is LineEndingStatus.UNSAFE
     assert (tmp_path / ".gitattributes").read_bytes() == original
     assert not list(tmp_path.glob(".booley-eol-*"))
 
 
-def test_local_publication_cleanup_error_is_reported(tmp_path: Path):
-    data = _stealth_repo(tmp_path)
-    real_unlink = Path.unlink
+@pytest.mark.parametrize(
+    "local,method", [(True, "unlink"), (False, "unlink"), (False, "read_bytes"), (True, "mkdir")]
+)
+def test_publication_errors(tmp_path, local, method):
+    data = _stealth_repo(tmp_path, enabled=local)
+    _init(tmp_path, autocrlf="false" if local else "true")
+    attrs = tmp_path / (".git/info/attributes" if local else ".gitattributes")
+    if method == "read_bytes":
+        attrs.write_bytes(b"# retained\n")
+    parent = attrs.parent
+    original = getattr(Path, method)
 
-    def fail_cleanup(path):
-        if path.parent == tmp_path / ".git/info" and path.name.startswith(".booley-eol-"):
-            raise OSError("cleanup failed")
-        return real_unlink(path)
+    def fail(path, *args, **kwargs):
+        if path == attrs or (path.parent == parent and path.name.startswith(".booley-eol-")):
+            raise OSError("I/O failed")
+        if method == "mkdir" and path == parent:
+            path.rename(tmp_path / "saved-info")
+            path.symlink_to(tmp_path / "saved-info", target_is_directory=True)
+        return original(path, *args, **kwargs)
 
-    with patch.object(Path, "unlink", new=fail_cleanup):
+    with patch.object(Path, method, new=fail):
+        if method == "unlink" and not local:
+            with pytest.raises(OSError, match="I/O failed"):
+                reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+            return
         report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     action = next(a for a in report.repositories[0].actions if a.target is not None)
     assert action.state is LineEndingActionState.FAILED
-    assert action.detail == f"{tmp_path / '.git/info/attributes'}: cleanup failed"
+    prefix = f"{attrs}: " if local else "could not read .gitattributes: "
+    error = f"unsafe attributes directory: {parent}" if method == "mkdir" else "I/O failed"
+    assert action.detail == prefix + error
     assert report.status is LineEndingStatus.UNSAFE
 
 
@@ -597,11 +608,7 @@ def test_stealth_publication_layout(tmp_path, linked):
     assert (root / ".git/info/attributes").read_text() == "* text=auto eol=lf\n"
     for worktree in (root, selected) if linked else (root,):
         assert _git(worktree, "status", "--porcelain").stdout == b""
-        assert _git(worktree, "check-attr", "eol", "--", ".gitignore").stdout == (
-            b".gitignore: eol: lf\n"
-        )
-    if not linked:
-        assert _git(root, "check-attr", "text", "eol", "--", ".gitignore").stdout == (
+        assert _git(worktree, "check-attr", "text", "eol", "--", ".gitignore").stdout == (
             b".gitignore: text: auto\n.gitignore: eol: lf\n"
         )
 
@@ -705,10 +712,8 @@ def test_local_default_conflicts_with_policy(tmp_path, monkeypatch, policy):
     home = _isolated_user_attributes(tmp_path, monkeypatch)
     root = tmp_path / "checkout"
     data = _stealth_repo(root)
-    assert (
-        reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR).status
-        is LineEndingStatus.SAFE
-    )
+    initial = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+    assert initial.status is LineEndingStatus.SAFE
     local = root / ".git/info/attributes"
     before = _snapshot(local)
     content = b"*.special diff=custom\n" if policy == "user-diff" else b"*.txt text eol=crlf\n"
@@ -1737,30 +1742,25 @@ def test_local_publication_preserves_post_stage_changes(tmp_path, monkeypatch, r
     attrs = tmp_path / ".git/info/attributes"
     if race == "update-stage":
         attrs.write_bytes(b"# existing comment\n")
-    original_stage, original_link = line_endings._stage_atomic_content, os.link
+    is_link = race == "create-link"
+    operation = os.link if is_link else line_endings._stage_atomic_content
     intervening = b"*.txt text eol=crlf\n"
 
-    def stage(path, *args, **kwargs):
-        result = original_stage(path, *args, **kwargs)
-        if path == attrs:
+    def intervene(path, *args, **kwargs):
+        if is_link and args[0] == attrs:
+            attrs.write_bytes(intervening)
+        result = operation(path, *args, **kwargs)
+        if not is_link and path == attrs:
             attrs.write_bytes(intervening)
         return result
 
-    def link(staged, target):
-        if target == attrs:
-            attrs.write_bytes(intervening)
-        return original_link(staged, target)
-
-    if race == "create-link":
-        monkeypatch.setattr(os, "link", link)
+    if is_link:
+        monkeypatch.setattr(os, "link", intervene)
     else:
-        monkeypatch.setattr(line_endings, "_stage_atomic_content", stage)
+        monkeypatch.setattr(line_endings, "_stage_atomic_content", intervene)
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    action = next(
-        a
-        for a in report.repositories[0].actions
-        if a.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
-    )
+    action = next(a for a in report.repositories[0].actions if a.target is not None)
+    assert action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
     assert action.target.path == attrs and action.target.local
     assert action.state is LineEndingActionState.FAILED
     assert action.detail == f"{attrs}: {attrs}: attributes changed during line-ending repair"
