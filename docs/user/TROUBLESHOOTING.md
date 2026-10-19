@@ -784,7 +784,9 @@ Forget also lists the Docker resources the Project leaves behind, with sizes:
   volume holds a copy of the agent's login and the agent's history;
 - containers and networks still labelled for the Project, marked `labelled`.
 
-Forget removes none of them. If Docker cannot list them, the root stays
+Forget removes none of the listed resources; it only deletes untagged images
+recorded as built for the Project once nothing uses them, before it lists the
+rest. If Docker cannot list them, the root stays
 forgotten and the command reports the error and the keeper outcome.
 
 An untagged image with neither a build record nor the Project's repository

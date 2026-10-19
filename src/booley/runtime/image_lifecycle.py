@@ -502,10 +502,10 @@ def _read_owned_record(
             raise ImageLifecycleError("invalid refresh image record fields/version")
         project = Path(require_str(raw, "project_root"))
         transaction = require_str(raw, "transaction")
+        # Match the stored root string; the directory may since be gone or replaced.
         if (
             not project.is_absolute()
-            or str(project.resolve()) != str(project)
-            or name != _owned_prefix(project) + transaction + ".json"
+            or name != _owned_prefix_for_identity(str(project)) + transaction + ".json"
         ):
             raise ImageLifecycleError("invalid refresh image record identity")
         refs = require_dict(raw["references"], field="owned image references")

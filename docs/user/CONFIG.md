@@ -239,7 +239,7 @@ If a present root's keeper was released, run `booley init` before using it again
 Forget then lists what the Project still holds in Docker, with sizes: images
 named by its own tags or recorded as built for it, its agent state volumes, and
 containers or networks labelled for it. Each entry says whether a container
-uses it or another tag shares it. Forget removes none of them. A state volume
+uses it or another tag shares it. Forget removes none of the listed resources. A state volume
 holds a copy of the agent's login and the agent's history.
 For keepers left by earlier forgotten Projects, preview with
 `booley projects prune-keepers`, then apply that exact preview with

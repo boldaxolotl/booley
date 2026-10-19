@@ -122,6 +122,21 @@ def test_leftovers_lists_only_this_projects_resources(
     )
 
 
+def test_leftovers_reads_records_of_a_root_since_replaced_by_a_symlink(
+    tmp_path: Path, host: FakeHost
+) -> None:
+    root = tmp_path / "chip"
+    root.mkdir()
+    image_lifecycle.record_owned_images(root, "t1", {}, (_id("5"),))
+    root.rmdir()
+    (tmp_path / "elsewhere").mkdir()
+    root.symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    host.images = [(_id("5"), "<none>:<none>", "4.9GB")]
+    assert project_resources.leftovers(str(tmp_path / "chip")) == (
+        Leftover("image", _id("5"), "unused", "4.9GB"),
+    )
+
+
 def test_leftovers_fails_loud_when_docker_cannot_list_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
