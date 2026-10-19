@@ -984,6 +984,39 @@ def test_alias_normalization_precedes_simulation_preparation(
     )
 
 
+def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import SimulationCampaign
+    from booley.flows.sim.execution.contract import PreSimEvidence
+    from booley.flows.sim.verilator_coverage import SimulationRunResult
+    from tests.flows.sim.test_campaign_phase3_integrity import _observe_pre_sim_reads
+    from tests.flows.sim.test_campaign_phase5_adversarial import _run_coverage_campaign
+    from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+    class Hooks(NativeExecution):
+        def run(self, request):
+            evidence = PreSimEvidence(
+                ("prepare-vectors",),
+                (request.test.name,),
+                "failed",
+                0.2,
+                "vector generator rejected input",
+                returncode=1,
+            )
+            return SimulationRunResult("elab_error", evidence.detail, evidence)
+
+    outcome, store = _run_coverage_campaign(
+        tmp_path, Hooks(), pre_sim_commands=("prepare-vectors",)
+    )
+    firings = store.read_pre_sim_firings()
+    assert len(firings) == 2 and outcome.complete
+    accesses, decodes = _observe_pre_sim_reads(monkeypatch)
+    SimulationCampaign.reauthenticate_pre_sim_firings(firings)
+    assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
+        "each sidecar must be decoded once"
+    )
+    assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
+
+
 def test_campaign_card_renders_each_target_once(monkeypatch):
     from types import SimpleNamespace
 
