@@ -110,7 +110,11 @@ def _test_config(
         "test-license-host",
         (PortRoute(0, upstream_ports[0]), PortRoute(0, upstream_ports[1])),
         listen_host="127.0.0.1",
-        connect_timeout=0.2,
+        # Generous on purpose: loopback connects finish at once, and no test here
+        # waits for this timeout (a refused port fails immediately). A short value
+        # let one event-loop stall under a loaded full run turn a reachable upstream
+        # into "upstream failed", which broke the idle-timeout test's log check.
+        connect_timeout=5.0,
         idle_timeout=idle_timeout,
         max_connections=maximum,
         health_port=0,
