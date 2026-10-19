@@ -37,20 +37,17 @@ class JobObserver:
         proc_root: Path = Path("/proc"),
         validate_record: RecordValidator | None = None,
     ) -> None:
-        self._booley_dir = booley_dir
         self._slots_root = slots_root
         self._proc_root = proc_root
         self._validate_record = validate_record
-        self._artifacts = JobArtifactCache()
+        self._artifacts = JobArtifactCache(booley_dir)
 
     def read(self, roots: Sequence[Path]) -> ObservationSnapshot:
         """Never poll, reconcile status, adopt, repair or invoke a reaper."""
         cache = self._artifacts
-        cache.configure_project(self._booley_dir, max_endpoints=MAX_JOBS)
         cache.begin()
         tokens = self._observe_slots()
         records, diagnostics = _snapshot_records(roots, self._validate_record)
-        cache.prepare_endpoints((root, rec.endpoint) for root, rec in records)
         rows = [_project_job(root, rec, tokens, self._proc_root, cache) for root, rec in records]
         diagnostics.extend(cache.diagnostics)
         diagnostics.extend(_ambiguous_ids(rows))
