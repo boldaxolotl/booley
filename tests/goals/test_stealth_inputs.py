@@ -50,7 +50,7 @@ def stealth(tmp_path):
             EntryRequest(
                 worktree, "stealth", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
-            EntryEnvironment(control),
+            EntryEnvironment(control, routing_guidance="Explicit test routing guidance."),
         ).record
         layout = SimpleNamespace(main=main, control=control, worktree=worktree, record=record)
         yield layout

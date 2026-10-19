@@ -104,7 +104,6 @@ class ProjectBinding(Enum):
     REQUIRED = "required"
     INDEPENDENT = "independent"
     OPTIONAL = "optional"
-    AUTH = "auth-status-conditional"
     FEEDBACK = "source-feedback"
 
 
@@ -119,7 +118,7 @@ COMMAND_PROJECT_BINDINGS = {
     "bootstrap": ProjectBinding.INDEPENDENT,
     "init": ProjectBinding.REQUIRED,
     "eda": ProjectBinding.INDEPENDENT,
-    "auth": ProjectBinding.AUTH,
+    "auth": ProjectBinding.OPTIONAL,
     "session": ProjectBinding.REQUIRED,
     "projects": ProjectBinding.INDEPENDENT,
     "upgrade": ProjectBinding.REQUIRED,
@@ -158,10 +157,7 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 
 
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
-    binding = command_project_bindings()[command]
-    if binding is ProjectBinding.AUTH:
-        return ProjectBinding.OPTIONAL if args.status else ProjectBinding.REQUIRED
-    return binding
+    return command_project_bindings()[command]
 
 
 class _RetiredEdaToolOptionAction(argparse.Action):
@@ -579,7 +575,12 @@ def _add_init_scaffold_arguments(init_p) -> None:
         "--asic",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Scaffold: ASIC synthesis Target + SDC (default on)",
+        help="Scaffold: ASIC synthesis Target (default on; physical mode adds SDC)",
+    )
+    init_p.add_argument(
+        "--synth-mode",
+        choices=("logical", "physical"),
+        help="Scaffold: synthesis mode (default physical; logical uses Yosys without SDC)",
     )
     init_p.add_argument(
         "--fpga-part",
@@ -854,6 +855,7 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
     if args.goal_command == "status":
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
+        from booley.goals.ended_records import with_last_ended
         from booley.goals.format import render_status
         from booley.goals.proposal_errors import ProposalError
         from booley.goals.state_store import GoalStateError
@@ -864,21 +866,20 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         try:
             from booley.flows.sim.unpublished_results import read_unpublished_results
 
-            selection = select_status(
-                GoalStore(resolve_booley_dir(_project_root)),
-                _goal_checkout(args, _project_root),
-                campaign_reader=read_unpublished_results,
-            )
+            store = GoalStore(resolve_booley_dir(_project_root))
+            checkout = _goal_checkout(args, _project_root)
+            selection = select_status(store, checkout, campaign_reader=read_unpublished_results)
             from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 
             for view in selection.views:
                 schedule_sim_baselines(resolve_booley_dir(_project_root), view.record)
             short = True if args.short else False if args.long else None
-            print(
+            text = (
                 render_status(selection.views, short=short, project_wide=selection.project_wide)
                 if selection.views
                 else "No active Goal Mode."
             )
+            print(with_last_ended(text, store, checkout, project_wide=selection.project_wide))
             return 0
         except (GoalStoreError, GoalStateError, ProposalError, AcceptanceLedgerError) as exc:
             message = unavailable_diagnostic(exc) if is_unnamable_error(exc) else str(exc)
@@ -1899,6 +1900,27 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
         return None
 
 
+def _auth_project_root(args: argparse.Namespace) -> Path | None:
+    """Keep optional auth authority within the selected checkout's own state."""
+    from booley.runtime.booley_dir import resolve_authoritative_booley_dir
+    from booley.runtime.project_discovery import ProjectRootDiscoveryError
+
+    root = _optional_project_root(args)
+    if root is None:
+        return None
+    for candidate in (root, *root.parents):
+        own_state = (candidate / ".booley").is_dir() or (candidate / "booley.toml").is_file()
+        if own_state and resolve_authoritative_booley_dir(candidate).is_dir():
+            return candidate
+        if (candidate / ".git").exists():
+            break
+    if hasattr(args, "_cli_selection") or getattr(args, "project_root", None):
+        raise ProjectRootDiscoveryError(
+            "not a Booley Project; cd into one or run `booley init` on the host."
+        )
+    return None
+
+
 def _selected_project_root(
     command: str, args: argparse.Namespace, binding: ProjectBinding
 ) -> Path | None:
@@ -1906,7 +1928,7 @@ def _selected_project_root(
     if binding is ProjectBinding.INDEPENDENT:
         return Path.cwd()
     if binding is ProjectBinding.OPTIONAL:
-        return _optional_project_root(args)
+        return _auth_project_root(args) if command == "auth" else _optional_project_root(args)
     if hasattr(args, "_cli_selection"):
         return _resolve_cli_selection(args)
     if getattr(args, "project_root", None):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,11 @@ from booley.goals.format import render_status
 from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore, GoalStoreError
-from booley.mcp import server
+from booley.mcp import (
+    catalog,
+    job_results,
+    server,
+)
 from booley.mcp.base import McpToolResult
 from booley.mcp.call_context import binding_from_environment, resolve_call_context
 from booley.mcp.goal_tools import dispatch_goal_tool
@@ -213,7 +218,7 @@ def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monke
         assert job_records.read_record(rec.run_id, root).status == "failed"
 
 
-def test_warning_and_discard_prefix_preserve_structured_result(goal_mode):
+def test_warning_and_discard_prefix_preserve_structured_result(goal_mode, monkeypatch):
     from tests.goals.conftest import edit_protected
 
     context = resolve_call_context({"work_dir": str(goal_mode.worktree)})
@@ -222,6 +227,11 @@ def test_warning_and_discard_prefix_preserve_structured_result(goal_mode):
     rendered = server._format_mcp_tool_result(0, "", "", report)
     assert rendered.startswith("evidence discarded: protected input changed\n")
     structured = ([server.TextContent(type="text", text=rendered)], {"facts": "retained"})
+
+    def unavailable_guidance():
+        raise RuntimeError("unrelated built-in unavailable")
+
+    monkeypatch.setattr(catalog, "work_dir_guidance", unavailable_guidance)
     result = server._goal_warning_result(structured, context.binding, context.session_key)
     assert result.goal_aware
     assert result.value[0][0].text.startswith("WARNING:")
@@ -237,6 +247,7 @@ def test_shared_worktree_and_missing_path_warning(goal_mode):
         work_dir=None,
         session_key="one",
         other_sessions=("one", "two"),
+        routing_guidance=server.catalog.work_dir_guidance(),
     )
     assert "another session" in warning
     assert "pass work_dir" in warning.casefold()
@@ -277,7 +288,6 @@ def test_spec_from_declared_goal_is_resolved_by_specialist(layout):
 
 
 def test_module_entrypoint_defines_dispatch_before_main(goal_mode):
-    import os
     import subprocess
     import sys
 
@@ -354,7 +364,7 @@ def test_terminal_write_uses_binding_even_if_manager_root_changes(
     jobs._stamp_context(rec, context)
     jobs._job_roots[rec.run_id] = tmp_path / "wrong"
     monkeypatch.setattr(
-        server, "_locate_job", lambda run_id: server.LocatedJob(rec, context.jobs_root)
+        server, "_locate_job", lambda run_id: job_results.LocatedJob(rec, context.jobs_root)
     )
     jobs._record_terminal(rec, 0, timed_out=False)
     assert job_records.read_record(rec.run_id, context.jobs_root).status == "done"
@@ -581,7 +591,7 @@ def test_public_report_recovery_selects_goal_root(goal_mode, monkeypatch, tmp_pa
         (reports / "sim.json").write_text(
             json.dumps({"flow": "sim", "exit_code": 0, "report_text": marker})
         )
-    assert "work_dir" in server._report_mcp_tool_def()["schema"]["properties"]
+    assert "work_dir" in catalog._report_mcp_tool_def()["schema"]["properties"]
     omitted = server._dispatch_report({"endpoint": "sim"})
     assert omitted.is_error and "Pass work_dir" in omitted.value[0].text
     for worktree, marker in ((goal_mode.worktree, "first-goal"), (second, "second-goal")):
@@ -597,7 +607,7 @@ def test_public_report_recovery_selects_goal_root(goal_mode, monkeypatch, tmp_pa
     missing = server._dispatch_report({"endpoint": "sim", "work_dir": str(goal_mode.worktree)})
     assert "Reports on disk: lint." in missing[0].text
     assert "sim" not in missing[0].text.split("Reports on disk:")[1]
-    assert "work_dir" in server._report_mcp_tool_def()["schema"]["properties"]
+    assert "work_dir" in catalog._report_mcp_tool_def()["schema"]["properties"]
     still_omitted = server._dispatch_report({"endpoint": "sim"})
     assert still_omitted.is_error and "Pass work_dir" in still_omitted.value[0].text
 
@@ -959,7 +969,9 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
     assert [view.record.id for view in views] == [goal_mode.record.id]
     expected = render_status(views)
     if rules:
-        expected += "\n\n" + goal_mode_rules()
+        from booley.mcp.catalog import work_dir_guidance
+
+        expected += "\n\n" + goal_mode_rules(routing_guidance=work_dir_guidance())
     result = asyncio.run(
         dispatch_goal_tool(
             "goal_status",
@@ -1098,3 +1110,55 @@ def test_review_target_declaration_race_is_a_refusal(
     result = reviewer._run()
     assert result.exit_code == 2 and "declaration cannot be read" in result.report_text
     provider.assert_not_called()
+
+
+def test_mcp_composes_schema_guidance_for_entry_status_warning_and_refusal(layout, monkeypatch):
+    from booley.goals.warnings import goal_warnings
+    from booley.mcp import catalog
+    from tests.goals.conftest import TESTS_TOML, TOP_CORE, write_tests_toml
+
+    definitions = [
+        {"name": "utility_custom", "schema": {"properties": {}}},
+        {"name": "accepting_custom", "schema": {"properties": {"work_dir": {}}}},
+    ]
+    catalog.work_dir_guidance.cache_clear()
+    monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
+    try:
+        (layout.worktree / "top.core").write_text(TOP_CORE)
+        (layout.worktree / "rtl.v").write_text("module top; endmodule\n")
+        git(layout.worktree, "add", "top.core", "rtl.v")
+        git(layout.worktree, "commit", "-q", "-m", "top core")
+        write_tests_toml(layout, TESTS_TOML)
+        entered = asyncio.run(
+            dispatch_goal_tool(
+                "goal_enter",
+                {
+                    "work_dir": str(layout.worktree),
+                    "slug": "routing",
+                    "goals": [{"family": "LINT", "target": "top"}],
+                },
+                booley_dir=layout.control,
+            )
+        )
+        assert not entered.is_error, entered.value
+        guidance = catalog.work_dir_guidance()
+        assert "`utility_custom` accept no `work_dir`" in guidance
+        assert "Goal tools, `accepting_custom`." in guidance
+        assert guidance in entered.value[0][0].text
+        status = asyncio.run(
+            dispatch_goal_tool(
+                "goal_status",
+                {"work_dir": str(layout.worktree), "rules": True},
+                booley_dir=layout.control,
+            )
+        )
+        assert not status.is_error
+        assert guidance in status.value[0][0].text
+        record = GoalStore(layout.control).active_for_worktree(layout.worktree)
+        warning = goal_warnings(record, layout.control, work_dir=None, routing_guidance=guidance)
+        assert guidance.replace("`", "") in warning
+        with pytest.raises(GoalBindingError) as refusal:
+            resolve_call_context({})
+        assert guidance.replace("`", "") in str(refusal.value)
+    finally:
+        catalog.work_dir_guidance.cache_clear()

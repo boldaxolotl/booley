@@ -23,11 +23,12 @@ import unicodedata
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from booley.runtime.booley_dir import runtime_dir
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
 
 _CURRENT: contextvars.ContextVar[TerminalProgress | None] = contextvars.ContextVar(
     "flow_terminal_progress", default=None
@@ -41,6 +42,21 @@ _OWNED_RECORD = re.compile(
 )
 _STAGE_LINES = re.compile(r"(?m)^BOOLEY_STAGE:[^\n]*$")
 _STAGE = re.compile(r"^BOOLEY_STAGE:\s*([\w.-]+)\s*$")
+
+
+class ProgressText(str):
+    """Human completion text with the unchanged representation for records."""
+
+    record_text: str
+
+    def __new__(cls, text: str, *, record_text: str) -> ProgressText:
+        result = super().__new__(cls, text)
+        result.record_text = record_text
+        return result
+
+
+def _record_text(text: str) -> str:
+    return text.record_text if isinstance(text, ProgressText) else text
 
 
 def current_progress() -> TerminalProgress | None:
@@ -146,6 +162,13 @@ class _FileSource:
         return chunk
 
 
+@dataclass(frozen=True)
+class _RegisteredLog:
+    target: str
+    stage: str
+    temporary: bool
+
+
 class TerminalProgress:
     """Bounded live presentation with a separate append-only observation log."""
 
@@ -178,7 +201,8 @@ class TerminalProgress:
         self._initialize_observation()
 
     def _initialize_observation(self) -> None:
-        self.paths: dict[Path, bool] = {}
+        self.paths: dict[Path, _RegisteredLog] = {}
+        self._target_stages: dict[str, str] = {}
         self.files: list[_FileSource] = []
         self.pipe_lines: dict[str, _Lines] = {}
         # Captures already retain full output in memory. Buffer observations too,
@@ -240,11 +264,13 @@ class TerminalProgress:
             # Below PIPE_BUF; writable POSIX pipes accept this without waiting.
             offset += os.write(fd, payload[offset : offset + 1024])
 
-    def _record(self, text: str) -> None:
+    def _record(self, text: str, *, target: str | None = None, stage: str | None = None) -> None:
         self._clear()
         self._write(
-            f"[booley-progress] {utc_now_rfc3339()} {self.flow} Target={sanitize(self.target)} "
-            f"stage={sanitize(self.stage)} elapsed={int(self.clock() - self.started)}s "
+            f"[booley-progress] {utc_now_rfc3339()} {self.flow} "
+            f"Target={sanitize(self.target if target is None else target)} "
+            f"stage={sanitize(_record_text(self.stage if stage is None else stage))} "
+            f"elapsed={int(self.clock() - self.started)}s "
             f"{sanitize(text)}\n"
         )
 
@@ -252,8 +278,14 @@ class TerminalProgress:
         if self.abandoned:
             return
         with self.lock:
-            new_stage = sanitize(stage)
-            if new_stage == self.stage and (target is None or target == self.target):
+            new_stage = ProgressText(sanitize(stage), record_text=sanitize(_record_text(stage)))
+            owner = self.target if target is None else target
+            self._target_stages[owner] = new_stage
+            if (
+                new_stage == self.stage
+                and _record_text(new_stage) == _record_text(self.stage)
+                and (target is None or target == self.target)
+            ):
                 return
             if target is not None:
                 self.target = target
@@ -264,13 +296,19 @@ class TerminalProgress:
             self.stage = new_stage
             self._record("")
 
-    def log_path_known(self, path: Path, *, temporary: bool = False) -> None:
+    def log_path_known(
+        self, path: Path, *, target: str | None = None, temporary: bool = False
+    ) -> None:
         if self.abandoned:
             return
         with self.lock:
-            self.paths[path] = temporary
+            owner = self.target if target is None else target
+            stage = self._target_stages.get(owner, "preparing")
+            self.paths[path] = _RegisteredLog(owner, stage, temporary)
             self._record(
-                f"log={path}" + (" (temporary; copied to transcript)" if temporary else "")
+                f"log={path}" + (" (temporary; copied to transcript)" if temporary else ""),
+                target=owner,
+                stage=stage,
             )
 
     def _open_transcript(self) -> None:
@@ -312,13 +350,15 @@ class TerminalProgress:
                 self.worker = threading.Thread(target=self._run, daemon=True)
                 self.worker.start()
 
-    def watch(self, paths: list[Path], *, temporary: bool = False) -> None:
+    def watch(
+        self, paths: list[Path], *, target: str | None = None, temporary: bool = False
+    ) -> None:
         if self.abandoned:
             return
         with self.lock:
             self.files = [_FileSource(path) for path in paths]
             for path in paths:
-                self.log_path_known(path, temporary=temporary)
+                self.log_path_known(path, target=target, temporary=temporary)
 
     def observe(self, source: str, chunk: bytes) -> None:
         """Never block a pipe reader on terminal or disk I/O."""
@@ -329,9 +369,7 @@ class TerminalProgress:
     def _consume(self, source: str, chunk: bytes, lines: _Lines) -> None:
         if self.log is not None and not self.log_failed:
             try:
-                label = (
-                    f"\n[{self.flow} Target={self.target} stage={self.stage} source={source}]\n"
-                )
+                label = f"\n[{self.flow} Target={self.target} stage={_record_text(self.stage)} source={source}]\n"
                 self.log.write(label.encode("utf-8") + chunk)
             except OSError:
                 self._log_failure()
@@ -389,9 +427,9 @@ class TerminalProgress:
             if now - self.last_render < 0.25:
                 return
             self._clear()
-            age = "none" if self.last_output is None else f"{int(now - self.last_output)}s ago"
+            age = "none" if self.last_output is None else format_age(0, now=now - self.last_output)
             status = (
-                f"{self.flow} elapsed={int(now - self.started)}s command={int(now - self.command_started)}s "
+                f"{self.flow} elapsed={format_duration(now - self.started)} command={format_duration(now - self.command_started)} "
                 f"Target={self.target[:20]} {self.stage[:24]} last output={age}"
             )
             rows = [status, *self.tail]
@@ -524,9 +562,9 @@ class TerminalProgress:
     def footer(self) -> None:
         if self.log_path is not None:
             self._record(f"transcript={self.log_path}")
-        for path, temporary in self.paths.items():
-            if not temporary and path.is_file():
-                self._record(f"log={path}")
+        for path, registration in self.paths.items():
+            if not registration.temporary and path.is_file():
+                self._record(f"log={path}", target=registration.target, stage=registration.stage)
 
 
 def announce_unit(stage: str, *, target: str | None = None) -> None:
@@ -536,8 +574,8 @@ def announce_unit(stage: str, *, target: str | None = None) -> None:
         observer.stage_changed(stage, target=target)
 
 
-def observe_logs(paths: list[Path], *, temporary: bool = False) -> None:
+def observe_logs(paths: list[Path], *, target: str | None = None, temporary: bool = False) -> None:
     """Register a bounded known set before dispatch, within the build lease."""
     observer = current_progress()
     if observer is not None:
-        observer.watch(paths, temporary=temporary)
+        observer.watch(paths, target=target, temporary=temporary)

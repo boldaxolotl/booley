@@ -122,7 +122,7 @@ jobs:
 
       - name: Retain semantic evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-semantic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-semantic/evidence.json
@@ -292,7 +292,7 @@ jobs:
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }}
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Run focused Windows compatibility suite
@@ -306,7 +306,7 @@ jobs:
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
           -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
@@ -314,10 +314,11 @@ jobs:
           PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
+          BOOLEY_PYTEST_TIMING_FILE: ${{ runner.temp }}/pytest-timeouts/test-timings.jsonl
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=worksteal
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
@@ -377,6 +378,8 @@ jobs:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage.${{ matrix.shard_index }}
           PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
+          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
+          BOOLEY_PYTEST_TIMING_FILE: ${{ runner.temp }}/pytest-timeouts/test-timings.jsonl
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
@@ -400,7 +403,7 @@ jobs:
 
       - name: Upload raw coverage shard
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-shard-${{ matrix.shard_index }}
           path: ${{ runner.temp }}/.coverage.${{ matrix.shard_index }}
@@ -415,7 +418,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: shard-windows-*
           path: ${{ runner.temp }}/shards
@@ -437,7 +440,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: shard-coverage-*
           path: ${{ runner.temp }}/shards
@@ -457,7 +460,7 @@ jobs:
       - name: Install coverage gate dependencies
         run: pip install -e ".[test]"
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-shard-*
           path: ${{ runner.temp }}/coverage
@@ -493,7 +496,7 @@ jobs:
 
       - name: Upload combined coverage report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: |
@@ -611,7 +614,7 @@ jobs:
 
       - name: Upload B-Wave timing data
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-bwave-integration
           path: ${{ runner.temp }}/bwave-*.xml
@@ -675,7 +678,7 @@ jobs:
           diff -u "${RUNNER_TEMP}/direct-wheel-files.txt" \
             "${RUNNER_TEMP}/sdist-wheel-files.txt"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-dist
           path: dist/
@@ -736,7 +739,7 @@ jobs:
 
       - name: Upload sidecar execution evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sidecar-smoke-evidence
           path: |
@@ -769,7 +772,7 @@ jobs:
       - name: Install host-side test dependencies
         run: pip install pytest==9.1.1 pytest-asyncio==1.4.0
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: pr-dist
           path: dist/
@@ -837,7 +840,7 @@ jobs:
 
       - name: Upload failed stable-base build log
         if: failure() && steps.runtime-base.outputs.build == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: stable-base-build-log
           path: ${{ runner.temp }}/stable-base-build.log
@@ -939,7 +942,7 @@ jobs:
 
       - name: Upload Docker build evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-build-evidence
           path: ${{ runner.temp }}/docker-build-evidence/
@@ -1426,7 +1429,7 @@ jobs:
 
       - name: Upload candidate RISC-V evidence
         if: always() && needs.changes.outputs.riscv_image == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/riscv-image-evidence/
@@ -1443,7 +1446,7 @@ jobs:
 
       - name: Upload Goal readiness evidence
         if: always() && steps.goal-readiness.outputs.started == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
@@ -1452,7 +1455,7 @@ jobs:
 
       - name: Upload coverage release test timing
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-coverage-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1464,7 +1467,7 @@ jobs:
 
       - name: Upload smoke phase records
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bwave-smoke-phase-records-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/riscv-image-evidence/records/
@@ -1473,7 +1476,7 @@ jobs:
 
       - name: Upload OpenROAD runtime evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openroad-runtime-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/bwave-smoke/openroad/
@@ -1482,7 +1485,7 @@ jobs:
 
       - name: Upload Verilator acceptance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verilator-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1495,7 +1498,7 @@ jobs:
 
       - name: Upload installed agent CLI policy evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json

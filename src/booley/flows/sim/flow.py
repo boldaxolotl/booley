@@ -124,8 +124,8 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
-from booley.targets.catalog import TargetCatalog
+from booley.runtime.timefmt import format_duration, utc_now_rfc3339
+from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import (
     TargetHandle,
     criterion_matches_target,
@@ -2112,7 +2112,13 @@ def _resolve_sim_campaign_work_units(
     """
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
-        return 1
+        try:
+            selection = PreparedTargetSelection.resolve(
+                work_dir, "", for_flow="sim", select_omitted=True
+            )
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return 1
+        targets = [handle.selector for handle in selection.handles]
     selected_mode = normalize_simulation_mode(mode)
     if selected_mode is SimulationMode.ELAB_ONLY:
         return len(targets)
@@ -2141,19 +2147,6 @@ def _resolve_sim_campaign_work_units(
             target, test_names, configured_skips, test_selector, skip_arg
         )
     return max(1, units)
-
-
-def _format_duration(seconds: float) -> str:
-    """A duration that stays legible from ten milliseconds to hours.
-
-    Cocotb unit tests finish in 10-20 ms, and ``f"{s:.1f}s"`` renders every one
-    of them as ``0.0s`` — a whole suite looks instantaneous and per-test timing
-    triage is impossible (F-39). Sub-second runs therefore get millisecond
-    resolution; anything longer keeps the familiar one-decimal seconds, so long
-    runs stay readable.
-    """
-    seconds = max(0.0, seconds)
-    return f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
 
 
 def _format_bytes(size: int) -> str:
@@ -2230,11 +2223,11 @@ def _build_display_lines(
     if len(results) == 1 and results[0].passed:
         tests = results[0].tests
         if len(tests) == 1:
-            return [f"✓ PASS  {_format_duration(total_elapsed)}"]
+            return [f"✓ PASS  {format_duration(total_elapsed)}"]
 
     targets_passed = sum(1 for r in results if r.passed)
     lines: list[str] = [
-        f"{targets_passed}/{len(results)} targets passed, {total_elapsed:.1f}s",
+        f"{targets_passed}/{len(results)} targets passed, {format_duration(total_elapsed)}",
     ]
 
     visible_results, omitted_line = cap_target_items(results)
@@ -2268,7 +2261,7 @@ def _target_display_lines(result: TargetResult) -> list[str]:
     icon = "?" if result.inconclusive else ("✓" if result.passed else "✗")
     tests_passed = sum(1 for test in result.tests if test.passed)
     tests_str = f"{tests_passed}/{len(result.tests)} tests" if len(result.tests) > 1 else ""
-    elapsed = _format_duration(result.elapsed_s)
+    elapsed = format_duration(result.elapsed_s)
     suffix = f" ({tests_str})  {elapsed}" if tests_str else f"  {elapsed}"
     lines = [f"{icon} {result.target}{suffix}"]
     if not result.passed:
@@ -2283,8 +2276,8 @@ def _append_test_failure_lines(tests: list[TestResult], lines: list[str]) -> Non
             continue
         sva = f"  {tr.sva_errors} SVA errors" if tr.sva_errors else ""
         cycles = f"  {tr.cycles:,} cyc" if tr.cycles is not None else ""
-        build = f"  (incl. {tr.build_s:.0f}s build)" if tr.build_s >= 1 else ""
-        lines.append(f"  FAIL {tr.name:<20s} {_format_duration(tr.elapsed_s)}{build}{cycles}{sva}")
+        build = f"  (incl. {format_duration(tr.build_s)} build)" if tr.build_s >= 1 else ""
+        lines.append(f"  FAIL {tr.name:<20s} {format_duration(tr.elapsed_s)}{build}{cycles}{sva}")
 
         if tr.error_tail:
             _append_error_excerpt(tr.error_tail, lines)
@@ -2522,7 +2515,8 @@ def _test_status_line(tr: TestResult) -> str:
     build_str = f"  (incl. {tr.build_s:.0f}s build)" if tr.build_s >= 1 else ""
     # F-39: millisecond resolution below 1s, so 10-20ms cocotb tests stop all
     # rendering as an indistinguishable "0.0s".
-    elapsed_str = _format_duration(tr.elapsed_s)
+    seconds = max(0.0, tr.elapsed_s)
+    elapsed_str = f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
     return f"  {tr.name:<20s} {status}   {cycles_str}  {elapsed_str:>7s}{build_str}"
 
 
@@ -6608,10 +6602,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             flags = f", sva_errors={sva_errors}"
             if any(t.timed_out for t in r.tests):
                 flags += ", TIMED OUT"
+            seconds = max(0.0, r.elapsed_s)
+            elapsed = f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
             lines.append(
                 f"[sim] {r.target} (Sandbox): {verdict} "
                 f"({tests_passed}/{len(r.tests)} tests{flags}, "
-                f"{_format_duration(r.elapsed_s)})"
+                f"{elapsed})"
             )
             lines.extend(_test_status_line(t) for t in r.tests)
             # F-35: the waveform's path+size must survive tail-truncation too —

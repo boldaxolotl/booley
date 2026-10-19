@@ -8,7 +8,7 @@ with AI coding agents to follow it.
 1. [Read this first](#read-this-first)
 2. [Check your setup](#first-verify-your-setup)
 3. [Choose how to work](#choose-how-to-work)
-4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
+4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
 5. [Goal Mode](#goal-mode): [Goalsets](#goalsets-and-entry), [Test Runs](#goals-that-name-test-runs), [evidence](#working-with-evidence), [human decisions](#changes-and-human-decisions), [Finish](#finish-and-review)
 6. [Recovery and parallel work](#recovery-unattended-work-and-parallel-sessions), [without VS Code](#entering-the-sandbox-without-vs-code)
 
@@ -249,6 +249,17 @@ Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), s
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
 How the connection works is in
 [ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode).
+
+### Editing Project instructions
+
+Root `AGENTS.md` and `CLAUDE.md` normally link to the canonical Booley Directory
+guide. Editing either link edits that guide. In an embedded non-Stealth layout,
+stage the canonical file with `git add .booley/AGENTS.md`, substituting your
+configured Booley Directory if different. The root links remain ignored.
+For a separate Booley repository, including Stealth, stage and commit `AGENTS.md`
+inside that repository. An explicitly selected hybrid footprint instead uses a
+matching tracked root `AGENTS.md` copy; keep it identical to the canonical guide
+and stage changes to both copies.
 
 ### Viewing waveforms
 
@@ -635,6 +646,19 @@ Stealth, Finish commits the Session Summary under
 path is Git-trackable and owned by the RTL repository. Stealth, excluded, or
 Paired Checkout summaries stay local.
 
+Booley deletes a finished, abandoned, or failed Goal Record, with its Session
+Summary and Review Package, once both its worktree and its Goal Branch are gone.
+A worktree is gone when it is absent from Git’s worktree registry: after
+`git worktree remove`, or
+after `git worktree prune` for a worktree directory you deleted by hand.
+Booley starts a background cleanup after every Goal entry, Finish, and abandonment;
+the command returns without waiting for Git checks or deletion. If the worker
+cannot start or is interrupted, the next lifecycle command retries cleanup. A record is kept
+whenever Git cannot confirm that the worktree or branch is gone, the record is
+unreadable, or another command is using it. Committed summaries under `goals/history/`
+are never deleted. Copy anything you want to keep before you remove both the
+worktree and the branch.
+
 ### Recovery, unattended work, and parallel sessions
 
 The same Goal session can work with your guidance or unattended. If intent is
@@ -669,15 +693,17 @@ and session pruning. The `1`–`9` keys remain navigation shortcuts, independent
 of handles. Full session keys and Job run IDs are secondary text in details;
 MCP polling continues to use the full run ID.
 
-Existing sessions and Jobs receive handles from MCP maintenance, which runs
-once per minute, or when they are next registered. Until then, or if handle
-storage is unavailable, the Dashboard shows `S?` or `J-SIM?` (and the equivalent
-for other kinds) with a diagnostic. Maintenance backfills at most 16384 retained
-Job files per pass; files beyond that scan bound stay unassigned until a
-producer registers them. The Dashboard itself never allocates handles.
+Sessions receive handles when registered; Jobs receive them when created.
+Historical records without allocations keep `S?` or `J-SIM?` (and the equivalent
+for other kinds). Handle-storage failures show a diagnostic. The Dashboard
+itself only reads handles and never allocates them.
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
-or every active Goal Mode in the Project when this worktree hosts none.
+or every active Goal Mode in the Project when this worktree hosts none. In a
+worktree without an active Goal Mode, `booley goal status` and `goal_status`
+also show its most recently ended Goal Record: Goal id, state, end time, the
+failure reason of a failed record, and the Session Summary and Review Package
+paths when those files exist.
 
 ### Entering the Sandbox without VS Code
 
@@ -876,6 +902,12 @@ booley flow sim --target sim_soc --test reset
 booley flow sim --target sim_soc --test stress+soak@42   # a Test Variant with one seed
 booley flow sim --help                       # every option
 ```
+
+For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
+exactly one eligible Target, and that selection is announced. With zero or multiple
+eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
+Simulation resume (`--resume-from`) retains the manifest Target regardless of
+the current catalog.
 
 [FLOW_REFERENCE.md](FLOW_REFERENCE.md) has the full details: options, exit
 codes, and results. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md) defines the

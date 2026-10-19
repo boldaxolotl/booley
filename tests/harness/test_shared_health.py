@@ -14,7 +14,9 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.harness import auto_doctor, doctor, upgrade_review
 from booley.harness import booley as cli
 from booley.harness.dashboard import model as dashboard
-from booley.mcp import server
+from booley.mcp import (
+    server,
+)
 from booley.runtime import health, health_presentation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime
@@ -64,7 +66,7 @@ def _isolate_mcp_and_dashboard(monkeypatch, root):
     monkeypatch.chdir(root)
     monkeypatch.setattr(server, "_interactive_session_id", lambda: "fixture")
     monkeypatch.setattr(server, "format_status_line", lambda: "status")
-    monkeypatch.setattr(server, "_status_mcp_tool_visible", lambda: True)
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setattr(
         upgrade_review,
         "read_status",
@@ -96,7 +98,8 @@ def test_same_observations_reach_doctor_mcp_and_dashboard(
     _isolate_mcp_and_dashboard(monkeypatch, root)
     assert "Health: " + message in server._format_status_card([])
     lines = dashboard.health_lines(root, directory)
-    assert lines == (() if clean else (message + " · current",))
+    expected = "Doctor: OK" if clean else f"Doctor: 1 {severity.name}"
+    assert tuple(line.text for line in lines) == (expected,)
     content = [server.TextContent(type="text", text="Flow result")]
     announced = server._prepend_changed_health_alert(content)
     assert len(announced) == (1 if clean else 2)
@@ -125,7 +128,7 @@ def test_upgrade_only_uses_weekly_cadence_and_drift_wins(project):
     assert health.read_health(root, now=NOW - timedelta(seconds=1)).due is None
     assert health.read_health(root, now=NOW).due == "automatic Doctor result expired"
     (directory / "booley.toml").write_text('[project]\nname="changed"\n')
-    assert health.read_health(root, now=NOW).due == "Doctor inputs changed"
+    assert health.read_health(root, now=NOW).due == "Doctor inputs changed: booley.toml"
 
 
 @pytest.mark.parametrize("value", [None, "invalid", 42])
@@ -290,7 +293,45 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     # Doctor's session start schedules a recheck rather than announcing stale findings.
     cli._report_session_health(root)
     assert f"Automatic Doctor is running in the Sandbox ({expired})" in capsys.readouterr().err
-    # MCP status and the Dashboard show the same findings; only the Dashboard shows age.
+    # MCP retains full findings; the Dashboard shows compact counts and freshness.
     assert "Health: " + message in server._format_status_card([])
-    assert dashboard.health_lines(root, directory) == (f"{message} · stale: {expired}",)
+    assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
+        "Doctor: 1 FAIL · stale",
+    )
     assert not (health.state_dir(directory) / "announcements.json").exists()
+
+
+def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
+    transcript = tmp_path / "sentinel[transcript].log"
+    mixed = health.HealthSnapshot(
+        DiagnosticReport(
+            (
+                DiagnosticFinding(Severity.FAIL, "broken machinery"),
+                DiagnosticFinding(Severity.WARN, "review needed", check_id="test.warning"),
+            )
+        ),
+        "hash",
+        transcript,
+        None,
+    )
+    clean = replace(mixed, diagnostics=DiagnosticReport())
+    monkeypatch.setattr(
+        upgrade_review,
+        "read_status",
+        lambda _: upgrade_review.ReviewStatus(upgrade_review.ReviewCondition.CURRENT, "1", "path"),
+    )
+    for snapshot, brief, compact in (
+        (
+            mixed,
+            f"Automatic Doctor found 1 FAIL, 1 WARN: broken machinery; review needed. Full report: {transcript}",
+            "Doctor: 1 FAIL · 1 WARN",
+        ),
+        (clean, f"Automatic Doctor is clean. Full report: {transcript}", "Doctor: OK"),
+    ):
+        monkeypatch.setattr(health, "read_health", lambda _, observed=snapshot: observed)
+        assert health_presentation.brief_message(snapshot) == brief
+        lines = dashboard.health_lines(tmp_path, tmp_path)
+        texts = tuple(getattr(line, "text", line) for line in lines)
+        assert texts == (compact,), (
+            "Dashboard compact format must preserve the separate verbose brief"
+        )

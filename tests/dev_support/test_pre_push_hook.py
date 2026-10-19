@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.dev_support import pre_push_hook
-from booley.dev_support.pre_push_hook import _commit_facts, _commit_offenses, main
+from booley.dev_support.pre_push_hook import main
 
 _ZERO_SHA = "0" * 40
 
@@ -66,6 +66,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", str(destination)])
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.chdir(root)
     return root
 
 
@@ -111,50 +112,21 @@ def _commit_symlink(repo: Path, name: str, target: str) -> str:
 
 def _configure_external_project_state(repo: Path, monkeypatch) -> None:
     """Run the hook as if Project state used a separate runtime mount."""
-    monkeypatch.chdir(repo)
     monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
     booley_dir = repo.parent / "runtime-project-state"
     booley_dir.mkdir()
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
 
 
-# ---------------------------------------------------------------------------
-# _commit_facts
-# ---------------------------------------------------------------------------
-
-
-class TestCommitFacts:
-    def test_parses_identities_and_message(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        facts = _commit_facts(_head(repo))
-        assert facts is not None
-        author_name, author_email, committer_name, committer_email, message = facts
-        assert (author_name, author_email) == ("Real Dev", "dev@example.com")
-        assert (committer_name, committer_email) == ("Real Dev", "dev@example.com")
-        assert message.startswith("feat(core): add the file")
-
-    def test_multiline_body_survives_the_split(self, repo, monkeypatch):
-        """The message is the last field precisely so its newlines are harmless."""
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "feat(core): thing\n\nfirst body line\nsecond body line")
-        facts = _commit_facts(sha)
-        assert facts is not None
-        assert "first body line" in facts[4]
-        assert "second body line" in facts[4]
-        assert facts[0] == "Real Dev"  # identity fields unaffected by the body
-
-    def test_forged_author_is_reported_separately_from_committer(self, repo, monkeypatch):
-        """`--author` changes only the author — the exact shape of the real case."""
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
-        facts = _commit_facts(sha)
-        assert facts is not None
-        assert (facts[0], facts[1]) == ("mut-creator", "mut@local")
-        assert (facts[2], facts[3]) == ("Real Dev", "dev@example.com")
-
-    def test_unknown_sha_returns_none(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        assert _commit_facts("0" * 40) is None
+@pytest.mark.parametrize("author", [None, "mut-creator <mut@local>"])
+def test_active_commit_facts_preserve_identities_and_multiline_body(repo, author):
+    sha = _commit(repo, "feat(core): thing\n\nfirst body line\nsecond body line", author=author)
+    inspection = pre_push_hook._Inspection(repo)
+    facts = pre_push_hook._parse_commit(inspection.objects([sha])[sha])
+    expected_author = ("mut-creator", "mut@local") if author else ("Real Dev", "dev@example.com")
+    assert facts[:2] == expected_author
+    assert facts[2:4] == ("Real Dev", "dev@example.com")
+    assert facts[4] == "feat(core): thing\n\nfirst body line\nsecond body line\n"
 
 
 def test_booley_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
@@ -174,123 +146,77 @@ def test_booley_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
     assert pre_push_hook._guard_booley_dir(tmp_path / "repo") == tmp_path
 
 
-# ---------------------------------------------------------------------------
-# _commit_offenses
-# ---------------------------------------------------------------------------
+def _inspect_one(repo, sha, allowlist=(), state=None):
+    """Select one commit so an earlier offense cannot mask a fresh field."""
+    inspection = pre_push_hook._Inspection(repo)
+    offenders = pre_push_hook._inspect_commits(
+        inspection, [sha], allowlist, state, pre_push_hook.stealth_policy(repo)
+    )
+    return offenders[0][1] if offenders else []
 
 
-class TestCommitOffenses:
-    def test_clean_commit_no_allowlist(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        assert _commit_offenses(_head(repo), []) == []
+@pytest.mark.parametrize(
+    ("author", "allowlist", "message", "expected"),
+    [
+        (None, [], "fix: clean", []),
+        (None, ["*@example.com"], "fix: clean", []),
+        (None, [], "fix: repair\n\nPaired with claude on this.", ["banned terms"]),
+        ("mut-creator <mut@local>", ["*@example.com"], "fix: clean", ["author not in"]),
+        ("mut-creator <mut@local>", ["*@example.com", "mut@local"], "fix: clean", []),
+        ("mut-creator <mut@local>", [], "fix: clean", []),
+        ("mut-creator <mut@local>", ["mut@local"], "fix: clean", ["committer not in"]),
+        (
+            "mut-creator <mut@local>",
+            ["*@example.com"],
+            "fix: claude",
+            ["banned terms", "author not in"],
+        ),
+    ],
+)
+def test_active_commit_policy(repo, author, allowlist, message, expected):
+    sha = _commit(repo, message, author=author)
+    offenses = _inspect_one(repo, sha, allowlist)
+    assert len(offenses) == len(expected)
+    for marker in expected:
+        assert any(marker in offense for offense in offenses)
+    if "author not in" in expected:
+        assert any("mut@local" in offense for offense in offenses)
+    if "banned terms" in expected:
+        assert any("claude" in offense for offense in offenses)
 
-    def test_clean_commit_matching_allowlist(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        assert _commit_offenses(_head(repo), ["*@example.com"]) == []
 
-    def test_banned_phrase_in_message(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "fix(core): repair it\n\nPaired with claude on this.")
-        offenses = _commit_offenses(sha, [])
-        assert any("banned terms" in o and "claude" in o for o in offenses)
-
-    def test_forged_author_blocked_by_allowlist(self, repo, monkeypatch):
-        """The motivating case: commit-msg never sees `--author`, this does."""
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
-        offenses = _commit_offenses(sha, ["*@example.com"])
-        assert len(offenses) == 1
-        assert "author not in" in offenses[0]
-        assert "mut@local" in offenses[0]
-
-    def test_forged_author_passes_when_allowlisted(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
-        assert _commit_offenses(sha, ["*@example.com", "mut@local"]) == []
-
-    def test_no_allowlist_permits_any_identity(self, repo, monkeypatch):
-        """The check is opt-in — an unconfigured project behaves as before."""
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
-        assert _commit_offenses(sha, []) == []
-
-    def test_committer_is_checked_too(self, repo, monkeypatch):
-        """A real author with a forged committer is the same problem, mirrored."""
-        monkeypatch.chdir(repo)
-        sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
-        offenses = _commit_offenses(sha, ["mut@local"])  # allows author, not committer
-        assert len(offenses) == 1
-        assert "committer not in" in offenses[0]
-
-    def test_both_offense_kinds_reported_together(self, repo, monkeypatch):
-        """One commit can be wrong in two ways; neither hides the other."""
-        monkeypatch.chdir(repo)
-        sha = _commit(
-            repo,
-            "fix(core): repair it\n\nBuilt with claude.",
-            author="mut-creator <mut@local>",
-        )
-        offenses = _commit_offenses(sha, ["*@example.com"])
-        assert any("banned terms" in o for o in offenses)
-        assert any("author not in" in o for o in offenses)
-
-    def test_banned_term_in_tracked_path_is_blocked(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        path = repo / "booley-state.txt"
-        path.write_text("opaque\n", encoding="utf-8")
-        _git(repo, "add", path.name)
-        _git(repo, "commit", "-q", "--no-verify", "-m", "feat(core): add state")
-
-        offenses = _commit_offenses(_head(repo), [])
-
-        assert any("tracked path has banned terms" in offense for offense in offenses)
-
-    def test_booley_source_paths_are_outside_project_stealth(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        (repo / "pyproject.toml").write_text(
-            "[tool.booley]\nsource_checkout = true\n",
-            encoding="utf-8",
-        )
-        package = repo / "src" / "booley" / "feature.py"
-        package.parent.mkdir(parents=True)
-        package.write_text("value = 1\n", encoding="utf-8")
-        _git(repo, "add", ".")
-        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: explain Booley architecture")
-
-        assert _commit_offenses(_head(repo), [], repository_root=repo) == []
-
-    def test_symlink_target_is_read_from_committed_blob(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        (repo / ".booley").mkdir()
-        sha = _commit_symlink(repo, "guide", ".booley/AGENTS.md")
-        (repo / "guide").unlink()
-        (repo / "guide").symlink_to("ordinary.txt")
-
-        offenses = _commit_offenses(sha, [])
-
+@pytest.mark.parametrize(
+    "target", [".booley/AGENTS.md", "../.private-state/AGENTS.md", "docs/guide.md"]
+)
+def test_active_symlink_targets_use_committed_blob(repo, target):
+    state = repo.parent / ".private-state"
+    state.mkdir()
+    sha = _commit_symlink(repo, "guide", target)
+    (repo / "guide").unlink()
+    (repo / "guide").symlink_to("ordinary.txt")
+    offenses = _inspect_one(repo, sha, state=state)
+    if target == "docs/guide.md":
+        assert offenses == []
+    else:
         assert any("symlink target exposes project state" in offense for offense in offenses)
-        assert any(".booley/AGENTS.md" in offense for offense in offenses)
-
-    def test_custom_booley_dir_target_is_blocked_without_banned_term(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        booley_dir = repo.parent / ".private-state"
-        booley_dir.mkdir()
-        sha = _commit_symlink(repo, "guide", "../.private-state/AGENTS.md")
-
-        offenses = _commit_offenses(sha, [], booley_dir=booley_dir)
-
-        assert any("symlink target exposes project state" in offense for offense in offenses)
-
-    def test_ordinary_symlink_is_allowed(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
-        sha = _commit_symlink(repo, "guide", "docs/guide.md")
-
-        assert _commit_offenses(sha, []) == []
+        assert any(target in offense for offense in offenses)
 
 
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+
+
+def _forbid_discovery(monkeypatch):
+    """Assert every attempted advertisement is rejected before Git runs it."""
+    original = pre_push_hook._run_git
+
+    def observe(args, **kwargs):
+        assert "ls-remote" not in args
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    return original
 
 
 def _stdin(local_sha: str, remote_sha: str = _ZERO_SHA):
@@ -301,7 +227,6 @@ def _stdin(local_sha: str, remote_sha: str = _ZERO_SHA):
 
 class TestMain:
     def test_allows_clean_push(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
         with (
             _stdin(_head(repo)),
@@ -310,7 +235,6 @@ class TestMain:
             assert main() == 0
 
     def test_blocks_unlisted_author(self, repo, monkeypatch, capsys):
-        monkeypatch.chdir(repo)
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
         sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
         with (
@@ -326,7 +250,6 @@ class TestMain:
         assert "mut@local" in err
 
     def test_blocks_symlink_to_project_state(self, repo, monkeypatch, capsys):
-        monkeypatch.chdir(repo)
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
         booley_dir = repo / ".booley"
         booley_dir.mkdir()
@@ -342,22 +265,23 @@ class TestMain:
         assert "symlink target" in err
         assert ".booley/AGENTS.md" in err
 
-    def test_blocks_tracked_project_state_when_runtime_uses_external_alias(
-        self, repo, monkeypatch, capsys
+    @pytest.mark.parametrize(
+        "relative_path", [".booley/docs/example.md", ".BOOLEY/docs/example.md", ".booley"]
+    )
+    def test_blocks_tracked_state_with_external_alias(
+        self, repo, monkeypatch, capsys, relative_path
     ):
         _configure_external_project_state(repo, monkeypatch)
-        path = repo / ".booley" / "docs" / "example.md"
-        path.parent.mkdir(parents=True)
+        if relative_path == ".booley":
+            # Isolate tracked paths from strict configuration-node validation.
+            monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
+        path = repo / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("private project state\n", encoding="utf-8")
-        _git(repo, "add", ".booley/docs/example.md")
+        _git(repo, "add", relative_path)
         _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
-
-        with _stdin(_head(repo)):
-            assert main() == 1
-
-        err = capsys.readouterr().err
-        assert "tracked path exposes project state" in err
-        assert ".booley/docs/example.md" in err
+        assert _push(_head(repo)) == 1
+        assert f"tracked path exposes project state: {relative_path}" in capsys.readouterr().err
 
     def test_blocks_checkout_state_symlink_when_runtime_uses_external_alias(
         self, repo, monkeypatch, capsys
@@ -371,35 +295,6 @@ class TestMain:
         err = capsys.readouterr().err
         assert "symlink target exposes project state" in err
         assert ".booley/AGENTS.md" in err
-
-    def test_blocks_case_variant_of_checkout_project_state(self, repo, monkeypatch, capsys):
-        _configure_external_project_state(repo, monkeypatch)
-        path = repo / ".BOOLEY" / "docs" / "example.md"
-        path.parent.mkdir(parents=True)
-        path.write_text("private project state\n", encoding="utf-8")
-        _git(repo, "add", ".BOOLEY/docs/example.md")
-        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
-
-        with _stdin(_head(repo)):
-            assert main() == 1
-
-        err = capsys.readouterr().err
-        assert "tracked path exposes project state" in err
-        assert ".BOOLEY/docs/example.md" in err
-
-    def test_blocks_tracked_project_state_root(self, repo, monkeypatch, capsys):
-        _configure_external_project_state(repo, monkeypatch)
-        # Isolate tracked paths from strict configuration-node validation.
-        monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
-        (repo / ".booley").write_text("private project state\n", encoding="utf-8")
-        _git(repo, "add", ".booley")
-        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add state")
-
-        with _stdin(_head(repo)):
-            assert main() == 1
-
-        err = capsys.readouterr().err
-        assert "tracked path exposes project state: .booley" in err
 
     @pytest.mark.parametrize(
         "relative_path",
@@ -423,7 +318,6 @@ class TestMain:
             assert main() == 0
 
     def test_escape_hatch_skips_everything(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
         monkeypatch.setenv("BOOLEY_SKIP_PUSH_GUARD", "1")
         sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
         with (
@@ -435,7 +329,6 @@ class TestMain:
             assert main() == 0
 
     def test_stealth_off_disables_the_guard(self, repo, monkeypatch):
-        monkeypatch.chdir(repo)
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
         sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
         with (
@@ -449,7 +342,6 @@ class TestMain:
 
     def test_branch_deletion_is_not_scanned(self, repo, monkeypatch):
         """A delete push has no outgoing commits — nothing to check."""
-        monkeypatch.chdir(repo)
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
         with (
             _stdin(_ZERO_SHA, _head(repo)),
@@ -498,7 +390,6 @@ def actual_git(request, monkeypatch):
 
 @pytest.fixture
 def matrix_repo(actual_git, repo, monkeypatch):
-    monkeypatch.chdir(repo)
     return repo
 
 
@@ -652,7 +543,6 @@ def test_minimum_git_missing_inspected_objects_refuse(matrix_repo: Path, missing
 def test_destination_other_branch_is_authoritative(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     base = _commit(repo, "fix(core): claude imported history")
     _git(repo, "push", "--no-verify", sys.argv[2], "HEAD:refs/heads/other")
     assert _push(base) == 0
@@ -661,7 +551,6 @@ def test_destination_other_branch_is_authoritative(
 def test_unrelated_and_stale_remote_refs_never_exempt(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     base = _commit(repo, "fix(core): claude local history")
     _git(repo, "update-ref", "refs/remotes/unrelated/main", base)
     assert _push(base) == 1
@@ -671,7 +560,6 @@ def test_unrelated_and_stale_remote_refs_never_exempt(
 def test_destination_failure_complete_superset(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure: str
 ) -> None:
-    monkeypatch.chdir(repo)
     old = _commit(repo, "fix(core): claude historical identity")
     fresh = _commit(repo, "fix(core): ordinary clean work")
     original = pre_push_hook._run_git
@@ -706,7 +594,6 @@ def test_destination_failure_complete_superset(
 def test_fallback_inspection_failure_refuses(
     repo: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    monkeypatch.chdir(repo)
     original = pre_push_hook._run_git
 
     def fail(args, **kwargs):
@@ -729,29 +616,15 @@ def test_fallback_inspection_failure_refuses(
 def test_malformed_protocol_refuses_without_discovery(
     repo: Path, monkeypatch: pytest.MonkeyPatch, line: str
 ) -> None:
-    monkeypatch.chdir(repo)
     line = line.format(oid=_head(repo), zero=_ZERO_SHA)
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     monkeypatch.setattr(sys, "stdin", io.StringIO(line))
     assert main() == 1
 
 
 def test_no_update_and_deletion_avoid_network(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(repo)
     _upstream_pair(repo, repo.parent / "offline.git", "f" * 40)
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    original = _forbid_discovery(monkeypatch)
     with patch("sys.stdin", io.StringIO("")):
         assert main() == 0
     assert _push(_ZERO_SHA, _head(repo)) == 0
@@ -762,7 +635,6 @@ def test_no_update_and_deletion_avoid_network(repo: Path, monkeypatch: pytest.Mo
 def test_destination_covered_base_needs_no_import_settings(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     base = _head(repo)
     _git(repo, "push", "--no-verify", sys.argv[2], "HEAD:refs/heads/main")
     assert _push(_commit(repo, "fix(core): new work"), base) == 0
@@ -771,7 +643,6 @@ def test_destination_covered_base_needs_no_import_settings(
 def test_missing_old_destination_tip_conservative(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     assert _push(_head(repo), "f" * 40) == 0
     assert _push(_commit(repo, "fix(core): claude fresh work"), "f" * 40) == 1
 
@@ -780,23 +651,15 @@ def test_missing_old_destination_tip_conservative(
 def test_effective_protocol_policy_cannot_be_widened(
     repo: Path, monkeypatch: pytest.MonkeyPatch, policy: str
 ) -> None:
-    monkeypatch.chdir(repo)
     _git(repo, "config", "protocol.file.allow", policy)
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file:ssh:https")
     monkeypatch.setenv("GIT_PROTOCOL_FROM_USER", "0")
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
     assert _push(_commit(repo, "fix(core): claude fresh work")) == 1
 
 
 def test_url_rewriting_denies_authority(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(repo)
     _git(repo, "config", "url./untrusted/.insteadOf", sys.argv[2])
     base = _commit(repo, "fix(core): claude historical work")
     assert _push(base) == 1
@@ -807,7 +670,6 @@ def test_url_rewriting_denies_authority(repo: Path, monkeypatch: pytest.MonkeyPa
 def test_deep_history_oldest_leak_and_bounded_batches(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     base = _commit(repo, "fix(core): claude oldest new work")
     tree = _git(repo, "rev-parse", "HEAD^{tree}")
     tip = base
@@ -838,7 +700,6 @@ def test_deep_history_oldest_leak_and_bounded_batches(
 def test_bypassed_trailer_remains_blocked(
     repo: Path, monkeypatch: pytest.MonkeyPatch, trail: str
 ) -> None:
-    monkeypatch.chdir(repo)
     assert _push(_commit(repo, f"fix(core): ordinary work\n\n{trail}")) == 1
 
 
@@ -877,15 +738,8 @@ def test_minimum_git_file_promisor_authority_preflight_before_upload_pack(
 def test_unsafe_transport_never_executes_helper(
     repo: Path, monkeypatch: pytest.MonkeyPatch, endpoint: str
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", endpoint])
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
 
@@ -893,7 +747,6 @@ def test_unsafe_transport_never_executes_helper(
 def test_merged_protocol_restrictions_are_respected(
     repo: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    monkeypatch.chdir(repo)
     if kind == "global":
         _git(repo, "config", "protocol.allow", "never")
     elif kind == "include":
@@ -904,13 +757,7 @@ def test_merged_protocol_restrictions_are_respected(
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
         monkeypatch.setenv("GIT_CONFIG_VALUE_0", "never")
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
 
@@ -918,7 +765,6 @@ def test_merged_protocol_restrictions_are_respected(
 def test_https_detectable_security_override_denies_authority(
     repo: Path, monkeypatch: pytest.MonkeyPatch, override: str
 ) -> None:
-    monkeypatch.chdir(repo)
     destination = "https://user:credential@example.test/repository.git"
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", destination])
     if override == "environment":
@@ -931,13 +777,7 @@ def test_https_detectable_security_override_denies_authority(
             f"http.https://example.test/.{key}",
             "false" if key == "sslVerify" else "true",
         )
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
 
@@ -954,16 +794,9 @@ def test_https_detectable_security_override_denies_authority(
 def test_ssh_detectable_insecure_options_deny_authority(
     repo: Path, monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", "ssh://example.test/repo.git"])
     monkeypatch.setenv("GIT_SSH_COMMAND", command)
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
 
@@ -971,7 +804,6 @@ def test_ssh_detectable_insecure_options_deny_authority(
 def test_ssh_owner_wrapper_preserved_and_default_strict(
     repo: Path, monkeypatch: pytest.MonkeyPatch, custom: bool
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", "ssh://example.test/repo.git"])
     monkeypatch.delenv("GIT_SSH", raising=False)
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
@@ -1000,7 +832,6 @@ def test_ssh_owner_wrapper_preserved_and_default_strict(
 def test_complete_stdin_consumed_and_lookup_has_devnull(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     stdin = io.StringIO(f"refs/heads/main {_head(repo)} refs/heads/main {_ZERO_SHA}\n")
     monkeypatch.setattr(sys, "stdin", stdin)
     original = subprocess.run
@@ -1019,7 +850,6 @@ def test_complete_stdin_consumed_and_lookup_has_devnull(
 def test_annotated_tags_older_import_and_noncommit_updates(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     older = _head(repo)
     _commit(repo, "fix(core): claude imported identity")
     upstream = _clone_upstream(repo)
@@ -1032,7 +862,6 @@ def test_annotated_tags_older_import_and_noncommit_updates(
 def test_multiref_new_tips_do_not_exempt_each_other(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     leak = _commit(repo, "fix(core): claude local work")
     clean = _commit(repo, "fix(core): ordinary local work")
     protocol = f"refs/heads/a {leak} refs/heads/a {_ZERO_SHA}\nrefs/heads/b {clean} refs/heads/b {_ZERO_SHA}\n"
@@ -1041,7 +870,6 @@ def test_multiref_new_tips_do_not_exempt_each_other(
 
 
 def test_merge_exposes_new_side_branch_commit(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(repo)
     base = _head(repo)
     _git(repo, "push", "--no-verify", sys.argv[2], "HEAD:refs/heads/main")
     _git(repo, "checkout", "-b", "side")
@@ -1054,7 +882,6 @@ def test_merge_exposes_new_side_branch_commit(repo: Path, monkeypatch: pytest.Mo
 def test_replacement_does_not_hide_identity_and_active_grafts_refuse(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     leak = _commit(repo, "fix(core): claude local work")
     clean = _git(
         repo,
@@ -1108,7 +935,6 @@ def test_sha256_object_format_and_full_zero_deletion(
 def test_malformed_batch_or_changed_inspection_state_refuses(
     repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    monkeypatch.chdir(repo)
     sha = _commit_symlink(repo, "guide", "docs/guide.md")
     original = pre_push_hook._run_git
     count = 0
@@ -1188,7 +1014,6 @@ def test_cloned_origin_is_not_destination_authority(
 def test_destination_imported_path_identity_and_allowlist_exempt_but_new_state_refuses(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     (repo / "claude.txt").write_text("imported upstream path\n")
     _git(repo, "add", "claude.txt")
     _git(
@@ -1213,7 +1038,6 @@ def test_destination_imported_path_identity_and_allowlist_exempt_but_new_state_r
 def test_destination_identity_probe_clears_current_repository_selection(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     base = _commit(repo, "fix(core): claude imported identity")
     upstream = _clone_upstream(repo)
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", str(upstream)])
@@ -1225,22 +1049,14 @@ def test_destination_identity_probe_clears_current_repository_selection(
 def test_empty_protocol_allowlist_never_discovers(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "")
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
 
 def test_plain_identity_footer_and_cherry_pick_remain_protected(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     base = _head(repo)
     _git(repo, "checkout", "-b", "foreign")
     leak = _commit(repo, "fix(core): clean work\n\nCo-Authored-By: Cursor Agent <cursor@local>")
@@ -1252,7 +1068,6 @@ def test_plain_identity_footer_and_cherry_pick_remain_protected(
 def test_symbolic_head_input_supported_without_using_it_as_object_argument(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     protocol = f"HEAD {_head(repo)} refs/heads/main {_ZERO_SHA}\n"
     monkeypatch.setattr(sys, "stdin", io.StringIO(protocol))
     assert main() == 0
@@ -1304,7 +1119,6 @@ def test_minimum_git_reference_and_inherited_alternate_are_complete(
 def test_disabled_project_does_not_load_upstream_pair(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     config = repo / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text('[stealth]\nenabled = false\nupstream_repository = "invalid"\n')
@@ -1319,7 +1133,6 @@ def test_disabled_project_does_not_load_upstream_pair(
 def test_available_advertised_object_read_error_is_not_optional_discovery_failure(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     foreign = _git(
         repo,
         "commit-tree",
@@ -1373,7 +1186,6 @@ def test_minimum_git_typed_push_source_label_uses_only_protocol_oid(
 def test_many_advertised_refs_use_bounded_inventory_arguments(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     oid = _head(repo)
     payload = "".join(f"{oid}\trefs/heads/branch-{index}\n" for index in range(900)).encode()
     original = pre_push_hook._run_git
@@ -1399,7 +1211,6 @@ def test_many_advertised_refs_use_bounded_inventory_arguments(
 def test_unrelated_non_utf8_git_config_preserves_push(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(repo)
     with (repo / ".git" / "config").open("ab") as stream:
         stream.write(b"\n[legacy]\n value = \xff\n")
     assert _push(_head(repo)) == 0
@@ -1490,7 +1301,6 @@ def test_default_auto_ssh_variant_keeps_noninteractive_flags(source: str) -> Non
 def test_legacy_resolve_symlink_loop_uses_destination_fallback(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.chdir(repo)
     destination = repo.parent / "looping-destination"
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", str(destination)])
     original = Path.resolve
@@ -1761,6 +1571,7 @@ def test_tilde_scp_host_remains_ssh_location(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "name",
     [
+        "booley-state.txt",
         "docs_qa/booley_notes.txt",
         "notes/booley-notes.txt",
         "notes/mybooleyfile.txt",
@@ -1769,40 +1580,38 @@ def test_tilde_scp_host_remains_ssh_location(tmp_path: Path) -> None:
     ],
 )
 def test_identifier_tracked_paths_blocked(repo, monkeypatch, name):
-    monkeypatch.chdir(repo)
     path = repo / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("opaque\n")
     _git(repo, "add", name)
     _git(repo, "commit", "-q", "--no-verify", "-m", "fix: add file")
     assert any(
-        "tracked path has banned terms" in offense for offense in _commit_offenses(_head(repo), [])
+        "tracked path has banned terms" in offense
+        for offense in _inspect_one(repo, _head(repo), [])
     )
 
 
 def test_identifier_generic_path_controls(repo, monkeypatch):
-    monkeypatch.chdir(repo)
     for name in ("precursor.txt", "reagent.sv"):
         (repo / name).write_text("opaque\n")
         _git(repo, "add", name)
     _git(repo, "commit", "-q", "--no-verify", "-m", "fix: add files")
-    assert _commit_offenses(_head(repo), []) == []
+    assert _inspect_one(repo, _head(repo), []) == []
 
 
 def test_identifier_symlink_and_identities(repo, monkeypatch):
-    monkeypatch.chdir(repo)
     sha = _commit_symlink(repo, "guide", "notes/mybooleyfile.txt")
-    assert any("symlink target" in offense for offense in _commit_offenses(sha, []))
+    assert any("symlink target" in offense for offense in _inspect_one(repo, sha, []))
     _git(repo, "rm", "guide")
     _git(repo, "commit", "-q", "--no-verify", "-m", "fix: remove link")
     sha = _commit(repo, "fix: tune layout", author="mybooleyfile <safe@example.com>")
-    assert any("banned terms" in offense for offense in _commit_offenses(sha, []))
+    assert any("banned terms" in offense for offense in _inspect_one(repo, sha, []))
     _git(repo, "config", "user.name", "BooleyRunner")
     sha = _commit(repo, "fix: tune layout", author="Safe User <safe@example.com>")
-    assert any("banned terms" in offense for offense in _commit_offenses(sha, []))
+    assert any("banned terms" in offense for offense in _inspect_one(repo, sha, []))
     _git(repo, "config", "user.name", "Safe User")
     sha = _commit(repo, "fix: tune booley_config", author="Safe User <safe@example.com>")
-    assert any("banned terms" in offense for offense in _commit_offenses(sha, []))
+    assert any("banned terms" in offense for offense in _inspect_one(repo, sha, []))
 
 
 def test_minimum_git_pinned_upstream_import_and_fresh_metadata(
@@ -1979,7 +1788,6 @@ def test_minimum_git_encoded_file_upstream_import(matrix_repo: Path) -> None:
 def test_upstream_authenticated_transport_keeps_new_commits_checked(
     repo: Path, monkeypatch: pytest.MonkeyPatch, transport: str
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     monkeypatch.delenv("GIT_SSH", raising=False)
     base = _commit(repo, "fix(core): claude pristine import")
@@ -2017,17 +1825,10 @@ def test_upstream_authenticated_transport_keeps_new_commits_checked(
 def test_upstream_insecure_transport_refuses_before_discovery(
     repo: Path, monkeypatch: pytest.MonkeyPatch, location: str, key: str, value: str
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     _git(repo, "config", key, value)
     _upstream_pair(repo, location)
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 1
 
 
@@ -2077,15 +1878,8 @@ def test_minimum_git_upstream_ancestry_has_bounded_output(
 def test_upstream_unsafe_transport_refuses_before_discovery(
     repo: Path, monkeypatch: pytest.MonkeyPatch, location: str
 ) -> None:
-    monkeypatch.chdir(repo)
     _upstream_pair(repo, location)
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 1
 
 
@@ -2133,13 +1927,7 @@ def test_minimum_git_zero_active_push_needs_no_selected_config(
             return original(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", denied)
-    original = pre_push_hook._run_git
-
-    def observe(args, **kwargs):
-        assert "ls-remote" not in args
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(pre_push_hook, "_run_git", observe)
+    _forbid_discovery(monkeypatch)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     assert main() == 0
     assert _push(_ZERO_SHA, _head(repo)) == 0
@@ -2480,33 +2268,34 @@ def test_unreadable_committed_symlink_blob_refuses() -> None:
         pre_push_hook._inspect_commits(inspection, [_OID], [], None, None)
 
 
-def test_unreadable_commit_facts_are_an_offense(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(repo)
-    monkeypatch.setattr(pre_push_hook, "_commit_facts", lambda sha: None)
-    assert _commit_offenses(_OID, [], repository_root=repo) == ["cannot inspect commit facts"]
-
-
-def test_unresolvable_root_is_an_offense(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(repo)
+def test_active_push_with_unresolvable_root_refuses(repo, monkeypatch, capsys):
     monkeypatch.setattr(pre_push_hook, "_repository_root", lambda: None)
-    monkeypatch.setattr(
-        pre_push_hook,
-        "_commit_facts",
-        lambda sha: ("Real Dev", "dev@example.com", "Real Dev", "dev@example.com", "fix: x"),
-    )
-    policy = pre_push_hook.stealth_policy(repo)
-    assert policy.enabled
-    assert _commit_offenses(_OID, [], policy=policy) == [
-        "cannot resolve repository root to inspect tracked metadata"
-    ]
+    assert _push(_head(repo)) == 1
+    assert "could not resolve the repository root" in capsys.readouterr().err
 
 
 def test_active_push_without_destination_arguments_refuses(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.chdir(repo)
     monkeypatch.setattr(sys, "argv", ["pre-push"])
     assert _push(_head(repo)) == 1
     assert "active push requires destination name and location" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("case", ["force", "stale", "intermediate"])
+def test_local_destination_history_preserved(repo, monkeypatch, capsys, case):
+    root = _head(repo)
+    old = _commit(repo, "fix: remote work")
+    destination = Path(sys.argv[2])
+    _git(repo, "push", "--no-verify", str(destination), "HEAD:refs/heads/main")
+    if case in ("force", "stale"):
+        _git(repo, "reset", "--hard", root)
+    forbidden = _commit(repo, "fix: claude intermediate metadata")
+    tip = _commit(repo, "fix: clean final metadata")
+    if case == "stale":
+        _git(repo, "remote", "add", "destination", str(destination))
+        _git(repo, "push", "--no-verify", "--force", "destination", "HEAD:refs/heads/main")
+        _git(repo, "--git-dir=" + str(destination), "update-ref", "refs/heads/main", old)
+        assert _git(repo, "rev-parse", "refs/remotes/destination/main") == tip
+    assert _push(tip, old) == 1
+    assert forbidden[:12] in capsys.readouterr().err

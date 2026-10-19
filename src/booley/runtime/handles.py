@@ -1,23 +1,21 @@
 """Persistent Project display handles; never routing or execution authority."""
 
-from __future__ import annotations
-
 import json
 import logging
 import re
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from itertools import islice
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import require_dict, require_int, require_str_value
-from booley.core.file_lock import nonblocking_file_lock, release_file_lock, wait_for_file_lock
+from booley.core.file_lock import acquire_file_lock, release_file_lock, wait_for_file_lock
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
 MAX_MAP_BYTES = 16 * 1024 * 1024
+
 JOB_TYPES = {
     "sim": "SIM",
     "simulate": "SIM",
@@ -32,67 +30,49 @@ JOB_TYPES = {
 
 
 def job_prefix(endpoint: str) -> str:
-    """Use a fixed vocabulary, including a safe fallback for custom endpoints."""
     return "J-" + JOB_TYPES.get(endpoint, "JOB")
 
 
 @dataclass
 class HandleMap:
-    """Unique allocations and direct aliases, loaded under the owner's writer lock."""
+    """Display allocations and direct aliases, loaded under the owner's writer lock."""
 
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     next_number: int = 1
 
     def labels(self) -> dict[str, str]:
-        """Detached lookup including old keys; suitable for observational readers."""
-        return {
-            **self.entries,
-            **{key: self.entries[target] for key, target in self.aliases.items()},
-        }
+        entries = self.entries
+        return {k: entries[v] for k, v in self.aliases.items() if v in entries} | entries
 
     def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
-        """Allocate once, carrying a fallback identity forward without renumbering."""
         require_str_value(key, field="handle key")
-        if key not in self.entries and key not in self.aliases:
-            prior = next(
-                (
-                    self.aliases.get(old, old)
-                    for old in predecessors
-                    if old in self.entries or old in self.aliases
-                ),
-                None,
-            )
-            if prior is not None:
-                self.entries[key] = self.entries.pop(prior)
-                self.aliases = {
-                    alias: key if target == prior else target
-                    for alias, target in self.aliases.items()
-                }
-                self.aliases[prior] = key
+        target = key if key in self.entries else self.aliases.get(key, key)
+        if key in self.aliases and key not in self.entries and target not in self.entries:
+            raise ValueError("requested handle alias has no allocation")
+        if target not in self.entries:
+            for old in predecessors:
+                prior = old if old in self.entries else self.aliases.get(old)
+                if prior in self.entries:
+                    target = self.aliases[key] = prior
+                    break
             else:
                 self.entries[key] = f"{prefix}{self.next_number}"
                 self.next_number += 1
-        target = self.aliases.get(key, key)
         for old in predecessors:
-            if old != target and old not in self.entries and old not in self.aliases:
-                self.aliases[old] = target
+            if old not in self.entries:
+                self.aliases.setdefault(old, target)
         return self.entries[target]
 
 
 def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
-    """A canonical worktree owner may have first registered by its physical path."""
     if not key.startswith("worktree:") or not work_dir:
         return ()
     root = Path(work_dir).resolve()
-    candidates = [root]
-    # Registry worktree facts use the checkout root, even when a call names a subdirectory.
-    for parent in islice((root, *root.parents), 128):
-        marker = parent / ".git"
-        if marker.is_dir() or marker.is_file():
-            candidates.append(parent)
-            break
-    return tuple(dict.fromkeys("worktree:path:" + str(path) for path in candidates))
+    for parent in (root, *root.parents[:127]):
+        if (parent / ".git").is_dir() or (parent / ".git").is_file():
+            return tuple(dict.fromkeys((f"worktree:path:{root}", f"worktree:path:{parent}")))
+    return (f"worktree:path:{root}",)
 
 
 class HandleStore:
@@ -104,7 +84,6 @@ class HandleStore:
         self.path = self.root / "map.json"
 
     def load(self) -> HandleMap:
-        """Validate persistent state without resetting corrupt or unsupported maps."""
         refuse_symlinks(self.path)
         if not self.path.exists():
             return HandleMap()
@@ -115,99 +94,61 @@ class HandleStore:
         data = require_dict(json.loads(raw), field="handle map")
         if type(data.get("schema")) is not int or data["schema"] != 1:
             raise ValueError("unsupported handle map schema")
-        entries = _entries(data.get("entries"), jobs=self.jobs)
-        aliases = _aliases(data.get("aliases"), entries, jobs=self.jobs)
-        next_number = require_int(data.get("next_number"), field="handle counter")
-        maximum = max(
-            (int(re.search(r"[0-9]+$", value)[0]) for value in entries.values()), default=0
+        entries, aliases = (require_dict(data.get(n), field=n) for n in ("entries", "aliases"))
+        if any(not isinstance(v, str) for m in (entries, aliases) for v in m.values()):
+            raise ValueError("handle mapping must contain strings")
+        highest = max(
+            (int(m[0]) for v in entries.values() if (m := re.search(r"[0-9]+$", v))), default=0
         )
-        if next_number <= maximum or next_number <= 0:
-            raise ValueError("handle counter would reuse an allocated number")
-        return HandleMap(entries, aliases, next_number)
+        counter = max(1, require_int(data.get("next_number"), field="handle counter"), highest + 1)
+        return HandleMap(entries, aliases, counter)
 
     def save(self, handles: HandleMap) -> None:
-        """Reserve durable bytes before the owner publishes a row or Job record."""
         refuse_symlinks(self.path)
-        payload = (
-            json.dumps(
-                {
-                    "schema": 1,
-                    "entries": handles.entries,
-                    "aliases": handles.aliases,
-                    "next_number": handles.next_number,
-                },
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode()
+        payload = (json.dumps({"schema": 1, **asdict(handles)}, sort_keys=True) + "\n").encode()
         if len(payload) > MAX_MAP_BYTES:
             raise ValueError("handle map exceeds 16 MiB")
         atomic_replace_bytes(self.path, payload)
 
+    def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
+        root = self.root if self.jobs else self.root.parent
+        with _writer(root, wait_s=1 if self.jobs else None):
+            handles = self.load()
+            before = asdict(handles)
+            label = handles.reserve(key, prefix, predecessors=predecessors)
+            if asdict(handles) != before:
+                self.save(handles)
+            return label
+
     def snapshot(self) -> tuple[dict[str, str], tuple[str, ...]]:
-        """Isolate presentation storage failures without hiding their diagnostics."""
         try:
             return self.load().labels(), ()
         except (OSError, ValueError, UnicodeError, RecursionError) as exc:
             return {}, (f"{'Job' if self.jobs else 'Session'} handles unavailable: {exc}",)
 
 
-def _entries(value: object, *, jobs: bool) -> dict[str, str]:
-    entries = require_dict(value, field="handle entries")
-    pattern = r"J-(?:SIM|SYN|LINT|FPGA|JOB)([1-9][0-9]*)" if jobs else r"S([1-9][0-9]*)"
-    numbers: set[int] = set()
-    result = {}
-    for key, label in entries.items():
-        require_str_value(key, field="handle key")
-        text = require_str_value(label, field="handle label")
-        match = re.fullmatch(pattern, text)
-        if match is None or int(match[1]) in numbers:
-            raise ValueError("invalid or duplicate handle allocation")
-        numbers.add(int(match[1]))
-        result[key] = text
-    return result
-
-
-def _aliases(value: object, entries: Mapping[str, str], *, jobs: bool) -> dict[str, str]:
-    aliases = require_dict(value, field="handle aliases")
-    if jobs and aliases:
-        raise ValueError("Job handles cannot have aliases")
-    result = {}
-    for key, raw_target in aliases.items():
-        require_str_value(key, field="handle alias")
-        target = require_str_value(raw_target, field="handle alias target")
-        if key in entries or target not in entries:
-            raise ValueError("handle alias must point directly to an allocation")
-        result[key] = target
-    return result
-
-
 @contextmanager
-def session_writer(booley_dir: Path) -> Iterator[None]:
-    """Share exactly the registry's nonblocking writer lock with handle allocation."""
-    root = booley_dir / "runtime" / "sessions"
-    refuse_symlinks(root)
-    root.mkdir(parents=True, exist_ok=True)
+def _writer(root: Path, *, wait_s: float | None) -> Iterator[None]:
     lock = root / ".lock"
     refuse_symlinks(lock)
-    with lock.open("a+", encoding="utf-8", newline="") as handle, nonblocking_file_lock(handle):
-        yield
-
-
-@contextmanager
-def job_writer(booley_dir: Path) -> Iterator[None]:
-    """Serialize cross-process Job allocation with a bounded wait."""
-    root = HandleStore(booley_dir, jobs=True).root
-    refuse_symlinks(root)
     root.mkdir(parents=True, exist_ok=True)
-    lock = root / ".lock"
-    refuse_symlinks(lock)
     with lock.open("a+", encoding="utf-8", newline="") as handle:
-        wait_for_file_lock(handle, timeout_s=1)
+        if wait_s is None:
+            acquire_file_lock(handle)
+        else:
+            wait_for_file_lock(handle, timeout_s=wait_s)
         try:
             yield
         finally:
             release_file_lock(handle)
+
+
+def session_writer(booley_dir: Path) -> AbstractContextManager[None]:
+    return _writer(booley_dir / "runtime/sessions", wait_s=None)
+
+
+def reserve_session_handle(booley_dir: Path, key: str) -> str:
+    return HandleStore(booley_dir).reserve(key, "S")
 
 
 def register_job(
@@ -218,26 +159,15 @@ def register_job(
     *,
     work_dir: str | None = None,
 ) -> None:
-    """Best-effort presentation allocation; broken maps never gate Job execution."""
-    try:
-        with job_writer(booley_dir):
-            store = HandleStore(booley_dir, jobs=True)
-            handles = store.load()
-            if run_id not in handles.entries:
-                handles.reserve(run_id, job_prefix(endpoint))
-                store.save(handles)
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("Job handle unavailable for %s: %s", run_id, exc)
+    if run_id:
+        try:
+            HandleStore(booley_dir, jobs=True).reserve(run_id, job_prefix(endpoint))
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Job handle unavailable for Job %s: %s", run_id, exc)
     if session_key:
         try:
-            with session_writer(booley_dir):
-                store = HandleStore(booley_dir)
-                handles = store.load()
-                before = handles.labels()
-                handles.reserve(
-                    session_key, "S", predecessors=fallback_predecessors(session_key, work_dir)
-                )
-                if handles.labels() != before:
-                    store.save(handles)
+            HandleStore(booley_dir).reserve(
+                session_key, "S", predecessors=fallback_predecessors(session_key, work_dir)
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Session handle unavailable for Job %s: %s", run_id, exc)

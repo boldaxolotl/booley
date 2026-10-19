@@ -95,6 +95,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_custom_endpoints_and_criteria",
             "_check_git_state",
             "_check_project_gitignore",
+            "_check_project_trackability",
             "_check_ticket_leftovers",
             "_check_repo_footprint",
         }

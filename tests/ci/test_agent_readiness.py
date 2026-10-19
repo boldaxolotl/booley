@@ -128,7 +128,7 @@ def test_project_runner_pins_match_the_readiness_contract():
         for name, version in runners.items():
             assert declared.get(name) == f"{name}=={version}"
     quality = {item.split("==", 1)[0]: item for item in extras["quality"]}
-    assert quality["ruff"] == "ruff==0.16.10"
+    assert quality["ruff"] == f"ruff=={readiness.PINNED_RUNNERS['ruff']}"
 
 
 def test_bootstrap_dependencies_never_install_booley():

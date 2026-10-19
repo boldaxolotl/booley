@@ -416,7 +416,9 @@ def test_sim_goal_added_by_approved_change_schedules_at_original_base(layout, mo
 
     record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     (layout.worktree / "rtl.v").write_bytes(b"module changed; endmodule\n")
-    env = ChangeEnvironment(EntryEnvironment(layout.control))
+    env = ChangeEnvironment(
+        EntryEnvironment(layout.control, routing_guidance="Explicit test routing guidance.")
+    )
     proposal = create_proposal(
         env,
         record.id,
@@ -488,6 +490,7 @@ def test_automatic_entry_launches_without_running_simulation(layout):
         schedule_baselines=lambda record: schedule_sim_baselines(
             layout.control, record, launch=launch
         ),
+        routing_guidance="Explicit test routing guidance.",
     )
     record = enter_goal_mode(
         EntryRequest(
@@ -514,7 +517,11 @@ def test_entry_launch_error_never_rolls_back_goal_mode(layout):
         EntryRequest(
             layout.worktree, "report-only", parse_goal_args([{"family": "SIM", "target": "top"}])
         ),
-        EntryEnvironment(layout.control, schedule_baselines=broken),
+        EntryEnvironment(
+            layout.control,
+            schedule_baselines=broken,
+            routing_guidance="Explicit test routing guidance.",
+        ),
     ).record
     assert record.state is GoalState.ACTIVE
 
@@ -666,6 +673,29 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
     assert not list(layout.control.glob(".baseline-wt-*"))
 
 
+def test_baseline_request_publication_tolerates_a_windows_reader(tmp_path, monkeypatch):
+    path = tmp_path / "request.json"
+    write_document(path, {"schema": "booley.sim-baseline/v1", "status": "pending"})
+    replace_path = Path.replace
+    blocked = False
+
+    def replace_after_reader_closes(source, destination):
+        nonlocal blocked
+        if destination == path and not blocked:
+            blocked = True
+            error = PermissionError("request reader has the destination open")
+            error.winerror = 5
+            raise error
+        return replace_path(source, destination)
+
+    monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
+    complete = {"schema": "booley.sim-baseline/v1", "status": "complete"}
+    write_document(path, complete)
+
+    assert read_document(path) == complete
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def test_unversioned_protected_program_is_captured_with_executable_state(layout):
     hook = layout.worktree / ".booley/hooks/build.py"
     hook.parent.mkdir()
@@ -726,7 +756,7 @@ def test_second_real_entry_on_same_base_reuses_baseline_without_launch(baseline)
     (other / ".booley/tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
     second = enter_goal_mode(
         EntryRequest(other, "second-real", parse_goal_args([{"family": "SIM", "target": "top"}])),
-        EntryEnvironment(baseline.control),
+        EntryEnvironment(baseline.control, routing_guidance="Explicit test routing guidance."),
     ).record
     _schedule(baseline, second)
     assert second.protected_digest == baseline.record.protected_digest
@@ -783,3 +813,64 @@ def test_child_has_an_independent_bounded_watchdog(baseline, monkeypatch):
     timer = _child_watchdog(path.parent)
     assert timer is timers[0] and timer.daemon
     assert terminated == [os.getpid()]
+
+
+@pytest.fixture
+def initialized_policy(layout, isolated_git_excludes):
+    """Select initialization's policy, with no ambient or blanket exclusion."""
+    from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
+    from booley.runtime.worktree_paths import worktree_state_dir
+
+    git(layout.main, "config", "core.excludesFile", str(isolated_git_excludes))
+    exclude = layout.main / ".git/info/exclude"
+    assert exclude.read_text() == "/.booley\n"
+    exclude.write_bytes(b"")
+    selected = worktree_state_dir(layout.worktree)
+    assert selected == layout.control
+    _backfill_project_gitignore(selected, InitContext(project_root=layout.main))
+    assert "/.baseline-wt-*/" in (selected / ".gitignore").read_text().splitlines()
+    # The local Snapshot's configuration is a normal committed Project input.
+    write_tests_toml(layout, b'[top]\ntests = ["smoke"]\n')
+    git(layout.worktree, "add", ".booley")
+    git(layout.worktree, "commit", "-qm", "Project configuration")
+    return layout
+
+
+@pytest.mark.parametrize("abbrev", [7, 12])
+def test_initialized_directory_policy_runs_baseline_and_reports_transition(
+    initialized_policy, abbrev
+):
+    from booley.runtime.worktree_paths import worktree_state_dir
+
+    layout = initialized_policy
+    git(layout.main, "config", "core.abbrev", str(abbrev))
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    mode = SimpleNamespace(**vars(layout), record=record, launches=[])
+    selected = worktree_state_dir(layout.worktree)
+    policy = selected / ".gitignore"
+    before = policy.read_bytes()
+    short = git(layout.worktree, "rev-parse", "--short", record.base_sha)
+    assert len(short) == abbrev
+    scratch = selected / f".baseline-wt-{os.getpid()}-{short}"
+    assert not scratch.exists()
+    assert (layout.main / ".git/info/exclude").read_bytes() == b""
+    checkouts = []
+
+    def execute(checkout, target, runs, output):
+        checkouts.append(checkout)
+        assert checkout == scratch
+        assert git(checkout, "rev-parse", "HEAD") == record.base_sha
+        result = _execute(checkout, target, runs, output)
+        result["rows"] = [run_row(run, "fail") for run in runs]
+        return result
+
+    assert _complete(mode, execute)[0]["grade"] == "fail"
+    _record(mode, "current", [run_row()])
+    summary = transition_summary(
+        build_status(GoalStore(layout.control), record).goals[0].sim_transitions
+    )
+    assert "fail -> pass" in summary
+    assert "unavailable" not in summary
+    assert checkouts == [scratch]
+    assert not scratch.exists()
+    assert policy.read_bytes() == before

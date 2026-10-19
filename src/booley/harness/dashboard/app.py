@@ -20,16 +20,26 @@ from textual.widgets import DataTable, Footer, Header, Static
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
+from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
+from booley.harness.dashboard.results import (
+    ReportPresentation,
+    ResultLine,
+    configuration,
+    literal,
+    present_report,
+    project_facts,
+    proposal_summary,
+)
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
-from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.timefmt import format_age, format_clock, format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
@@ -48,12 +58,24 @@ HELP = (
     "Navigation is read-only; approvals remain in chat."
 )
 
-_STATUS_STYLE = {
+_ACCENT = f"color({PALETTE_DODGER_BLUE})"
+_CHROME = f"color({PALETTE_MAUVE})"
+SEMANTIC_STYLE = {
+    "pass": "green",
+    "met": "green",
     "passing": "green",
-    "failing": "red",
-    "needs recheck": "dark_orange",
+    "warn": "yellow",
+    "fail": "bold red",
+    "failing": "bold red",
+    "running": _ACCENT,
+    "checking": _ACCENT,
+    "needs recheck": f"color({PALETTE_ORANGE})",
+    "attention": f"color({PALETTE_ORANGE})",
+    "unknown": "dim",
+    "not run": "dim",
     "not yet run": "dim",
-    "checking": "cyan",
+    "unavailable": "dim",
+    "ok": "dim",
 }
 
 
@@ -67,27 +89,6 @@ class Navigation:
     selected: str = ""
 
 
-def _age(stamp: str, now: float) -> str:
-    try:
-        seconds = max(0, int(now - parse_timestamp(stamp).timestamp()))
-        return f"{seconds // 3600}h {seconds % 3600 // 60}m"
-    except ValueError:
-        return "—"
-
-
-def _duration(stamp: str, now: float) -> str:
-    """Compact age of a recent state: seconds, then minutes, then hours."""
-    try:
-        seconds = max(0, int(now - parse_timestamp(stamp).timestamp()))
-    except ValueError:
-        return "—"
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m"
-    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
-
-
 def _sentence(text: str) -> str:
     """Capitalize only the first letter; tool names keep their case."""
     return text[:1].upper() + text[1:]
@@ -98,15 +99,18 @@ def activity_label(activity: Activity, now: float) -> str:
     if activity.state == UNKNOWN:
         return "activity unknown"
     tool = f" ({activity.tool})" if activity.state == WAITING_TOOL and activity.tool else ""
-    return f"{activity.state}{tool} · {_duration(activity.since, now)}"
+    try:
+        elapsed = now - parse_timestamp(activity.since).timestamp()
+    except ValueError:
+        elapsed = None
+    return f"{activity.state}{tool} · {format_duration(elapsed)}"
 
 
 def _measure(value: int | float | None) -> str:
     return "—" if value is None else f"{value / 1024**3:.1f} GiB"
 
 
-def resource_summary(resources: Resources) -> str:
-    """Label Sandbox CPU by its measured capacity; Job CPU uses separate core units."""
+def _resource_parts(resources: Resources) -> tuple[tuple[str, str], ...]:
     cpu = "—" if resources.cpu_percent is None else f"{resources.cpu_percent:.1f}%"
     capacity = (
         "capacity unavailable"
@@ -114,24 +118,63 @@ def resource_summary(resources: Resources) -> str:
         else f"of {resources.cpu_capacity:g} CPUs"
     )
     return (
-        f"Sandbox CPU {cpu} {capacity} · Memory {_measure(resources.memory)} / "
-        f"{_measure(resources.memory_limit)} · Free disk {_measure(resources.disk_free)}"
+        ("Sandbox CPU", f"{cpu} {capacity}"),
+        ("Memory", f"{_measure(resources.memory)} / {_measure(resources.memory_limit)}"),
+        ("Free disk", _measure(resources.disk_free)),
     )
+
+
+def resource_summary(resources: Resources) -> str:
+    """Label Sandbox CPU by its measured capacity; Job CPU uses separate core units."""
+    return " · ".join(f"{label} {value}" for label, value in _resource_parts(resources))
+
+
+def _resource_text(resources: Resources) -> Text:
+    text = Text()
+    for label, value in _resource_parts(resources):
+        if text:
+            text.append(" · ")
+        text.append(label, style=_CHROME)
+        text.append(" " + value)
+    return text
+
+
+def _orientation_text(orientation: str) -> Text:
+    title, separator, details = orientation.partition("\n")
+    text = Text(title, style="bold " + _ACCENT)
+    # Keep detail lines outside the title's base style.
+    return Text.assemble(text, separator + details)
+
+
+def _health_text(snapshot: DashboardSnapshot) -> Text:
+    text = Text()
+    for line in snapshot.health:
+        if text:
+            text.append("\n")
+        text.append(
+            line.text, style=SEMANTIC_STYLE[line.severity] if line.severity is not None else None
+        )
+    for diagnostic in (*snapshot.diagnostics, *snapshot.jobs.diagnostics):
+        if text:
+            text.append("\n")
+        text.append(diagnostic)
+    return text
 
 
 def _goal_text(goal: GoalDetail) -> Text:
     text = Text()
     if goal.checking:
-        text.append("checking · ", style=_STATUS_STYLE["checking"])
-    text.append(goal.state + " · ", style=_STATUS_STYLE[goal.state])
-    text.append(goal.presentation.label + " · " + goal.presentation.detail, style="cyan")
+        text.append("checking · ", style=SEMANTIC_STYLE["checking"])
+    text.append(goal.state + " · ", style=SEMANTIC_STYLE[goal.state])
+    text.append(goal.presentation.label + " · " + goal.presentation.detail, style=_ACCENT)
     return text
 
 
-def _elapsed(job: JobView, now: float | None = None) -> str:
+def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
+    """Extract an interval, freezing terminal Jobs even without an end stamp."""
     if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
         reported = as_float((job.report or {}).get("elapsed_s"))
-        return f"{reported:g}s" if reported is not None and reported >= 0 else "unavailable"
+        return reported if reported is not None and reported >= 0 else None
     try:
         start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
         end = (
@@ -139,15 +182,15 @@ def _elapsed(job: JobView, now: float | None = None) -> str:
             if job.record.ended_at
             else (time.time() if now is None else now)
         )
-        return f"{max(0, end - start):.0f}s"
+        return max(0, end - start)
     except ValueError:
-        return "unavailable"
+        return None
 
 
 def _connection_label(row: SessionRow, now: float) -> str:
     if row.process_state == ProcessState.RUNNING:
         return "connected"
-    return f"last seen {_age(row.last_call_at, now)} ago · connection unknown"
+    return f"last seen {format_age(row.last_call_at, now=now)} · connection unknown"
 
 
 def _owner_label(
@@ -186,73 +229,130 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
         outcome = f"exit {job.record.exit_code} · design verdict {(job.report or {}).get('passed', 'unavailable')}"
     else:
         outcome = "resources unavailable"
+    elapsed = job_elapsed_seconds(job, now)
     return (
         f"{_job_label(job)} · {job.record.endpoint} · {DashboardApp._target(job)} · {owner} · "
-        f"{job.state} · {_elapsed(job, now)} · {job.stage or 'stage —'} · {outcome}"
+        f"{job.state} · {format_duration(elapsed) if elapsed is not None else 'unavailable'} · {job.stage or 'stage —'} · {outcome}"
     )
+
+
+def _job_presentation(job: JobView) -> ReportPresentation:
+    report = dict(job.report or {})
+    report["exit_code"] = job.record.exit_code
+    report["argv"] = job.record.argv
+    endpoint = job.record.endpoint
+    report["flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool"] = endpoint
+    return present_report(report)
+
+
+def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
+    return "\n".join(
+        f"{row.label}: {row.value}".rstrip() if row.label else row.value for row in rows
+    )
+
+
+def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
+    """Compact result, independent acceptance, execution and published artifacts."""
+    result = _job_presentation(job)
+    rows = [result.flow_result]
+    if result.criterion is not None:
+        rows.append(result.criterion)
+    elapsed = job_elapsed_seconds(job, now)
+    duration = format_duration(elapsed) if elapsed is not None else "unavailable"
+    rows.append(
+        ResultLine("Execution", f"{job.state} · {result.execution.value} · elapsed {duration}")
+    )
+    rows.extend(
+        (
+            ResultLine("Job", f"{_job_label(job)} · {job.record.endpoint}"),
+            ResultLine("Run ID", job.record.run_id),
+        )
+    )
+    rows.extend(configuration(job.record.argv))
+    rows.extend(_job_metadata(job, now=now))
+    rows.extend(result.result_rows)
+    if job.report is None:
+        rows = [
+            replace(row, value="Summary unavailable · no report")
+            if row.value == "Summary unavailable"
+            else row
+            for row in rows
+        ]
+    report = str(job.report_path) if job.report_path is not None else None
+    artifacts = [path for path in dict.fromkeys(job.artifacts) if path != report]
+    if artifacts:
+        rows.append(ResultLine("Artifacts", ""))
+        rows.extend(ResultLine("", path) for path in artifacts[:3])
+        if len(artifacts) > 3:
+            rows.append(ResultLine("", f"{len(artifacts) - 3} more artifacts in report"))
+    if report:
+        rows.extend((ResultLine("Report", ""), ResultLine("", report)))
+    return rows
 
 
 def job_detail(job: JobView, *, now: float | None = None) -> str:
-    """Execution outcome and design verdict remain distinct; no inline logs."""
-    rec, report = job.record, job.report or {}
-    paths = job_paths(job)
-    return "\n".join(
-        [
-            f"{_job_label(job)} · {rec.endpoint}",
-            f"Run ID: {rec.run_id}",
-            f"Execution: {job.state} · exit {rec.exit_code}",
-            f"Design verdict: {report.get('passed', 'unavailable')}",
-            f"Flow configuration: {' '.join(rec.argv) or '—'}",
-            f"EDA tool: {report.get('eda_tool') or report.get('tool') or job.eda_tool or '—'}",
-            f"Start: {rec.run_started_at or rec.started_at} · End: {rec.ended_at or '—'}",
-            f"Elapsed: {_elapsed(job, now)}",
-            f"Stage: {job.stage or '—'}",
-            f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
-            f"Result: {report.get('summary', report.get('detail', 'unavailable'))}",
-            "Metrics / failure details: " + _reported_metrics(report),
-            "Artifacts:\n" + ("\n".join(paths) or "—"),
-        ]
-    )
+    """Render the shared Job rows as plain text."""
+    return _line_text(_job_rows(job, now=now))
+
+
+def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]:
+    report = job.report or {}
+    rows = []
+    for label, stamp in (
+        ("Start", job.record.run_started_at or job.record.started_at),
+        ("End", job.record.ended_at),
+    ):
+        if stamp:
+            rows.append(ResultLine(label, format_clock(stamp, now=now)))
+    tool = literal(report.get("eda_tool") or report.get("tool") or job.eda_tool)
+    if tool:
+        rows.append(ResultLine("EDA tool", tool))
+    if job.stage:
+        rows.append(ResultLine("Stage", literal(job.stage)))
+    parts = []
+    if job.cpu_percent is not None:
+        parts.append(f"CPU {job.cpu_percent:.1f}% of one core")
+    for label, value in (("Memory", job.memory), ("Peak memory", job.peak_memory)):
+        if value is not None:
+            parts.append(f"{label}: {_measure(value)}")
+    if parts:
+        rows.append(ResultLine("Resources", " · ".join(parts)))
+    return rows
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """The report and artifact paths published for one Job, each shown on its own line."""
-    report = (str(job.report_path),) if job.report_path is not None else ()
-    return (*report, *job.artifacts)
+    """Visible deduplicated side artifacts first, exact report last."""
+    report = str(job.report_path) if job.report_path is not None else None
+    artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
+    return (*artifacts, report) if report else artifacts
 
 
 def _job_summary(job: JobView, now: float) -> str:
     """Compact overview form: Flow, Target and elapsed time."""
-    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {_elapsed(job, now)}"
+    elapsed = job_elapsed_seconds(job, now)
+    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
 
 
-def _reported_metrics(report: dict[str, Any]) -> str:
-    structured = {"metrics", "counts", "failure_reason", "issues", "conditions"}
-    metadata = {"run_id", "invocation_id", "exit_code", "elapsed_s", "schema", "schema_version"}
-    fields = {
-        key: value
-        for key, value in report.items()
-        if key in structured
-        or (key not in metadata and type(value) in {int, float} and as_float(value) is not None)
-    }
-    return json.dumps(fields, indent=2)[:8000]
-
-
-def _evidence_detail(goal: GoalDetail) -> str:
+def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
     frozen = "".join(f"{line}\n" for line in goal.test_runs)
     if goal.evidence is None:
         return frozen + "Last check: unavailable · Evidence unavailable"
-    facts = goal.evidence
-    return (
-        frozen
-        + f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
-        + "Observations: "
-        + json.dumps(observation_facts(facts).get("observations", {}), indent=2)[:8000]
-        + "\nImmutable derivation provenance: "
-        + json.dumps([observation_facts(row) for row in goal.provenance], indent=2)[:8000]
-        + "\nAvailable evidence paths:\n"
-        + ("\n".join(goal.artifacts) or "—")
-    )
+    facts = observation_facts(goal.evidence)
+    recorded = goal.evidence.get("recorded_at")
+    checked = format_clock(recorded, now=now) if recorded is not None else "unavailable"
+    lines = [
+        f"Last check: {checked}",
+        "Observations:",
+        _line_text(project_facts(facts)),
+        "Immutable derivation provenance:",
+    ]
+    for row in goal.provenance[:5]:
+        lines.append(_line_text(project_facts(observation_facts(row))))
+    if len(goal.provenance) > 5:
+        lines.append(f"{len(goal.provenance) - 5} more provenance records in evidence")
+    if goal.artifacts:
+        lines.extend(("Available evidence paths:", *goal.artifacts))
+    return frozen + "\n".join(lines)
 
 
 class DashboardApp(App[None]):
@@ -271,7 +371,7 @@ class DashboardApp(App[None]):
     ]
     CSS = """
     #orientation { height: auto; max-height: 8; }
-    #resources { height: 1; color: $text-muted; }
+    #resources { height: 1; }
     #health { height: auto; max-height: 6; }
     #body { height: 1fr; }
     #list { width: 1fr; }
@@ -349,7 +449,12 @@ class DashboardApp(App[None]):
     def _show_stale(self, reason: str) -> None:
         health = self._health()
         if health is not None:
-            health.update(f"Dashboard data unavailable/stale: {reason}")
+            health.update(
+                Text(
+                    f"Dashboard data unavailable/stale: {reason}",
+                    style=SEMANTIC_STYLE["attention"],
+                )
+            )
 
     def _assign_shortcuts(self) -> None:
         connected = {row.attribution.key for row in self.snapshot.sessions}
@@ -456,9 +561,9 @@ class DashboardApp(App[None]):
         )
         return (
             f"{self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch unavailable'} · "
-            f"{'Goal Mode' if goal else 'Interactive'} · {connection} · uptime {_age(row.started_at, self.snapshot.observed_at)}\n"
+            f"{'Goal Mode' if goal else 'Interactive'} · {connection} · Started {format_age(row.started_at, now=self.snapshot.observed_at)}\n"
             f"{_sentence(self._activity_label(facts.key))} · {warning}\nLast Booley call: {last.tool if last else '—'} "
-            f"· {_age(row.last_call_at, self.snapshot.observed_at)} ago\nSession key: {facts.key}"
+            f"· {format_age(row.last_call_at, now=self.snapshot.observed_at)}\nSession key: {facts.key}"
         ), goal
 
     def _activity_label(self, key: str) -> str:
@@ -586,7 +691,7 @@ class DashboardApp(App[None]):
             activities.extend(
                 (
                     "proposal:" + view.proposal.id,
-                    "Pending proposal: " + json.dumps(proposal_presentation(view)),
+                    "Pending proposal: " + proposal_summary(proposal_presentation(view)),
                 )
                 for view in goal.status.proposals
                 if view.state == "pending" and not view.closed_by_abandonment
@@ -595,7 +700,7 @@ class DashboardApp(App[None]):
             (
                 "job:" + json.dumps(job.key),
                 f"Running Job: {_job_label(job)} · {job.record.endpoint} · {self._target(job)} · {job.state}"
-                f" · {_elapsed(job, self.snapshot.observed_at)}",
+                f" · {format_duration(job_elapsed_seconds(job, self.snapshot.observed_at))}",
             )
             for job in self.snapshot.jobs.jobs
             if self._owned_by(job, self.navigation.session)
@@ -611,7 +716,10 @@ class DashboardApp(App[None]):
         )
         if session:
             activities.extend(
-                ("call:" + str(index), f"Booley call: {call.tool} · {call.outcome} · {call.at}")
+                (
+                    "call:" + str(index),
+                    f"Booley call: {call.tool} · {call.outcome} · {format_clock(call.at, now=self.snapshot.observed_at)}",
+                )
                 for index, call in enumerate(session.calls[-10:])
             )
         return activities
@@ -672,7 +780,7 @@ class DashboardApp(App[None]):
         branch = facts.branch or (goal.record.branch if goal and goal.record else "")
         return (
             f"{self.shortcuts.get(facts.key, '·')} · {self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch —'} · "
-            f"{'Goal Mode' if goal else 'Interactive'} · {_age(row.started_at, self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
+            f"{'Goal Mode' if goal else 'Interactive'} · Started {format_age(row.started_at, now=self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
             + summary
             + warning
             + (" · " + running if running else "")
@@ -697,7 +805,7 @@ class DashboardApp(App[None]):
     def render_snapshot(self) -> None:
         """Refresh content while retaining row identity and scroll position."""
         orientation, keys, rows = self._content()
-        self.query_one("#orientation", Static).update(orientation)
+        self.query_one("#orientation", Static).update(_orientation_text(orientation))
         self.query_one("#empty", Static).update(
             "No connected sessions"
             if not rows and self.navigation.view == "overview"
@@ -705,16 +813,8 @@ class DashboardApp(App[None]):
                 "No Jobs match this filter" if not rows and self.navigation.view == "jobs" else ""
             )
         )
-        self.query_one("#resources", Static).update(resource_summary(self.snapshot.resources))
-        self.query_one("#health", Static).update(
-            "\n".join(
-                (
-                    *self.snapshot.health,
-                    *self.snapshot.diagnostics,
-                    *self.snapshot.jobs.diagnostics,
-                )
-            )
-        )
+        self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
+        self.query_one("#health", Static).update(_health_text(self.snapshot))
         table = self.query_one(DataTable)
         selected = self._selected_key()
         scope = (self.navigation.view, self.navigation.session, self.navigation.job_filter)
@@ -773,9 +873,11 @@ class DashboardApp(App[None]):
         )
         if view is None:
             return "Proposal unavailable"
-        return json.dumps(proposal_presentation(view), indent=2) + "\nApproval remains in chat."
+        return (
+            _line_text(project_facts(proposal_presentation(view))) + "\nApproval remains in chat."
+        )
 
-    def _detail_content(self) -> tuple[str, tuple[str, ...]]:
+    def _detail_content(self) -> tuple[str | Text, tuple[str, ...]]:
         """Detail text for the current view and the published paths it may link."""
         view = self.navigation.view
         if view in {"jobs", "job"}:
@@ -787,7 +889,7 @@ class DashboardApp(App[None]):
                 return "Goal data unavailable", ()
             return (
                 f"{goal.presentation.label}\n{goal.state}\nRequirement: {goal.presentation.requirement}\n{goal.presentation.detail}\n"
-                + _evidence_detail(goal)
+                + _evidence_detail(goal, now=self.snapshot.observed_at)
             ), goal.artifacts
         if view == "help":
             return HELP, ()
@@ -805,19 +907,33 @@ class DashboardApp(App[None]):
         aside.styles.width = "100%" if dedicated else "50%"
         self.query_one("#detail", Static).update(linked_text(detail, paths))
 
-    def _job_detail(self, job: JobView) -> str:
-        return (
-            "Owner: "
-            + _owner_label(
-                job,
-                self.snapshot.sessions,
-                self.snapshot.observed_at,
-                self.snapshot.session_handles,
+    def _job_detail(self, job: JobView) -> Text:
+        rows = _job_rows(job, now=self.snapshot.observed_at)
+        owner = [
+            ResultLine(
+                "Owner",
+                _owner_label(
+                    job,
+                    self.snapshot.sessions,
+                    self.snapshot.observed_at,
+                    self.snapshot.session_handles,
+                ),
             )
-            + (f"\nSession key: {job.record.session_key}" if job.record.session_key else "")
-            + "\n"
-            + job_detail(job, now=self.snapshot.observed_at)
-        )
+        ]
+        if job.record.session_key:
+            owner.append(ResultLine("Session key", job.record.session_key))
+        offset = next(index for index, row in enumerate(rows) if row.label == "Job")
+        rows[offset:offset] = owner
+        detail = Text()
+        for index, row in enumerate(rows):
+            if index:
+                detail.append("\n")
+            if row.label:
+                detail.append(row.label + ":", style=_CHROME)
+                if row.value:
+                    detail.append(" ")
+            detail.append(row.value, style=SEMANTIC_STYLE.get(row.semantic, ""))
+        return detail
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self.navigation = replace(self.navigation, selected=self._selected_key())

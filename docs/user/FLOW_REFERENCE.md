@@ -30,8 +30,8 @@ Help groups shared controls under **Common**, reporting under **Output**, then
 Flow-specific options. Synth's **Expert: ABC** and **Expert: OpenROAD** sections
 come last and remain visible in ordinary `--help`. Boolean override pairs share
 one help entry; leaving them unset preserves Target/profile/backend resolution.
-Each option explains omission behavior. Required Target flags have no default;
-Simulation discovery and manifest-owned resume settings have their own rules.
+Each option explains omission behavior. Omitted Target selection follows the
+eligible Target cardinality rule below; Simulation resume restores manifest selection.
 
 ### Live progress and logs
 
@@ -42,6 +42,14 @@ the Flow, Target, current work unit, invocation elapsed time, command elapsed
 time, and age of the last observed output. It fits the terminal when resized.
 Elapsed time advances during silent work; it is neither a percentage nor proof
 that the EDA process is healthy. EDA tools may buffer their output.
+
+TTY status and independent completion messages use adaptive durations: `59s`,
+`1m 00s`, `1h 00m`, `1d 00h`. Every positive subsecond value uses one decimal
+(`0.0s`, `0.4s`, or rounded `1.0s`); nonpositive durations display `0s`.
+Last-output ages use `just now` below five seconds, then `5s ago`, `1m ago`,
+`1h ago`, or `1d ago`. Redirected newline records keep their existing elapsed
+seconds tokens and UTC prefixes. JSON, report document bytes, and printed
+report excerpts keep their existing representation.
 
 Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
 records without terminal escapes or carriage-return rewrites. For example:
@@ -107,8 +115,11 @@ captured transcript should pass `--quiet`.
 
 ### Choosing Targets
 
-Every run needs `--target`; there is no project-wide default. (The one exception
-is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
+For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
+exactly one eligible Target, and that selection is announced. With zero or multiple
+eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
+`sim --resume-from` takes its Target from the Campaign it resumes, independent
+of the current catalog.
 
 - `booley targets` lists all Targets; `booley targets --for <flow>` lists
   the ones a Flow can drive.
@@ -386,8 +397,7 @@ Goal Mode translates Goals into evidence keys. Ordinary Interactive Mode runs
 report verdicts without a Goal Record. In an active Goal worktree, pass its
 absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 `booley_targets`, and `booley_report` so calls select that worktree.
-`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
-`coverage_evidence`, and `bwave` accept no `work_dir`. See
+`booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`. See
 [worktree routing](USAGE.md#working-with-evidence) for the full inventory and
 when `work_dir` is required.
 

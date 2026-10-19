@@ -30,6 +30,22 @@ def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "isolated-xdg"))
 
 
+@pytest.fixture
+def isolated_git_excludes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_git_attributes: None
+) -> Path:
+    """Return an empty excludes file without inherited command-scope Git policy."""
+    for key in tuple(os.environ):
+        if key.startswith("GIT_CONFIG_") and key not in {
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+        }:
+            monkeypatch.delenv(key)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    return empty
+
+
 def symlink_or_skip(link: Path, target: Path | str, **kwargs: object) -> None:
     """``link.symlink_to(target)``, skipping the test if the OS forbids it.
 
@@ -349,3 +365,18 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     signal = {"schema": SCHEMA, "key": key, "state": state, "at": at}
     path.write_text(json.dumps(signal | ({"tool": tool} if tool else {})), encoding="utf-8")
     return path
+
+
+@pytest.fixture(autouse=True)
+def _inline_ended_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep cleanup deterministic; worker tests explicitly restore the process launcher."""
+    from booley.goals import ended_records
+    from booley.goals.store import GoalStore
+
+    monkeypatch.setattr(
+        ended_records,
+        "_launch_cleanup",
+        lambda booley_dir, repo_dir: ended_records.sweep_ended_records(
+            GoalStore(booley_dir), repo_dir
+        ),
+    )

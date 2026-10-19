@@ -1,6 +1,7 @@
 """Regression contracts for shipped workflow skills."""
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,22 @@ def _skill_text(name: str, relative: str = "SKILL.md") -> str:
 
 def _compact_skill_text(name: str, relative: str = "SKILL.md") -> str:
     return " ".join(_skill_text(name, relative).split())
+
+
+def test_project_guidance_header_explains_editing_and_staging():
+    template = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+    rendered = template.split("```markdown\n", 1)[1].split("```", 1)[0]
+    header = rendered.split("## Project-Specific Instructions", 1)[0]
+    assert "git add .booley/AGENTS.md" in header, (
+        "generated guidance must explain staging the canonical instructions"
+    )
+    usage = (Path(__file__).resolve().parents[2] / "docs/user/USAGE.md").read_text()
+    for text in (header, usage):
+        assert "AGENTS.md` and `CLAUDE.md" in text
+        assert "non-Stealth" in text and "separate Booley repository" in text
+        assert "hybrid" in text and "tracked" in text
+        assert "git add .booley/AGENTS.md" in text
+    assert "#editing-project-instructions" in usage
 
 
 def test_feedback_routes_private_project_bugs_through_verified_synthetic_reproducer():
@@ -712,3 +729,76 @@ def test_setup_open_footprint_preserves_history_before_changing_exclusions():
     assert section.index("regular-file entries") < section.index("before committing")
     assert "missing-exclusion waiver" in section
     assert "git info/exclude missing Booley entry" not in section
+
+
+def test_setup_greenfield_records_and_applies_synthesis_mode():
+    text = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    assert "--synth-mode" in text, "greenfield synthesis mode contract is missing"
+    for phrase in (
+        "physical",
+        "logical",
+        "SETUP-PLAN",
+        "pre-set",
+        "missing mode",
+        "deviation",
+        "re-scaffold",
+    ):
+        assert phrase in text
+
+
+def test_setup_greenfield_audit_preserves_additional_recipe_requests():
+    text = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    assert "Additional recipe requests" in text, "greenfield recipe audit dispositions are missing"
+    for phrase in (
+        "balanced",
+        "compact",
+        "max_frequency",
+        "frontend",
+        "flatten",
+        "constraints",
+        "provisioning",
+        "verification",
+        "full setup",
+        "deviation",
+    ):
+        assert phrase in text
+
+
+def test_setup_reports_quote_delivered_flow_facts():
+    text = _compact_skill_text("booley-setup")
+    assert "Delivered Flow results" in text, "setup report evidence contract is missing"
+    for phrase in (
+        "report.json",
+        "eda_tool",
+        "detail[Target].synth_mode",
+        "area_source",
+        "exit_code",
+        "passed",
+        "run_id",
+        "not reported",
+        "not applicable",
+        "requested",
+        "delivered",
+        "digest",
+    ):
+        assert phrase in text
+    for relative in ("steps/new-greenfield.md", "steps/6-findings.md"):
+        assert "Delivered Flow results" in _skill_text("booley-setup", relative)
+
+
+def test_setup_preserves_delivered_facts_after_feedback_report_render():
+    text = _compact_skill_text("booley-setup", "steps/6-findings.md")
+    assert "After the renderer" in text, "setup rendered report omits delivered facts"
+    assert (
+        text.index("booley feedback report")
+        < text.index("After the renderer")
+        < text.index("same evidence rows")
+    )
+    for phrase in (
+        "actual returned path",
+        "Delivered Flow results",
+        "non-blocking",
+        "unverified",
+        "independent",
+    ):
+        assert phrase in text

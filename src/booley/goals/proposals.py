@@ -445,19 +445,25 @@ def save_decision(
     return updated
 
 
-def finalize(lock: RecordLock, view: ProposalView) -> ProposalView:
-    """Idempotently reconcile a completed transaction with its approved decision."""
+def finalize(lock: RecordLock, view: ProposalView, *, rejected: bool = False) -> ProposalView:
+    """Reconcile completed captured effects with their exact human decision."""
     lock.require_owned()
     current = load_proposal(lock.record_dir, view.proposal.id)
-    if current.state == "applied":
+    if not rejected and current.state == "applied":
         return current
     if (
-        current.state != "approved"
+        current.state != ("rejected" if rejected else "approved")
         or current.decision != view.decision
         or current.transaction_digest != view.transaction_digest
     ):
-        raise ProposalError("completed apply has no matching approved decision")
-    updated = replace(current, state="applied", applied_at=utc_now_rfc3339())
+        raise ProposalError("completed effects have no matching human decision")
+    if rejected and current.resolved_at is not None:
+        return current
+    updated = (
+        replace(current, resolved_at=utc_now_rfc3339())
+        if rejected
+        else replace(current, state="applied", applied_at=utc_now_rfc3339())
+    )
     atomic_replace_bytes(
         proposal_path(lock.record_dir, view.proposal.id) / "state.json", encode(updated.metadata())
     )
@@ -474,25 +480,6 @@ def new_proposal(record: GoalRecord, **values: Any) -> Proposal:
         created_at=utc_now_rfc3339(),
         **values,
     )
-
-
-def finalize_rejection(lock: RecordLock, view: ProposalView) -> ProposalView:
-    """Mark only a rejected decision's captured candidate effects complete."""
-    lock.require_owned()
-    current = load_proposal(lock.record_dir, view.proposal.id)
-    if (
-        current.state != "rejected"
-        or current.decision != view.decision
-        or current.transaction_digest != view.transaction_digest
-    ):
-        raise ProposalError("rejection effects have no matching human rejection")
-    if current.resolved_at is not None:
-        return current
-    updated = replace(current, resolved_at=utc_now_rfc3339())
-    atomic_replace_bytes(
-        proposal_path(lock.record_dir, view.proposal.id) / "state.json", encode(updated.metadata())
-    )
-    return updated
 
 
 def close_by_abandonment(

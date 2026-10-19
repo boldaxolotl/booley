@@ -201,3 +201,41 @@ def test_endpoint_validation_reads_the_resolved_booley_directory(tmp_path):
     (project / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
     with pytest.raises(ValueError, match="reveiwer"):
         validate_custom_endpoints_and_criteria(tmp_path)
+
+
+@pytest.mark.parametrize("names", [(), ("local",)])
+def test_supplied_specialist_inventory_avoids_discovery(tmp_path, monkeypatch, names):
+    from booley.mcp import registry
+    from booley.mcp.endpoint_config import read_endpoint_config
+
+    def unexpected(**kwargs):
+        pytest.fail("supplied inventory must avoid discovery")
+
+    monkeypatch.setattr(registry, "discover_mcp_tools", unexpected)
+    path = tmp_path / "booley.toml"
+    assert read_endpoint_config(path, specialist_names=names) == ({}, {})
+    path.write_text("[specialists.local]\nenabled = false\n")
+    if names:
+        assert read_endpoint_config(path, specialist_names=names)[0] == {
+            "local": {"enabled": False}
+        }
+    else:
+        with pytest.raises(ValueError, match="local"):
+            read_endpoint_config(path, specialist_names=names)
+
+
+@pytest.mark.parametrize("content", ["[tools]\n", "[specialists]\nlocal = false\n", "[broken"])
+def test_supplied_inventory_preserves_invalid_config_policy(tmp_path, content):
+    from booley.mcp.endpoint_config import EndpointConfigError, read_endpoint_config
+
+    path = tmp_path / "booley.toml"
+    path.write_text(content)
+    with pytest.raises(EndpointConfigError):
+        read_endpoint_config(path, specialist_names=("local",))
+
+
+def test_supplied_inventory_preserves_unreadable_config_policy(tmp_path):
+    from booley.mcp.endpoint_config import EndpointConfigError, read_endpoint_config
+
+    with pytest.raises(EndpointConfigError, match="Cannot read"):
+        read_endpoint_config(tmp_path, specialist_names=())

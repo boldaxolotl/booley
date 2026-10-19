@@ -43,7 +43,7 @@ from booley.core.differences import format_differences
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.devcontainer import devcontainer_path
-from booley.runtime.timefmt import format_human_date, parse_timestamp, utc_now_rfc3339
+from booley.runtime.timefmt import format_age, format_human_date, parse_timestamp, utc_now_rfc3339
 
 STAMP_FILENAME = "doctor_stamp.json"
 
@@ -206,7 +206,7 @@ def check_stamp_advisory(
     age_days = ((now or datetime.now(tz=UTC)) - passed_at).days
     if age_days > max_age_days:
         return StampAdvisory(
-            f"last clean `booley doctor` run was {age_days} days ago "
+            f"last clean `booley doctor` run was {format_age(passed_at, now=now)} "
             f"({passed_on}) -- re-run `booley doctor`"
         )
     return None

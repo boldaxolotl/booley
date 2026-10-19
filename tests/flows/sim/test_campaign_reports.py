@@ -7,6 +7,7 @@ import pytest
 
 from booley.flows.sim import campaign_reports
 from booley.flows.sim.test_run_invocation import TestRunInvocation
+from booley.mcp.job_results import _read_report_json
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -330,7 +331,7 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, capsys)
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.campaign_retention import _read_object
     from booley.flows.sim.flow import SimulateFlow
-    from booley.mcp.server import _read_report_json, _structured_from_report
+    from booley.mcp.server import _structured_from_report
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = SimulateFlow()
@@ -679,6 +680,7 @@ def _observed_hook_request(tmp_path, observer):
     from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle, _request
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
 
+    (tmp_path / ".booley").mkdir(exist_ok=True)
     commands = ("echo observed-hook",)
     plan, _disclosures = _pre_sim_plan("immutable", commands, lambda document: None)
     store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")

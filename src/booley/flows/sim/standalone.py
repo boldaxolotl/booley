@@ -17,6 +17,7 @@ from booley.core.build_paths import work_root_for
 from booley.flows.eda_parsers import extract_error_gist
 from booley.flows.sim.live_progress import attempt_scope, observe_stage
 from booley.fusesoc import fusesoc_registry
+from booley.runtime.timefmt import format_duration
 from booley.targets.catalog import TargetCatalog
 
 from .. import output_budget
@@ -527,7 +528,7 @@ class StandaloneMixin:
             passed=passed,
             eda_tool_failed=False,
             detail=detail,
-            display=display,
+            display=f"{display} · {format_duration(elapsed)}",
         )
 
     @staticmethod

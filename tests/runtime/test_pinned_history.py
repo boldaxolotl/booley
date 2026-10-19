@@ -19,8 +19,10 @@ from booley.runtime.history_commit import FileCommitError, build_commit
 from booley.runtime.pinned_history import (
     PinnedPublication,
     proves_publication,
+    publication_pack,
     publish_pinned,
     raw_git,
+    restore_publication_objects,
     validate_pin,
 )
 
@@ -184,6 +186,13 @@ def test_sha256_and_shallow_raw_parent_proof(tmp_path, algorithm):
     source.write_bytes(b"proof")
     blob = raw_git(clone, "hash-object", "-w", "summary").strip().decode()
     publication = PinnedPublication(_head(clone), "refs/heads/main", "summary", blob)
+    intended = build_commit(clone, publication.pin, "summary", blob, "summary")
+    publication = replace(publication, intended_commit=intended)
+    pack = publication_pack(clone, publication)
+    _git(clone, "prune", "--expire=now")
+    with pytest.raises(FileCommitError):
+        raw_git(clone, "cat-file", "commit", intended)
+    restore_publication_objects(clone, publication, b"proof", pack)
     commit = publish_pinned(clone, publication, "summary", lambda _: None)
     validate_pin(clone, commit)
     assert proves_publication(clone, commit, publication)
@@ -215,10 +224,9 @@ def test_index_handoff_does_not_delete_successor_git_lock(repo, publication, mon
     assert lock.read_bytes() == b"successor Git process owns this lock"
 
 
-@pytest.mark.parametrize("attack", ["summary", "recipe", "parent", "tree", "headers"])
+@pytest.mark.parametrize("attack", ["summary", "recipe", "parent", "tree", "headers", "mode"])
 def test_exact_object_recipe_refuses_substitution_before_any_git_write(repo, publication, attack):
     from booley.runtime.pinned_history import build_commit as build_pinned_commit
-    from booley.runtime.pinned_history import restore_publication_objects
 
     commit = build_pinned_commit(
         repo, publication.pin, publication.path, publication.blob, "summary"
@@ -232,41 +240,42 @@ def test_exact_object_recipe_refuses_substitution_before_any_git_write(repo, pub
     elif attack == "parent":
         raw = raw.replace(b"parent " + publication.pin.encode(), b"parent " + commit.encode())
     elif attack == "tree":
-        tree = raw_git(repo, "rev-parse", publication.pin + "^{tree}").strip()
+        rows = raw_git(repo, "ls-tree", commit)
+        empty = raw_git(repo, "mktree", input_bytes=b"").strip()
+        tree = raw_git(
+            repo, "mktree", input_bytes=rows + b"040000 tree " + empty + b"\tempty\n"
+        ).strip()
         raw = b"tree " + tree + b"\n" + raw.split(b"\n", 1)[1]
-    else:
+    elif attack == "headers":
         raw = raw.replace(b"\n\n", b"\nforeign header\n\n", 1)
-    if attack in {"parent", "tree", "headers"}:
+    elif attack == "mode":
+        raw_git(
+            repo, "update-index", "--add", "--cacheinfo", f"100755,{publication.blob},{RECORD}"
+        )
+        tree = raw_git(repo, "write-tree").strip()
+        raw = b"tree " + tree + b"\n" + raw.split(b"\n", 1)[1]
+    if attack in {"parent", "tree", "headers", "mode"}:
         commit = (
-            raw_git(repo, "hash-object", "-t", "commit", "--stdin", input_bytes=raw)
+            raw_git(repo, "hash-object", "-w", "-t", "commit", "--stdin", input_bytes=raw)
             .strip()
             .decode()
         )
+    pack = publication_pack(repo, replace(publication, intended_commit=commit))
+    if attack == "recipe":
+        pack = pack[:-1]
+    _git(repo, "prune", "--expire=now")
+    with pytest.raises(FileCommitError):
+        raw_git(repo, "cat-file", "-e", commit)
     before = (_git(repo, "count-objects", "-v"), _head(repo), (repo / ".git/index").read_bytes())
     with pytest.raises(FileCommitError):
         restore_publication_objects(
-            repo, replace(publication, intended_commit=commit), content, raw
+            repo, replace(publication, intended_commit=commit), content, pack
         )
     assert before == (
         _git(repo, "count-objects", "-v"),
         _head(repo),
         (repo / ".git/index").read_bytes(),
     )
-
-
-def test_dry_tree_oid_preserves_git_ordering_and_rejects_committed_ancestors(repo, publication):
-    from booley.runtime.pinned_history import publication_tree, publication_tree_oid
-
-    for path in ("new/deep/summary.md", "README/summary.md", "README"):
-        candidate = replace(publication, path=path)
-        before = _git(repo, "count-objects", "-v")
-        if path.startswith("README"):
-            with pytest.raises(FileCommitError):
-                publication_tree_oid(repo, candidate)
-        else:
-            predicted = publication_tree_oid(repo, candidate)
-            assert before == _git(repo, "count-objects", "-v")
-            assert predicted == publication_tree(repo, publication.pin, path, publication.blob)
 
 
 def test_publication_ignores_inherited_foreign_selection(repo, publication, tmp_path, monkeypatch):

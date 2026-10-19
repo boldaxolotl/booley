@@ -110,25 +110,24 @@ class JobReader:
         )
 
     def read(
-        self, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
+        self,
+        records: Sequence[GoalRecord],
+        *,
+        interactive_root: Path | None = None,
+        session_handles: dict[str, str] | None = None,
     ) -> JobSnapshot:
         """Reuse the Goal enumeration that supplied this Dashboard refresh."""
         roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
         observed = self._observer.read(roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
-        owners, owner_diagnostics = HandleStore(self._booley_dir).snapshot()
+        owners, owner_diagnostics = (
+            HandleStore(self._booley_dir).snapshot()
+            if session_handles is None
+            else (session_handles, ())
+        )
         rows = tuple(_job_view(job, catalogs, handles, owners) for job in observed.jobs)
-        missing = (
-            ("Job or owner handles pending MCP registration/maintenance",)
-            if any(
-                not row.handle or (row.record.session_key and not row.owner_handle) for row in rows
-            )
-            else ()
-        )
-        return JobSnapshot(
-            rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics, *missing)
-        )
+        return JobSnapshot(rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics))
 
 
 def _job_view(

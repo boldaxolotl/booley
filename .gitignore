@@ -79,3 +79,6 @@ docs/benchmarks/
 docs/plans/
 docs/research/
 docs/notes/
+
+# Project site build output (website/mkdocs.yml site_dir)
+/website/_build/

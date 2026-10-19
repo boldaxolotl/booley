@@ -138,7 +138,8 @@ from booley.harness.setup.line_endings import (
     pending_normalization_paths,
     sample_worktree_cleanliness,
 )
-from booley.harness.setup.plan import InitPlan, InitPreconditionError
+from booley.harness.setup.plan import InitPlan, InitPlanBlockedError, InitPreconditionError
+from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.projects.inventory import ProjectInventoryError, remember_project
@@ -225,11 +226,13 @@ TESTS_TOML_SKELETON = """\
 # ---------------------------------------------------------------------------
 
 
-def _backfill_config_skeletons(booley_dir: Path, ctx: InitContext) -> None:
+def _backfill_config_skeletons(
+    booley_dir: Path, ctx: InitContext, content: str = BOOLEY_TOML_SKELETON
+) -> None:
     """Create missing config skeletons without guessing project-specific values."""
     # Create-only configuration preserves Project-authored content.
     skeletons = {
-        "booley.toml": BOOLEY_TOML_SKELETON,
+        "booley.toml": content,
         "tests.toml": TESTS_TOML_SKELETON,
     }
     added = [
@@ -242,6 +245,7 @@ def _backfill_config_skeletons(booley_dir: Path, ctx: InitContext) -> None:
         return
     if ctx.check_only:
         warn(f"would add {len(added)} config skeleton file(s) under {booley_dir}")
+        ctx.record("booley_dir", "warn", "would add " + ", ".join(added))
         return
     ok(f"added {len(added)} config skeleton file(s) under {booley_dir}")
 
@@ -262,6 +266,7 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
     if not gitignore.exists():
         if ctx.check_only:
             warn(f"would add {gitignore.name} (covers {', '.join(PROJECT_GITIGNORE_PATTERNS)})")
+            ctx.record("booley_dir", "warn", "would add .gitignore")
             return
         guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
         ok(f"added {gitignore} (ignores {', '.join(PROJECT_GITIGNORE_PATTERNS)})")
@@ -279,6 +284,7 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
         warn(
             f"would add {len(missing)} missing ignore pattern(s) to {gitignore.name}: {', '.join(missing)}"
         )
+        ctx.record("booley_dir", "warn", "missing .gitignore patterns: " + ", ".join(missing))
         return
 
     prefix = "" if existing.endswith("\n") or not existing else "\n"
@@ -321,13 +327,14 @@ def _backfill_fusesoc_ignore(booley_dir: Path, ctx: InitContext) -> None:
         return
     if ctx.check_only:
         warn(f"would add {marker.name} (keeps worktree .core copies out of FuseSoC's scan)")
+        ctx.record("booley_dir", "warn", "would add FUSESOC_IGNORE")
         return
     ok(f"added {marker} (worktree cores stay out of FuseSoC's --cores-root scan)")
 
 
 def _step_booley_dir(ctx: InitContext) -> None:
     ctx.step_banner("Booley Directory")
-    info(f"initializing project at {ctx.project_root}")
+    info(f"{'checking' if ctx.check_only else 'initializing'} project at {ctx.project_root}")
 
     # Init only ever creates/backfills .booley/ at the top-level repo dir
     # it was pointed at — a DIRECT check, never a walk-up. resolve_booley_dir()
@@ -360,7 +367,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
         _init_project_git_repo(target, ctx)  # self-heal an older stealth setup
         if permissions_pending:
             ctx.record("booley_dir", "warn", "permissions need 0700")
-        else:
+        elif not any(r.name == "booley_dir" and r.status == "warn" for r in ctx.results):
             ctx.record("booley_dir", "skip", "already present")
         return
 
@@ -377,7 +384,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
     guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
 
     # booley.toml + tests.toml skeletons (idempotent, never overwrites).
-    _backfill_config_skeletons(target, ctx)
+    _backfill_config_skeletons(target, ctx, "# booley-init-origin: port\n" + BOOLEY_TOML_SKELETON)
     _backfill_fusesoc_ignore(target, ctx)
     _init_project_git_repo(target, ctx)
 
@@ -420,8 +427,10 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
             f"branch is unavailable ({detail}); attach the outer checkout to a branch "
             "and rerun `booley init`"
         )
+        ctx.record("booley_dir", "warn", f"inner git branch unavailable: {detail}")
         return
     if ctx.check_only:
+        ctx.record("booley_dir", "warn", "would initialize inner git repository")
         warn(f"would `git init -b {branch.branch}` {target} (stealth persistence, ADR 0036)")
         return
     try:
@@ -721,7 +730,11 @@ def _step_auth(
     if mode:
         ok(f"detected {mode} auth for {selection.provider}")
         _check_provider_creds(selection.provider, mode, selection.auth)
-        ctx.record("auth", "ok", f"{selection.provider}/{mode}")
+        ctx.record(
+            "auth",
+            "ok",
+            f"{'checked authentication: ' if ctx.check_only else ''}{selection.provider}/{mode}",
+        )
         return
     key_var = "ANTHROPIC_API_KEY" if selection.provider == "claude" else "OPENAI_API_KEY"
     login = "claude login" if selection.provider == "claude" else "codex login"
@@ -844,11 +857,14 @@ def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
 
 
 def _step_image_lifecycle(
-    ctx: InitContext, *, base_result: LifecycleResult | None = None
+    ctx: InitContext,
+    *,
+    base_result: LifecycleResult | None = None,
+    intent: ImageLifecycleIntent | None = None,
 ) -> LifecycleResult | None:
     """Reconcile the authoritative Sandbox Image chain for initialization."""
     ctx.step_banner("Sandbox Image lifecycle")
-    intent = (
+    intent = intent or (
         ImageLifecycleIntent.CHECK
         if ctx.check_only
         else ImageLifecycleIntent.REFRESH
@@ -1553,7 +1569,14 @@ def _outstanding_setup_steps(project_root: Path) -> list[str]:
 
     data = _load_booley_toml(project_root)
     return [
-        line for key, line in _SETUP_STEP_LINES if not _setup_step_done(key, project_root, data)
+        line
+        for key, line in _SETUP_STEP_LINES
+        if not (
+            key == "agents"
+            and read_project_origin(booley_dir_for_init(project_root) / "booley.toml")
+            == "scaffold"
+        )
+        and not _setup_step_done(key, project_root, data)
     ]
 
 
@@ -1565,10 +1588,14 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     left is verification — and the doctor stamp already knows whether that has
     happened recently, so say which.
     """
-    info("This project is already configured — booley.toml is populated, AGENTS.md is")
-    info(
-        "written, and every enabled Flow and Specialist is wired. No booley-setup steps are outstanding."
-    )
+    if read_project_origin(booley_dir_for_init(ctx.project_root) / "booley.toml") == "scaffold":
+        info("This scaffold Project is already configured; every enabled Flow is wired.")
+        info("Optional guide: AGENTS.md. Verify with `booley doctor --deep` in the container.")
+    else:
+        info("This project is already configured — booley.toml is populated, AGENTS.md is")
+        info(
+            "written, and every enabled Flow and Specialist is wired. No booley-setup steps are outstanding."
+        )
     print()
     try:
         advisory = doctor_stamp.check_stamp_advisory(
@@ -1782,17 +1809,17 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     if published:
         _print_published_advisory(ctx)
         return "published"
-    if scaffolded:
-        info("Scaffolded starter project: booley.toml/tests.toml are populated and")
-        info(
-            "every enabled Flow and Specialist is already wired — most booley-setup steps don't apply:"
-        )
-        print()
-        info("  * Step 3 (AGENTS.md) - writes the project's AGENTS.md guide (recommended)")
-        info("  * Step 4 (doctor)    - `booley doctor --deep` should be green as scaffolded")
-        info("  * Commit the scaffolded files and keep the working tree clean")
-        return "scaffold"
+    origin = read_project_origin(booley_dir_for_init(ctx.project_root) / "booley.toml")
     outstanding = _outstanding_setup_steps(ctx.project_root)
+    if scaffolded or (origin == "scaffold" and outstanding):
+        if scaffolded:
+            info("Scaffolded starter project; continue greenfield setup in the container.")
+        info('Next: open this Project in VS Code and choose "Reopen in Container".')
+        info("In the container run `/booley-setup new`, then `booley doctor --deep`.")
+        info("AGENTS.md is optional; commit the scaffolded files before verification.")
+        if outstanding:
+            info("Check the current enabled Flow wiring and Project configuration.")
+        return "scaffold"
     if not outstanding:
         _print_configured_advisory(ctx)
         return "configured"
@@ -1806,14 +1833,28 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     return ""
 
 
+def _print_planned_scaffold_advisory() -> None:
+    info("After applying the scaffold, the greenfield route would be:")
+    info('  * Open this Project in VS Code and choose "Reopen in Container"')
+    info("  * In the container run `/booley-setup new`, then `booley doctor --deep`")
+    info("No scaffold files were written by this check.")
+
+
 def _step_advisories(ctx: InitContext) -> None:
     ctx.step_banner("post-setup advisories")
     # A failed required step outranks every other send-off: routing the user to
     # booley-setup after an image build died reads as "ready" (fpu F-2).
     failed = _failed_step_names(ctx)
     if failed:
-        _print_incomplete_advisory(failed)
+        if ctx.check_only:
+            info("Check found failed steps: " + ", ".join(failed))
+        else:
+            _print_incomplete_advisory(failed)
         ctx.record("advisories", "ok", "incomplete")
+        return
+    if ctx.check_only and any(r.name == "scaffold" and r.status == "warn" for r in ctx.results):
+        _print_planned_scaffold_advisory()
+        ctx.record("advisories", "ok", "planned scaffold")
         return
     published = _is_published_project(ctx.project_root)
     # A scaffolded project needs a different send-off: --scaffold already wrote
@@ -1821,9 +1862,31 @@ def _step_advisories(ctx: InitContext) -> None:
     # pointing the user at Steps 4-6 ("enable the disabled Flows and Specialists") contradicts
     # what just happened on their disk (SETUP.md: such a project "typically
     # only wants Step 3").
-    scaffolded = any(r.name == "scaffold" and r.status in ("ok", "warn") for r in ctx.results)
+    scaffolded = any(r.name == "scaffold" and r.status == "ok" for r in ctx.results)
     detail = _print_success_advisory(ctx, published=published, scaffolded=scaffolded)
     ctx.record("advisories", "ok", detail)
+
+
+def _step_project_trackability(ctx: InitContext) -> None:
+    """Advise on effective exclusions after full Project reconciliation."""
+    from booley.runtime.project_trackability import FIX, inspect_project_trackability
+
+    selected = booley_dir_for_init(ctx.project_root)
+    if stealth_enabled(ctx.project_root, booley_dir=selected):
+        return
+    ctx.step_banner("Project trackability")
+    inspection = inspect_project_trackability(ctx.project_root, selected)
+    for group in inspection.ignored:
+        warn(group.message)
+        info(f"  fix: {FIX}")
+    for error in inspection.errors:
+        warn(error)
+    problems = len(inspection.ignored) + len(inspection.errors)
+    ctx.record(
+        "project_trackability",
+        "warn" if problems else "ok",
+        f"{problems} exclusion/inspection warning(s)" if problems else "current",
+    )
 
 
 def _step_project_inventory(ctx: InitContext) -> None:
@@ -1850,6 +1913,17 @@ def _step_project_inventory(ctx: InitContext) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _print_check_verdict(ctx: InitContext) -> None:
+    failed = [f"{r.name}: {r.detail}" for r in ctx.results if r.status == "err"]
+    pending = [f"{r.name}: {r.detail}" for r in ctx.results if r.status == "warn"]
+    if failed:
+        print(red("Checked initialization: failed — " + "; ".join(failed + pending)))
+    elif pending:
+        print(yellow("Checked initialization: pending or unresolved — " + "; ".join(pending)))
+    else:
+        print(green("Checked initialization: nothing pending"))
+
+
 def _print_summary(ctx: InitContext) -> int:
     banner("Summary")
     exit_code = 0
@@ -1864,6 +1938,9 @@ def _print_summary(ctx: InitContext) -> int:
             exit_code = 1
 
     print()
+    if ctx.check_only:
+        _print_check_verdict(ctx)
+        return exit_code
     if exit_code == 2:
         print(red("Setup incomplete — fix the errors above and re-run."))
         return exit_code
@@ -1892,6 +1969,12 @@ def _print_summary(ctx: InitContext) -> int:
             green('to choose "Reopen in Container". No popup? Press F1 (or Ctrl+Shift+P) and run')
         )
         print(green('"Dev Containers: Reopen in Container".'))
+    elif advisory.detail == "scaffold":
+        print(
+            green(
+                'Booley base setup complete. Next: "Reopen in Container", then `/booley-setup new`.'
+            )
+        )
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))
@@ -1986,7 +2069,7 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     folder needs its own untracked ``.devcontainer/`` and exclude entry, since a
     folder without the seeded config will not offer "Reopen in Container".
     """
-    observed = _step_image_lifecycle(replace(ctx, check_only=True, force=False))
+    observed = _step_image_lifecycle(ctx, intent=ImageLifecycleIntent.CHECK)
     if observed is None or observed.status is ImageLifecycleStatus.STALE:
         if observed is not None and not ctx.check_only:
             ctx.record(
@@ -2204,6 +2287,18 @@ def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> N
     )
 
 
+def _initialize_project_configuration(
+    ctx: InitContext,
+    selection: AgentSelection,
+    agent_config_path: Path,
+) -> bool:
+    """Prepare the Directory before allowing agent configuration writes."""
+    _step_booley_dir(ctx)
+    if any(result.name == "booley_dir" and result.status == "err" for result in ctx.results):
+        return False
+    return _step_agent_config(ctx, selection, agent_config_path)
+
+
 def _run_project_init_steps(
     ctx: InitContext,
     args: argparse.Namespace,
@@ -2220,13 +2315,11 @@ def _run_project_init_steps(
 
     line_ending_baseline = _sample_line_ending_baseline(ctx)  # before any Project write
 
-    # A refusal to scaffold aborts the run — the user asked
-    # for a fresh scaffold and must decide, not get a half-initialized mix.
+    # Scaffold refusal aborts: the user must decide how to handle the existing design.
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
 
-    _step_booley_dir(ctx)
-    if not _step_agent_config(ctx, selection, agent_config_path):
+    if not _initialize_project_configuration(ctx, selection, agent_config_path):
         return _print_summary(ctx)
     _step_core_projections(ctx)
     _step_goalsets(ctx)
@@ -2250,6 +2343,7 @@ def _run_project_init_steps(
         init_will_create_booley_dir=True,
     )
     _step_project_inventory(ctx)
+    _step_project_trackability(ctx)
     _step_advisories(ctx)
 
     return _print_summary(ctx)
@@ -2370,6 +2464,12 @@ def _check_init_only(args: argparse.Namespace, project_root: Path, migration) ->
     if pending:
         err("interrupted Sandbox host state also requires recovery")
     if pending or migration is not None:
+        ctx = InitContext(project_root=project_root, check_only=True)
+        if pending:
+            ctx.record("recovery", "err", "interrupted Sandbox host state requires recovery")
+        if migration is not None:
+            ctx.record("migration", "err", "Booley Directory migration required")
+        _print_check_verdict(ctx)
         return 2
     return _run_init_unlocked(args, project_root)
 
@@ -2414,4 +2514,94 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         session_runtime.SessionError,
     ) as exc:
         err(f"{exc}; run `booley init` after resolving this condition")
+        if getattr(args, "check_only", False):
+            ctx = InitContext(project_root=project_root, check_only=True)
+            ctx.record("inspection", "err", str(exc))
+            _print_check_verdict(ctx)
+        return 2
+
+
+def preflight_auth_reseed(project_root: Path) -> None:
+    """Validate existing Project/recovery storage before a credential mutation."""
+    from booley.runtime import session_issuance
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    _check_init_layout(argparse.Namespace(seed=True), project_root)
+    shared_recovery_blocks_command(read_only=True)
+    session_issuance.validate_auth_reseed_storage(project_root)
+
+
+def _auth_reseed_dependencies(project_root: Path) -> bool:
+    from booley.config.host_config import load_host_policy
+    from booley.harness import host_sidecars
+
+    sidecars = host_sidecars.reconcile_sidecars(load_host_policy(), ImageLifecycleIntent.CHECK)
+    for finding in sidecars.findings:
+        if finding.state is host_sidecars.SidecarState.ERROR:
+            err(finding.detail)
+            return False
+    plan = image_lifecycle.plan(ProjectImageScope(project_root), intent=ImageLifecycleIntent.CHECK)
+    host_roles = {
+        image_lifecycle.ImageRole.RUNTIME_BASE,
+        image_lifecycle.ImageRole.STANDARD_SUBSTRATE,
+        image_lifecycle.ImageRole.RISCV_SUBSTRATE,
+    }
+    host_stale = any(
+        step.role in host_roles and step.action is not image_lifecycle.PlanAction.REUSE
+        for step in plan.steps
+    )
+    if host_stale or any(f.state is host_sidecars.SidecarState.PENDING for f in sidecars.findings):
+        err("Host capabilities need `booley bootstrap`; then retry `booley init --seed`.")
+        return False
+    if any(step.action is not image_lifecycle.PlanAction.REUSE for step in plan.steps):
+        err("Project Sandbox Image is not current; run `booley init`, then retry auth.")
+        return False
+    return True
+
+
+def _reseed_auth_unlocked(project_root: Path) -> int:
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    if shared_recovery_blocks_command(read_only=False):
+        err("Recovered interrupted Sandbox host state; retry `booley init --seed`.")
+        return 2
+    if not _auth_reseed_dependencies(project_root):
+        return 2
+    args = argparse.Namespace(seed=True)
+    ctx = _init_context(args, project_root)
+    path = _agent_config_path(project_root, seed=True)
+    if not _project_config_migration_preflight(ctx, path):
+        return _print_summary(ctx)
+    selection = _resolve_agent_selection(ctx, args, path)
+    if selection is None or not _step_agent_config(ctx, selection, path):
+        return _print_summary(ctx)
+    return _run_seed(ctx, selection)
+
+
+def reseed_auth_spec(project_root: Path) -> int:
+    """Reconcile an initialized Project without running full Host Bootstrap."""
+    from booley.config.host_config import HostConfigError
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.checkout_role import SourceCheckoutProjectError
+    from booley.harness.host_sidecars import SidecarError
+    from booley.runtime import issuance_invalidation, session_runtime
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
+
+    try:
+        preflight_auth_reseed(project_root)
+        with host_lifecycle_lock("auth Sandbox spec reseed"):
+            return _reseed_auth_unlocked(project_root)
+    except (
+        BooleyLayoutError,
+        SourceCheckoutProjectError,
+        OSError,
+        subprocess.SubprocessError,
+        issuance_invalidation.InvalidationError,
+        session_runtime.SessionError,
+        RuntimeSpecError,
+        ImageLifecycleError,
+        SidecarError,
+        HostConfigError,
+    ) as exc:
+        err(str(exc))
         return 2

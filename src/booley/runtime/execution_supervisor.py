@@ -319,6 +319,30 @@ def _finish_prestart_cancellation(
     return exit_code
 
 
+def _finish_spawn_failure(
+    paths: ExecutionPaths,
+    supervisor: ProcessIdentity | None,
+    executable: str,
+    error: FileNotFoundError | PermissionError,
+) -> int:
+    missing = isinstance(error, FileNotFoundError)
+    exit_code = 127 if missing else 126
+    diagnostic = "command not found" if missing else "permission denied"
+    print(f"{diagnostic}: {executable}", file=sys.stderr)
+    atomic_write_json(
+        paths.record,
+        _execution_record(
+            state="terminal",
+            supervisor=supervisor,
+            leader=None,
+            exit_code=exit_code,
+            tree_terminal=True,
+            terminal_cause="spawn_error",
+        ),
+    )
+    return exit_code
+
+
 def _finish_owned_tree(
     child: subprocess.Popen[Any],
     paths: ExecutionPaths,
@@ -396,7 +420,10 @@ def supervise(
         if cancellation is not None:
             return _finish_prestart_cancellation(paths, supervisor, cancellation)
         grouped_tty = tty and os.isatty(0) and hasattr(os, "tcsetpgrp")
-        child = subprocess.Popen(command, process_group=0 if grouped_tty else None)
+        try:
+            child = subprocess.Popen(command, process_group=0 if grouped_tty else None)
+        except (FileNotFoundError, PermissionError) as exc:
+            return _finish_spawn_failure(paths, supervisor, command[0], exc)
         pending = _RuntimeSignals()
         with _capture_runtime_signals(pending), _foreground_child(child, enabled=grouped_tty):
             leader = capture_process_identity(child.pid)

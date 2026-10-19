@@ -8,6 +8,8 @@ from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from booley.core.boundary import as_float
+
 MACHINE_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 LOCAL_TIMEZONE_ENV = "BOOLEY_LOCAL_TIMEZONE"
 
@@ -166,3 +168,75 @@ def format_human_datetime_safe(value: str, *, seconds: bool = False) -> str:
         return format_human_datetime(value, seconds=seconds)
     except ValueError:
         return value
+
+
+def _display_instant(value: object) -> datetime | None:
+    """Coerce a presentation input without relaxing persisted timestamp rules."""
+    try:
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if isinstance(value, datetime):
+            return value.astimezone(UTC) if value.utcoffset() is not None else None
+        epoch = as_float(value)
+        return datetime.fromtimestamp(epoch, UTC) if epoch is not None else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def format_clock(value: object, *, now: object = None, tz: tzinfo | None = None) -> str:
+    """Render an instant using local calendar buckets; invalid inputs are unknown."""
+    instant = _display_instant(value)
+    current = datetime.now(UTC) if now is None else _display_instant(now)
+    if instant is None or current is None:
+        return "unknown"
+    zone = local_timezone() if tz is None else tz
+    try:
+        shown, today = instant.astimezone(zone), current.astimezone(zone)
+    except (ValueError, OverflowError):
+        return "unknown"
+    if shown.date() == today.date():
+        return f"{shown.hour:02d}:{shown.minute:02d}:{shown.second:02d}"
+    clock = f"{shown.hour:02d}:{shown.minute:02d}"
+    if shown.year == today.year:
+        return f"{_MONTHS[shown.month].title()} {shown.day:02d} {clock}"
+    return f"{shown.year:04d}-{shown.month:02d}-{shown.day:02d} {clock}"
+
+
+def format_duration(value: object) -> str:
+    """Render finite elapsed seconds with adaptive units and floored whole seconds."""
+    try:
+        seconds = as_float(value)
+    except OverflowError:
+        seconds = None
+    if seconds is None:
+        return "unknown"
+    if seconds <= 0:
+        return "0s"
+    if seconds < 1:
+        return f"{seconds:.1f}s"
+    whole = int(seconds)
+    if seconds < 60:
+        result = f"{whole}s"
+    elif seconds < 3600:
+        result = f"{whole // 60}m {whole % 60:02d}s"
+    elif seconds < 86400:
+        result = f"{whole // 3600}h {whole % 3600 // 60:02d}m"
+    else:
+        result = f"{whole // 86400}d {whole % 86400 // 3600:02d}h"
+    return result
+
+
+def format_age(value: object, *, now: object = None, tz: tzinfo | None = None) -> str:
+    """Render time since an instant, clamping future instants to just now."""
+    del tz  # Ages compare instants in UTC, including across DST folds.
+    instant = _display_instant(value)
+    current = datetime.now(UTC) if now is None else _display_instant(now)
+    if instant is None or current is None:
+        return "unknown"
+    seconds = max(0, (current - instant).total_seconds())
+    if seconds < 5:
+        return "just now"
+    for unit, divisor in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        if seconds >= divisor:
+            return f"{int(seconds) // divisor}{unit} ago"
+    raise AssertionError("age bucket must exist")

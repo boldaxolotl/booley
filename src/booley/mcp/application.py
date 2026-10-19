@@ -7,9 +7,13 @@ catalog and one validated call path.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from booley.mcp.live_catalog import LiveCatalog
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
@@ -18,6 +22,8 @@ from jsonschema.validators import validator_for
 
 from booley.core.boundary import BoundaryError, as_dict, require_dict
 from booley.mcp.session_registry import Attribution
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +110,13 @@ Canonicalize = Callable[[str], str]
 DiscoveryError = Callable[[str], None]
 
 
+@dataclass(frozen=True, slots=True)
+class _CatalogGeneration:
+    definitions: dict[str, McpToolDefinition]
+    sources: dict[str, Mapping[str, Any]]
+    validators: dict[str, Validator]
+
+
 class McpApplication:
     """Deep MCP application module shared by every transport adapter.
 
@@ -121,12 +134,11 @@ class McpApplication:
         on_discovery_error: DiscoveryError,
         request_dispatch: RequestDispatch | None = None,
     ) -> None:
+        self.live_catalog: LiveCatalog | None = None
         self._dispatch = dispatch
         self._request_dispatch = request_dispatch
         self._canonicalize = canonicalize
-        self._definitions: dict[str, McpToolDefinition] = {}
-        self._sources: dict[str, Mapping[str, Any]] = {}
-        self._validators: dict[str, Validator] = {}
+        self._generation = _CatalogGeneration({}, {}, {})
         for source in definitions:
             try:
                 self._register(source)
@@ -139,7 +151,9 @@ class McpApplication:
 
     def list_tools(self) -> list[McpToolDefinition]:
         """Return the advertised catalog in deterministic wire-name order."""
-        return [self._definitions[name] for name in sorted(self._definitions)]
+        return [
+            self._generation.definitions[name] for name in sorted(self._generation.definitions)
+        ]
 
     async def call_tool(
         self,
@@ -150,10 +164,11 @@ class McpApplication:
     ) -> McpToolPayload | McpInputRequired:
         """Validate and dispatch one tool call through the advertised catalog."""
         canonical_name = self._canonicalize(name)
-        definition = self._definitions.get(canonical_name)
+        generation = self._generation
+        definition = generation.definitions.get(canonical_name)
         if definition is None:
             raise UnknownMcpToolError(canonical_name)
-        error = next(self._validators[canonical_name].iter_errors(arguments), None)
+        error = next(generation.validators[canonical_name].iter_errors(arguments), None)
         if error is not None:
             return McpToolPayload(
                 content=(McpTextBlock(_format_validation_error(error)),),
@@ -161,11 +176,27 @@ class McpApplication:
             )
         if self._request_dispatch is not None and request_context is not None:
             result = await self._request_dispatch(
-                canonical_name, arguments, self._sources[canonical_name], request_context
+                canonical_name, arguments, generation.sources[canonical_name], request_context
             )
         else:
-            result = await self._dispatch(canonical_name, arguments, self._sources[canonical_name])
+            result = await self._dispatch(
+                canonical_name, arguments, generation.sources[canonical_name]
+            )
         return result if isinstance(result, McpInputRequired) else _normalize_payload(result)
+
+    def replace_tools(self, definitions: Iterable[Mapping[str, Any]]) -> None:
+        """Validate a complete candidate before publishing one atomic generation."""
+        errors: list[str] = []
+        candidate = McpApplication(
+            definitions,
+            dispatch=self._dispatch,
+            canonicalize=self._canonicalize,
+            on_discovery_error=errors.append,
+            request_dispatch=self._request_dispatch,
+        )
+        self._generation = candidate._generation
+        for error in errors:
+            logger.warning("%s", error)
 
     def _register(self, source: Mapping[str, Any]) -> None:
         name = str(source["name"])
@@ -174,7 +205,7 @@ class McpApplication:
             raise ValueError(
                 f"MCP tool {name!r} is an alias of {canonical_name!r}; advertise only canonical names"
             )
-        if canonical_name in self._definitions:
+        if canonical_name in self._generation.definitions:
             raise ValueError(f"Duplicate MCP wire name or canonical alias: {canonical_name!r}")
         schema = require_dict(
             source.get("schema"),
@@ -190,14 +221,14 @@ class McpApplication:
             )
             output_validator = validator_for(output_schema, default=Draft202012Validator)
             output_validator.check_schema(output_schema)
-        self._definitions[canonical_name] = McpToolDefinition(
+        self._generation.definitions[canonical_name] = McpToolDefinition(
             name=canonical_name,
             description=str(source.get("description") or ""),
             input_schema=schema,
             output_schema=output_schema,
         )
-        self._sources[canonical_name] = source
-        self._validators[canonical_name] = validator_type(schema)
+        self._generation.sources[canonical_name] = source
+        self._generation.validators[canonical_name] = validator_type(schema)
 
 
 def _format_validation_error(error: ValidationError) -> str:

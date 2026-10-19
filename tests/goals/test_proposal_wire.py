@@ -11,13 +11,15 @@ from mcp.types import ElicitResult, InputRequiredResult
 
 from booley.goals.paths import record_paths
 from booley.goals.proposals import list_proposals
-from booley.mcp import server
+from booley.mcp import (
+    server,
+)
 from tests.goals.test_proposals import CYCLE_ARG, CYCLE_KEY, setup_cycle
 
 
 def sdk(layout, monkeypatch):
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-    monkeypatch.setattr(server, "_bwave_mcp_tools_for_mode", lambda: [])
+
     lifetime = server._McpLifetime(None, None)
     application = server._build_mcp_application([], [], lifetime)
     return server._build_sdk_server(application, lifetime)

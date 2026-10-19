@@ -39,7 +39,12 @@ def _enter(layout: SimpleNamespace) -> None:
     request = EntryRequest(
         layout.worktree, "uart-fix", parse_goal_args([{"family": "LINT", "target": "top"}])
     )
-    enter_goal_mode(request, EntryEnvironment(booley_dir=layout.control))
+    enter_goal_mode(
+        request,
+        EntryEnvironment(
+            routing_guidance="Explicit test routing guidance.", booley_dir=layout.control
+        ),
+    )
 
 
 def _violations(layout: SimpleNamespace, worktree: Path | None = None) -> list[str]:

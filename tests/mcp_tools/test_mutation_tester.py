@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
@@ -108,7 +109,7 @@ def _make_endpoint(
     target: str = "lite",
     scope: str = "rtl/mod_a.sv,rtl/mod_b.sv",
     tb_top: str = "design_top_tb",
-    count: int = 10,
+    count: int | str | None = 10,
     min_detected: int | None = None,
     steer: str | None = None,
     regen_lock: bool = False,
@@ -134,9 +135,9 @@ def _make_endpoint(
         target,
         "--scope",
         scope,
-        "--count",
-        str(count),
     ]
+    if count is not None:
+        argv.extend(["--count", str(count)])
     if min_detected is not None:
         argv.extend(["--min-detected", str(min_detected)])
     if steer:
@@ -513,6 +514,97 @@ def test_dry_run_does_not_touch_agents_simulators_or_locks(
     run_cold.assert_not_called()
 
 
+def _run_count_preview(endpoint, monkeypatch, *, params=None):
+    """Use real count resolution while isolating Target discovery and execution."""
+    campaign = SimpleNamespace(
+        scope_arg=endpoint.args.scope,
+        params_for=lambda _name: params or {},
+        execution_units=lambda: (),
+    )
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.resolve_target_campaign", lambda *a, **kw: campaign
+    )
+    with (
+        patch.object(endpoint, "_registered_tests", return_value={}),
+        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
+        patch.object(endpoint, "_validate_target_runner"),
+        patch.object(endpoint, "cocotb_target"),
+        patch.object(endpoint, "_target_test_suite"),
+        patch.object(endpoint, "emit_progress") as progress,
+        patch.object(endpoint, "_load_reusable_lock") as load_lock,
+        patch.object(endpoint, "_run_cold") as run_cold,
+    ):
+        before = set(endpoint.args.work_dir.rglob("*"))
+        result = endpoint._run()
+        assert set(endpoint.args.work_dir.rglob("*")) == before
+    load_lock.assert_not_called()
+    run_cold.assert_not_called()
+    return result, progress
+
+
+def _assert_preview_lines(result, count):
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.detail["mode"] == "dry_run"
+    assert result.detail["count"] == count
+    assert result.report_text == "\n".join(result.display_lines)
+    assert len(result.display_lines) > 1
+    assert all("\n" not in line for line in result.display_lines)
+    assert result.display_lines[-1].startswith("mutation_tester dry-run:")
+    assert result.display_lines[-1].endswith(f"count={count}; min_detected={count}")
+
+
+@pytest.mark.parametrize(
+    "sizes,timeout,count", [((4, 1), 1800, 3), ((100, 125), 1800, 12)], ids=["small", "time-cap"]
+)
+def test_auto_dry_run_explains_source_size_count(tmp_path, monkeypatch, sizes, timeout, count):
+    for name, lines in zip(("mod_a.sv", "mod_b.sv"), sizes, strict=True):
+        source = tmp_path / "rtl" / name
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n" * lines)
+    endpoint = _make_endpoint(
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        extra_args=["--dry-run", "--timeout-ms", str(timeout * 1000)],
+    )
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+    _assert_preview_lines(result, count)
+    for name, lines in zip(("mod_a.sv", "mod_b.sv"), sizes, strict=True):
+        assert f"rtl/{name}: {lines} lines ({10 * lines} bytes)" in result.report_text
+    assert f"total: {sum(sizes)} lines" in result.report_text
+    assert f"time cap: max(3, {timeout}s // 150) = 12" in result.report_text
+    assert f") = {count}" in result.display_lines[-2]
+
+
+def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):
+    for name in ("mod_a.sv", "mod_b.sv"):
+        source = tmp_path / "rtl" / name
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, count=7, extra_args=["--dry-run"])
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+    _assert_preview_lines(result, 7)
+    assert "count source: fixed; count=7 (not auto-derived)" in result.report_text
+    assert "source-size breakdown" not in result.report_text
+
+
+def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
+    paths = [f"rtl/module_{i:02d}_{'x' * 130}.sv" for i in range(20)]
+    for path in paths:
+        source = tmp_path / path
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n" * 4)
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, count="auto", scope=",".join(paths), extra_args=["--dry-run"]
+    )
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+    event = _display_safe_event(
+        _endpoint_end_event("mutation_tester", "lite", result, 0.0, dry_run=True)
+    )
+    assert event["display_lines_truncated"] > 0
+    assert event["summary"] == result.display_lines[-1]
+
+
 # ---------------------------------------------------------------------------
 # Endpoint metadata
 # ---------------------------------------------------------------------------
@@ -653,6 +745,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
             staged.parent.mkdir(parents=True, exist_ok=True)
             staged.write_bytes(source.read_bytes())
             entries.append({"name": name, "core": "acme:test:fixture:1"})
+            entries[-1]["file_type"] = "systemVerilogSource"
         edam_path = root / "fixture.eda.yml"
         edam_path.write_text(
             yaml.safe_dump(
@@ -662,8 +755,6 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                 }
             )
         )
-        (root / "Makefile").write_text("verilator -f fixture.vc\n")
-        (root / "fixture.vc").write_text("\n".join(entry["name"] for entry in entries))
         resolved = types.SimpleNamespace(
             edam_path=edam_path,
             build_root=Path(build_root),

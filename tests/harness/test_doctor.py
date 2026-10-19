@@ -299,6 +299,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+        if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
         if cmd[:3] == ["git", "status", "--porcelain"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:3] == ["git", "rev-parse", "--git-dir"]:
@@ -313,7 +315,10 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             # Live Sandbox inventory must see an empty container list.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            binary = not kwargs.get("text")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=b"" if binary else "", stderr=b"" if binary else ""
+            )
         if cmd[0] == "git" and "config" in cmd and "gc.worktreePruneExpire" in cmd:
             # Healthy default: the ADR 0028 worktree prune guard is set.
             return subprocess.CompletedProcess(cmd, 0, stdout="never\n", stderr="")
@@ -364,7 +369,10 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
                 cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{verdicts}\n", stderr=""
             )
         if cmd[0:2] == ["git", "check-ignore"]:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            binary = not kwargs.get("text")
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout=b"" if binary else "", stderr=b"" if binary else ""
+            )
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -1322,7 +1330,7 @@ def test_core_resolve_announces_before_container_run(
 
     assert (
         "RUN   .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10 min)" in printed_before_run[0]
+        "(FuseSoC configure; timeout 10m 00s)" in printed_before_run[0]
     )
 
 
@@ -7377,6 +7385,47 @@ class TestSubscriptionCredsHealth:
         assert rec.kinds() == {"pass"}
         assert "valid until" in rec.events[0][1]
 
+    def test_expiry_clock_preserves_finding_and_transcript(self, creds_home, monkeypatch, capsys):
+        from datetime import UTC, datetime
+
+        now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
+        monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+        monkeypatch.setattr(doctor.time, "time", lambda: now)
+        monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
+        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda _: "auto")
+        monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
+        monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
+        published = []
+        monkeypatch.setattr(
+            doctor.health, "publish_result", lambda _root, **kw: published.append(kw)
+        )
+        path = auth_token.subscription_creds_path(auth_token.APP_CLAUDE)
+        for hour, human in ((11, "15:00:00"), (10, "14:00:00")):
+            expiry = datetime(2026, 10, 8, hour, tzinfo=UTC).timestamp()
+            path.write_text(json.dumps({"claudeAiOauth": {"expiresAt": expiry * 1000}}))
+            reporter = doctor._Reporter.create()
+            doctor._run_agent_credential_checks(SimpleNamespace(), reporter)
+            result = reporter.result(0)
+            legacy = f"{hour + 4:02d}:00 · 08 OCT 2026"
+            expected = (
+                f"subscription login valid until {legacy}"
+                if hour == 11
+                else f"subscription login at {path} is expired ({legacy}) and refresh "
+                "fails once the host has rotated the shared refresh token — agents then crash at launch"
+            )
+            assert result.findings[0].message == expected, (
+                "doctor expiry display/record contract missing"
+            )
+            assert human in capsys.readouterr().out, (
+                "doctor expiry display/record contract missing"
+            )
+            doctor.record_manual_result(creds_home, result)
+            assert published[-1]["diagnostics"].findings[0].message == expected
+            assert (
+                published[-1]["transcript"]
+                == f"{result.findings[0].severity.value.upper()}: {expected}\n"
+            )
+
     def test_absent_or_unparseable_login_is_silent(self, creds_home):
         assert self._run().events == []  # absent
         (creds_home / ".claude" / ".credentials.json").write_text("not json")
@@ -8251,6 +8300,51 @@ def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_pat
     assert exclude.read_bytes() == before
 
 
+def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypatch):
+    _history_git(tmp_path, "init", "-q")
+    project = tmp_path / ".booley"
+    project.mkdir()
+    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    excludes = tmp_path / "global ignores"
+    excludes.write_text("# local policy\n.booley/booley.toml\n")
+    _history_git(tmp_path, "config", "core.excludesFile", str(excludes))
+    for name in (
+        "_check_ticket_leftovers",
+        "_check_project_gitignore",
+        "_check_git_state",
+        "_check_repo_footprint",
+        "_check_custom_endpoints_and_criteria",
+        "_check_agent_backend_health",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+    reporter = doctor._Reporter.create()
+    audit = doctor.ProjectAudit(tmp_path, project, {}, {}, None)
+    doctor._run_project_checks(audit, reporter)
+    warnings = [f for f in reporter.findings or [] if f.severity == "warn"]
+    assert any(".booley/booley.toml" in f.message for f in warnings), (
+        "Doctor must report excluded durable configuration"
+    )
+    assert any(str(excludes) + ":2" in f.message for f in warnings)
+    assert all(f.check_id != "goals.history-ignored" for f in warnings)
+    assert any("edit the reported" in f.fix for f in warnings)
+    assert excludes.read_text() == "# local policy\n.booley/booley.toml\n"
+
+
+def test_goal_history_negation_is_not_ignored(tmp_path):
+    _history_git(tmp_path, "init", "-q")
+    project = tmp_path / ".booley"
+    project.mkdir()
+    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    (tmp_path / ".gitignore").write_text(
+        "/.booley/goals/history/doctor-probe.md\n!/.booley/goals/history/doctor-probe.md\n"
+    )
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(tmp_path, project, reporter.pass_, reporter.warn_)
+    assert not any(f.severity == "warn" for f in reporter.findings or []), (
+        "Goal history negation must not produce an ignored warning"
+    )
+
+
 def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path):
     root = tmp_path / "rtl"
     root.mkdir()
@@ -8357,6 +8451,47 @@ def _versioned_history_layout(tmp_path, *, linked, ignored):
     exclude = root / ".git/info/exclude"
     exclude.write_bytes(b".booley/\n" if ignored else b"")
     return root, project, exclude
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize(
+    "hidden", [None, "booley.toml", "goals/history/a.md", "tickets/history/a.md"]
+)
+def test_independent_history_waiver_does_not_hide_owner_inputs(
+    tmp_path, monkeypatch, linked, hidden
+):
+    root, project, _ = _versioned_history_layout(tmp_path, linked=linked, ignored=True)
+    (project / "doctor-waivers.toml").write_text(
+        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
+        'subject = "independent-booley-history"\n'
+        'reason = "Preserve independent history."\npermanent = true\n'
+    )
+    if hidden:
+        path = project / hidden
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("summary")
+        (project / ".gitignore").write_text(hidden + "\n")
+    for name in (
+        "_check_ticket_leftovers",
+        "_check_project_gitignore",
+        "_check_git_state",
+        "_check_repo_footprint",
+        "_check_custom_endpoints_and_criteria",
+        "_check_agent_backend_health",
+    ):
+        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(project))
+    doctor._run_project_checks(doctor.ProjectAudit(root, project, {}, {}, None), reporter)
+    findings = reporter.findings or []
+    assert any(
+        f.severity == "waived" and f.subject == "independent-booley-history" for f in findings
+    )
+    warnings = [f for f in findings if f.severity == "warn"]
+    assert len(warnings) == (1 if hidden else 0)
+    if hidden:
+        assert warnings[0].check_id == "project.inputs-ignored"
+        assert hidden in warnings[0].message
 
 
 @pytest.mark.parametrize("linked", [False, True])
@@ -8828,3 +8963,244 @@ def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path
     warnings = [m for level, m in rec.events if level == "warn" and "untagged C/C++ harness" in m]
     assert warnings and any("shared/main.cpp" in m for m in warnings)
     assert all("shared/tb.sv" not in m for m in warnings)
+
+
+@pytest.fixture
+def copyto_audit(tmp_path, monkeypatch):
+    core = tmp_path / "ip"
+    core.mkdir()
+    source = core / "payload.mem"
+    source.write_bytes(b"source bytes")
+    (core / "input.core").write_text(
+        "CAPI=2:\nname: acme:ip:input:1.0\nfilesets:\n"
+        "  data:\n    file_type: user\n"
+        "    files:\n      - payload.mem: {copyto: runtime.mem}\n"
+        "targets:\n  default:\n    filesets: [data]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: acme:ip:design:1.0\nfilesets:\n"
+        "  data:\n    depend: [acme:ip:input:1.0]\n"
+        "targets:\n  sim:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n    filesets: [data]\n    toplevel: dut\n"
+        "  lint:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        "    filesets: [data]\n    toplevel: dut\n",
+        encoding="utf-8",
+    )
+    destination = tmp_path / "runtime.mem"
+    destination.write_bytes(b"other bytes")
+    configured = ["."]
+    monkeypatch.setattr(doctor, "resolve_run_cwd", lambda root: configured[0])
+
+    def check():
+        catalog = TargetCatalog.build(tmp_path)
+        refs = {handle.name: handle for handle in catalog.list()}
+        warnings = []
+
+        def noop(*args):
+            return None
+
+        audit = doctor._CoreAuditContext(
+            _run_cwd_project(tmp_path, configured[0]),
+            noop,
+            lambda finding, fix="": warnings.append((finding, fix)),
+            noop,
+            noop,
+            noop,
+        )
+        doctor._check_target_sources(audit, refs, doctor._CoreAuditInputs(catalog, refs))
+        return [
+            (finding, fix)
+            for finding, fix in warnings
+            if getattr(finding, "check_id", None) == "sim.runtime-input-collision"
+        ]
+
+    return source, destination, configured, check
+
+
+def test_sim_copyto_collision_warns_with_paths_and_remedies(copyto_audit):
+    source, destination, _, check = copyto_audit
+    findings = check()
+    assert findings, "missing copyto collision warning"
+    assert len(findings) == 1
+    finding, fix = findings[0]
+    message = str(finding)
+    assert "sim" in message and "lint" not in message
+    assert str(source) in message and str(destination) in message
+    assert "rename" in fix.lower() and "remove" in fix.lower() and "run_cwd" in fix
+
+
+def test_sim_copyto_identical_collision_is_silent(copyto_audit):
+    source, destination, _, check = copyto_audit
+    assert check(), "missing copyto collision warning"
+    destination.write_bytes(source.read_bytes())
+    assert check() == []
+
+
+def test_sim_copyto_absent_and_templated_destinations_are_silent(copyto_audit):
+    _, destination, configured, check = copyto_audit
+    assert check(), "missing copyto collision warning"
+    destination.unlink()
+    assert check() == []
+    configured[0] = "runs/{attempt}"
+    lookalike = destination.parent / configured[0]
+    lookalike.mkdir(parents=True)
+    (lookalike / destination.name).write_bytes(b"collision")
+    assert check() == []
+
+
+def test_sim_copyto_literal_cwd_controls_collision(copyto_audit):
+    source, destination, configured, check = copyto_audit
+    run = destination.parent / "runs"
+    run.mkdir()
+    literal = run / destination.name
+    literal.write_bytes(b"collision")
+    for cwd in ("runs", str(run)):
+        configured[0] = cwd
+        assert check(), "missing copyto collision warning"
+        literal.write_bytes(source.read_bytes())
+        assert check() == []
+        literal.unlink()
+        assert check() == []
+        literal.write_bytes(b"collision")
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file", "missing"])
+def test_sim_copyto_blocked_parent_warns(copyto_audit, kind):
+    source, destination, _, check = copyto_audit
+    core = source.parent / "input.core"
+    core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: nested/runtime.mem"))
+    parent = destination.parent / "nested"
+    if kind == "symlink":
+        parent.symlink_to(source.parent, target_is_directory=True)
+    elif kind == "file":
+        parent.write_bytes(b"obstruction")
+    assert len(check()) == (0 if kind == "missing" else 1)
+
+
+def test_sim_copyto_escaped_literal_directory_warns(copyto_audit):
+    _, destination, configured, check = copyto_audit
+    configured[0] = "{{escaped}}"
+    escaped = destination.parent / configured[0]
+    escaped.mkdir()
+    (escaped / destination.name).write_bytes(b"collision")
+    assert len(check()) == 1
+
+
+@pytest.mark.parametrize(
+    "kind", ["invalid-template", "blocked-cwd", "invalid-copyto", "unreadable"]
+)
+def test_sim_copyto_uninspectable_configuration_is_owned_by_other_checks(
+    copyto_audit, monkeypatch, kind
+):
+    source, destination, configured, check = copyto_audit
+    if kind == "invalid-template":
+        configured[0] = "{unknown_placeholder}"
+    elif kind == "blocked-cwd":
+        configured[0] = str(destination)
+    elif kind == "invalid-copyto":
+        core = source.parent / "input.core"
+        core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: ../runtime.mem"))
+    else:
+
+        def unreadable(*_args, **_kwargs):
+            raise PermissionError("unreadable input")
+
+        monkeypatch.setattr("booley.flows.sim.runtime_inputs.filecmp.cmp", unreadable)
+    assert check() == []
+
+
+def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
+    from booley.flows.implementation_publication import target_report_path
+
+    path = target_report_path("synth", "synth", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "synth_mode": "logical",
+                "termination": "completed",
+                "ppa_complete": True,
+                "area_source": "yosys_mapped",
+                "timing_complete": False,
+                "per_clock": [],
+            }
+        )
+    )
+    assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path) == "", (
+        "logical deep Doctor report was rejected"
+    )
+    passed, failed = [], []
+    doctor._report_flow_check_result(
+        SimpleNamespace(),
+        "synth",
+        subprocess.CompletedProcess([], 0, "", ""),
+        target="synth",
+        dry_run=False,
+        label="synth",
+        report_dir=tmp_path,
+        verbose=False,
+        _pass=passed.append,
+        _warn=lambda *a: None,
+        _skip=lambda *a: None,
+        _fail=lambda *a: failed.append(a),
+    )
+    assert passed and not failed
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"ppa_complete": False}, "ppa_complete"),
+        ({"area_source": "other"}, "mapped-area"),
+        ({"termination": "timeout"}, "did not complete"),
+        ({"synth_mode": "unknown"}, "unknown synthesis mode"),
+        ({"synth_mode": "physical"}, "constrained-clock"),
+        ({"synth_mode": ""}, "constrained-clock"),
+        (
+            {"synth_mode": "physical", "timing_complete": True, "per_clock": []},
+            "constrained-clock",
+        ),
+        ({"synth_mode": "physical", "timing_complete": True, "per_clock": [{"clock": "clk"}]}, ""),
+        ({"synth_mode": "", "timing_complete": True, "per_clock": [{"clock": "clk"}]}, ""),
+    ],
+)
+def test_deep_doctor_synthesis_mode_evidence(tmp_path, changes, expected):
+    from booley.flows.implementation_publication import target_report_path
+
+    report = {
+        "synth_mode": "logical",
+        "ppa_complete": True,
+        "termination": "completed",
+        "area_source": "yosys_mapped",
+        "timing_complete": False,
+    }
+    report.update(changes)
+    path = target_report_path("synth", "synth", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report))
+    error = doctor._synth_deep_report_error("synth", "synth", False, tmp_path)
+    assert expected in error if expected else error == ""
+
+
+def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
+    from booley.flows.implementation_publication import target_report_path
+
+    path = target_report_path("synth", "synth", tmp_path)
+    assert "unreadable" in doctor._synth_deep_report_error("synth", "synth", False, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for content in ("[", "[]", "null", '"text"'):
+        path.write_text(content)
+        assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path)
+    path.write_text(
+        json.dumps(
+            {"ppa_complete": True, "timing_complete": True, "per_clock": [{"clock": "clk"}]}
+        )
+    )
+    assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path) == ""
+    path.write_text(json.dumps({"ppa_complete": True}))
+    assert "constrained-clock" in doctor._synth_deep_report_error(
+        "synth", "synth", False, tmp_path
+    )
+    assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
+    assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""

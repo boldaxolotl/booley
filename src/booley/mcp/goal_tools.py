@@ -23,6 +23,7 @@ from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.goals.binding import GoalBindingError
 from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
+from booley.goals.ended_records import with_last_ended
 from booley.goals.entry import (
     EntryEnvironment,
     GoalEntryError,
@@ -39,9 +40,10 @@ from booley.goals.proposals import ProposalError
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
 from booley.goals.state_store import GoalStateError
-from booley.goals.status import GoalStatusView, status_views
+from booley.goals.status import GoalStatusSelection, GoalStatusView, select_status
 from booley.goals.store import GoalRecordCorruptError, GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
+from booley.mcp.catalog import work_dir_guidance
 from booley.mcp.goal_changes import proposal_schema, propose_change
 from booley.mcp.goal_completion import complete_goal, finish_schema
 
@@ -129,14 +131,14 @@ def goal_enter_schema() -> dict[str, Any]:
     }
 
 
-def _status_views(store: GoalStore, root: Path) -> tuple[GoalStatusView, ...]:
+def _status_selection(store: GoalStore, root: Path) -> GoalStatusSelection:
     """Status with the Simulation Flow's reader of unpublished campaign results."""
     from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 
-    views = status_views(store, root, campaign_reader=read_unpublished_results)
-    for view in views:
+    selection = select_status(store, root, campaign_reader=read_unpublished_results)
+    for view in selection.views:
         schedule_sim_baselines(store.booley_dir, view.record)
-    return views
+    return selection
 
 
 async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal tools have distinct responses
@@ -163,14 +165,23 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             return result
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
-            views = await asyncio.to_thread(_status_views, store, root)
+            selection = await asyncio.to_thread(_status_selection, store, root)
+            views = selection.views
             aware = await asyncio.to_thread(_status_has_caller, views, root, request_context)
-            text = render_status(views) if views else "No active Goal Mode."
+            text = await asyncio.to_thread(
+                with_last_ended,
+                render_status(views) if views else "No active Goal Mode.",
+                store,
+                root,
+                project_wide=selection.project_wide,
+            )
             if arguments.get("rules") is True:
                 for view in views:
-                    text += "\n\n" + goal_mode_rules(view.record.declared_protected_inputs)
+                    text += "\n\n" + goal_mode_rules(
+                        view.record.declared_protected_inputs, routing_guidance=work_dir_guidance()
+                    )
                 if not views:
-                    text += "\n\n" + goal_mode_rules()
+                    text += "\n\n" + goal_mode_rules(routing_guidance=work_dir_guidance())
             return _text(
                 text,
                 is_error=False,
@@ -311,6 +322,7 @@ def _entry_environment(booley_dir: Path, context: McpRequestContext | None) -> E
     return EntryEnvironment(
         booley_dir=booley_dir,
         recipe_families=_recipe_families(),
+        routing_guidance=work_dir_guidance(),
         other_sessions=lambda _identity: keys,
         schedule_baselines=lambda record: schedule_sim_baselines(booley_dir, record),
     )

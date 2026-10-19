@@ -179,7 +179,9 @@ def test_modern_abandon_quote_binding_and_saved_retry_after_replacement(layout, 
                     "replacement",
                     parse_goal_args([{"family": "LINT", "target": "top"}]),
                 ),
-                EntryEnvironment(layout.control),
+                EntryEnvironment(
+                    layout.control, routing_guidance="Explicit test routing guidance."
+                ),
             ).record
             path = record_paths(layout.control, record.id).record_file
             before = path.read_bytes()

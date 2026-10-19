@@ -1186,3 +1186,27 @@ def test_coverage_pre_sim_project_relative_hook_uses_project_root(
     assert Path(hook["root"]).resolve() == tmp_path.resolve()
     assert Path(hook["run"]).resolve() == run.resolve() != tmp_path.resolve()
     assert "run_script" in captured
+
+
+@pytest.mark.parametrize("observed", [False, True])
+@pytest.mark.parametrize("stage", ["build", "run"])
+def test_coverage_log_failure_remains_advisory(tmp_path, monkeypatch, observed, stage):
+    from contextlib import nullcontext
+    from unittest.mock import patch
+
+    from booley.flows.sim.live_progress import LiveProgressSink, install_progress
+
+    execution, target, raw, captured = _execution_fixture(tmp_path, monkeypatch)
+    sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "coverage")
+    with install_progress(sink) if observed else nullcontext():
+        if stage == "run":
+            assert _build_coverage(execution, target).success
+        with patch("booley.flows.run_log.begin_run_log", side_effect=OSError("full")):
+            if stage == "build":
+                assert _build_coverage(execution, target).success
+            else:
+                assert execution.run(_run_request(target, raw)).verdict == "pass"
+                assert raw.exists()
+    assert captured["timeouts"]
+    if observed:
+        assert sink.error == "OSError: full"

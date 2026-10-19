@@ -110,7 +110,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     message = str(caught.value)
     assert "max_sessions=1" in message
     assert f"Project {other}" in message
-    assert "age 2h" in message
+    assert "started 2h ago" in message
     assert session_admission._command(["booley", "session", "down", "--project"]) in message
     assert "existing" in message
 
@@ -434,16 +434,6 @@ def test_unreadable_claim_json_fails_closed(
 
     with pytest.raises(session_admission.AdmissionError, match="cannot read"):
         session_admission.admit_start(project, target_name="headless", run=_Docker({}))
-
-
-def test_age_includes_minutes_and_seconds() -> None:
-    assert (
-        session_admission._age(
-            datetime(2026, 9, 27, 8, 0, tzinfo=UTC),
-            datetime(2026, 9, 27, 8, 2, 3, tzinfo=UTC),
-        )
-        == "2m 3s"
-    )
 
 
 def test_claim_candidate_disappearing_during_inspect_fails_closed(

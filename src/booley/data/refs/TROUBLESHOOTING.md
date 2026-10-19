@@ -1,7 +1,10 @@
 # Troubleshooting
 
-Start with `booley doctor`; it catches setup breakage on its own, and `booley
-doctor --deep` additionally runs real sim/lint/synthesis smoke checks. Plain
+For setup breakage, start with `booley doctor`. If you suspect agent-planted Git
+configuration or hooks, read the [known Sandbox escape warning](#known-sandbox-escape-through-shared-git-metadata)
+first: host-side Doctor can trigger that vulnerability.
+
+`booley doctor --deep` additionally runs real sim/lint/synthesis smoke checks. Plain
 Doctor setup-checks marked FPGA Targets; deep mode prints their manual full-
 implementation commands instead of launching long Vivado runs. What
 follows is the residue Booley cannot safely repair itself: upstream constraints,
@@ -16,6 +19,37 @@ For installation see the [README](https://github.com/boldaxolotl/Booley#installa
 the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md). For the Booley-specific
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
+
+## Known Sandbox escape through shared Git metadata
+
+[Issue #1529](https://github.com/boldaxolotl/booley/issues/1529) tracks a known,
+unresolved escape hatch from the Sandbox. Shared Git metadata is writable from
+the container. A Developer Agent can plant executable configuration or hooks
+that run as the host user when Git later runs on the host, including through
+an editor or Booley. Stopping the Sandbox does not remove the planted metadata.
+The investigation also demonstrated that a substituted Git object-store symlink
+can redirect native host Git writes outside the Project. The exposure includes
+filesystem writes as well as execution of planted commands.
+
+Doctor does not currently detect this tampering, and host-side Doctor can
+itself trigger it. A successful Doctor run or a review of tracked changes is
+not a security clearance: Git configuration and hooks need not appear in the diff.
+
+Until this is fixed, keep Git inspection inside an already-running Sandbox after untrusted
+agent work, and avoid host Git operations on the affected checkout, including
+automatic editor Git integrations and Booley commands that invoke Git. Do not
+use host-side Doctor as a cleanup or validation step. For work requiring a
+stronger boundary, use a disposable VM or a separate machine without valuable
+host credentials or data; these precautions are not a fix for the vulnerability.
+
+Host-side `booley init` and `booley session refresh` also invoke Git. There is
+currently no audited list of safe host Booley commands for an affected checkout;
+these precautions do not establish that opening or refreshing a Sandbox is safe.
+
+Workspace tasks and `.envrc` are additional ways to execute Project-controlled
+code on the host. Do not approve host execution of untrusted Project files.
+Remediation of #1529 is deferred for reconsideration on **31 DEC 2026**, not
+promised for that date.
 
 ## Goal evidence and state recovery
 
@@ -160,7 +194,10 @@ For any other missing MCP tool:
    `[specialists.<name>].enabled` is not `false`.
 2. For a custom MCP tool, fix Python syntax and make `name` and `description` literal
    class attributes so AST discovery can read them.
-3. Restart the Sandbox after adding or renaming the file.
+3. Request a fresh MCP tool list, or use the client's tool-list change
+   notification channel. Installing, renaming, removing, or editing custom
+   endpoint files and capability settings updates the running server without
+   restarting the Sandbox.
 4. Check whether the MCP server was deliberately narrowed for a Specialist or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
@@ -230,9 +267,23 @@ itself is fine and still queryable.
 ## Installation fails with `externally-managed-environment`
 
 Recent distributions ship Python as an *externally managed* environment
-(PEP 668), where system Python refuses user package installation. Follow the
-README's Ubuntu/Debian pipx preparation, run `pipx ensurepath`, reopen your
-terminal, then run `pipx install booley-rtl` and `booley bootstrap`.
+(PEP 668), where system Python refuses user package installation. On Ubuntu or
+Debian, install pipx from the distribution package; a pip-installed pipx fails
+there because stock Python has no `ensurepip` until the `python3-venv` package,
+which the `pipx` package depends on, is installed:
+
+```bash
+sudo apt install pipx
+pipx ensurepath
+```
+
+Reopen your terminal, then install Booley and prepare the host:
+
+```bash
+pipx install booley-rtl
+booley bootstrap
+```
+
 If you already have uv, use `uv tool install booley-rtl` instead.
 These persistent isolated wheel installs can own host state. Source/editable
 checkouts and temporary or ephemeral installs remain ineligible.

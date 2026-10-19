@@ -397,3 +397,57 @@ def test_registration_cannot_succeed_without_persisted_validation(tmp_path, monk
     else:
         assert original_load(state) == candidate
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["missing", "current", "conflict", "corrupt", "ineligible", "invalid", "unreadable"],
+)
+def test_read_only_installation_distinguishes_registration_work(tmp_path, monkeypatch, condition):
+    path = tmp_path / "identity.json"
+    identity = _identity()
+    monkeypatch.setattr(host_install, "host_installation_path", lambda: path)
+    monkeypatch.setattr(
+        host_install,
+        "_eligibility_error",
+        lambda _source: "not an installed wheel" if condition == "ineligible" else None,
+    )
+    monkeypatch.setattr(
+        host_install,
+        "current_host_installation",
+        lambda _source: replace(identity, revision="") if condition == "invalid" else identity,
+    )
+    if condition in {"current", "conflict", "unreadable"}:
+        _write(path, replace(identity, version="other") if condition == "conflict" else identity)
+    elif condition == "corrupt":
+        path.write_text("{invalid", encoding="utf-8")
+    if condition == "unreadable":
+        original = Path.read_text
+
+        def denied(source, *args, **kwargs):
+            if source == path:
+                raise PermissionError("denied")
+            return original(source, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", denied)
+    result = host_install.inspect_host_installation(tmp_path)
+    assert result.pending is (condition == "missing")
+    assert bool(result.error) is (condition not in {"missing", "current"})
+    if condition == "missing":
+        assert not path.exists()
+        assert host_install.host_install_error(tmp_path) is not None
+    if condition == "conflict":
+        assert "--update" in result.error
+
+
+def test_read_only_installation_contains_unreadable_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+
+    def denied(_source):
+        raise PermissionError("package inaccessible")
+
+    monkeypatch.setattr(host_install, "current_host_installation", denied)
+    result = host_install.inspect_host_installation(tmp_path)
+    assert not result.pending
+    assert str(tmp_path) in result.error
+    assert "restore package read access" in result.error
