@@ -447,7 +447,11 @@ def _owned_store() -> PrivateStore:
 
 
 def _owned_prefix(project: Path) -> str:
-    return hashlib.sha256(str(project.resolve()).encode()).hexdigest() + "-"
+    return _owned_prefix_for_identity(str(project.resolve()))
+
+
+def _owned_prefix_for_identity(identity: str) -> str:
+    return hashlib.sha256(identity.encode()).hexdigest() + "-"
 
 
 def record_owned_images(
@@ -498,10 +502,10 @@ def _read_owned_record(
             raise ImageLifecycleError("invalid refresh image record fields/version")
         project = Path(require_str(raw, "project_root"))
         transaction = require_str(raw, "transaction")
+        # Match the stored root string; the directory may since be gone or replaced.
         if (
             not project.is_absolute()
-            or str(project.resolve()) != str(project)
-            or name != _owned_prefix(project) + transaction + ".json"
+            or name != _owned_prefix_for_identity(str(project)) + transaction + ".json"
         ):
             raise ImageLifecycleError("invalid refresh image record identity")
         refs = require_dict(raw["references"], field="owned image references")
@@ -515,6 +519,18 @@ def _read_owned_record(
         return project, dict(refs), tuple(ids)
     except (BoundaryError, OSError, ValueError) as exc:
         raise ImageLifecycleError(f"cannot read refresh image ownership: {exc}") from exc
+
+
+def owned_image_ids(identity: str) -> tuple[str, ...]:
+    """Exact image IDs the ownership records still attribute to a canonical stored root."""
+    store = _owned_store()
+    if not store.validate_existing_directory():
+        return ()
+    return tuple(
+        image
+        for path in sorted(store.root.glob(_owned_prefix_for_identity(identity) + "*.json"))
+        for image in _read_owned_record(store, path.name)[2]
+    )
 
 
 def _owned_image_blocker(image: str, docker: DockerPort) -> str:

@@ -707,11 +707,7 @@ def _check_interactive_state_volumes(
         return
 
     project_id = dc.canonical_project_id(project_root)
-    mine = {
-        dc.state_volume_name(app, project_id, policy)
-        for app in (dc.APP_CLAUDE, dc.APP_CODEX)
-        for policy in ("auto", "subscription", "api_key")
-    }
+    mine = dc.state_volume_names(project_id)
     others = sorted(v for v in vols if v not in mine)
 
     present_mine = sorted(v for v in vols if v in mine)

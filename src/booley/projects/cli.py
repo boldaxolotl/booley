@@ -17,6 +17,8 @@ class KeeperOperations(Protocol):
 
     def forget_project(self, project: Path) -> tuple[Path, image_keepers.KeeperRelease]: ...
 
+    def project_leftovers(self, project: Path) -> tuple[image_keepers.Leftover, ...]: ...
+
     def prune_keepers(self, confirm: str | None = None) -> image_keepers.PruneResult: ...
 
 
@@ -67,7 +69,15 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
         if action == "forget":
             assert keeper_operations is not None
             forgotten, keeper = keeper_operations.forget_project(args.project)
-            return _render_forgotten(forgotten, keeper, json_output=getattr(args, "json", False))
+            try:
+                left = keeper_operations.project_leftovers(forgotten)
+            except inventory.ProjectInventoryError as exc:
+                raise inventory.ProjectInventoryError(
+                    f"{exc} (keeper {keeper.status}: {keeper.tag})"
+                ) from exc
+            return _render_forgotten(
+                forgotten, keeper, left, json_output=getattr(args, "json", False)
+            )
         if action == "prune-keepers":
             assert keeper_operations is not None
             result = keeper_operations.prune_keepers(args.confirm)
@@ -98,18 +108,32 @@ def _render_discovered(discovered: tuple[Path, ...], *, json_output: bool) -> in
 
 
 def _render_forgotten(
-    forgotten: Path, keeper: image_keepers.KeeperRelease, *, json_output: bool
+    forgotten: Path,
+    keeper: image_keepers.KeeperRelease,
+    left: tuple[image_keepers.Leftover, ...],
+    *,
+    json_output: bool,
 ) -> int:
     if json_output:
-        print(
-            json.dumps(
-                {"schema": 1, "forgotten": str(forgotten), "keeper": asdict(keeper)}, indent=2
-            )
-        )
-    else:
-        print(f"Forgot remembered Project path: {forgotten}")
-        image = f" ({keeper.image_id})" if keeper.image_id is not None else ""
-        print(f"Keeper {keeper.status}: {keeper.tag}{image}")
+        document = {
+            "schema": 1,
+            "forgotten": str(forgotten),
+            "keeper": asdict(keeper),
+            "leftovers": [asdict(item) for item in left],
+        }
+        print(json.dumps(document, indent=2))
+        return 0
+    print(f"Forgot remembered Project path: {forgotten}")
+    image = f" ({keeper.image_id})" if keeper.image_id is not None else ""
+    print(f"Keeper {keeper.status}: {keeper.tag}{image}")
+    if not left:
+        print("No Docker resources left behind for this Project.")
+        return 0
+    print("Left behind for this Project:")
+    for item in left:
+        size = f" {item.size}" if item.size else ""
+        tags = f" tags: {', '.join(item.tags)}" if item.tags else ""
+        print(f"  {item.kind} {item.name}{size} [{item.reason}]{tags}")
     return 0
 
 

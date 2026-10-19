@@ -774,6 +774,25 @@ An in-use keeper remains, but forgetting succeeds; Docker inspection or removal
 failure preserves the inventory entry for retry. A present forgotten Project
 whose keeper was released needs `booley init` before session reuse.
 
+Forget also lists the Docker resources the Project leaves behind, with sizes:
+
+- images named by the Project's own Sandbox Image tags, or recorded as built
+  for it, marked `in-use` (a container uses it), `shared` (a tag outside the
+  Project also names it), or `unused`. An untagged image that still shows the
+  Project's repository name but has no build record is marked `unrecorded`;
+- the Project's agent state volumes, marked `in-use` or `unused`. A state
+  volume holds a copy of the agent's login and the agent's history;
+- containers and networks still labelled for the Project, marked `labelled`.
+
+Forget removes none of the listed resources; it only deletes untagged images
+recorded as built for the Project once nothing uses them, before it lists the
+rest. If Docker cannot list them, the root stays
+forgotten and the command reports the error and the keeper outcome.
+
+An untagged image with neither a build record nor the Project's repository
+name can't be traced to any Project, so forget doesn't list it.
+`docker image prune` reclaims every dangling image on the host, from any Project.
+
 To reclaim keepers from Projects forgotten before this behavior was available:
 
 ```bash
