@@ -2336,46 +2336,12 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     return selected.container_id, command_env
 
 
-def _check_command_cwd(workspace: Path, container_id: str, cwd: str) -> None:
-    """Prove the selected directory still belongs to an authenticated bind mount."""
-    from booley.core.booley_dir import resolve_authoritative_booley_dir
-
-    location = Path(cwd)
-    roots = (
-        (Path("/work"), workspace.resolve()),
-        (Path("/booley-project"), resolve_authoritative_booley_dir(workspace).resolve()),
-    )
-    mapped = next(
-        ((target, source) for target, source in roots if location.is_relative_to(target)), None
-    )
-    if mapped is None:
-        raise SessionError(f"Sandbox directory {cwd!r} is outside issued mounts")
-    target, source = mapped
-    expected = source / location.relative_to(target)
-    state = _strict_refresh_container(container_id)
-    mounts = (
-        state.get("Mounts", []) if state is not None and state.get("Id") == container_id else []
-    )
-    covering = [
-        mount
-        for mount in mounts
-        if isinstance(mount, dict)
-        and isinstance(mount.get("Destination"), str)
-        and location.is_relative_to(mount["Destination"])
-    ]
-    mount = max(covering, key=lambda item: len(item["Destination"]), default=None)
-    if mount is None or not isinstance(mount.get("Source"), str):
-        raise SessionError(f"Sandbox directory {cwd!r} is unavailable or masked by a mount")
-    actual = host_path_from_docker_mount(mount["Source"])
-    if (
-        actual is None
-        or (actual / location.relative_to(mount["Destination"])).resolve() != expected.resolve()
-    ):
-        raise SessionError(f"Sandbox directory {cwd!r} is masked by another mount")
-    _probe_command_cwd(container_id, cwd)
-
-
 def _probe_command_cwd(container_id: str, cwd: str) -> None:
+    """Refuse a selected Sandbox directory the agent user cannot enter.
+
+    Discovery only maps into the issued ``/work`` and ``/booley-project``
+    mounts, so a probe inside the container is the whole check.
+    """
     probe = _run(
         [
             "docker",

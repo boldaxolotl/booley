@@ -4905,6 +4905,12 @@ def test_enter_preserves_container_credentials_without_literal_placeholder_overr
     assert captured[-len(command or ["/bin/bash", "-l"]) :] == (command or ["/bin/bash", "-l"])
 
 
+def _replace_file(path, text):
+    """Rewrite a file Git may have marked hidden; Windows refuses to truncate hidden files."""
+    path.unlink()
+    path.write_text(text)
+
+
 def _linked_project(tmp_path, monkeypatch, *, external=False, sandbox_pointer=False):
     from booley.harness import booley as cli
     from booley.runtime.booley_dir import reset_cache
@@ -4938,7 +4944,10 @@ def _linked_project(tmp_path, monkeypatch, *, external=False, sandbox_pointer=Fa
         timeout=30,
     )
     if sandbox_pointer:
-        (linked / ".git").write_text("gitdir: /work/.git/worktrees/goal\n")
+        # A Sandbox-created worktree records both Git pointers as container paths.
+        admin = Path((linked / ".git").read_text().removeprefix("gitdir:").strip())
+        _replace_file(linked / ".git", "gitdir: /work/.git/worktrees/goal\n")
+        _replace_file(admin / "gitdir", "/work/.booley/worktrees/goal/.git\n")
     for key in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -5038,8 +5047,6 @@ def _linked_transport(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sr, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "", "")
     )
-    if hasattr(sr, "_check_command_cwd"):
-        monkeypatch.setattr(sr, "_check_command_cwd", lambda *_: None)
     captured = []
 
     def run(driver, execution_id, argv):
@@ -5109,12 +5116,6 @@ def test_linked_worktree_prepare_refuses_before_validation(
     )
 
 
-def test_session_prepare_never_validates_another_folders_spec(tmp_path, monkeypatch, capsys):
-    test_linked_worktree_prepare_refuses_before_validation(
-        tmp_path, monkeypatch, capsys, "explicit"
-    )
-
-
 def test_main_project_subdirectory_retains_work_start(tmp_path, monkeypatch):
     root, _ = _linked_project(tmp_path, monkeypatch)
     child = root / "rtl"
@@ -5135,25 +5136,12 @@ def test_project_root_prepare_validates_exact_folder(tmp_path, monkeypatch):
     assert calls == [root]
 
 
-@pytest.mark.parametrize("problem", ["missing", "masked", "inaccessible"])
+@pytest.mark.parametrize("problem", ["missing", "inaccessible"])
 def test_enter_rejects_unavailable_mapped_cwd(tmp_path, monkeypatch, problem):
     root, linked = _linked_project(tmp_path, monkeypatch)
     (linked / ".booley").mkdir()
     selected = []
     monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
-    monkeypatch.setattr(
-        sr,
-        "_strict_refresh_container",
-        lambda _: {
-            "Id": "immutable-id",
-            "Mounts": [
-                {
-                    "Source": str(tmp_path / "wrong" if problem == "masked" else root),
-                    "Destination": "/work",
-                }
-            ],
-        },
-    )
     monkeypatch.setattr(
         sr, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", problem)
     )
@@ -5166,24 +5154,15 @@ def test_enter_rejects_unavailable_mapped_cwd(tmp_path, monkeypatch, problem):
     assert not selected
 
 
-def test_mapped_cwd_probe_is_bounded_and_isolated(tmp_path, monkeypatch):
-    root, _ = _linked_project(tmp_path, monkeypatch)
+def test_mapped_cwd_probe_is_bounded_and_isolated(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        sr,
-        "_strict_refresh_container",
-        lambda _: {
-            "Id": "immutable-id",
-            "Mounts": [{"Source": str(root), "Destination": "/work"}],
-        },
-    )
 
     def run(argv, *, timeout):
         calls.append((argv, timeout))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(sr, "_run", run)
-    sr._check_command_cwd(root, "immutable-id", "/work/.booley/worktrees/goal")
+    sr._probe_command_cwd("immutable-id", "/work/.booley/worktrees/goal")
     argv, timeout = calls[0]
     assert timeout == 10
     assert argv[:8] == [

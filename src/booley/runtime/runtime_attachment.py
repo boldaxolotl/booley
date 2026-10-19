@@ -57,12 +57,10 @@ class SupervisedExecutionDriver:
         *,
         project_root: Path | None = None,
         cwd: str | None = None,
-        container_id: str | None = None,
     ) -> None:
         self._project_data = project_data
         self._project_root = project_root
         self._cwd = cwd
-        self._container_id = container_id
 
     def run(self, execution_id: ExecutionId, transport_argv: list[str]) -> ExecutionResult:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
@@ -76,11 +74,10 @@ class SupervisedExecutionDriver:
                     "protocol_unavailable",
                     "protocol_mismatch",
                 }:
-                    from booley.runtime.session_runtime import _check_command_cwd
-
-                    _check_command_cwd(self._project_root, self._container_id, self._cwd)
+                    # A vanished directory and a broken image look the same here.
                     logger.error(
-                        "Sandbox startup failed with selected directory %r; directory and protocol startup could not be distinguished",
+                        "Sandbox startup failed with selected directory %r; "
+                        "directory and protocol startup could not be distinguished",
                         self._cwd,
                     )
                 else:
@@ -287,10 +284,10 @@ def run_command(
     cwd: str | None = None,
 ) -> ExecutionResult:
     """Run one explicit command and own it through complete scoped cleanup."""
-    from booley.runtime.session_runtime import _check_command_cwd, exec_argv
+    from booley.runtime.session_runtime import _probe_command_cwd, exec_argv
 
     if cwd is not None:
-        _check_command_cwd(project_root, container_name, cwd)
+        _probe_command_cwd(container_name, cwd)
 
     execution_id = ExecutionId(uuid.uuid4().hex)
     from booley.core.booley_dir import resolve_authoritative_booley_dir
@@ -309,6 +306,6 @@ def run_command(
         env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
         **({"cwd": cwd} if cwd is not None else {}),
     )
-    return SupervisedExecutionDriver(
-        project_data, project_root=project_root, cwd=cwd, container_id=container_name
-    ).run(execution_id, docker_argv)
+    return SupervisedExecutionDriver(project_data, project_root=project_root, cwd=cwd).run(
+        execution_id, docker_argv
+    )

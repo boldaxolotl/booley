@@ -972,32 +972,21 @@ def _linked_auth(tmp_path, monkeypatch, *, data=True):
 
 
 @pytest.mark.parametrize("mode", ["mint", "token-stdin", "clear"])
-def test_linked_worktree_auth_mutation_requires_project_root(tmp_path, monkeypatch, capsys, mode):
-    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
-    result = auth_cmd.run_auth(
-        SimpleNamespace(
-            status=False, clear=mode == "clear", token_stdin=mode == "token-stdin", app="claude"
-        ),
-        linked,
-    )
-    text = capsys.readouterr().err
-    assert result == 2 and not effects and "run from the Project Root" in text, (
-        "linked auth must refuse before credential mutation"
-    )
-
-
 @pytest.mark.parametrize(
     "selection",
     ["implicit-with-data", "implicit-without-data", "explicit-with-data", "explicit-without-data"],
 )
-def test_cli_linked_auth_refuses_before_required_guard(tmp_path, monkeypatch, capsys, selection):
+def test_cli_linked_auth_refuses_before_required_guard(
+    tmp_path, monkeypatch, capsys, selection, mode
+):
     import sys
 
     _, linked, effects = _linked_auth(tmp_path, monkeypatch, data="without" not in selection)
-    argv = ["booley", "auth"]
+    flags = {"mint": [], "token-stdin": ["--token-stdin"], "clear": ["--clear"]}[mode]
+    argv = ["booley", "auth", *flags]
     if selection.startswith("explicit"):
         monkeypatch.chdir(tmp_path)
-        argv = ["booley", "-C", str(linked), "auth"]
+        argv = ["booley", "-C", str(linked), "auth", *flags]
     monkeypatch.setattr(sys, "argv", argv)
     result = tlr.main()
     text = capsys.readouterr().err
@@ -1025,13 +1014,6 @@ def test_auth_from_project_subdirectory_retains_behavior(tmp_path, monkeypatch):
     child = root / "rtl"
     child.mkdir()
     assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), child) == 0
-    assert effects == ["clear_stored_token", "_reseed_spec"]
-
-
-def test_sandbox_auth_retains_behavior(tmp_path, monkeypatch):
-    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), linked) == 0
     assert effects == ["clear_stored_token", "_reseed_spec"]
 
 

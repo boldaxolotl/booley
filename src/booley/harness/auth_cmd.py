@@ -291,15 +291,6 @@ def run_auth(args: argparse.Namespace, project_root: Path | None) -> int:
     if getattr(args, "status", False):
         return _safe_report_status(getattr(args, "app", None), project_root)
 
-    from booley.runtime.project_discovery import linked_auth_error
-
-    if message := linked_auth_error(project_root):
-        print(f"ERROR: {message}", file=sys.stderr)
-        return 2
-    return _mutate_auth(args, project_root)
-
-
-def _mutate_auth(args: argparse.Namespace, project_root: Path) -> int:
     app = _resolve_app(args)
     if app is None:
         return 1

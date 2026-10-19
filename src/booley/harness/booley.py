@@ -1915,8 +1915,12 @@ def _auth_project_root(args: argparse.Namespace) -> Path | None:
         if (candidate / ".git").exists():
             break
     if hasattr(args, "_cli_selection") or getattr(args, "project_root", None):
+        from booley.runtime.project_discovery import linked_auth_error
+
+        # A linked worktree needs the Project Root, not `booley init`.
         raise ProjectRootDiscoveryError(
-            "not a Booley Project; cd into one or run `booley init` on the host."
+            linked_auth_error(root)
+            or "not a Booley Project; cd into one or run `booley init` on the host."
         )
     return None
 
