@@ -148,7 +148,10 @@ def _new(name: str, project_root: Path) -> int:
 
 
 @_real_script
-def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys) -> None:
+def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, tmp_path) -> None:
+    excludes = tmp_path / "empty-excludes"
+    excludes.touch()
+    assert _git(project, "config", "core.excludesFile", str(excludes)).returncode == 0
     assert _new("goal-entry", project) == 0
 
     worktree = project / ".booley" / "worktrees" / "goal-entry"
@@ -165,10 +168,8 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys) 
     assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").returncode != 0
     head = _git(worktree, "rev-parse", "HEAD").stdout
     assert head == _git(project, "rev-parse", "HEAD").stdout
-    # Discard only the disposable fixture's copied, untracked inputs before removal.
-    (worktree / ".booley/booley.toml").unlink()
-    for directory in ("cores", "mcp_tools"):
-        shutil.rmtree(worktree / ".booley" / directory)
+    # Discard the disposable Snapshot's copied and generated files before removal.
+    assert _git(worktree, "clean", "-fdx").returncode == 0
     subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
     assert not worktree.exists()
     assert str(worktree) not in _git(project, "worktree", "list", "--porcelain").stdout
