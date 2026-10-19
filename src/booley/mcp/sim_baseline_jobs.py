@@ -52,8 +52,6 @@ def baseline_environment() -> dict[str, str]:
         "BOOLEY_RUN_ID",
         "BOOLEY_WORKTREE",
         "BOOLEY_EXECUTION_ID",
-        "BOOLEY_REVIEW_OPERATION",
-        "BOOLEY_EXECUTION_LEASE",
         "BOOLEY_TICKET_FILE",
         "BOOLEY_DIR",
         "BOOLEY_CONTROL_PROJECT_ROOT",
