@@ -43,6 +43,7 @@ from booley.harness.setup.plan import (
     apply_init_plan,
     plan_init_filesystem,
 )
+from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.runtime.booley_dir import reset_cache
 
 # Wizard vocabulary. `sv` = a plain self-checking SystemVerilog TB scored by
@@ -897,6 +898,9 @@ def _booley_toml(c: ScaffoldChoices) -> str:
             "# XDC has no board pins yet — drop it once you add LOCs.",
         ]
 
+    else:
+        lines += ["", "[flows.fpga]", "enabled = false"]
+
     return "\n".join(lines) + "\n"
 
 
@@ -1018,7 +1022,7 @@ def step_scaffold(ctx: InitContext, args) -> bool:
         ctx.record("scaffold", "warn", f"would write {len(pending)} file(s)")
         return True
 
-    if not _apply_scaffold_files(ctx, plan):
+    if not _apply_scaffold_files(ctx, plan) or not _publish_scaffold_origin(ctx):
         return False
     reset_cache()  # .booley may have just come into existence
 
@@ -1038,4 +1042,14 @@ def step_scaffold(ctx: InitContext, args) -> bool:
     info("after init finishes: `booley doctor --deep` should be green, then try")
     info(f"  a sim run of test 'reset' on target 'sim' — then replace {choices.name}.")
     ctx.record("scaffold", "ok", summary)
+    return True
+
+
+def _publish_scaffold_origin(ctx: InitContext) -> bool:
+    try:
+        record_scaffold_origin(ctx.project_root / ".booley/booley.toml")
+    except OSError as exc:
+        err(f"could not record successful scaffold origin: {exc}")
+        ctx.record("scaffold", "err", str(exc))
+        return False
     return True
