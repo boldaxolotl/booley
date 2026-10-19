@@ -38,6 +38,8 @@ def _init_repo(repo: Path) -> None:
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
+    # Detached worktree pruning can race a later worktree add before it locks.
+    _git(repo, "config", "maintenance.auto", "false")
 
 
 def _commit_file(repo: Path, text: str, message: str) -> str:
@@ -45,6 +47,16 @@ def _commit_file(repo: Path, text: str, message: str) -> str:
     _git(repo, "add", "source.sv")
     _git(repo, "commit", "-qm", message)
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_fixture_commits_do_not_launch_background_maintenance(tmp_path, monkeypatch):
+    """Fixture commits must not launch a pruner beside later worktree creation."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    trace = tmp_path / "commit.trace"
+    monkeypatch.setenv("GIT_TRACE", str(trace))
+    _commit_file(repo, "source\n", "initial")
+    assert "maintenance run" not in trace.read_text(encoding="utf-8")
 
 
 def _add_submodule(parent: Path, dependency: Path, relative: str) -> None:

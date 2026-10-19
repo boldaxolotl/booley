@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -147,16 +148,31 @@ def _new(name: str, project_root: Path) -> int:
 
 
 @_real_script
-def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys) -> None:
+def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, tmp_path) -> None:
+    excludes = tmp_path / "empty-excludes"
+    excludes.touch()
+    assert _git(project, "config", "core.excludesFile", str(excludes)).returncode == 0
     assert _new("goal-entry", project) == 0
 
     worktree = project / ".booley" / "worktrees" / "goal-entry"
-    assert capsys.readouterr().out.strip() == str(worktree)
+    output = capsys.readouterr()
+    assert output.out == f"{worktree}\n"
+    command = shlex.join(["git", "-C", str(project), "worktree", "remove", str(worktree)])
+    assert command in output.err, "Snapshot removal instructions missing"
+    assert "Snapshot" in output.err and "same Sandbox" in output.err
+    assert "WARNING: usable host removal commands are unavailable" in output.err
+    assert "preserve" in output.err and "docs/user/USAGE.md" in output.err
+    assert output.err.count("git -C") == 1 and "branch -D" not in output.err
     assert (worktree / ".git").is_file()
     assert (worktree / "README.md").read_text(encoding="utf-8") == "hello\n"
     assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").returncode != 0
     head = _git(worktree, "rev-parse", "HEAD").stdout
     assert head == _git(project, "rev-parse", "HEAD").stdout
+    # Discard the disposable Snapshot's copied and generated files before removal.
+    assert _git(worktree, "clean", "-fdx").returncode == 0
+    subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
+    assert not worktree.exists()
+    assert str(worktree) not in _git(project, "worktree", "list", "--porcelain").stdout
 
 
 @_real_script
@@ -244,7 +260,7 @@ def versioned_project(tmp_path):
     from tests.goals.conftest import git
     from tests.goals.stealth_support import CORE
 
-    root = tmp_path / "paired-user" / "main"
+    root = tmp_path / "paired user's" / "main"
     root.mkdir(parents=True)
     git(root, "init", "-q", "-b", "main")
     _write(root / "rtl.v", "module top; endmodule\n")
@@ -303,13 +319,31 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         assert git(paired, "config", "--worktree", "--get", key) == value
     output = capsys.readouterr()
     assert output.out.strip() == str(worktree)
-    from booley.runtime.project_worktree_pairing import worktree_removal_instructions
-
-    assert worktree_removal_instructions(root, worktree, "real-paired") in output.err
+    assert "same Sandbox" in output.err, "Sandbox removal venue missing"
+    assert "WARNING: usable host removal commands are unavailable" in output.err
+    commands = [line.split(": ", 1)[1] for line in output.err.splitlines() if "git -C" in line]
+    expected = [
+        ["git", "-C", str(source), "worktree", "remove", str(paired)],
+        ["git", "-C", str(root), "worktree", "remove", str(worktree)],
+        ["git", "-C", str(source), "branch", "-D", "booley-worktree/real-paired"],
+    ]
+    assert commands == [shlex.join(command) for command in expected]
+    assert "Optional" in output.err and "preserving its commits" in output.err
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
     assert _new("real-paired", root) == 1
-    assert "Remove the Paired Checkout first" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "same Sandbox" in error and "Remove the Paired Checkout first" in error
+    assert "WARNING: usable host removal commands are unavailable" in error
+    assert all(command in error for command in commands)
+    for command, removed in zip(commands[:2], (paired, worktree), strict=True):
+        subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
+        assert not removed.exists()
+    assert str(paired) not in git(source, "worktree", "list", "--porcelain")
+    assert str(worktree) not in git(root, "worktree", "list", "--porcelain")
+    assert git(source, "rev-parse", "booley-worktree/real-paired")
+    subprocess.run(shlex.split(commands[2]), check=True, capture_output=True, timeout=10)
+    assert _git(source, "rev-parse", "--verify", "booley-worktree/real-paired").returncode != 0
 
 
 def test_python_pairing_accepts_detached_project_head(versioned_project, python_outer):
@@ -1012,7 +1046,12 @@ def test_existing_project_registration_is_refused_and_preserved(
     shutil.rmtree(nested)
 
     assert _new("taken", root) == 1
-    assert "already registers a checkout" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "same Sandbox" in error, "Registered-checkout removal venue missing"
+    assert "already registers a checkout" in error
+    assert shlex.join(["git", "-C", str(source), "worktree", "remove", str(nested)]) in error
+    assert "preserve" in error and "locks" in error and "forcing removal" in error
+    assert "remove --force" not in error
     assert nested.as_posix() in git(source, "worktree", "list", "--porcelain")
     assert git(source, "rev-parse", "booley-ticket/taken")
 
