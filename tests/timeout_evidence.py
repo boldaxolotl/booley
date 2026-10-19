@@ -144,5 +144,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         "duration_seconds": report.duration,
         "recorded_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     }
+    if report.failed:
+        payload["longrepr"] = report.longreprtext
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(payload) + "\n")

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from functools import cache
+from itertools import chain
 from pathlib import Path
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_authoritative_booley_dir
@@ -29,20 +32,9 @@ def has_git_worktree_marker(path: Path) -> bool:
         return False
 
 
-def _checkout_data(root: Path) -> Path:
-    """Restrict ownership evidence to this checkout, excluding ancestor config."""
-    root = require_project_checkout(root)
-    return resolve_authoritative_booley_dir(root)
-
-
-def _owns(root: Path, data: Path) -> bool:
-    try:
-        return _checkout_data(root).samefile(data)
-    except (OSError, SourceCheckoutProjectError):
-        return False
-
-
-def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
+def _data_root(
+    start: Path, checkouts: list[Path], checkout_data: Callable[[Path], Path | None]
+) -> Path | None:
     for parent in (start, *start.parents):
         if parent.name == BOOLEY_DIR_NAME and (
             parent != Path.home() / BOOLEY_DIR_NAME or has_git_worktree_marker(parent.parent)
@@ -53,20 +45,15 @@ def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
     configured = [os.environ.get("BOOLEY_DIR")]
     if os.environ.get("BOOLEY_CONTAINER") == "1":
         configured.append(BOOLEY_DIR_TARGET)
-    for value in configured:
-        if value:
-            data = Path(value).resolve()
-            if contains(start, booley_dir=data) is not None and not any(
-                (canonical := contains(checkout, booley_dir=data)) is not None
-                and canonical != data.resolve()
-                for checkout in checkouts
-            ):
-                return data
-    for checkout in checkouts:
-        try:
-            data = _checkout_data(checkout).resolve()
-        except SourceCheckoutProjectError:
-            continue
+    directories = chain(
+        (Path(value).resolve() for value in configured if value),
+        (
+            data.resolve()
+            for checkout in checkouts
+            if (data := checkout_data(checkout)) is not None
+        ),
+    )
+    for data in directories:
         if contains(start, booley_dir=data) is not None:
             if any(
                 (canonical := contains(p, booley_dir=data)) is not None
@@ -100,26 +87,41 @@ def _checkout_candidates(start: Path | None) -> tuple[Path, list[Path]]:
     return current, checkouts
 
 
-def _owning_checkouts(candidates: list[Path], data: Path) -> set[Path]:
-    """Require independent checkout-local ownership for every candidate."""
-    return {
-        p.resolve()
-        for p in candidates
-        if contains(p, booley_dir=data) is None and has_git_worktree_marker(p) and _owns(p, data)
-    }
+def _owning_checkouts(
+    candidates: list[Path], data: Path, checkout_data: Callable[[Path], Path | None]
+) -> set[Path]:
+    owners = set()
+    for candidate in candidates:
+        if contains(candidate, booley_dir=data) is None and has_git_worktree_marker(candidate):
+            try:
+                root = candidate.resolve()
+                selected = checkout_data(root)
+                if selected is not None and selected.samefile(data):
+                    owners.add(root)
+            except OSError:
+                pass
+    return owners
 
 
 def discover_project_root(
     start: Path | None = None, *, required: bool = False, explicit_selection: bool = False
 ) -> Path | None:
     """Resolve explicit selection or an independently proven owning checkout."""
+
+    @cache
+    def checkout_data(root):
+        try:
+            return resolve_authoritative_booley_dir(require_project_checkout(root))
+        except SourceCheckoutProjectError:
+            return None
+
     current, checkouts = _checkout_candidates(start)
-    data = _data_root(current, checkouts)
+    data = _data_root(current, checkouts, checkout_data)
     env = None if explicit_selection else os.environ.get("RTL_PROJECT_ROOT")
-    explicit = Path(env).resolve() if env else None
-    if explicit is not None:
-        _selected, explicit_checkouts = _checkout_candidates(Path(env))
-        explicit_data = _data_root(explicit, explicit_checkouts)
+    explicit = None
+    if env:
+        explicit, explicit_checkouts = _checkout_candidates(Path(env))
+        explicit_data = _data_root(explicit, explicit_checkouts, checkout_data)
         if explicit_data is None:
             return explicit
         data = data or explicit_data
@@ -127,14 +129,14 @@ def discover_project_root(
         candidates = checkouts[:]
         if os.environ.get("BOOLEY_CONTAINER") == "1":
             candidates.append(Path(WORK_DIR))
-        owners = _owning_checkouts(candidates, data)
+        owners = _owning_checkouts(candidates, data, checkout_data)
         if not owners and start is not None:
             # A data-path lookup can originate in its owning checkout.
             try:
                 _current, cwd_checkouts = _checkout_candidates(None)
             except OSError:
                 cwd_checkouts = []
-            owners = _owning_checkouts(cwd_checkouts, data)
+            owners = _owning_checkouts(cwd_checkouts, data, checkout_data)
         if len(owners) == 1 and explicit is None:
             return owners.pop()
         raise ProjectRootDiscoveryError(
