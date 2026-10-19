@@ -3246,7 +3246,7 @@ class TestMangledArgWarning:
         cmd = ["python3", "-c", "print(1)", "--out", "C:/Temp/x"]
         with patch.object(sr, "run_project_command", return_value=0) as run:
             assert sr.enter(workspace, cmd, tty=False) == 0
-        run.assert_called_once_with(workspace, cmd, tty=False)
+        run.assert_called_once_with(workspace, cmd, tty=False, cwd=None)
 
 
 class _ParallelEnterProbe:
@@ -3333,6 +3333,7 @@ class TestRunProjectCommand:
             command,
             tty=True,
             env=self.COMMAND_ENV,
+            cwd=None,
         )
 
     def test_starts_headless_runtime_when_none_is_running(self, workspace: Path):
@@ -3371,6 +3372,7 @@ class TestRunProjectCommand:
             command,
             tty=False,
             env=self.COMMAND_ENV,
+            cwd=None,
         )
 
     def test_ignores_running_runtime_for_another_project(self, workspace: Path):
@@ -3666,7 +3668,7 @@ class TestSessionRefresh:
                 booley._session_enter(SimpleNamespace(exec_cmd=["--", "echo", "ready"]), tmp_path)
                 == 7
             )
-        enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True)
+        enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True, cwd=None)
 
         with (
             patch.object(sr, "down", return_value=sr.DownResult()),
@@ -4374,7 +4376,11 @@ def test_project_sandbox_resolution_reuses_editor_for_up_and_both_enters(
     assert sr.enter(workspace, tty=True) == 0
     assert [call.args[1] for call in attached.call_args_list] == ["a" * 64] * 2
     assert attached.call_args.args[2] == ["/bin/bash", "-l"]
-    assert attached.call_args.kwargs == {"tty": True, "env": {"BOOLEY_DIR": "/booley-project"}}
+    assert attached.call_args.kwargs == {
+        "tty": True,
+        "env": {"BOOLEY_DIR": "/booley-project"},
+        "cwd": None,
+    }
     assert sr.validate(workspace) == fixture.issuance.spec_sha256
     assert all(call[1] in ("ps", "container", "inspect") for call in fixture.calls)
 

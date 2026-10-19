@@ -304,7 +304,7 @@ def run_command(
         supervisor,
         tty=tty,
         env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
-        **({"cwd": cwd} if cwd is not None else {}),
+        cwd=cwd,
     )
     return SupervisedExecutionDriver(project_data, project_root=project_root, cwd=cwd).run(
         execution_id, docker_argv

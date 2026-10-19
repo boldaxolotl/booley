@@ -1280,11 +1280,11 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     raw = list(getattr(args, "exec_cmd", []) or [])
     if raw and raw[0] == "--":
         raw = raw[1:]
-    kwargs = {}
-    if getattr(args, "_session_cwd", None) is not None:
-        kwargs["cwd"] = args._session_cwd
     return sr.enter(
-        project_root, raw or None, tty=sys.stdin.isatty() and sys.stdout.isatty(), **kwargs
+        project_root,
+        raw or None,
+        tty=sys.stdin.isatty() and sys.stdout.isatty(),
+        cwd=getattr(args, "_session_cwd", None),
     )
 
 

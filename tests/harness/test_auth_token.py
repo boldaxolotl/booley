@@ -998,6 +998,40 @@ def test_cli_linked_auth_refuses_before_required_guard(
     ), "linked CLI auth must require Project Root before generic guards"
 
 
+@pytest.mark.parametrize("repo", ["unrelated", "source-checkout"])
+def test_cli_auth_from_non_project_linked_worktree_is_not_refused(
+    tmp_path, monkeypatch, capsys, repo
+):
+    """Only a proven linked Project checkout refuses; other linked worktrees keep auth."""
+    import subprocess
+    import sys
+
+    _linked_auth(tmp_path, monkeypatch)
+    main = tmp_path / "plain"
+    git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com"]
+    subprocess.run([*git, "init", str(main)], check=True, capture_output=True, timeout=30)
+    if repo == "source-checkout":
+        (main / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+        subprocess.run([*git, "-C", str(main), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        [*git, "-C", str(main), "commit", "--allow-empty", "-m", "initial"],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    linked = tmp_path / "plain-linked"
+    subprocess.run(
+        [*git, "-C", str(main), "worktree", "add", "--detach", str(linked)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    monkeypatch.chdir(linked)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--clear"])
+    result = tlr.main()
+    assert result == 0, capsys.readouterr().err
+
+
 def test_linked_auth_status_preserves_selected_checkout(tmp_path, monkeypatch):
     _, linked, effects = _linked_auth(tmp_path, monkeypatch)
     selected = []

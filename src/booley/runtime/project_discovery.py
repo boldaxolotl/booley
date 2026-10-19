@@ -232,7 +232,11 @@ def linked_auth_error(selected: Path) -> str | None:
     _current, checkouts = _checkout_candidates(selected)
     if not checkouts or not (checkouts[0] / ".git").is_file():
         return None
-    context = discover_session_context(selected)
+    try:
+        context = discover_session_context(selected)
+    except (ProjectRootDiscoveryError, SourceCheckoutProjectError):
+        # Not a Booley Project worktree: auth keeps its Project-independent behavior.
+        return None
     if context.project_root != context.checkout:
         return "Auth mutation from a linked worktree is unsupported; run from the Project Root."
     return None

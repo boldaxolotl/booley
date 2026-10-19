@@ -2382,7 +2382,7 @@ def run_project_command(
             list(command),
             tty=tty,
             env=command_env,
-            **({"cwd": cwd} if cwd is not None else {}),
+            cwd=cwd,
         ).exit_code
     except (OSError, subprocess.SubprocessError) as exc:
         raise SessionError(f"could not attach to Sandbox {name!r}: {exc}") from exc
@@ -2401,7 +2401,7 @@ def enter(
         workspace,
         command or ["/bin/bash", "-l"],
         tty=tty,
-        **({"cwd": cwd} if cwd is not None else {}),
+        cwd=cwd,
     )
 
 
