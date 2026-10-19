@@ -11,9 +11,7 @@ import pytest
 from booley.criteria.freshness import evaluate_verification_freshness
 from booley.criteria.state import DevelopmentState
 from booley.evidence.review_dispositions import (
-    collect_review_audit,
     collect_review_dispositions,
-    review_report_required,
 )
 from booley.mcp.server import _structured_from_report
 from booley.specialists.reviewer import (
@@ -88,6 +86,19 @@ def evidence(result):
     return json.loads(Path(result.detail["audit_evidence"]).read_text())["detail"]
 
 
+def persisted_criterion(reviewer):
+    state = DevelopmentState.load(Path(reviewer.args.state_file))
+    return state.criteria["review_rtl_bugs_clean"]
+
+
+def assert_run_evidence(result):
+    path = Path(result.detail["audit_evidence"])
+    assert len(list(path.parent.glob("*.json"))) == 1, "one evidence file per run"
+    assert result.detail["artifacts"]["reviewer_evidence"] == str(path)
+    assert json.loads(path.read_text()) == {"exit_code": result.exit_code, "detail": result.detail}
+    return path
+
+
 def test_mixed_rows_preserve_raw_ordinals_and_duplicate_source_proposals(reviewer, monkeypatch):
     outside = proposal(file="../outside.sv")
     malformed = [None, {"severity": "SECRET", "summary": "<script>[link](bad)</script>"}]
@@ -101,7 +112,7 @@ def test_mixed_rows_preserve_raw_ordinals_and_duplicate_source_proposals(reviewe
     assert result.detail["filtered"][0]["finding_id"] == result.detail["filtered"][1]["finding_id"]
     assert evidence(result) == result.detail
     assert len(collect_review_dispositions(reviewer.state.criteria)) == 1
-    assert len(collect_review_audit(reviewer.state.criteria)) == 4
+    assert result.detail.items() <= persisted_criterion(reviewer).detail.items()
 
 
 @pytest.mark.parametrize("value", [None, 17, {"unexpected": [1, 2]}, "bad"])
@@ -136,8 +147,10 @@ def test_source_only_audit_is_non_gating_and_surfaces_in_mcp(reviewer, monkeypat
     result = reviewer._run()
     assert result.exit_code == 0
     assert result.detail["pending"] == []
-    assert review_report_required(reviewer.state.criteria) is False
-    assert len(collect_review_audit(reviewer.state.criteria)) == 1
+    assert collect_review_dispositions(reviewer.state.criteria) == []
+    assert result.detail.items() <= persisted_criterion(reviewer).detail.items()
+    assert len(result.detail["filtered"]) == 1
+    assert result.detail["rejected"] == []
     payload = _structured_from_report(
         {"mcp_tool": "reviewer", "exit_code": 0, "detail": result.detail}
     )
@@ -323,7 +336,7 @@ def test_reused_specialist_starts_audit_history_for_new_contract(reviewer, monke
     assert result.detail["pending"][0]["file"] == "rtl/other.sv"
     assert result.detail["filtered"] == []
     assert result.detail["rejected"] == []
-    assert result.detail.get("receipt_history", []) == []
+    assert result.detail["audit_evidence"] != first.detail["audit_evidence"]
     assert evidence(first)["rejected"] == first.detail["rejected"]
 
 
@@ -405,8 +418,11 @@ def test_error_diagnostics_accumulate_within_unchanged_contract(reviewer, monkey
     second = reviewer._run()
     assert [row["raw"] for row in second.detail["rejected"]] == [None, False]
     assert len({row["attempt_id"] for row in second.detail["rejected"]}) == 2
-    assert second.detail["rejected"][0]["evidence"] == first.detail["audit_evidence"]
-    assert second.detail.get("receipt_history", []) == []
+    assert evidence(first) == first.detail
+    path = Path(second.detail["audit_evidence"])
+    assert second.detail["artifacts"]["reviewer_evidence"] == str(path)
+    assert evidence(second) == second.detail
+    assert len(list(path.parent.glob("*.json"))) == 2
 
 
 def test_evidence_write_failure_cannot_publish_passing_criterion(reviewer, monkeypatch):
@@ -422,7 +438,12 @@ def test_evidence_write_failure_cannot_publish_passing_criterion(reviewer, monke
     assert persisted.is_met("review_rtl_bugs_clean") is False
 
 
-def test_passing_criterion_already_references_durable_evidence(reviewer, monkeypatch):
+@pytest.mark.parametrize("late_error", [False, True], ids=["normal", "late-error"])
+def test_recorded_review_uses_one_evidence_file(reviewer, monkeypatch, late_error):
+    from booley.specialists import reviewer as module
+
+    write = MagicMock(wraps=module.atomic_write_json)
+    monkeypatch.setattr(module, "atomic_write_json", write)
     original_set = reviewer.set_criterion
     published = []
 
@@ -433,10 +454,38 @@ def test_passing_criterion_already_references_durable_evidence(reviewer, monkeyp
         original_set(key, met, detail=detail)
 
     monkeypatch.setattr(reviewer, "set_criterion", inspect_publication)
+    original_execute = reviewer._execute_review
+
+    def finish_execution(key):
+        result = original_execute(key)
+        if late_error:
+            result.exit_code = 2
+            result.criterion_met = False
+            reviewer._audit["rejected"].append({"raw": "late error"})
+        return result
+
+    monkeypatch.setattr(reviewer, "_execute_review", finish_execution)
     output(reviewer, monkeypatch, {"issues": []})
     result = reviewer._run()
-    assert result.criterion_met is True
+    assert result.criterion_met is (not late_error)
     assert published == ["review_rtl_bugs_clean"]
+    path = assert_run_evidence(result)
+    assert [call.args[0] for call in write.call_args_list] == [path] * (2 if late_error else 1)
+    persisted = persisted_criterion(reviewer)
+    assert persisted.met is (not late_error)
+    assert result.detail.items() <= persisted.detail.items()
+    if late_error:
+        assert result.exit_code == 2
+        assert result.detail["review_error"] is True
+        assert result.detail["rejected"] == [{"raw": "late error"}]
+
+
+def test_diagnostic_review_keeps_one_file_without_publishing_criterion(reviewer, monkeypatch):
+    reviewer.args.diagnostic = True
+    output(reviewer, monkeypatch, {"issues": None})
+    result = reviewer._run()
+    assert_run_evidence(result)
+    assert "audit_evidence" not in persisted_criterion(reviewer).detail
 
 
 @pytest.mark.parametrize(
@@ -475,25 +524,6 @@ def test_configured_tb_policy_does_not_discard_valid_current_finding(
     prompt = reviewer._build_prompt()
     assert "CUSTOM PASS" in prompt
     assert "custom.vcd" in prompt
-
-
-@pytest.mark.parametrize("mode", ["done", "clean"])
-@pytest.mark.parametrize("disposition", ["current", "advisory", "deferred", "out_of_scope"])
-def test_real_reviewer_output_roundtrips_package(reviewer, monkeypatch, mode, disposition):
-    from booley.review.artifact import ReviewPackage
-    from tests.review.test_artifact import _package
-
-    reviewer.state.criteria.clear()
-    key = f"review_rtl_bugs_{mode}"
-    reviewer.state.init_criteria({key: True})
-    output(reviewer, monkeypatch, {"issues": [proposal(disposition=disposition)]})
-    result = reviewer._run()
-    rows = collect_review_dispositions({key: {"detail": result.detail}})
-    package = ReviewPackage.parse({**_package(), "review_dispositions": rows})
-    roundtrip = ReviewPackage.parse(package.to_dict())
-    row = roundtrip.review_dispositions[0]
-    assert row.disposition == ("open" if disposition == "current" else "reported")
-    assert row.reviewer_disposition == disposition
 
 
 @pytest.mark.parametrize("mode", ["done", "clean"])

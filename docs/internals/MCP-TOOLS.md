@@ -968,25 +968,25 @@ is a Specialist error. Invalid verification dispositions keep findings pending.
 
 ### Publication and history
 
-Review results have immutable JSON evidence under `reviewer-evidence/` in the
-directory resolved by `booley.runtime.booley_dir`, including Interactive Mode
-and failures after input validation. Dry runs and input-validation failures do
-not publish review evidence. Results include the path in `audit_evidence` and
-`artifacts.reviewer_evidence`. Evidence is published atomically before a passing
-Criterion is recorded.
+Each review run uses one durable JSON evidence path under `reviewer-evidence/`
+in the directory resolved by `booley.runtime.booley_dir`, including Interactive
+Mode and failures after input validation. Dry runs and input-validation failures
+do not publish review evidence. Results and recorded Criterion details include
+the same path in `audit_evidence` and `artifacts.reviewer_evidence`. Evidence is
+published atomically before a passing Criterion is recorded; a later error
+rewrites that same file with the final error detail.
 
 Audit rows retain proposal ordinals, attempts, and phases within one contract.
-A contract change archives the previous receipt and starts new audit history,
-preserving open obligations and explicit disposition provenance. Historical
-resolutions remain inspectable, but an active pending finding takes precedence
-over any historical resolution with the same identity in normalized views.
-Old automatic policy exclusions are historical only.
+A contract change starts new audit history, preserving open obligations and
+explicit disposition provenance. Historical resolutions remain inspectable, but
+an active pending finding takes precedence over any historical resolution with
+the same identity in normalized views. Old automatic policy exclusions are
+historical only.
 
-Live receipts predating the filtering revision require fresh discovery.
-Historical accepted packages stay readable; previously discarded proposals
-cannot be recovered. Audit evidence appears separately in review packages,
-briefings, HTML explanations, and MCP results, without entering severity
-counts, dispositions, acceptance predicates, or `review_report_required`.
+Live receipts predating the filtering revision require fresh discovery;
+previously discarded proposals cannot be recovered. Filtered and rejected audit
+rows appear separately in MCP results and persisted Criterion detail, without
+entering severity counts, dispositions, or acceptance predicates.
 
 ## Report-driven Coverage Analyst
 
