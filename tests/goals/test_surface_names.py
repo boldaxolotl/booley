@@ -385,5 +385,7 @@ def _admit_coverage_goal(layout, monkeypatch, selector):
                 ]
             ),
         ),
-        entry.EntryEnvironment(booley_dir=layout.control),
+        entry.EntryEnvironment(
+            booley_dir=layout.control, routing_guidance="Explicit test routing guidance."
+        ),
     ).record

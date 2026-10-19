@@ -373,7 +373,7 @@ class SessionRegistry:
         try:
             store = HandleStore(self.booley_dir)
             handles = store.load()
-            before = handles.labels()
+            before = (handles.entries.copy(), handles.aliases.copy())
             handles.reserve(
                 facts.key,
                 "S",
@@ -388,26 +388,10 @@ class SessionRegistry:
                         # Keep ownership even when this thread already has a historic
                         # allocation, which the handle contract never renumbers.
                         handles.aliases["chat:thread:" + key] = facts.key
-            if handles.labels() != before:
+            if (handles.entries, handles.aliases) != before:
                 store.save(handles)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Session handle unavailable for %s: %s", facts.key, exc)
-
-    def backfill_handles(self) -> None:
-        """Migrate legacy identities before pruning; Dashboard snapshots never write."""
-        with self._writer():
-            store = HandleStore(self.booley_dir)
-            handles = store.load()
-            before = handles.labels()
-            for path in islice(self.root.glob("*.json"), MAX_ROWS):
-                try:
-                    row = self._read(path)
-                except (OSError, ValueError, UnicodeError):
-                    continue
-                facts = canonical_attribution(row.attribution)
-                handles.reserve(facts.key, "S", predecessors=(row.attribution.key,))
-            if handles.labels() != before:
-                store.save(handles)
 
     def prune(
         self,

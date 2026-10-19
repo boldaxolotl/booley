@@ -22,7 +22,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import sys
 import time
 from collections.abc import Mapping
@@ -156,17 +155,10 @@ def _chat_aliases(project: Path) -> dict[str, str]:
     aliases, entries = data.get("aliases"), data.get("entries")
     if not isinstance(aliases, dict) or not isinstance(entries, dict):
         raise ValueError("invalid handle map")
-    numbers = set()
-    for key, label in entries.items():
-        match = re.fullmatch(r"S([1-9][0-9]*)", label) if isinstance(label, str) else None
-        if not key or match is None or int(match[1]) in numbers:
-            raise ValueError("invalid handle allocation")
-        numbers.add(int(match[1]))
-    for key, target in aliases.items():
-        if not key or key in entries or not isinstance(target, str) or target not in entries:
-            raise ValueError("invalid handle alias")
-    counter = data.get("next_number")
-    if type(counter) is not int or counter <= max(numbers, default=0):
+    for mapping in (entries, aliases):
+        if any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
+            raise ValueError("handle mapping must contain strings")
+    if type(data.get("next_number")) is not int:
         raise ValueError("invalid handle counter")
     return aliases
 

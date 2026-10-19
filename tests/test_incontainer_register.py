@@ -14,6 +14,9 @@ from unittest.mock import patch
 import pytest
 
 from booley.harness import incontainer_register as entry
+from booley.mcp import (
+    catalog,
+)
 from booley.runtime import incontainer_setup as reg
 from tests.conftest import require_symlinks
 
@@ -320,7 +323,6 @@ class TestEnsureHttpServer:
     def test_explicit_interactive_mode_controls_spawned_server_surface(
         self, tmp_path, monkeypatch
     ):
-        from booley.mcp.server import _status_mcp_tool_visible
 
         states = iter([False, True])
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: next(states))
@@ -355,7 +357,7 @@ class TestEnsureHttpServer:
         assert "BOOLEY_MCP_TOOLS" not in child_env
 
         with patch.dict(os.environ, child_env, clear=True):
-            assert _status_mcp_tool_visible()
+            assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
     def test_starts_and_waits_for_port(self, tmp_path, monkeypatch):
         # Port dead on the pre-check, alive once the (fake) server was spawned.

@@ -1795,10 +1795,20 @@ class TestConfigDiscovery:
         )
         assert flow._get_targets() == ()
 
-    def test_target_is_required_by_parser(self, state_file: Path):
+    def test_omitted_target_rejects_empty_catalog_after_parsing(
+        self, state_file: Path, monkeypatch
+    ):
         flow = LintFlow()
-        with pytest.raises(SystemExit):
-            flow.parse_args([])
+        assert flow.parse_args([]).target == ""
+        monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+        monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
+        result = flow.execute(
+            flow.request_type(
+                target="", work_dir=state_file.parent, report_dir=state_file.parent / "reports"
+            )
+        )
+        assert result.exit_code == EXIT_ERROR
+        assert "Eligible Targets: (none)" in result.outcome.report_text
 
     def test_run_refuses_an_explicit_empty_target(self, tmp_path):
         flow = LintFlow()

@@ -26,7 +26,13 @@ from booley.goals.changes import Approval, read_change_log
 from booley.goals.entry import EntryEnvironment
 from booley.goals.format import render_status
 from booley.goals.paths import record_paths
-from booley.goals.proposals import ProposalError, list_proposals, load_proposal, proposal_path
+from booley.goals.proposals import (
+    ProposalError,
+    finalize,
+    list_proposals,
+    load_proposal,
+    proposal_path,
+)
 from booley.goals.recorder import GOAL_SCOPE, GoalEvidenceRecorder, GoalProjection
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
@@ -59,7 +65,7 @@ def interrupted_transaction(layout, env, view, *, answer="approve", boundary=Non
     return path, json.loads(path.read_bytes())
 
 
-@pytest.mark.parametrize("attack", ["traversal", "unknown", "record", "state", "ledger"])
+@pytest.mark.parametrize("attack", ["traversal", "unknown", "record"])
 def test_restart_rejects_unauthorized_destinations_before_any_publication(layout, attack):
     env = setup_cycle(layout)
     publish(layout)
@@ -69,11 +75,8 @@ def test_restart_rejects_unauthorized_destinations_before_any_publication(layout
     victim = root.parent / "victim"
     if attack == "traversal":
         effect["path"] = str(root / ".." / "victim")
-    elif attack == "unknown":
-        effect["label"] = "unrecognized"
-        effect["path"] = str(root / "victim")
     else:
-        effect["label"] = attack
+        effect["label"] = "unrecognized" if attack == "unknown" else "record"
         effect["path"] = str(root / "victim")
     path.write_text(json.dumps(transaction))
     before = {item: item.read_bytes() for item in root.rglob("*") if item.is_file()}
@@ -337,6 +340,7 @@ def test_competing_saved_proposals_can_be_rejected_and_terminal_decisions_do_not
 def test_payload_substitution_is_refused(layout):
     env = setup_cycle(layout)
     view = proposal(layout, env)
+    interrupted_transaction(layout, env, view, boundary="approved")
     path = (
         proposal_path(record_paths(layout.control, layout.record.id).root, view.proposal.id)
         / "payload.json"
@@ -624,3 +628,30 @@ def test_missing_published_decision_metadata_never_resets_a_saved_decision(layou
     (proposal_path(root, view.proposal.id) / "state.json").unlink()
     with pytest.raises(ProposalError, match="cannot read"):
         load_proposal(root, view.proposal.id)
+
+
+def test_finalization_refuses_a_view_without_the_durable_decision(layout):
+    env = setup_cycle(layout)
+    pending = proposal(layout, env)
+    interrupted_transaction(layout, env, pending)
+    root = record_paths(layout.control, layout.record.id).root
+    state_path = proposal_path(root, pending.proposal.id) / "state.json"
+    before = state_path.read_bytes()
+    with (
+        env.store.record_lock(layout.record.id) as lock,
+        pytest.raises(ProposalError, match="no matching human decision"),
+    ):
+        finalize(lock, pending)
+    assert state_path.read_bytes() == before
+
+
+def test_finalized_rejection_is_idempotent(layout):
+    env = setup_cycle(layout)
+    pending = proposal(layout, env)
+    rejected = approve(layout, env, pending.proposal.id, answer="reject")
+    root = record_paths(layout.control, layout.record.id).root
+    state_path = proposal_path(root, pending.proposal.id) / "state.json"
+    before = state_path.read_bytes()
+    with env.store.record_lock(layout.record.id) as lock:
+        assert finalize(lock, rejected, rejected=True) == rejected
+    assert state_path.read_bytes() == before

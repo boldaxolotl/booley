@@ -6,11 +6,15 @@ and edge cases (empty dirs, syntax errors, missing attributes).
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from booley.mcp import (
+    catalog,
+)
 from booley.mcp.registry import (
     BUILTIN_FLOW_PACKAGES,
     SKIP_MODULES,
@@ -567,14 +571,19 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
 
 
 def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
-    from booley.mcp import server as mcp_server
+    monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
 
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-    monkeypatch.setattr(mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
+
     builtins = [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}]
-    names = {definition["name"] for definition in mcp_server._all_mcp_tool_defs(builtins)}
+    names = {
+        definition["name"]
+        for definition in catalog.visible_definitions(
+            catalog.Exposure.from_mapping(os.environ), builtins
+        )
+    }
     assert len(names) == 10
     assert {name for name in names if name.startswith("goal_")} == {
         "goal_enter",

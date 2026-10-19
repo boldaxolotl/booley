@@ -14,7 +14,9 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.harness import auto_doctor, doctor, upgrade_review
 from booley.harness import booley as cli
 from booley.harness.dashboard import model as dashboard
-from booley.mcp import server
+from booley.mcp import (
+    server,
+)
 from booley.runtime import health, health_presentation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime
@@ -64,7 +66,7 @@ def _isolate_mcp_and_dashboard(monkeypatch, root):
     monkeypatch.chdir(root)
     monkeypatch.setattr(server, "_interactive_session_id", lambda: "fixture")
     monkeypatch.setattr(server, "format_status_line", lambda: "status")
-    monkeypatch.setattr(server, "_status_mcp_tool_visible", lambda: True)
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setattr(
         upgrade_review,
         "read_status",

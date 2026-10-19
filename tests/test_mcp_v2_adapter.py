@@ -11,6 +11,9 @@ from mcp.server.transport_security import TransportSecurityMiddleware
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, CallToolRequestParams, TextContent
 from starlette.requests import Request
 
+from booley.mcp import (
+    catalog,
+)
 from booley.mcp import server as mcp_server
 
 
@@ -27,7 +30,7 @@ def _test_server(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
     monkeypatch.setattr(mcp_server, "_discover_booley_mcp_tools", lambda: ([], []))
     monkeypatch.setattr(mcp_server, "_build_mcp_tool_index", lambda _tools: {})
-    monkeypatch.setattr(mcp_server, "_all_mcp_tool_defs", lambda _tools: [definition])
+    monkeypatch.setattr(catalog, "visible_definitions", lambda _exposure, _tools: [definition])
 
     async def dispatch_status(name, arguments, jobs, names):
         return [TextContent(type="text", text=f"{name}: ready")]

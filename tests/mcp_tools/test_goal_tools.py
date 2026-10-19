@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,10 @@ from jsonschema import Draft202012Validator
 
 from booley.core.booley_dir import reset_cache
 from booley.goals.model import goal_arg_json_schema
-from booley.mcp import goal_tools
+from booley.mcp import (
+    catalog,
+    goal_tools,
+)
 from booley.mcp import server as mcp_server
 from booley.mcp.application import UnknownMcpToolError
 
@@ -31,14 +35,19 @@ def _plain_server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     project = tmp_path / ".booley"
     project.mkdir()
     monkeypatch.setenv("BOOLEY_DIR", str(project))
-    monkeypatch.setattr(mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
+
     reset_cache()
     yield
     reset_cache()
 
 
 def _listed() -> set[str]:
-    return {definition["name"] for definition in mcp_server._all_mcp_tool_defs([])}
+    return {
+        definition["name"]
+        for definition in catalog.visible_definitions(
+            catalog.Exposure.from_mapping(os.environ), []
+        )
+    }
 
 
 def _application():
