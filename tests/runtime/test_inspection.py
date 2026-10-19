@@ -532,6 +532,43 @@ class TestDevcontainerSpecStaleness:
         )
         return rec
 
+    def test_image_comparison_uses_shared_dispatch(self, tmp_path, monkeypatch):
+        assert callable(getattr(idk, "compare_issued_image", None)), (
+            "shared image dispatch is missing"
+        )
+        calls = []
+
+        def compare(*args, **kwargs):
+            calls.append((args, kwargs))
+            return inspection.image_identity.Comparison(inspection.image_identity.Status.MATCH)
+
+        monkeypatch.setattr(idk, "compare_issued_image", compare)
+        request = inspection.RuntimeInspectionRequest(tmp_path, "configured", "custom-docker")
+        report = inspection.Findings()
+        assert inspection._image_current(request, {"image": "issued-tag"}, report)
+        assert calls == [
+            (
+                ("issued-tag", "configured"),
+                {"project_root": tmp_path, "executable": "custom-docker"},
+            )
+        ]
+        assert report.report().findings == ()
+
+    def test_equivalent_image_has_no_doctor_findings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            idk,
+            "compare_issued_selection",
+            lambda *args, **kwargs: inspection.image_identity.Comparison(
+                inspection.image_identity.Status.MATCH
+            ),
+        )
+        request = inspection.RuntimeInspectionRequest(
+            tmp_path, project_image.project_image_name(tmp_path), None
+        )
+        report = inspection.Findings()
+        assert inspection._image_current(request, {"image": "sha256:" + "a" * 64}, report)
+        assert report.report().findings == ()
+
     def test_fresh_claude_spec_passes(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
