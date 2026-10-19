@@ -63,6 +63,7 @@ def discover_mcp_tools(
     project_mcp_tools_dir: Path | None = None,
     specialist_config: dict[str, Any] | None = None,
     flow_config: dict[str, Any] | None = None,
+    inventory: list[McpToolInfo] | None = None,
 ) -> list[McpToolInfo]:
     """Discover and filter available MCP endpoints.
 
@@ -72,38 +73,47 @@ def discover_mcp_tools(
         project_mcp_tools_dir: Project custom MCP tool directory.
         specialist_config: ``booley.toml [specialists]`` Specialist config.
         flow_config: ``booley.toml [flows]`` deterministic Flow config.
+        inventory: Optional complete unfiltered metadata; an empty inventory is valid.
 
     Returns:
         Enabled MCP endpoints, built-ins first and then project-defined ones.
     """
+    if inventory is None:
+        inventory = discover_mcp_inventory(
+            booley_src=booley_src, project_mcp_tools_dir=project_mcp_tools_dir
+        )
+    return filter_mcp_tools(
+        inventory, specialist_config=specialist_config, flow_config=flow_config
+    )
+
+
+def discover_mcp_inventory(
+    *, booley_src: Path | None = None, project_mcp_tools_dir: Path | None = None
+) -> list[McpToolInfo]:
+    """Read unfiltered endpoint metadata without executing Project Python."""
     if booley_src is None:
         booley_src = Path(__file__).resolve().parent.parent
-
-    specialist_config = specialist_config or {}
-    flow_config = flow_config or {}
-
     discovered = _scan_builtin_flows(booley_src / "flows", {})
     for package in ("mcp", "specialists"):
         discovered.extend(_scan_directory(booley_src / package, {}, builtin=True, package=package))
-
     if project_mcp_tools_dir and project_mcp_tools_dir.is_dir():
-        discovered.extend(
-            _scan_directory(
-                project_mcp_tools_dir,
-                {},
-                {},
-                builtin=False,
-                package="",
-            )
-        )
+        discovered.extend(_scan_directory(project_mcp_tools_dir, {}, builtin=False))
+    return discovered
 
+
+def filter_mcp_tools(
+    inventory: list[McpToolInfo],
+    *,
+    specialist_config: dict[str, Any] | None = None,
+    flow_config: dict[str, Any] | None = None,
+) -> list[McpToolInfo]:
+    """Validate complete Specialist names and apply the shared enablement policy."""
+    specialists, flows = specialist_config or {}, flow_config or {}
     parse_specialist_config(
-        specialist_config, {info.name for info in discovered if info.kind == "specialist"}
+        specialists, {info.name for info in inventory if info.kind == "specialist"}
     )
     return [
-        info
-        for info in discovered
-        if endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config)
+        info for info in inventory if endpoint_is_enabled(info.name, info.kind, specialists, flows)
     ]
 
 

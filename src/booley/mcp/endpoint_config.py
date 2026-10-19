@@ -44,7 +44,9 @@ def parse_endpoint_config(data: Mapping[str, Any]) -> tuple[dict[str, Any], dict
     return specialists, flows
 
 
-def read_endpoint_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def read_endpoint_config(
+    path: Path, *, specialist_names: Collection[str] | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read optional configuration, failing closed on unreadable or invalid content."""
     try:
         with path.open("rb") as handle:
@@ -54,7 +56,9 @@ def read_endpoint_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise EndpointConfigError(f"Cannot read {path}: {exc}") from exc
     specialists, flows = parse_endpoint_config(data)
-    if specialists:
+    if specialist_names is not None:
+        parse_specialist_config(specialists, specialist_names)
+    elif specialists:
         from booley.mcp.registry import discover_mcp_tools
 
         discover_mcp_tools(
