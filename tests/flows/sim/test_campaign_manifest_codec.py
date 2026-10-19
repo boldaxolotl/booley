@@ -1495,6 +1495,46 @@ def _prepared_diagnostic_pair():
     return old, new
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        json.loads(line)
+        for line in (Path(__file__).parent / "fixtures/prepared_manifest_pairs.jsonl")
+        .read_text()
+        .splitlines()
+    ],
+    ids=lambda case: case["id"],
+)
+def test_prepared_manifest_pair_corpus(case):
+    from booley.flows.sim.campaign.planning import (
+        SimulationCampaignWorkloadMismatchError,
+        project_workload_mismatches,
+        verify_workload,
+    )
+
+    left, right = [
+        decode_simulation_campaign_manifest(canonical_json_bytes(case[key]))
+        for key in ("expected", "current")
+    ]
+    raw = compare_manifests(left, right)
+    assert canonical_json_bytes(
+        [[item.pointer, item.expected, item.actual, item.message] for item in raw]
+    ) == canonical_json_bytes(case["raw"])
+    assert [manifest_digest(left), manifest_digest(right)] == case["digests"]
+    diagnostic = project_workload_mismatches(left, right, raw)
+    assert project_workload_mismatches(left, right) == diagnostic
+    assert diagnostic.detail == case["detail"]
+    assert diagnostic.report() == case["report"]
+    assert diagnostic.report(verbose=True) == case["verbose_report"]
+    assert diagnostic.report(verbose=True) == diagnostic.report() + case["raw_verbose_suffix"]
+    if case["outcome"] == "accept":
+        verify_workload(left, right)
+    else:
+        with pytest.raises(SimulationCampaignWorkloadMismatchError) as exc:
+            verify_workload(left, right)
+        assert exc.value.diagnostic == diagnostic
+
+
 def test_prepared_path_and_content_equality_collapses_across_multiple_disclosures():
     old, new = _prepared_diagnostic_pair()
     for document in (old, new):
