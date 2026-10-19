@@ -50,26 +50,17 @@ def test_raw_abc_script_must_not_be_empty():
         ppa.validate_abc_script("+")
 
 
-def test_fanout_resolved_default_and_override_preserve_authored_integer():
-    original = openroad_ppa.openroad_profile("balanced")
-    assert original.max_fanout is None
-    configured = openroad_ppa.with_openroad_overrides(original, max_fanout=16777217)
-    assert configured.max_fanout == 16777217
-    assert original.max_fanout is None
-
-
-def test_logical_target_fanout_rejected_before_backend_transport():
+@pytest.mark.parametrize("profile", [None, "balanced"])
+def test_target_fanout_is_unknown_with_or_without_profile_override(profile):
     import argparse
 
     from booley.flows.synth.mode import SynthMode
     from booley.flows.synth.ppa_config import append_ppa_args
 
-    command = []
-    with pytest.raises(BoundaryError, match="cannot be set when synth_mode is logical"):
+    with pytest.raises(BoundaryError, match=r"unknown setting.*max_fanout"):
         append_ppa_args(
-            command,
+            [],
             {"advanced_settings_openroad": {"max_fanout": 50}},
-            argparse.Namespace(ppa_profile="compact"),
-            synth_mode=SynthMode.LOGICAL,
+            argparse.Namespace(ppa_profile=profile),
+            synth_mode=SynthMode.PHYSICAL,
         )
-    assert command == []

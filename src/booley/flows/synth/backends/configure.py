@@ -148,7 +148,6 @@ def _openroad_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
     if repair_setup is None:
         repair_setup = getattr(args, "repair_timing", None)
     return {
-        "max_fanout": getattr(args, "max_fanout", None),
         "utilization_pct": getattr(args, "utilization_pct", None),
         "placement_density": getattr(args, "placement_density", None),
         "repair_setup": repair_setup,
@@ -166,13 +165,6 @@ def _validate_resolved_ppa(
     """Range-check resolved PPA values before rendering backend commands."""
     if yosys.abc_delay_ps is not None and yosys.abc_delay_ps <= 0:
         raise SystemExit("ERROR: abc_delay_ps must be greater than zero")
-    if openroad.max_fanout is not None:
-        from booley.flows.synth.ppa_config import validate_max_fanout
-
-        try:
-            validate_max_fanout(openroad.max_fanout, field="max_fanout")
-        except BoundaryError as exc:
-            raise SystemExit(f"ERROR: {exc}") from None
     numeric = {
         "utilization_pct": openroad.utilization_pct,
         "placement_density": openroad.placement_density,
@@ -213,15 +205,12 @@ def _resolve_syn_timing(
 ) -> StaTimingConfig:
     """Resolve validated timing configuration for logical or physical synthesis."""
     mode = SynthMode(args.synth_mode)
-    if openroad.max_fanout is not None and not mode.runs_openroad:
-        raise SystemExit("ERROR: max_fanout is physical-only")
     legacy_utilization_fallback, legacy_repair_fallback = _legacy_timing_fallbacks(args)
     return synth_timing_config(
         mode=mode,
         sdc=args.sta_sdc,
         utilization_pct=openroad.utilization_pct,
         repair_timing=openroad.repair_setup,
-        max_fanout=openroad.max_fanout,
         placement_density=openroad.placement_density,
         repair_hold=openroad.repair_hold,
         gate_cloning=openroad.gate_cloning,
@@ -507,7 +496,6 @@ def _add_timing_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Expert OpenROAD floorplan utilization override (profile-derived by default)",
     )
-    parser.add_argument("--max-fanout", type=int, default=None)
     parser.add_argument(
         "--placement-density",
         type=float,

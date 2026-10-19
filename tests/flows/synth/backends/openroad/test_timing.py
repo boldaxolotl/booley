@@ -100,6 +100,18 @@ class TestWriteScript:
         assert "remove_buffers" in text.splitlines()
         assert "remove_buffers [get_cells *]" not in text
 
+    def test_fanout_uses_native_defaults_and_authored_sdc(self, tmp_path):
+        sdc = tmp_path / "c.sdc"
+        authored = (
+            "create_clock -period 10 [get_ports clk]\nset_max_fanout 1000000 [current_design]\n"
+        )
+        sdc.write_text(authored)
+        text = self._write(tmp_path)
+        assert "set_max_fanout" not in text
+        assert "booley_fanout" not in text
+        assert text.index(f"read_sdc {{{sdc.as_posix()}}}") < text.index("\nrepair_design\n")
+        assert sdc.read_text() == authored
+
     def test_clockless_sdc_is_runtime_input_error(self, tmp_path):
         text = self._write(tmp_path)
         assert "[llength [all_clocks]] == 0" in text
@@ -252,97 +264,3 @@ class TestParseArea:
         from booley.flows.synth.backends.openroad import timing as openroad_timing
 
         assert openroad_timing.parse_openroad_area("no area here") == (None, None)
-
-
-def test_default_fanout_rule_precedes_authored_sdc(tmp_path):
-    text = TestWriteScript()._write(tmp_path)
-    assert "set_max_fanout 1e20" in text
-    assert text.index("set_max_fanout 1e20") < text.index("read_sdc")
-
-
-def test_native_fanout_evidence_is_captured_before_repair(tmp_path):
-    text = TestWriteScript()._write(tmp_path)
-    assert "report_check_types -max_fanout" in text
-    assert text.index("report_check_types -max_fanout") < text.index("\nrepair_design\n")
-    assert "sta::set_port_fanout_limit" in text
-    assert "sta::set_cell_fanout_limit" in text
-    assert "write_sdc" not in text
-
-
-def test_exact_fanout_capture_follows_parasitics_and_precedes_repair(tmp_path):
-    text = TestWriteScript()._write(tmp_path)
-    boundary = text.index("\nbooley_fanout::checkpoint\n")
-    assert boundary > text.index("estimate_parasitics -placement")
-    assert boundary < text.index('puts "BOOLEY_STAGE: repair_design"')
-    assert "sta::max_fanout_min_slack_limit" in text
-    assert "-max_count 1 >" in text
-
-
-def test_max_fanout_is_target_owned_across_profile_overrides():
-    import argparse
-
-    from booley.flows.synth.mode import SynthMode
-    from booley.flows.synth.ppa_config import append_ppa_args
-
-    command = []
-    append_ppa_args(
-        command,
-        {"advanced_settings_openroad": {"max_fanout": 50, "placement_density": 0.7}},
-        argparse.Namespace(ppa_profile="compact"),
-        synth_mode=SynthMode.PHYSICAL,
-    )
-    assert command[-2:] == ["--max-fanout", "50"]
-    assert "--placement-density" not in command
-
-
-def test_target_fanout_native_range_and_strict_type():
-    import pytest
-
-    from booley.core.boundary import BoundaryError
-    from booley.flows.synth.ppa_config import validate_max_fanout
-
-    field = "advanced_settings_openroad.max_fanout"
-    for invalid in (True, False, 50.0, "50", 0, -1, float("inf"), 10**39, 10**400):
-        with pytest.raises(BoundaryError, match=field):
-            validate_max_fanout(invalid, field=field)
-    assert validate_max_fanout(10**21, field=field) == 10**21
-    assert validate_max_fanout(16777217, field=field) == 16777217
-
-
-def test_native_policy_metadata_rejects_missing_or_invalid_authority():
-    import json
-
-    import pytest
-
-    from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-    valid = {
-        "configured_max_fanout": None,
-        "suppression_reason": None,
-        "design_rule": {"scope": "current_design", "max_fanout": None, "source": "booley_default"},
-        "status": "no_applicable_driver",
-        "worst_check": None,
-    }
-    assert parse_policy(json.dumps(valid)) == valid
-    for invalid in (
-        {**valid, "configured_max_fanout": True},
-        {**valid, "worst_check": {"source": "library", "max_fanout": 25.5}},
-        {
-            **valid,
-            "design_rule": {"scope": "current_design", "source": "library", "max_fanout": 25.5},
-        },
-        {
-            **valid,
-            "design_rule": {
-                "scope": "current_design",
-                "source": "booley_default",
-                "max_fanout": 1e20,
-            },
-        },
-        {
-            **valid,
-            "design_rule": {"scope": "current_design", "source": "sdc", "max_fanout": 10**400},
-        },
-    ):
-        with pytest.raises(ValueError):
-            parse_policy(json.dumps(invalid))

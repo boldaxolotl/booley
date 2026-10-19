@@ -364,36 +364,12 @@ class TestSynResultRoot:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 50.0, "50", 10**39, 10**400])
-def test_backend_fanout_rejects_invalid_values_before_rendering(value):
-    from booley.flows.synth.backends.configure import _resolve_ppa_settings
+def test_backend_rejects_unknown_fanout_option(capsys):
+    from booley.flows.synth.backends.configure import _build_parser
 
-    with pytest.raises(SystemExit, match="max_fanout"):
-        _resolve_ppa_settings(_make_args(max_fanout=value))
-
-
-def test_backend_logical_fanout_is_rejected_before_rendering():
-    from booley.flows.synth.backends.configure import _resolve_ppa_settings, _resolve_syn_timing
-
-    args = _make_args(synth_mode="logical", max_fanout=50)
-    _, _, openroad = _resolve_ppa_settings(args)
-    with pytest.raises(SystemExit, match="max_fanout is physical-only"):
-        _resolve_syn_timing(args, openroad)
-
-
-def test_backend_fanout_survives_transport_into_native_tcl(tmp_path):
-    from booley.flows.synth.backends.configure import (
-        _build_parser,
-        _resolve_ppa_settings,
-        _resolve_syn_timing,
-    )
-    from booley.flows.synth.backends.openroad.fanout import policy_tcl
-
-    args = _build_parser().parse_args(["configure", "-t", "top", "--max-fanout", "16777217"])
-    _, _, openroad = _resolve_ppa_settings(args)
-    timing = _resolve_syn_timing(args, openroad, project_root=tmp_path)
-    assert timing.max_fanout == 16777217
-    assert "set ::booley_fanout::configured {16777217}" in policy_tcl(tmp_path, timing.max_fanout)
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["configure", "-t", "top", "--max-fanout", "50"])
+    assert "unrecognized arguments: --max-fanout" in capsys.readouterr().err
 
 
 def test_declared_string_parser_preserves_whitespace_and_rejects_unbound_metadata():
