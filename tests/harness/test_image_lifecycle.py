@@ -228,17 +228,52 @@ def test_host_capacity_requests_use_local_build_projection(
 
 
 def test_reconcile_planned_commits_prepared_graph(monkeypatch: pytest.MonkeyPatch) -> None:
-    scope = SimpleNamespace()
+    scope = SimpleNamespace(project_root=Path("/chip"))
     planned = SimpleNamespace(nodes=(SimpleNamespace(role=lifecycle.ImageRole.WHEEL_OVERLAY),))
     prepared = SimpleNamespace()
-    expected = SimpleNamespace()
+    adopted = lifecycle.LifecycleResult("image", "sha256:" + "9" * 64, lifecycle.Status.CHANGED)
+    superseded = ("sha256:" + "1" * 64,)
     monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args, **_kwargs: planned)
     monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
     monkeypatch.setattr(
-        harness_lifecycle, "commit", lambda value: expected if value is prepared else None
+        harness_lifecycle, "commit", lambda value: adopted if value is prepared else None
+    )
+    # Init records the images its adoption superseded, for cleanup after keeper reissue.
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    snapshots = iter(({"tag": "old"}, {"tag": "new"}))
+    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda *_args: next(snapshots))
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "record_superseded_images",
+        lambda _identity, before, after: (
+            superseded if (before, after) == ({"tag": "old"}, {"tag": "new"}) else ()
+        ),
     )
 
-    assert harness_lifecycle.reconcile_planned(scope, lifecycle.Intent.ENSURE) is expected
+    result = harness_lifecycle.reconcile_planned(scope, lifecycle.Intent.ENSURE)
+
+    assert result == replace(adopted, superseded=superseded)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("docker inspect failed"), OSError("disk full")])
+def test_reconcile_planned_keeps_adoption_when_superseded_record_fails(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    planned = SimpleNamespace(nodes=(SimpleNamespace(role=lifecycle.ImageRole.WHEEL_OVERLAY),))
+    adopted = lifecycle.LifecycleResult("image", "sha256:" + "9" * 64, lifecycle.Status.CHANGED)
+    monkeypatch.setattr(harness_lifecycle, "plan", lambda *_args, **_kwargs: planned)
+    monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(harness_lifecycle, "commit", lambda _prepared: adopted)
+
+    def fail(*_args: object) -> tuple[str, ...]:
+        raise error
+
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda *_args: {})
+    monkeypatch.setattr(harness_lifecycle, "record_superseded_images", fail)
+
+    scope = SimpleNamespace(project_root=Path("/chip"))
+    assert harness_lifecycle.reconcile_planned(scope, lifecycle.Intent.REFRESH) is adopted
 
 
 def test_reconcile_planned_aborts_failed_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,9 +293,13 @@ def test_reconcile_planned_aborts_failed_commit(monkeypatch: pytest.MonkeyPatch)
         lambda _prepared: (_ for _ in ()).throw(RuntimeError("adoption failed")),
     )
     monkeypatch.setattr(harness_lifecycle, "abort", aborted.append)
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda *_args: {})
 
     with pytest.raises(RuntimeError, match="adoption failed"):
-        harness_lifecycle.reconcile_planned(SimpleNamespace(), lifecycle.Intent.ENSURE)
+        harness_lifecycle.reconcile_planned(
+            SimpleNamespace(project_root=Path("/chip")), lifecycle.Intent.ENSURE
+        )
 
     assert aborted == [prepared]
 

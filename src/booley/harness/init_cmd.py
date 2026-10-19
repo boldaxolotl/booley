@@ -2255,6 +2255,28 @@ def _reconcile_initialized_image(
     return _step_image_lifecycle(ctx)
 
 
+def _step_retire_superseded_images(ctx: InitContext, result: LifecycleResult | None) -> None:
+    """Remove images this init superseded, now that the reissued keeper no longer pins them."""
+    if result is None or not result.superseded:
+        return
+    from booley.runtime.image_lifecycle import cleanup_owned_images
+
+    try:
+        retained = cleanup_owned_images(ctx.project_root)
+    except ImageLifecycleError as exc:
+        warn(f"superseded Sandbox Images kept: {exc}")
+        ctx.record("superseded_images", "warn", str(exc))
+        return
+    kept = [line for line in retained if line.startswith(result.superseded)]
+    for line in kept:
+        warn(f"superseded Sandbox Image {line}")
+    if kept:
+        ctx.record("superseded_images", "warn", "some superseded Sandbox Images were kept")
+    else:
+        ok("removed superseded Sandbox Images: " + ", ".join(result.superseded))
+        ctx.record("superseded_images", "ok", "removed superseded Sandbox Images")
+
+
 def _selected_runtime_image_id(result: LifecycleResult | None) -> str | None:
     """Return the verified image identity suitable for Session issuance."""
     if result is None or result.status not in {
@@ -2342,6 +2364,7 @@ def _run_project_init_steps(
         runtime_image_id=runtime_image_id,
         init_will_create_booley_dir=True,
     )
+    _step_retire_superseded_images(ctx, image_result)
     _step_project_inventory(ctx)
     _step_project_trackability(ctx)
     _step_advisories(ctx)
