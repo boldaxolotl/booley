@@ -300,7 +300,7 @@ def tag_image(source: str, target: str) -> None:
 def remove_image_tag(target: str) -> None:
     """Release one tag without force; Docker may reclaim otherwise unreferenced bytes."""
     try:
-        result = _run_docker(["image", "rm", target], timeout=30)
+        result = _run_docker(["image", "rm", "--no-prune", target], timeout=30)
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         raise RuntimeError(f"cannot remove issued Sandbox Image keeper: {exc}") from exc
     if result.returncode == 0:

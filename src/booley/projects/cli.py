@@ -15,7 +15,9 @@ from booley.projects import image_keepers, inventory
 class KeeperOperations(Protocol):
     """Host-coordinated keeper operations supplied by the command composition layer."""
 
-    def forget_project(self, project: Path) -> tuple[Path, image_keepers.KeeperRelease]: ...
+    def forget_project(
+        self, project: Path, *, purge: bool = False
+    ) -> tuple[Path, image_keepers.KeeperRelease, image_keepers.PurgeResult | None]: ...
 
     def project_leftovers(self, project: Path) -> tuple[image_keepers.Leftover, ...]: ...
 
@@ -44,6 +46,11 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     forget = actions.add_parser("forget", help="Forget one root with no live Project Grants")
     forget.add_argument("project", type=Path)
     forget.add_argument(
+        "--purge",
+        action="store_true",
+        help="Also remove the Project's unused images and state volumes (agent login and history)",
+    )
+    forget.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -68,7 +75,9 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
             )
         if action == "forget":
             assert keeper_operations is not None
-            forgotten, keeper = keeper_operations.forget_project(args.project)
+            forgotten, keeper, purged = keeper_operations.forget_project(
+                args.project, purge=args.purge
+            )
             try:
                 left = keeper_operations.project_leftovers(forgotten)
             except inventory.ProjectInventoryError as exc:
@@ -76,7 +85,7 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
                     f"{exc} (keeper {keeper.status}: {keeper.tag})"
                 ) from exc
             return _render_forgotten(
-                forgotten, keeper, left, json_output=getattr(args, "json", False)
+                forgotten, keeper, purged, left, json_output=getattr(args, "json", False)
             )
         if action == "prune-keepers":
             assert keeper_operations is not None
@@ -110,6 +119,7 @@ def _render_discovered(discovered: tuple[Path, ...], *, json_output: bool) -> in
 def _render_forgotten(
     forgotten: Path,
     keeper: image_keepers.KeeperRelease,
+    purged: image_keepers.PurgeResult | None,
     left: tuple[image_keepers.Leftover, ...],
     *,
     json_output: bool,
@@ -119,13 +129,18 @@ def _render_forgotten(
             "schema": 1,
             "forgotten": str(forgotten),
             "keeper": asdict(keeper),
+            "purge": asdict(purged) if purged is not None else None,
             "leftovers": [asdict(item) for item in left],
         }
         print(json.dumps(document, indent=2))
         return 0
-    print(f"Forgot remembered Project path: {forgotten}")
+    print(f"Forgot Project path: {forgotten}")
     image = f" ({keeper.image_id})" if keeper.image_id is not None else ""
     print(f"Keeper {keeper.status}: {keeper.tag}{image}")
+    for name in purged.removed if purged else ():
+        print(f"Removed: {name}")
+    for line in purged.kept if purged else ():
+        print(f"Kept: {line}")
     if not left:
         print("No Docker resources left behind for this Project.")
         return 0
@@ -134,6 +149,8 @@ def _render_forgotten(
         size = f" {item.size}" if item.size else ""
         tags = f" tags: {', '.join(item.tags)}" if item.tags else ""
         print(f"  {item.kind} {item.name}{size} [{item.reason}]{tags}")
+    if purged is None and any(item.reason == "unused" for item in left):
+        print(f"Remove the unused ones with: booley projects forget --purge {forgotten}")
     return 0
 
 
