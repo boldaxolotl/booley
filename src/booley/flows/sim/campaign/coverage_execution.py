@@ -19,6 +19,7 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import (
     SimulationInfrastructureFailure,
@@ -658,6 +659,7 @@ def _failure_projection(context: CampaignFailureContext) -> dict[str, object]:
         "simulation": simulation,
         "collection": campaign.collection["status"],
         "evaluation": campaign.evaluation["status"],
+        "coverage_metrics": coverage_metrics(campaign),
         "tests": [_failure_test(item) for item in observations],
         "abort_remaining": True,
     }
