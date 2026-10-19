@@ -8,6 +8,7 @@ bytes comes only from the image lifecycle's owned-image records.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import NamedTuple
 from uuid import uuid4
@@ -19,6 +20,7 @@ from booley.projects.image_keepers import Leftover, PurgeResult
 from booley.runtime import interactive_docker
 from booley.runtime.devcontainer import state_volume_names
 from booley.runtime.image_lifecycle import (
+    ImageReference,
     cleanup_owned_images,
     owned_image_ids,
     record_owned_images,
@@ -221,27 +223,29 @@ def purge(identity: str) -> PurgeResult:
     return PurgeResult(tuple(removed), tuple(kept))
 
 
-def own_tag_snapshot(identity: str) -> dict[str, str]:
-    """The Project's managed tags (keeper excluded) and the image IDs they name now."""
+def own_tag_snapshot(identity: str, references: Iterable[ImageReference]) -> dict[str, str]:
+    """The Project's managed tags (keeper excluded) and the image IDs they name."""
     keeper = keeper_image_for_identity(identity)
     return {
-        row.reference: row.image
-        for row in _image_rows()
+        row.reference: row.image_id
+        for row in references
         if _is_tag(row.reference)
         and _owns_tag(identity, row.reference)
         and row.reference != keeper
     }
 
 
-def record_superseded_images(identity: str, before: dict[str, str]) -> tuple[str, ...]:
+def record_superseded_images(
+    identity: str, before: dict[str, str], after: dict[str, str]
+) -> tuple[str, ...]:
     """Own the images an adoption moved off the Project's managed tags, for later cleanup.
 
-    *before* is :func:`own_tag_snapshot` taken just before adoption; this covers
-    moved tags and removed ones (such as an obsolete layout tag). Only the init
-    path calls this: session refresh keeps its prior images for rollback. A tag
-    outside the Project's family (a shared substrate) never makes its bytes owned.
+    *before* and *after* are :func:`own_tag_snapshot` results around adoption;
+    this covers moved tags and removed ones (such as an obsolete layout tag).
+    Only the init path calls this: session refresh keeps its prior images for
+    rollback. A tag outside the Project's family (a shared substrate) never
+    makes its bytes owned.
     """
-    after = own_tag_snapshot(identity)
     current = set(after.values())
     moved = tuple(
         dict.fromkeys(

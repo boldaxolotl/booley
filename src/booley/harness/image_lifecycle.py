@@ -829,14 +829,16 @@ def reconcile_planned(
         return runtime_lifecycle.planned_result(observed, _docker_adapter())
     prepared = prepare(observed, verbose=verbose)
     identity = str(scope.project_root.resolve())
+    docker = _docker_adapter()
     try:
-        before = own_tag_snapshot(identity)
+        before = own_tag_snapshot(identity, docker.image_references())
         result = commit(prepared)
     except BaseException:
         abort(prepared)
         raise
     try:
-        superseded = record_superseded_images(identity, before)
+        after = own_tag_snapshot(identity, docker.image_references())
+        superseded = record_superseded_images(identity, before, after)
     except (RuntimeError, OSError) as exc:  # adoption succeeded; only cleanup is lost
         logger.warning("superseded Sandbox Images will stay: %s", exc)
         return result

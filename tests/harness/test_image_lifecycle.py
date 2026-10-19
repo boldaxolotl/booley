@@ -239,11 +239,15 @@ def test_reconcile_planned_commits_prepared_graph(monkeypatch: pytest.MonkeyPatc
         harness_lifecycle, "commit", lambda value: adopted if value is prepared else None
     )
     # Init records the images its adoption superseded, for cleanup after keeper reissue.
-    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda _identity: {"tag": "old"})
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    snapshots = iter(({"tag": "old"}, {"tag": "new"}))
+    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda *_args: next(snapshots))
     monkeypatch.setattr(
         harness_lifecycle,
         "record_superseded_images",
-        lambda identity, before: superseded if before == {"tag": "old"} else (),
+        lambda _identity, before, after: (
+            superseded if (before, after) == ({"tag": "old"}, {"tag": "new"}) else ()
+        ),
     )
 
     result = harness_lifecycle.reconcile_planned(scope, lifecycle.Intent.ENSURE)
@@ -261,10 +265,11 @@ def test_reconcile_planned_keeps_adoption_when_superseded_record_fails(
     monkeypatch.setattr(harness_lifecycle, "prepare", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(harness_lifecycle, "commit", lambda _prepared: adopted)
 
-    def fail(_identity: str, _before: dict[str, str]) -> tuple[str, ...]:
+    def fail(*_args: object) -> tuple[str, ...]:
         raise error
 
-    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda _identity: {})
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda *_args: {})
     monkeypatch.setattr(harness_lifecycle, "record_superseded_images", fail)
 
     scope = SimpleNamespace(project_root=Path("/chip"))
@@ -288,7 +293,8 @@ def test_reconcile_planned_aborts_failed_commit(monkeypatch: pytest.MonkeyPatch)
         lambda _prepared: (_ for _ in ()).throw(RuntimeError("adoption failed")),
     )
     monkeypatch.setattr(harness_lifecycle, "abort", aborted.append)
-    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda _identity: {})
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(harness_lifecycle, "own_tag_snapshot", lambda *_args: {})
 
     with pytest.raises(RuntimeError, match="adoption failed"):
         harness_lifecycle.reconcile_planned(
