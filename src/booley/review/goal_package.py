@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
-from booley.evidence.test_run_ledger import LEDGER_DETAIL_KEY, LedgerFormatError, decode_ledger
+from booley.flows.test_runs import rerun_command
+from booley.goals.model import GoalRecord
 
 
 class GoalPackageError(ValueError):
@@ -93,14 +94,14 @@ def _validate_facts(facts: dict[str, Any]) -> None:
     for row in facts.get("earlier_attempts", []):
         require_dict(row, field="earlier attempt")
     for row in facts["goals"]:
-        _validate_goal_row(row)
+        _validate_goal_row(row, record)
     for row in (*facts["diff_summary"], *facts["constraint_edits"]):
         require_str_value(row.get("path"), field="diff path")
         if row.get("change") not in {"added", "removed", "modified"}:
             raise ValueError("invalid diff change")
 
 
-def _validate_goal_row(row: dict[str, Any]) -> None:
+def _validate_goal_row(row: dict[str, Any], record: dict[str, Any]) -> None:
     fields = {
         "record_id",
         "key",
@@ -145,7 +146,7 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
     originals = require_list(row["original_observations"], field="original_observations")
     for original in originals:
         require_dict(original, field="original observation")
-    if originals and LEDGER_DETAIL_KEY not in detail:
+    if originals and row["key"] not in record.get("test_run_resolutions", {}):
         require_dict(detail.get("goal_derivation"), field="goal_derivation")
     if row["selected_transaction"] is not None:
         require_dict(row["selected_transaction"], field="selected_transaction")
@@ -161,16 +162,31 @@ def _validate_baseline_report(row: dict[str, Any]) -> None:
             require_str_value(name, field="baseline attention Test Run")
 
 
-def _test_run_lines(detail: dict[str, Any]) -> list[str]:
-    """The frozen Test Runs a Goal was judged by, with the outcome of each (ADR 0072)."""
-    try:
-        ledger = decode_ledger(detail)
-    except LedgerFormatError as exc:
-        return [f"  Test Runs: the recorded outcomes cannot be read ({exc})"]
-    if ledger is None:
+def _test_run_lines(record: GoalRecord, row: dict[str, Any]) -> list[str]:
+    """Render outcomes and reruns from frozen package facts, without live declarations."""
+    from booley.goals.test_run_evidence import HistoryScope, run_outcomes
+
+    resolution = record.test_run_resolution(row["key"])
+    if resolution is None:
         return []
-    shown = ", ".join(f"{run['name']} {run['outcome']}" for run in ledger.runs)
-    return [f"  Test Runs: {shown}"]
+    goal = next(goal for goal in record.goals if goal.spec.key == row["key"])
+    assert goal.spec.target is not None
+    selected = row["selected_observation"]
+    runs = run_outcomes(
+        HistoryScope.of(record, goal),
+        resolution.test_runs,
+        selected["detail"],
+        row["original_observations"],
+        before=selected["sequence"],
+    )
+    shown = ", ".join(f"{run['name']} {run['outcome']}" for run in runs)
+    return [
+        f"  Test Runs: {shown}",
+        *(
+            f"  rerun {run.name}: {rerun_command(goal.spec.target, run)}"
+            for run in resolution.test_runs
+        ),
+    ]
 
 
 def _deferred_resolution_lines(record: dict[str, Any], names: dict[str, str]) -> list[str]:
@@ -205,8 +221,10 @@ def render_goal_briefing(
         "",
         "Goals",
     ]
+    record = GoalRecord.from_json(facts["record"])
     for row in facts["goals"]:
         lines.extend(_goal_lines(row, presenter))
+        lines.extend(_test_run_lines(record, row))
     names = {row["key"]: presenter(row["spec"]) for row in facts["goals"]}
     lines += _deferred_resolution_lines(facts["record"], names)
     for title, key in (
@@ -251,7 +269,6 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
     detail = selected["detail"]
     for finding in detail.get("pending", detail.get("issue_list", [])):
         lines.append("  Open finding: " + json.dumps(finding, sort_keys=True, ensure_ascii=False))
-    lines += _test_run_lines(detail)
     if row["original_observations"]:
         if "goal_derivation" in detail:
             lines.append(

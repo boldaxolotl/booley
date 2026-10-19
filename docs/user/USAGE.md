@@ -476,7 +476,10 @@ later. The Review Package lists every such Test Run under the heading
 
 **Evidence.** A Test Run counts for a Goal only when its name and its declared
 arguments and environment equal one of the Goal's frozen Test Runs. Each
-frozen Test Run is `passed`, `failed` or `missing`:
+frozen Test Run is `passed`, `failed` or `missing`, computed from applicable
+evidence history at the same Goal revision and dependent file contents.
+Observations retain their own Test Run rows; older stored outcome copies are
+ignored. Evidence without Test Run rows supplies no outcome:
 
 - It becomes `passed` when it passes at the current contents of the files the
   Goal depends on.
@@ -520,8 +523,9 @@ for each reason `goal_status` can show.
 **Seeing the frozen Test Runs.** `goal_status`, `booley goal status` and the
 Dashboard list each Goal's frozen Test Runs with their outcomes, the parts
 still pending, the Test Runs resolved after entry, and a rerun command for every
-failed Test Run. The Review Package shows the frozen Test Runs and outcomes
-each Goal was judged by.
+failed Test Run. The Review Package computes the same outcomes from its frozen
+evidence and lists each frozen Test Run with its rerun command. It retains the
+contributing observations, so later runs do not change a saved package.
 
 ### Working with evidence
 

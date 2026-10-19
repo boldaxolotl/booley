@@ -618,3 +618,23 @@ def test_ignored_consumed_project_snapshot_keeps_its_independent_completion_proo
         row["classification"] == "ProjectSnapshot" and row["path"].endswith("tests.toml")
         for row in observations
     )
+
+
+def test_accumulated_campaign_keeps_generated_input_authority(layout):
+    from booley.mcp.goal_generated_inputs import generated_inputs
+    from tests.goals.conftest import SIM_KEY, passing_sim, run_row
+    from tests.goals.test_test_run_evidence import _record
+
+    _source, _manifest, transaction = classified(
+        layout,
+        goals=[{"family": "SIM", "target": "top"}],
+        criterion=SIM_KEY,
+        criterion_detail=passing_sim(),
+    )
+    state = DevelopmentState.load(record_paths(layout.control, layout.record.id).state_file)
+    before = generated_inputs(layout.control, layout.record, state, layout.worktree)
+    assert len(before) == 1
+    _record(layout, "later", [run_row()])
+    state = DevelopmentState.load(record_paths(layout.control, layout.record.id).state_file)
+    assert generated_inputs(layout.control, layout.record, state, layout.worktree) == before
+    assert transaction.transaction_id in state.acceptance_transactions

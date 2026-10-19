@@ -69,10 +69,11 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     violation = entry.detail.get("goal_contract_violation", "")
     assert "Test Runs failed" not in violation and "have not passed" not in violation
     # The failing runs stay visible in what the Goal shows of its Test Runs.
-    outcomes = {run["outcome"] for run in entry.detail["test_run_ledger"]["runs"]}
-    assert outcomes == {"passed" if simulation == "pass" else "failed"}
     view = build_status(GoalStore(layout.control), record, work_dir=root)
     status = next(goal for goal in view.goals if goal.key == "coverage_top")
+    assert {run.outcome for run in status.test_runs.runs} == {
+        "passed" if simulation == "pass" else "failed"
+    }
     # (This substituted campaign records no waiver policy, so met evidence reads stale.)
     assert (status.status == "unmet") is (coverage == "fail"), status
     assert "goal-test-run-" not in status.reason
@@ -142,7 +143,9 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
     entry = state.criteria["coverage_top"]
     assert entry.met is True
     assert [row["name"] for row in entry.detail["test_runs"]] == frozen
-    outcomes = [run["outcome"] for run in entry.detail["test_run_ledger"]["runs"]]
+    view = build_status(GoalStore(layout.control), record, work_dir=root)
+    status = next(goal for goal in view.goals if goal.key == "coverage_top")
+    outcomes = [run.outcome for run in status.test_runs.runs]
     assert outcomes == ["passed", "passed"]
     assert "match no Goal" not in result.outcome.report_text
 
