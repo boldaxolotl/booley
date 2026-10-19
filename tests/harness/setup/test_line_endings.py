@@ -314,11 +314,8 @@ def test_atomic_attributes_creation_failure_leaves_no_partial_file(tmp_path: Pat
     with patch.object(os, "link", new=fail_attributes):
         report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    action = next(
-        a
-        for a in report.repositories[0].actions
-        if a.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
-    )
+    action = next(a for a in report.repositories[0].actions if a.target is not None)
+    assert action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
     assert action.target.path == tmp_path / ".gitattributes" and not action.target.local
     assert action.state is LineEndingActionState.FAILED
     assert (
@@ -345,11 +342,8 @@ def test_atomic_attributes_update_failure_preserves_original_file(tmp_path: Path
     with patch.object(Path, "replace", new=fail_attributes):
         report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    action = next(
-        a
-        for a in report.repositories[0].actions
-        if a.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
-    )
+    action = next(a for a in report.repositories[0].actions if a.target is not None)
+    assert action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
     assert action.target.path == tmp_path / ".gitattributes" and not action.target.local
     assert action.state is LineEndingActionState.FAILED
     assert (
@@ -359,6 +353,23 @@ def test_atomic_attributes_update_failure_preserves_original_file(tmp_path: Path
     assert report.status is LineEndingStatus.UNSAFE
     assert (tmp_path / ".gitattributes").read_bytes() == original
     assert not list(tmp_path.glob(".booley-eol-*"))
+
+
+def test_local_publication_cleanup_error_is_reported(tmp_path: Path):
+    data = _stealth_repo(tmp_path)
+    real_unlink = Path.unlink
+
+    def fail_cleanup(path):
+        if path.parent == tmp_path / ".git/info" and path.name.startswith(".booley-eol-"):
+            raise OSError("cleanup failed")
+        return real_unlink(path)
+
+    with patch.object(Path, "unlink", new=fail_cleanup):
+        report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    action = next(a for a in report.repositories[0].actions if a.target is not None)
+    assert action.state is LineEndingActionState.FAILED
+    assert action.detail == f"{tmp_path / '.git/info/attributes'}: cleanup failed"
+    assert report.status is LineEndingStatus.UNSAFE
 
 
 def test_index_refresh_exception_restores_and_remains_unsafe(tmp_path: Path):

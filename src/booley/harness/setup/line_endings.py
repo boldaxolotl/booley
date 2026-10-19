@@ -1741,7 +1741,12 @@ def _publish_attributes(
     except OSError as exc:
         error = str(exc) if target.local else f"could not read .gitattributes: {exc}"
     else:
-        error = _write_attributes(path, expected, content, validate)
+        try:
+            error = _write_attributes(path, expected, content, validate)
+        except OSError as exc:
+            if not target.local:
+                raise
+            error = str(exc)
     state = LineEndingActionState.COMPLETED if error is None else LineEndingActionState.FAILED
     return _action(
         LineEndingActionKind.PUBLISH_ATTRIBUTES,
