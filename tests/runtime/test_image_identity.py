@@ -765,3 +765,34 @@ def test_layout_history_requires_the_trusted_recipe(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "docker_data_dir", lambda: tmp_path)
     with pytest.raises(RuntimeError, match="trusted recipe is unavailable or malformed"):
         project_image._verify_layout_history(parent, child, "docker")
+
+
+@pytest.mark.parametrize(
+    "with_nodes,parent,expected",
+    [
+        (False, "", "1eda4eb81bcc607229beac648e80b5a07ce75779a82b3dda5d4991a67870979c"),
+        (
+            False,
+            "registry-parent",
+            "1eda4eb81bcc607229beac648e80b5a07ce75779a82b3dda5d4991a67870979c",
+        ),
+        (True, "", "514e2db26e807d1dec453d4eacbbd7029d4b256054209f271b7ce888a6c44d14"),
+        (
+            True,
+            "registry-parent",
+            "6b348a8dd84e4876bb11c5d60b4eebd4fc2153c8c7bd7804ae38121257e0e6b8",
+        ),
+    ],
+)
+def test_logical_selection_fingerprint_chain_golden(with_nodes, parent, expected):
+    nodes = [
+        ("runtime-base", "runtime-inputs", "runtime-recipe", "runtime-v1", ""),
+        ("standard-substrate", "standard-inputs", "standard-recipe", "runtime-v1", "standard-v1"),
+        ("wheel-overlay", "", "wheel-recipe", "runtime-v1", "standard-v1"),
+    ]
+    assert (
+        identity.logical_selection_fingerprint_for_chain(
+            "booley-sandbox", nodes if with_nodes else [], initial_parent_key=parent
+        )
+        == expected
+    )
