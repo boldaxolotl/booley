@@ -1270,10 +1270,7 @@ def _observe_pre_sim_reads(monkeypatch):
     return accesses, decodes
 
 
-@pytest.mark.parametrize("entry", ["scan", "retained"])
-@pytest.mark.parametrize("interrupted", [False, True])
-def test_scan_validates_each_pre_sim_snapshot_once(tmp_path, monkeypatch, entry, interrupted):
-    from booley.flows.sim.campaign.inspection import inspect_retained_campaign
+def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
@@ -1283,6 +1280,29 @@ def test_scan_validates_each_pre_sim_snapshot_once(tmp_path, monkeypatch, entry,
         (firing.path.parents[3] / "result.json").unlink()
     expected = store.scan()
     accesses, decodes = _observe_pre_sim_reads(monkeypatch)
+    return store, firing, expected, accesses, decodes
+
+
+def test_scan_validates_each_pre_sim_snapshot_once(tmp_path, monkeypatch):
+    store, firing, expected, accesses, decodes = _pre_sim_read_case(tmp_path, monkeypatch)
+    assert store.scan() == expected
+    assert accesses == {firing.path: 1}, "each sidecar must have one byte access"
+    assert decodes == {(firing.key[2], firing.key[3]): 1}, "each sidecar must be decoded once"
+
+
+@pytest.mark.parametrize(
+    "entry, interrupted",
+    [("retained", False), ("scan", True), ("retained", True)],
+    ids=["complete-retained", "interrupted-scan", "interrupted-retained"],
+)
+def test_other_inspections_validate_each_pre_sim_snapshot_once(
+    tmp_path, monkeypatch, entry, interrupted
+):
+    from booley.flows.sim.campaign.inspection import inspect_retained_campaign
+
+    store, firing, expected, accesses, decodes = _pre_sim_read_case(
+        tmp_path, monkeypatch, interrupted=interrupted
+    )
     if entry == "scan":
         assert store.scan() == expected
     else:
