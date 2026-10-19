@@ -48,3 +48,19 @@ def test_raw_script_and_named_recipe_are_mutually_exclusive():
 def test_raw_abc_script_must_not_be_empty():
     with pytest.raises(BoundaryError, match="non-empty"):
         ppa.validate_abc_script("+")
+
+
+@pytest.mark.parametrize("profile", [None, "balanced"])
+def test_target_fanout_is_unknown_with_or_without_profile_override(profile):
+    import argparse
+
+    from booley.flows.synth.mode import SynthMode
+    from booley.flows.synth.ppa_config import append_ppa_args
+
+    with pytest.raises(BoundaryError, match=r"unknown setting.*max_fanout"):
+        append_ppa_args(
+            [],
+            {"advanced_settings_openroad": {"max_fanout": 50}},
+            argparse.Namespace(ppa_profile=profile),
+            synth_mode=SynthMode.PHYSICAL,
+        )

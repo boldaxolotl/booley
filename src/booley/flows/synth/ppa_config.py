@@ -104,6 +104,10 @@ def append_ppa_args(
     _reject_retired_subtables(recipe, field_prefix)
     yosys_cfg = _subtable(recipe, "advanced_settings_yosys", field_prefix=field_prefix)
     openroad_cfg = _subtable(recipe, "advanced_settings_openroad", field_prefix=field_prefix)
+    _reject_unknown_keys(yosys_cfg, _YOSYS_KEYS, f"{field_prefix}.advanced_settings_yosys")
+    _reject_unknown_keys(
+        openroad_cfg, _OPENROAD_KEYS, f"{field_prefix}.advanced_settings_openroad"
+    )
     if not synth_mode.runs_openroad and openroad_cfg:
         raise BoundaryError(
             f"{field_prefix}.advanced_settings_openroad cannot be set when synth_mode is logical"
@@ -155,7 +159,6 @@ def _append_yosys_config(
     section: str = "Target flow_options.advanced_settings_yosys",
 ) -> None:
     """Validate and append Yosys expert overrides."""
-    _reject_unknown_keys(cfg, _YOSYS_KEYS, section)
     recipe = require_opt_str(cfg, "abc_recipe", field=f"{section}.abc_recipe")
     script = require_opt_str(cfg, "abc_script", field=f"{section}.abc_script")
     if recipe is not None and script is not None:
@@ -185,7 +188,6 @@ def _append_openroad_config(
     section: str = "Target flow_options.advanced_settings_openroad",
 ) -> None:
     """Validate and append OpenROAD expert overrides."""
-    _reject_unknown_keys(cfg, _OPENROAD_KEYS, section)
     _append_number_config(cmd, cfg, "utilization_pct", positive=True)
     _append_number_config(cmd, cfg, "placement_density", positive=True)
     _append_bool_config(cmd, cfg, "repair_setup")
