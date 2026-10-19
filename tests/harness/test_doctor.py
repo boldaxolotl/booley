@@ -8965,6 +8965,151 @@ def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path
     assert all("shared/tb.sv" not in m for m in warnings)
 
 
+@pytest.fixture
+def copyto_audit(tmp_path, monkeypatch):
+    core = tmp_path / "ip"
+    core.mkdir()
+    source = core / "payload.mem"
+    source.write_bytes(b"source bytes")
+    (core / "input.core").write_text(
+        "CAPI=2:\nname: acme:ip:input:1.0\nfilesets:\n"
+        "  data:\n    file_type: user\n"
+        "    files:\n      - payload.mem: {copyto: runtime.mem}\n"
+        "targets:\n  default:\n    filesets: [data]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: acme:ip:design:1.0\nfilesets:\n"
+        "  data:\n    depend: [acme:ip:input:1.0]\n"
+        "targets:\n  sim:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n    filesets: [data]\n    toplevel: dut\n"
+        "  lint:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+        "    filesets: [data]\n    toplevel: dut\n",
+        encoding="utf-8",
+    )
+    destination = tmp_path / "runtime.mem"
+    destination.write_bytes(b"other bytes")
+    configured = ["."]
+    monkeypatch.setattr(doctor, "resolve_run_cwd", lambda root: configured[0])
+
+    def check():
+        catalog = TargetCatalog.build(tmp_path)
+        refs = {handle.name: handle for handle in catalog.list()}
+        warnings = []
+
+        def noop(*args):
+            return None
+
+        audit = doctor._CoreAuditContext(
+            _run_cwd_project(tmp_path, configured[0]),
+            noop,
+            lambda finding, fix="": warnings.append((finding, fix)),
+            noop,
+            noop,
+            noop,
+        )
+        doctor._check_target_sources(audit, refs, doctor._CoreAuditInputs(catalog, refs))
+        return [
+            (finding, fix)
+            for finding, fix in warnings
+            if getattr(finding, "check_id", None) == "sim.runtime-input-collision"
+        ]
+
+    return source, destination, configured, check
+
+
+def test_sim_copyto_collision_warns_with_paths_and_remedies(copyto_audit):
+    source, destination, _, check = copyto_audit
+    findings = check()
+    assert findings, "missing copyto collision warning"
+    assert len(findings) == 1
+    finding, fix = findings[0]
+    message = str(finding)
+    assert "sim" in message and "lint" not in message
+    assert str(source) in message and str(destination) in message
+    assert "rename" in fix.lower() and "remove" in fix.lower() and "run_cwd" in fix
+
+
+def test_sim_copyto_identical_collision_is_silent(copyto_audit):
+    source, destination, _, check = copyto_audit
+    assert check(), "missing copyto collision warning"
+    destination.write_bytes(source.read_bytes())
+    assert check() == []
+
+
+def test_sim_copyto_absent_and_templated_destinations_are_silent(copyto_audit):
+    _, destination, configured, check = copyto_audit
+    assert check(), "missing copyto collision warning"
+    destination.unlink()
+    assert check() == []
+    configured[0] = "runs/{attempt}"
+    lookalike = destination.parent / configured[0]
+    lookalike.mkdir(parents=True)
+    (lookalike / destination.name).write_bytes(b"collision")
+    assert check() == []
+
+
+def test_sim_copyto_literal_cwd_controls_collision(copyto_audit):
+    source, destination, configured, check = copyto_audit
+    run = destination.parent / "runs"
+    run.mkdir()
+    literal = run / destination.name
+    literal.write_bytes(b"collision")
+    for cwd in ("runs", str(run)):
+        configured[0] = cwd
+        assert check(), "missing copyto collision warning"
+        literal.write_bytes(source.read_bytes())
+        assert check() == []
+        literal.unlink()
+        assert check() == []
+        literal.write_bytes(b"collision")
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file", "missing"])
+def test_sim_copyto_blocked_parent_warns(copyto_audit, kind):
+    source, destination, _, check = copyto_audit
+    core = source.parent / "input.core"
+    core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: nested/runtime.mem"))
+    parent = destination.parent / "nested"
+    if kind == "symlink":
+        parent.symlink_to(source.parent, target_is_directory=True)
+    elif kind == "file":
+        parent.write_bytes(b"obstruction")
+    assert len(check()) == (0 if kind == "missing" else 1)
+
+
+def test_sim_copyto_escaped_literal_directory_warns(copyto_audit):
+    _, destination, configured, check = copyto_audit
+    configured[0] = "{{escaped}}"
+    escaped = destination.parent / configured[0]
+    escaped.mkdir()
+    (escaped / destination.name).write_bytes(b"collision")
+    assert len(check()) == 1
+
+
+@pytest.mark.parametrize(
+    "kind", ["invalid-template", "blocked-cwd", "invalid-copyto", "unreadable"]
+)
+def test_sim_copyto_uninspectable_configuration_is_owned_by_other_checks(
+    copyto_audit, monkeypatch, kind
+):
+    source, destination, configured, check = copyto_audit
+    if kind == "invalid-template":
+        configured[0] = "{unknown_placeholder}"
+    elif kind == "blocked-cwd":
+        configured[0] = str(destination)
+    elif kind == "invalid-copyto":
+        core = source.parent / "input.core"
+        core.write_text(core.read_text().replace("copyto: runtime.mem", "copyto: ../runtime.mem"))
+    else:
+
+        def unreadable(*_args, **_kwargs):
+            raise PermissionError("unreadable input")
+
+        monkeypatch.setattr("booley.flows.sim.runtime_inputs.filecmp.cmp", unreadable)
+    assert check() == []
+
+
 def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
     from booley.flows.implementation_publication import target_report_path
 
