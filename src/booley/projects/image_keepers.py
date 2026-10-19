@@ -46,3 +46,11 @@ class Leftover:
     reason: Literal["unused", "in-use", "shared", "unrecorded", "labelled"]
     size: str | None = None
     tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeResult:
+    """What one purge removed, and what it kept with the reason."""
+
+    removed: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()

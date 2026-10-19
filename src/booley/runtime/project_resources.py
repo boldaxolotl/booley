@@ -13,10 +13,10 @@ from typing import NamedTuple
 from booley.config.sandbox import project_image_name_for_identity
 from booley.core.boundary import require_dict, require_list, require_str
 from booley.core.project_identity import accepted_project_labels, project_name_id
-from booley.projects.image_keepers import Leftover
+from booley.projects.image_keepers import Leftover, PurgeResult
 from booley.runtime import interactive_docker
 from booley.runtime.devcontainer import state_volume_names
-from booley.runtime.image_lifecycle import owned_image_ids
+from booley.runtime.image_lifecycle import cleanup_owned_images, owned_image_ids
 from booley.runtime.session_issuance import keeper_image_for_identity
 
 # Docker prints a missing repository or tag as this placeholder.
@@ -123,9 +123,13 @@ def _volume_in_use(name: str) -> bool:
     return bool(_lines(["container", "ls", "--all", "--quiet", "--filter", f"volume={name}"]))
 
 
-def _volumes(identity: str) -> tuple[Leftover, ...]:
+def _present_volumes(identity: str) -> list[str]:
     names = state_volume_names(project_name_id(identity))
-    present = sorted(names & set(_lines(["volume", "ls", "--format", "{{.Name}}"])))
+    return sorted(names & set(_lines(["volume", "ls", "--format", "{{.Name}}"])))
+
+
+def _volumes(identity: str) -> tuple[Leftover, ...]:
+    present = _present_volumes(identity)
     sizes = _volume_sizes() if present else {}
     return tuple(
         Leftover("volume", name, "in-use" if _volume_in_use(name) else "unused", sizes.get(name))
@@ -154,3 +158,58 @@ def _labelled(identity: str) -> tuple[Leftover, ...]:
 def leftovers(identity: str) -> tuple[Leftover, ...]:
     """List every Booley-owned Docker resource that still carries this root's identity."""
     return (*_images(identity), *_volumes(identity), *_labelled(identity))
+
+
+def _layer_count(image: str) -> int:
+    return int("".join(_lines(["image", "inspect", "--format", "{{len .RootFS.Layers}}", image])))
+
+
+def _release_own_tags(identity: str, removed: list[str]) -> set[str]:
+    """Untag children before parents so Docker can reclaim each chain's bytes.
+
+    Returns the IDs whose tags were released.
+    """
+    in_use = interactive_docker.container_image_ids_strict()
+    tags = [
+        (row.image, row.reference)
+        for row in _image_rows()
+        if _is_tag(row.reference)
+        and _owns_tag(identity, row.reference)
+        and row.image not in in_use
+    ]
+    layers = {image: _layer_count(image) for image, _reference in tags}
+    for _image, reference in sorted(tags, key=lambda row: (-layers[row[0]], row[1])):
+        # Non-force, no-prune: other tags keep the bytes, untagged parents stay.
+        _lines(["image", "rm", "--no-prune", reference])
+        removed.append(reference)
+    return {image for image, _reference in tags}
+
+
+def purge(identity: str) -> PurgeResult:
+    """Remove the root's unused own tags, recorded untagged images and unused state volumes.
+
+    Every removal is non-force. Unrecorded untagged images, labelled containers
+    and networks, and anything a container uses stay for the caller to report.
+    """
+    removed: list[str] = []
+    try:
+        untagged = _release_own_tags(identity, removed)
+        recorded = set(owned_image_ids(identity)) & {row.image for row in _image_rows()}
+        kept = list(cleanup_owned_images(identity))
+        present = {row.image for row in _image_rows()}
+        removed.extend(sorted(recorded - present))
+        # Released bytes another image or tag still needs are no longer this Project's.
+        kept.extend(
+            f"{image}: bytes kept (another image or tag still needs them)"
+            for image in sorted((untagged & present) - recorded)
+        )
+        for volume in _present_volumes(identity):
+            if not _volume_in_use(volume):
+                _lines(["volume", "rm", volume])
+                removed.append(volume)
+        if failed := [line for line in kept if ": deferred (" in line]:
+            raise RuntimeError("could not remove recorded images: " + "; ".join(failed))
+    except (RuntimeError, ValueError) as exc:  # ValueError: malformed Docker output
+        done = ", ".join(removed) or "nothing"
+        raise RuntimeError(f"{exc}; already removed: {done}; run the purge again") from exc
+    return PurgeResult(tuple(removed), tuple(kept))

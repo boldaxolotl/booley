@@ -10,10 +10,16 @@ from dataclasses import asdict
 from pathlib import Path
 
 from booley.projects import inventory
-from booley.projects.image_keepers import Candidate, KeeperRelease, Leftover, PruneResult
+from booley.projects.image_keepers import (
+    Candidate,
+    KeeperRelease,
+    Leftover,
+    PruneResult,
+    PurgeResult,
+)
 from booley.runtime import interactive_docker as docker
+from booley.runtime import project_resources
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
-from booley.runtime.project_resources import leftovers
 from booley.runtime.session_issuance import keeper_image_for_identity
 from booley.runtime.session_refresh import shared_recovery_blocks_command
 
@@ -47,28 +53,38 @@ def _require_recovered_host() -> None:
         )
 
 
-def forget_project(project: Path) -> tuple[Path, KeeperRelease]:
-    """Validate Grants, release only this root's unused tag, then persist forgetting."""
+def forget_project(
+    project: Path, *, purge: bool = False
+) -> tuple[Path, KeeperRelease, PurgeResult | None]:
+    """Validate Grants, release only this root's unused tag, then persist forgetting.
+
+    ``purge`` also accepts an already-forgotten absolute root and then removes
+    the root's unused images and state volumes, returning what it removed and kept.
+    """
     outcomes: list[KeeperRelease] = []
     try:
         with host_lifecycle_lock("projects forget"):
             _require_recovered_host()
             forgotten = inventory.forget_project(
-                project, before_forget=lambda root: outcomes.append(_release_root(root))
+                project,
+                before_forget=lambda root: outcomes.append(_release_root(root)),
+                allow_forgotten=purge,
             )
+            if purge:  # purge collects recorded images itself, after releasing tags
+                return forgotten, outcomes[0], project_resources.purge(str(forgotten))
             from booley.runtime.image_lifecycle import cleanup_owned_images
 
             for retained in cleanup_owned_images(forgotten):
                 logger.warning("refresh image cleanup: %s", retained)
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
-    return forgotten, outcomes[0]
+    return forgotten, outcomes[0], None
 
 
 def project_leftovers(project: Path) -> tuple[Leftover, ...]:
     """List what a forgotten root still holds in Docker; never mutates."""
     try:
-        return leftovers(str(project))
+        return project_resources.leftovers(str(project))
     except (RuntimeError, OSError, ValueError) as exc:
         raise inventory.ProjectInventoryError(
             f"forgot {project}, but could not list its leftover Docker resources: {exc}"

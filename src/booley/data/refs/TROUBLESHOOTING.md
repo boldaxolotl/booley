@@ -793,6 +793,25 @@ An untagged image with neither a build record nor the Project's repository
 name can't be traced to any Project, so forget doesn't list it.
 `docker image prune` reclaims every dangling image on the host, from any Project.
 
+To remove the listed resources, run `booley projects forget --purge <project>`
+with the exact absolute root. Purge never follows a symlink in that path. It
+works on a remembered root and on one that is already forgotten or deleted; a
+live Grant for the root refuses it. Purge removes:
+
+- every tag of the Project's own Sandbox Image family and its keeper, unless a
+  container uses the image. Removal never forces and never prunes untagged
+  parent images, so a tag outside the Project keeps its bytes;
+- untagged images recorded as built for the Project, once nothing needs them;
+- the Project's unused state volumes, including the login copy and agent
+  history inside them.
+
+Purge prints a `Removed:` line for each removal and a `Kept:` line, with the
+reason, for each recorded image it had to keep. It keeps `in-use`,
+`unrecorded`, and `labelled` entries and lists them afterwards. Remove an
+`unrecorded` image yourself with `docker image rm <id>`
+once you are sure no other Project needs it. If a removal fails, the error
+names what was already removed; run the same command again to finish.
+
 To reclaim keepers from Projects forgotten before this behavior was available:
 
 ```bash
