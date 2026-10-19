@@ -948,6 +948,10 @@ def test_codex_invalid_interactive_config_never_writes(tmp_path, existing):
         "notice.other=true\n",
         "notice.hide_full_access_warning=false\n",
         '["notice"] # retain header\nother=true\n',
+        pytest.param(
+            '[notice]\nother=true\n[other]\nkey=1\n[notice.model_migrations]\nold="new"\n',
+            id="split-notice",
+        ),
         '["features"] # flags\n"mcp_2026_07_28"=false # deliberate override\n',
         '["mcp_servers"."booley"] # stale\ncommand="old"\n["other"] # retain header\nx=1',
         'model="existing"',
@@ -1356,7 +1360,7 @@ def _assert_codex_editor_preflight(tmp_path, monkeypatch, failure):
             editor.cache_clear()
 
 
-@pytest.mark.parametrize("existing", ['broken="', "notice=true\n"])
+@pytest.mark.parametrize("existing", ['broken="', "notice=true\n", "[notice]\nx=1\nx=2\n"])
 def test_codex_permission_boundary_preserves_invalid_file(tmp_path, existing):
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir()

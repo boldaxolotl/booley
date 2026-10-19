@@ -613,7 +613,7 @@ def _codex_document(path: Path):
     try:
         document = editor.parse(existing)
         _validate_codex_shape(document.unwrap())
-    except ValueError as exc:
+    except (ValueError, editor.exceptions.TOMLKitError) as exc:
         raise ValueError(
             f"Invalid Codex config {path}: {exc}; repair this file and retry"
         ) from exc
@@ -653,6 +653,8 @@ def _prepare_codex_permissions(existing, document):
             for old_key, old_value in notice.value.body:
                 body.append(old_key, old_value)
             document["notice"] = editor.items.InlineTable(body, notice.trivia)
+        elif isinstance(notice, editor.container.OutOfOrderTableProxy):
+            notice[key] = True
         elif notice.value.body:
             notice.value._insert_at(0, editor.key(key), value)
         else:
