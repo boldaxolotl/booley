@@ -380,11 +380,6 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert steps.index(resolve) < group_index
     assert riscv["if"] == gate
     assert "Dockerfile.riscv" in riscv["run"]
-    assert "--progress rawjson" in riscv["run"]
-    assert "riscv-tool-substrate-build.raw.jsonl" in riscv["run"]
-    assert "wheel-overlay-build.raw.jsonl" in riscv["run"]
-    assert "riscv-tool-substrate-metadata.json" in riscv["run"]
-    assert "wheel-overlay-metadata.json" in riscv["run"]
     assert "verify_riscv_image_contract.sh" in riscv["run"]
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
     assert '--build-context "riscv-tooling=${TOOLING_CONTEXT}"' in riscv["run"]
@@ -394,13 +389,6 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert restore["if"] == f"always() && {gate}"
     assert upload["if"] == f"always() && {gate}"
     assert steps.index(restore) > group_index
-
-
-def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None:
-    workflow = _test_workflow()
-    steps = workflow["jobs"]["bwave-smoke"]["steps"]
-    group = next(step for step in steps if "parallel" in step)
-    rendered_lanes = "\n".join(step["run"] for step in group["parallel"])
     helper = (REPOSITORY_ROOT / ".github/scripts/verify_riscv_image_contract.sh").read_text(
         encoding="utf-8"
     )
@@ -408,35 +396,10 @@ def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None
         encoding="utf-8"
     )
 
-    assert rendered_lanes.count("--topology parallel") == len(group["parallel"])
-    timed_lanes = [
-        step
-        for step in group["parallel"]
-        if step.get("name") != "Run RISC-V candidate image contract"
-    ]
-    assert all(
-        step["run"].startswith("python .github/scripts/riscv_phase_metrics.py timed-run")
-        for step in timed_lanes
-    )
-    assert "--name riscv_tool_substrate --topology nested" in rendered_lanes
-    assert "--name wheel_overlay --topology nested" in rendered_lanes
-    assert "--name image_contract_size_resources --topology nested" in rendered_lanes
-    assert "--name picorv32_runtime_demo --topology nested" in rendered_lanes
     assert "image_contract.py" in helper
     assert "image_size_report.py" in helper
     assert "image_runtime_resources.py" in helper
     assert "verify_picorv32_demo.sh" in demo
-
-    ibex = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
-    finalizer = next(
-        step for step in steps if step.get("name") == "Finalize RISC-V phase evidence"
-    )
-    upload = next(step for step in steps if step.get("name") == "Upload candidate RISC-V evidence")
-    assert "--name ibex_runtime --topology post-group" in ibex["run"]
-    assert "riscv_phase_metrics.py finalize" in finalizer["run"]
-    assert "phases.json" in finalizer["run"]
-    assert "--tooling-source" in finalizer["run"]
-    assert steps.index(finalizer) < steps.index(upload)
 
 
 def test_matrix_uses_test_only_dependencies() -> None:
@@ -874,7 +837,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert all(cleanup_wrapper in step["run"] for step in validations)
     for step in validations:
         tokens = shlex.split(step["run"])
-        assert tokens.index(cleanup_wrapper) > tokens.index("--")
+        assert tokens[0] == cleanup_wrapper
         assert "&&" not in tokens
 
 
