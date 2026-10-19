@@ -34,7 +34,6 @@ from booley.eda.provisioning.policies.vivado import (
 from booley.runtime import (
     auth_token,
     image_identity,
-    project_image,
     runtime_context,
     session_runtime,
 )
@@ -187,26 +186,14 @@ def _provider_persistence_current(
 
 def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findings) -> bool:
     spec_image = spec.get("image")
-    immutable_spec = isinstance(spec_image, str) and re.fullmatch(
-        r"sha256:[0-9a-f]{64}", spec_image
-    )
     if not isinstance(spec_image, str) or spec_image == request.image:
         return True
-    if immutable_spec and project_image.is_managed_sandbox_image(
-        request.project_root, request.image
-    ):
-        comparison = idk.compare_issued_selection(
-            spec_image,
-            request.image,
-            executable=request.docker_exe or "docker",
-            project_root=request.project_root,
-        )
-    elif immutable_spec:
-        comparison = idk.compare_issued_reference(
-            spec_image, request.image, executable=request.docker_exe or "docker"
-        )
-    else:
-        comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
+    comparison = idk.compare_issued_image(
+        spec_image,
+        request.image,
+        project_root=request.project_root,
+        executable=request.docker_exe or "docker",
+    )
     if comparison.status is image_identity.Status.UNKNOWN:
         report.note(
             "devcontainer.json has an immutable image pin, but [sandbox].image "
