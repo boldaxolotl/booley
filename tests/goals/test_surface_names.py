@@ -11,6 +11,7 @@ import pytest
 from booley.flows import endpoint_events
 from booley.goals.changes import ChangeKind
 from booley.goals.entry import EntryResult
+from booley.goals.finish_presentation import render_goal_briefing, render_goal_html
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.format import render_status
 from booley.goals.model import REVIEW_KINDS, GoalRecord
@@ -23,7 +24,6 @@ from booley.harness.dashboard.model import _terminal, project_goal
 from booley.mcp.application import McpInputRequired, McpRequestContext
 from booley.mcp.goal_changes import _pending_response
 from booley.mcp.goal_tools import dispatch_goal_tool
-from booley.review.goal_package import render_goal_briefing, render_goal_html
 from tests.goals.conftest import bind
 from tests.goals.test_completion_package import metric_package
 

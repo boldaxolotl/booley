@@ -559,8 +559,8 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
     assert transactions[old_transaction.transaction_id]["manifest"] is None
     import hashlib
 
+    from booley.goals.finish import render_goal_briefing
     from booley.goals.review_package import canonical_json
-    from booley.review.goal_package import render_goal_briefing
     from booley.review.goal_presentation_v1 import render_goal_html
 
     old_path = logs / "acceptance/transactions" / (old_transaction.transaction_id + ".json")
@@ -580,3 +580,31 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
     ):
         assert "prepared.vmem" not in rendered
     assert all(path.read_bytes() == content for path, content in ledger.items())
+
+
+def test_saved_package_renders_frozen_test_runs_without_stored_ledger(layout):
+    from booley.goals.finish import render_goal_briefing
+    from tests.goals.conftest import run_row
+    from tests.goals.test_finish import request
+    from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _record
+
+    layout.record = enter_goals(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
+    _record(layout, "run-1", [run_row(A)])
+    _record(layout, "run-2", [run_row(B)])
+    result = finish_goal(request(layout), environment(layout))
+    facts = json.loads(Path(result["package"]).read_bytes())
+    (goal,) = facts["goals"]
+    for row in [goal["selected_observation"], *goal["original_observations"]]:
+        row["detail"]["test_run_ledger"] = {
+            "schema": "booley.goal-test-run-ledger/v1",
+            "runs": [
+                {"name": run.name, "fingerprint": run.fingerprint, "outcome": "failed"}
+                for run in (A, B)
+            ],
+            "source_evidence": [],
+        }
+    package = GoalCompletionPackage.from_json(facts)
+    text = render_goal_briefing(package)
+    assert "Test Runs: a@1 passed, b@1 passed" in text
+    assert "rerun b@1: booley flow sim --target top --test=b@1" in text
+    assert package.to_json() == facts

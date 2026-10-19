@@ -18,11 +18,10 @@ from booley.goals.sim_baseline_store import (
     validate_results,
 )
 from booley.goals.test_run_evidence import (
-    LedgerScope,
+    HistoryScope,
     freshness_stamp,
-    ledger_defect,
-    ledger_runs,
     matching_rows,
+    run_outcomes,
 )
 from booley.goals.test_run_freezing import TargetPlanError, TargetPlans
 from booley.runtime import job_records
@@ -139,11 +138,7 @@ def goal_transitions(
     if resolution is None:
         return []
     baseline = baseline_observations(project, record, goal)
-    finals, reason = _current_outcomes(record, goal, current, root, resolvers)
-    if current is not None and ledger_defect(
-        current, history, LedgerScope.of(record, goal), resolution.test_runs
-    ):
-        finals, reason = {}, "current Test Run ledger is unavailable or outdated"
+    finals, reason = _current_outcomes(record, goal, current, history, root, resolvers)
     indexed = {(row["name"], row["fingerprint"]): row for row in baseline.get("results", [])}
     target_identity = _target_identity(root, goal)
     rows: list[dict[str, Any]] = []
@@ -187,6 +182,7 @@ def _current_outcomes(
     record: GoalRecord,
     goal: RecordedGoal,
     current: Mapping[str, Any] | None,
+    history: Sequence[Mapping[str, Any]],
     root: Path,
     resolvers: GoalFreshnessResolvers,
 ) -> tuple[dict[tuple[str, str], str], str]:
@@ -207,7 +203,14 @@ def _current_outcomes(
         stamp = freshness_stamp(goal.spec.key, detail)
         if stamp is None or freshness_stamp(goal.spec.key, current["detail"]) != stamp:
             return {}, "current evidence is stale or has no dependent-contents fingerprint"
-        runs = ledger_runs(current["detail"]) or []
+        resolution = record.test_run_resolution(goal.spec.key)
+        runs = run_outcomes(
+            HistoryScope.of(record, goal),
+            () if resolution is None else resolution.test_runs,
+            current["detail"],
+            history,
+            before=current["sequence"],
+        )
         return {(run["name"], run["fingerprint"]): run["outcome"] for run in runs}, ""
     except (OSError, ValueError, RuntimeError) as exc:
         return {}, f"current evidence is unavailable: {exc}"

@@ -21,7 +21,7 @@ from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.store import GoalStore
-from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
+from booley.goals.test_run_evidence import HistoryScope, contributing_observations, outcomes_decide
 from booley.review.goal_package import GoalCompletionPackage, GoalReviewContext
 
 
@@ -168,7 +168,7 @@ def _package_rows(
             raise LifecycleError(
                 f"selected evidence missing for {goal_presentation(goal.spec).text}"
             )
-        originals = original_observations(observation, indexed)
+        originals = original_observations(observation, indexed, record)
         modified = any(
             item["change"] == "modified"
             and item["target"] == context.target_identities.get(goal.spec.target or "")
@@ -197,39 +197,51 @@ def _row_digest(row: dict[str, Any]) -> str:
 
 
 def original_observations(
-    row: dict[str, Any], indexed: dict[int, dict[str, Any]]
+    row: dict[str, Any], indexed: dict[int, dict[str, Any]], record: GoalRecord
 ) -> list[dict[str, Any]]:
-    """Digest-verified linked producer observations, including chained derivations.
-
-    An observation links the observation an approved change derived it from
-    (``goal_derivation``) and the earlier observations its Test Run ledger
-    accumulated (``test_run_ledger``, ADR 0072). Every linked row must still
-    have the digest its link names.
-    """
-    originals: list[dict[str, Any]] = []
-    pending = _linked_evidence(row)
-    seen = {row["sequence"]}
+    """History contributors and digest-verified approved derivations, in sequence order."""
+    originals: dict[int, dict[str, Any]] = {}
+    pending = [row]
+    seen: set[int] = set()
+    goals = {goal.spec.key: goal for goal in record.goals}
     while pending:
-        reference = pending.pop(0)
-        original = indexed.get(reference["sequence"])
-        if original is None or _row_digest(original) != reference["sha256"]:
-            raise LifecycleError(
-                "derived Goal evidence has missing or substituted original observation"
+        current = pending.pop(0)
+        if current["sequence"] in seen:
+            continue
+        seen.add(current["sequence"])
+        resolution = record.test_run_resolution(current.get("criterion", ""))
+        sources = [current]
+        if resolution is not None:
+            goal = goals[current["criterion"]]
+            revision = current["goal_identity"]["spec_revisions"][goal.spec.key]
+            scope = HistoryScope(
+                current["goal_identity"]["record_id"],
+                goal.spec.key,
+                revision,
+                outcomes_decide(goal),
             )
-        if original["sequence"] not in seen:
-            seen.add(original["sequence"])
-            originals.append(original)
-            pending.extend(_linked_evidence(original))
-    return originals
-
-
-def _linked_evidence(row: dict[str, Any]) -> list[dict[str, Any]]:
-    """The ``{sequence, sha256}`` links of *row* to the observations it was built from."""
-    detail = row["detail"]
-    return [
-        *detail.get("goal_derivation", {}).get("source_evidence", []),
-        *detail.get(LEDGER_DETAIL_KEY, {}).get("source_evidence", []),
-    ]
+            required = resolution.test_runs if revision == goal.spec_revision else None
+            for contributor in contributing_observations(
+                current, list(indexed.values()), scope, required
+            ):
+                original = indexed[contributor["sequence"]]
+                originals[original["sequence"]] = original
+                sources.append(original)
+        references = [
+            reference
+            for source in sources
+            for reference in source["detail"].get("goal_derivation", {}).get("source_evidence", [])
+        ]
+        for reference in references:
+            original = indexed.get(reference["sequence"])
+            if original is None or _row_digest(original) != reference["sha256"]:
+                raise LifecycleError(
+                    "derived Goal evidence has missing or substituted original observation"
+                )
+            originals[original["sequence"]] = original
+            pending.append(original)
+    originals.pop(row["sequence"], None)
+    return [originals[sequence] for sequence in sorted(originals)]
 
 
 def _transactions(
@@ -290,7 +302,7 @@ def presentation_observations(
     return tuple(
         row
         for value in selected.values()
-        for row in (value, *original_observations(value, indexed))
+        for row in (value, *original_observations(value, indexed, record))
     )
 
 
