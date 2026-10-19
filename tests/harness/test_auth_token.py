@@ -939,6 +939,130 @@ def test_codex_subscription_plan_uses_cli_home(isolated_home, monkeypatch, tmp_p
     )
 
 
+def _linked_auth(tmp_path, monkeypatch, *, data=True):
+    from tests.harness.test_session_runtime import _linked_project
+
+    root, linked = _linked_project(tmp_path, monkeypatch)
+    if data:
+        (linked / ".booley").mkdir()
+    effects = []
+
+    def effect(name, value=None):
+        def call(*args, **kwargs):
+            effects.append(name)
+            return value
+
+        return call
+
+    for name, value in [
+        ("_acquire", _TOKEN),
+        ("_read_token_from_stdin", _TOKEN),
+        ("_prompt_secret", _TOKEN),
+        ("_mint_claude_token", _TOKEN),
+        ("_reseed_spec", True),
+    ]:
+        monkeypatch.setattr(auth_cmd, name, effect(name, value))
+    for name, value in [
+        ("store_token", tmp_path / "token"),
+        ("clear_stored_token", True),
+        ("read_stored_token", None),
+    ]:
+        monkeypatch.setattr(auth_token, name, effect(name, value))
+    return root, linked, effects
+
+
+@pytest.mark.parametrize("mode", ["mint", "token-stdin", "clear"])
+@pytest.mark.parametrize(
+    "selection",
+    ["implicit-with-data", "implicit-without-data", "explicit-with-data", "explicit-without-data"],
+)
+def test_cli_linked_auth_refuses_before_required_guard(
+    tmp_path, monkeypatch, capsys, selection, mode
+):
+    import sys
+
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch, data="without" not in selection)
+    flags = {"mint": [], "token-stdin": ["--token-stdin"], "clear": ["--clear"]}[mode]
+    argv = ["booley", "auth", *flags]
+    if selection.startswith("explicit"):
+        monkeypatch.chdir(tmp_path)
+        argv = ["booley", "-C", str(linked), "auth", *flags]
+    monkeypatch.setattr(sys, "argv", argv)
+    result = tlr.main()
+    text = capsys.readouterr().err
+    assert (
+        result == 2
+        and not effects
+        and "run from the Project Root" in text
+        and "booley init" not in text
+    ), "linked CLI auth must require Project Root before generic guards"
+
+
+@pytest.mark.parametrize("repo", ["unrelated", "source-checkout"])
+def test_cli_auth_from_non_project_linked_worktree_is_not_refused(
+    tmp_path, monkeypatch, capsys, repo
+):
+    """Only a proven linked Project checkout refuses; other linked worktrees keep auth."""
+    import subprocess
+    import sys
+
+    _linked_auth(tmp_path, monkeypatch)
+    main = tmp_path / "plain"
+    git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com"]
+    subprocess.run([*git, "init", str(main)], check=True, capture_output=True, timeout=30)
+    if repo == "source-checkout":
+        (main / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+        subprocess.run([*git, "-C", str(main), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        [*git, "-C", str(main), "commit", "--allow-empty", "-m", "initial"],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    linked = tmp_path / "plain-linked"
+    subprocess.run(
+        [*git, "-C", str(main), "worktree", "add", "--detach", str(linked)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    monkeypatch.chdir(linked)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--clear"])
+    result = tlr.main()
+    assert result == 0, capsys.readouterr().err
+
+
+def test_linked_auth_status_preserves_selected_checkout(tmp_path, monkeypatch):
+    _, linked, effects = _linked_auth(tmp_path, monkeypatch)
+    selected = []
+    monkeypatch.setattr(
+        auth_cmd, "_safe_report_status", lambda app, root: selected.append(root) or 0
+    )
+    assert auth_cmd.run_auth(SimpleNamespace(status=True), linked) == 0
+    assert selected == [linked]
+    assert not effects
+
+
+def test_auth_from_project_subdirectory_retains_behavior(tmp_path, monkeypatch):
+    root, _, effects = _linked_auth(tmp_path, monkeypatch)
+    child = root / "rtl"
+    child.mkdir()
+    assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), child) == 0
+    assert effects == ["clear_stored_token", "_reseed_spec"]
+
+
+def test_uninitialized_nested_checkout_is_not_adopted_as_ancestor_project(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import discover_project_root
+
+    root, _, _ = _linked_auth(tmp_path, monkeypatch)
+    nested = root / "unrelated"
+    nested.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", str(nested)], check=True, capture_output=True, timeout=30)
+    assert discover_project_root(nested) == nested
+
+
 @pytest.fixture
 def auth_project(home, monkeypatch):
     from booley.runtime.booley_dir import reset_cache
