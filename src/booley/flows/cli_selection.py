@@ -230,15 +230,9 @@ def human_parser(
         return parser
     _replace_action(parser, old, EndpointProjectAction)
     if "--project" not in occupied and "-C" not in occupied:
-        parser.add_argument(
-            "-C",
-            "--project",
-            dest="work_dir",
-            action=EndpointProjectAction,
-            default=argparse.SUPPRESS,
-            metavar="PATH",
-            help="Select the Project Root",
-        )
+        from booley.flows.cli_arguments import add_canonical_project_args
+
+        add_canonical_project_args(parser)
     if durations and "--timeout" not in occupied and "--timeout-ms" in occupied:
         old = occupied["--timeout-ms"]
         scope = old.help.replace(" in positive milliseconds", "").replace(" in milliseconds", "")
@@ -252,9 +246,14 @@ def human_parser(
             metavar="DURATION",
             help=f"{scope.rstrip('.')}. Use seconds, 30m, or 1h30m.",
         )
+    apply_project_selection(parser)
+    return parser
+
+
+def apply_project_selection(parser: argparse.ArgumentParser) -> None:
+    """Apply the outer invocation's explicit selection to a human parser."""
     if _selection.get() is not None:
         parser.set_defaults(work_dir=_selection.get(), _cli_seen_project=True)
-    return parser
 
 
 def _replace_action(parser, old, action_type) -> None:
