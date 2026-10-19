@@ -592,7 +592,7 @@ def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_
 
 
 def test_the_review_package_lists_campaigns_that_were_never_fully_accounted_for() -> None:
-    from booley.review.goal_package import _unsettled_campaign_lines
+    from booley.goals.finish_presentation import _unsettled_campaign_lines
 
     assert _unsettled_campaign_lines({}) == []
     listed = [{"state": "quarantined", "file": "x.json"}]

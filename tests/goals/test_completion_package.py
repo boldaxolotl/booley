@@ -559,8 +559,8 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
     assert transactions[old_transaction.transaction_id]["manifest"] is None
     import hashlib
 
+    from booley.goals.finish import render_goal_briefing
     from booley.goals.review_package import canonical_json
-    from booley.review.goal_package import render_goal_briefing
     from booley.review.goal_presentation_v1 import render_goal_html
 
     old_path = logs / "acceptance/transactions" / (old_transaction.transaction_id + ".json")
@@ -583,7 +583,7 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
 
 
 def test_saved_package_renders_frozen_test_runs_without_stored_ledger(layout):
-    from booley.review.goal_package import render_goal_briefing
+    from booley.goals.finish import render_goal_briefing
     from tests.goals.conftest import run_row
     from tests.goals.test_finish import request
     from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _record

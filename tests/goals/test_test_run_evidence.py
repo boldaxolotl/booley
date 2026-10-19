@@ -515,11 +515,11 @@ def test_review_package_rejects_a_substituted_contributor(two: SimpleNamespace) 
 
 
 def test_briefing_names_test_runs_and_every_deferred_resolution(two: SimpleNamespace) -> None:
-    from booley.goals.test_run_freezing import ensure_test_run_resolutions
-    from booley.review.goal_package import (
+    from booley.goals.finish_presentation import (
         _deferred_resolution_lines,  # pyright: ignore[reportPrivateUsage]
         _test_run_lines,  # pyright: ignore[reportPrivateUsage]
     )
+    from booley.goals.test_run_freezing import ensure_test_run_resolutions
 
     _record(two, "run-1", [run_row(A), run_row(B, "fail")], met=False)
     record, _state, indexed = _package_inputs(two)
