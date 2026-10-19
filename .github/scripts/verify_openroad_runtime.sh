@@ -32,7 +32,7 @@ retain_evidence() {
     if test -f "$work/check_dut.txt"; then
       files+=("$work/check_dut.txt")
     fi
-    for directory in abc-control collision-preserve collision-attribute repair-off repair-on fanout; do
+    for directory in abc-control collision-preserve collision-attribute repair-off repair-on; do
       if (( status == 0 )) || test -d "$work/$directory"; then
         files+=("$work/$directory")
       fi
@@ -184,7 +184,6 @@ for label, repair_timing in (("repair-off", False), ("repair-on", True)):
         ),
         target="synth_dut",
         source_sdc_paths=(work / "dut.sdc",),
-        fanout_report_dir=run_dir / "reports" / "fanout",
     )
     (work / f"run_openroad-{label}.tcl").write_text(
         (run_dir / "run_openroad.tcl").read_text(encoding="utf-8"),
@@ -257,6 +256,3 @@ run_openroad() {
 run_openroad "repair-off"
 run_openroad "repair-on"
 grep -Fq "BOOLEY_STAGE: repair_timing" "$work/openroad-repair-on.log"
-
-PYTHONPATH=/booley-source/src python /booley-source/.github/scripts/verify_openroad_fanout.py \
-  --pdk-root "$pdk_root" --work-dir "$work/fanout"

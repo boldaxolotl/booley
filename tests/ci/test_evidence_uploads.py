@@ -257,12 +257,3 @@ def test_evidence_audit_rejects_publication_before_producer(tmp_path: Path) -> N
     steps.insert(0, upload)
     with pytest.raises(AssertionError, match="no unconditional or producer-gated upload"):
         _assert_uploads(workflow, tmp_path)
-
-
-def test_openroad_fanout_diagnostics_use_existing_export():
-    from pathlib import Path
-
-    root = Path(__file__).parents[2]
-    script = (root / ".github/scripts/verify_openroad_runtime.sh").read_text()
-    assert "repair-off repair-on fanout; do" in script
-    assert '--work-dir "$work/fanout"' in script

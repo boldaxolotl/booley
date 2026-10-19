@@ -792,17 +792,20 @@ booley flow synth --target synth_soc --baseline main   # compare with another re
 
 **Constraints.** Physical synthesis (the Target's `synth_mode`) needs a
 `file_type: SDC` fileset in the Target that creates at least one clock; Booley
-adds no timing constraints of its own; its one generated design rule is the
-fanout limit ([`max_fanout`](CONFIG.md#asic-synthesis-flowssynth)). Logical
-synthesis skips STA and needs no
-SDC. Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
+adds no timing constraints of its own. Logical synthesis skips STA and needs no
+SDC. Physical fanout limits come from OpenROAD's defaults, the library, or the
+Project's SDC. OpenROAD uses an implicit maximum fanout of 50 when neither the
+library nor the SDC sets a limit. For very large nets, set a suitable limit in
+the Target's SDC: `set_max_fanout <n> [current_design]`.
+
+Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
 
 Everyday options:
 
 | Option | Effect |
 |---|---|
 | `--baseline <git-ref>` | Compare with the baseline Target at another revision (the two Targets may differ). |
-| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings except `max_fanout`; expert flags below still apply on top. |
+| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings; expert flags below still apply on top. |
 | `--flatten` / `--no-flatten` | Override the Target's hierarchy flattening. |
 | `--frontend <sv2v\|slang>` | Override the Target's RTL frontend, mainly for diagnosis. |
 
