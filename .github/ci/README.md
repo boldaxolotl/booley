@@ -89,8 +89,7 @@ considering job runtime alone.
 ### Smoke diagnostic evidence
 
 `bwave-smoke` always attempts to publish `junit-coverage-release-*` (JUnit XML
-and incremental `test-timings.jsonl`), `bwave-smoke-phase-records-*` (raw phase
-records), and `openroad-runtime-*` (logs, scripts, Yosys check reports, and placement
+and incremental `test-timings.jsonl`) and `openroad-runtime-*` (logs, scripts, Yosys check reports, and placement
 run directories, including partial evidence from failed probes).
 Successful OpenROAD probes still fail if required evidence cannot be exported.
 These artifacts have 14-day retention. Missing evidence warns when a producer never started or was terminated before writing it.
@@ -102,67 +101,19 @@ an interrupted test may have only setup evidence. Completed-test timings survive
 process termination even when pytest cannot finish its JUnit XML. Runner loss
 or a hard job timeout can still prevent the upload steps from running.
 
-The upload contract tests cover explicit JUnit, diagnostic, and phase-record
+The upload contract tests cover explicit JUnit and diagnostic
 outputs in `test.yml`, including timeout diagnostics, shard manifests and timings,
 composite-action input gates, container mounts, and publication after producers.
 CI-metrics publication also runs after collection failures, retaining any
 completed telemetry file.
 Caches, temporary test projects, and build products are not diagnostic outputs.
 
-### RISC-V image phase measurements
+### RISC-V on-demand builds
 
-When `riscv_image` is selected, `bwave-smoke` retains `riscv-image-evidence-*`
-with a `phases.json` summary, independent records for every native parallel
-lane, distinct raw BuildKit progress logs and metadata for the RISC-V substrate
-and wheel overlay, and the candidate/parent image inspections. The summary
-records the run and attempt, candidate SHA, UTC boundaries, elapsed seconds,
-outcome, cache observations, parallel completion order, the RISC-V lane's
-completion gap after the latest-finishing other lane, and the post-group Ibex
-duration. Raw progress is BuildKit's `rawjson` stream: one SolveStatus snapshot
-per line, with vertices merged by digest and statuses merged by vertex and ID.
-The outer `exporting to image` vertex includes layer export, image metadata, and
-naming, so it remains part of construction/export. Transfer/load is separated
-only when BuildKit exposes a distinct daemon import, layer-load, or unpack
-interval. Otherwise transfer/load is explicitly `unavailable`, the command
-duration remains attributed to the combined construction/export/transfer/load
-operation, and the sample is not complete.
-The summary's `run.tooling` holds the lane's tooling source record (see
-"RISC-V tooling stage"), so every run says whether it reused the published
-tooling image. A registry hit adds an optional `riscv_tooling_compat` phase for
-the compatibility check.
-
-Use the `Tests` workflow's `riscv_measurement` dispatch input for controlled
-samples. Main and manual runs otherwise skip the RISC-V lane unless the last
-commit changed its inputs. `cold` forces the lane and builds the tooling stage
-locally instead of asking the registry (for example `gh workflow run test.yml
---ref <branch> -f riscv_measurement=cold`); `automatic` keeps path gating and
-registry reuse. Both arms use the hosted runner's own Docker and image store,
-so a pair differs only in its tooling source. The input cannot be set on pull
-requests. ADR 0070 retired the Phase-1 `baseline` and `warm` arms and their
-containerd image store.
-
-#568 claims sustained savings only from two cohorts, reported on the issue:
-
-- **Controlled pairs (attribution).** On one temporary measurement branch at
-  one SHA, alternate `automatic` (registry) and `cold` (local) dispatches with
-  the same pinned published stable base. Pin `PUBLISHED_BASE` to an immutable
-  digest, because `:main` moves on every stable-base merge, and avoid `main`,
-  where `tests-${{ github.ref }}` concurrency cancels dispatches. Collect at
-  least three complete registry runs and two complete local runs.
-- **Sustained cohort (at least 20 runs).** Count automatic `pull_request` and
-  `push` runs only when `riscv_image` was selected, the stable base was the
-  published one (`runtime-base.build == false`), the job set, Docker version,
-  storage driver (from the image-size environment evidence), and platform
-  match, the job succeeded, and `run.tooling.source` is `registry`. Report
-  local-base runs, misses, and compatibility fallbacks separately, with the
-  hit rate over all RISC-V-lane runs.
-
-Compare the sustained cohort with automatic classic-store runs from the 30 days
-before the consumer change, using only aggregate totals: RISC-V lane,
-`bwave-smoke` critical path, required gate, queue time, and runner minutes.
-Classic-store phase evidence has no transfer attribution, so report medians and
-ranges for both cohorts and state that the controlled pairs bound the
-cross-period difference without proving it.
+The `Tests` workflow's `riscv_measurement` dispatch input accepts `cold` and `automatic`.
+`cold` forces the RISC-V lane and builds tooling locally: `gh workflow run test.yml --ref <branch> -f riscv_measurement=cold`.
+`automatic` retains path gating and registry reuse; main and manual runs otherwise select the lane only when the last commit changed its inputs.
+The input cannot be set on pull requests.
 
 ### RISC-V tooling stage
 
@@ -206,7 +157,7 @@ record** `riscv-image-evidence/tooling-source.json`:
 | --- | --- | --- |
 | `registry` | The key's tag exists with matching labels | Builds `Dockerfile.riscv` with `--build-context riscv-tooling=docker-image://<repository>@<digest>`, then runs the compatibility check |
 | `local` | The tag is absent, the registry errors, the lookup exceeds 120 s, or the arm is `cold` | Builds the stage from source; the record's `reason` says why |
-| `local-compat-fallback` | A registry hit whose composed candidate failed to build or failed the compatibility check | Moves the rejected attempt's evidence to `registry-attempt/`, then builds the stage from source |
+| `local-compat-fallback` | A registry hit whose composed candidate failed to build or failed the compatibility check | Builds the stage from source; any compatibility log remains at the evidence root |
 
 A tag with the wrong labels fails the job: that is an integrity failure, not a
 miss. Only the label-verified digest reaches BuildKit. The compatibility check

@@ -14,7 +14,6 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import get_args
 
 import pytest
 import yaml
@@ -27,8 +26,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 # Fake python: log argv, create any --record file the way the real helpers
-# would, print a trivial check script, and fail the compatibility check or the
-# resolver when the test asks for it.
+# would, print a trivial check script, and fail the resolver when requested.
 _FAKE_PYTHON = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_LOG}"
 args=("$@")
@@ -41,9 +39,6 @@ done
 case "$*" in
   *"riscv_tooling.py checks"*) echo true ;;
   *"riscv_tooling.py resolve"*) exit "${RESOLVE_STATUS:-0}" ;;
-  *"--name riscv_tooling_compat"*) exit "${COMPAT_STATUS:-0}" ;;
-  *"--name image_contract_size_resources"*) exit "${IMAGE_CONTRACT_STATUS:-0}" ;;
-  *"--name picorv32_runtime_demo"*) exit "${DEMO_STATUS:-0}" ;;
 esac
 exit 0
 """
@@ -55,7 +50,9 @@ printf 'docker %s\n' "$*" >> "${FAKE_LOG}"
 case "$*" in
   "buildx build"*"riscv-tooling=docker-image://"*) exit "${REGISTRY_BUILD_STATUS:-0}" ;;
   "buildx build"*"Dockerfile.riscv"*) exit "${LOCAL_BUILD_STATUS:-0}" ;;
-  "image inspect"*) echo '[]' ;;
+  "buildx build"*"Dockerfile.wheel"*) exit "${WHEEL_BUILD_STATUS:-0}" ;;
+  "run "*"--entrypoint bash booley-riscv-substrate:ci"*)
+    echo compatibility-output; exit "${COMPAT_STATUS:-0}" ;;
 esac
 exit 0
 """
@@ -91,7 +88,7 @@ def _expressions_removed(script: str) -> str:
 
 
 def _run(
-    tmp_path: Path, step: dict, env: dict[str, str]
+    tmp_path: Path, step: dict, env: dict[str, str], *, cwd: Path = _ROOT
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -110,7 +107,7 @@ def _run(
     runner_temp.mkdir(exist_ok=True)
     result = subprocess.run(
         ["bash", "-e", "-c", _expressions_removed(step["run"])],
-        cwd=_ROOT,
+        cwd=cwd,
         env={
             **os.environ,
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -142,7 +139,7 @@ def test_demo_chowns_and_mounts_only_its_readiness_subdirectory(tmp_path: Path) 
     assert any(f"src={directory},dst=/evidence" in call for call in calls)
 
 
-def test_readiness_ownership_and_upload_access_are_restored_before_finalize(
+def test_readiness_ownership_and_upload_access_are_restored_before_upload(
     tmp_path: Path,
 ) -> None:
     directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
@@ -153,7 +150,7 @@ def test_readiness_ownership_and_upload_access_are_restored_before_finalize(
     step = _step("Restore RISC-V demo checkout ownership")
     assert "always()" in step["if"]
     steps = _steps()
-    assert steps.index(step) < steps.index(_step("Finalize RISC-V phase evidence"))
+    assert steps.index(step) < steps.index(_step("Upload candidate RISC-V evidence"))
     result, calls = _run(tmp_path, step, {})
     assert result.returncode == 0, result.stderr
     assert f"sudo chown -R {os.getuid()}:{os.getgid()} {directory}" in calls
@@ -223,10 +220,23 @@ def test_resolver_integrity_failure_fails_the_step(tmp_path: Path) -> None:
 
 
 def _lane(tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    scripts = tmp_path / ".github/scripts"
+    scripts.mkdir(parents=True)
+    for name, status in (
+        ("verify_riscv_image_contract.sh", "IMAGE_CONTRACT_STATUS"),
+        ("run_picorv32_ci_demo.sh", "DEMO_STATUS"),
+    ):
+        fake = scripts / name
+        fake.write_text(
+            f'#!/usr/bin/env bash\nprintf "{name} %s\\n" "$*" >> "${{FAKE_LOG}}"\n'
+            f'exit "${{{status}:-0}}"\n'
+        )
+        fake.chmod(0o755)
     return _run(
         tmp_path,
         _step("Run RISC-V candidate image contract"),
         {"TOOLING_CONTEXT": _CONTEXT, **env},
+        cwd=tmp_path,
     )
 
 
@@ -248,7 +258,7 @@ def test_registry_hit_overrides_the_stage_and_checks_compatibility(tmp_path: Pat
     assert result.returncode == 0, result.stderr
     (build,) = _substrate_builds(calls)
     assert f"--build-context riscv-tooling={_CONTEXT}" in build
-    assert any("--name riscv_tooling_compat" in call for call in calls)
+    assert any("--entrypoint bash booley-riscv-substrate:ci" in call for call in calls)
     assert not _fallbacks(calls)
 
 
@@ -258,7 +268,7 @@ def test_local_source_builds_the_stage_without_a_compat_check(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     (build,) = _substrate_builds(calls)
     assert "riscv-tooling=" not in build
-    assert not any("riscv_tooling_compat" in call for call in calls)
+    assert not any("--entrypoint bash booley-riscv-substrate:ci" in call for call in calls)
     assert not _fallbacks(calls)
 
 
@@ -283,15 +293,12 @@ def test_incompatible_published_tooling_falls_back_to_a_local_build(
     (fallback,) = _fallbacks(calls)
     assert fallback.endswith(f"--detail {detail}")
     assert f"::warning::Published RISC-V tooling {_CONTEXT} failed: {detail}" in result.stdout
-    # The rejected attempt's evidence leaves the final path's phase records.
     evidence = tmp_path / "runner" / "riscv-image-evidence"
-    attempt = {path.name for path in (evidence / "registry-attempt").iterdir()}
-    assert "riscv-tool-substrate.json" in attempt
-    assert "riscv-tool-substrate-build.raw.jsonl" in attempt
-    assert ("riscv-tooling-compat.json" in attempt) == ("COMPAT_STATUS" in env)
-    assert not (evidence / "records" / "riscv-tooling-compat.json").exists()
-    # The local rebuild writes a fresh record for the final path.
-    assert (evidence / "records" / "riscv-tool-substrate.json").exists()
+    assert not (evidence / "registry-attempt").exists()
+    log = evidence / "tooling-compat.log"
+    assert log.exists() == ("COMPAT_STATUS" in env)
+    if log.exists():
+        assert log.read_text() == "compatibility-output\n"
 
 
 def test_failed_local_rebuild_still_fails_the_lane(tmp_path: Path) -> None:
@@ -363,23 +370,11 @@ def test_registry_budget_never_exceeds_the_local_budget() -> None:
     assert env["REGISTRY_BUDGET_SECONDS"] <= env["LOCAL_BUDGET_SECONDS"]
 
 
-def test_measurement_arms_agree_across_workflow_classifier_and_evidence() -> None:
-    """The dispatch input, its validator, and the evidence schema name the same arms."""
-    sys.path.insert(0, str(_ROOT / ".github/scripts"))
-    import ci_changes
-    import riscv_phase_metrics
-
-    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
-    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["riscv_measurement"]["options"]
-
-    assert tuple(dispatch) == ci_changes.RISCV_MEASUREMENT_ARMS
-    assert get_args(riscv_phase_metrics.MeasurementArm) == ci_changes.RISCV_MEASUREMENT_ARMS
-
-
 @pytest.mark.parametrize(
     "failure,started",
     [
         ("LOCAL_BUILD_STATUS", False),
+        ("WHEEL_BUILD_STATUS", False),
         ("IMAGE_CONTRACT_STATUS", False),
         ("DEMO_STATUS", True),
         (None, True),
@@ -391,7 +386,7 @@ def test_readiness_upload_marker_tracks_demo_attempt(
     env = {"TOOLING_SOURCE": "local", "TOOLING_CONTEXT": ""}
     if failure:
         env[failure] = "1"
-    result, calls = _run(tmp_path, _step("Run RISC-V candidate image contract"), env)
+    result, calls = _lane(tmp_path, **env)
     assert result.returncode == (1 if failure else 0), result.stderr
     marker = tmp_path / "runner/riscv-image-evidence/goal-readiness-started"
     assert marker.exists() == started
@@ -399,4 +394,4 @@ def test_readiness_upload_marker_tracks_demo_attempt(
     assert collected.returncode == 0, collected.stderr
     output = tmp_path / "github-output"
     assert (output.exists() and "started=true" in output.read_text()) == started
-    assert any("--name picorv32_runtime_demo" in call for call in calls) == started
+    assert any(call.startswith("run_picorv32_ci_demo.sh ") for call in calls) == started
