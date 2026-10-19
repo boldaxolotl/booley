@@ -315,8 +315,11 @@ class SimulationCampaign:
     @staticmethod
     def reauthenticate_pre_sim_firings(firings: tuple[PreSimFiring, ...]) -> None:
         """Retain reporting evidence only after fresh owner and sidecar validation."""
+        by_manifest: dict[Path, list[PreSimFiring]] = {}
         for firing in firings:
-            CampaignStore(firing.manifest_path.parent).reauthenticate_pre_sim_firing(firing)
+            by_manifest.setdefault(firing.manifest_path, []).append(firing)
+        for path, owned in by_manifest.items():
+            CampaignStore(path.parent).reauthenticate_pre_sim_firings(tuple(owned))
 
     @staticmethod
     def preflight(request: NewCampaignRunRequest) -> None:

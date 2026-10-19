@@ -1893,6 +1893,43 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
     assert final["observation_health"]["error"] == "OSError: advisory checkpoint unavailable"
 
 
+def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
+    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+
+    def fail_build(group):
+        sidecars = list(
+            tmp_path.glob("reports/1/targets/sim/campaign/work-items/*/attempts/*/pre-sim/*.json")
+        )
+        assert len(sidecars) == 1, "hook must be published before the build fails"
+        return SimpleNamespace(passed=False)
+
+    from dataclasses import replace
+
+    from tests.flows.sim.test_campaign_phase3 import _failed_shared_outcome
+
+    failed = _failed_shared_outcome()
+    failed = replace(failed, tests=(replace(failed.tests[0], name="alpha"),))
+    monkeypatch.setattr(_Group, "finish_build_failure", lambda self: failed, raising=False)
+    monkeypatch.setattr(_Group, "compile", fail_build)
+    invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "legacy-per-test")
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([campaign])
+    assert result.exit_code == 1
+    assert len(campaign.pre_sim_firings) == 1
+    firing = campaign.pre_sim_firings[0]
+    assert firing.document["status"] == "passed" and firing.document["returncode"] == 0
+    assert firing.document["stdout_tail"] == "hook-out\n"
+    assert firing.document["stderr_tail"] == "hook-err\n"
+    assert "rc=0" in result.detail["pre_sim_lines"][0]
+    terminal = json.loads((firing.path.parents[3] / "result.json").read_text())
+    assert terminal["state"] == "blocked_by_build"
+    build = json.loads((firing.path.parent.parent / "private-build/build-result.json").read_text())
+    assert build["state"] == "design_failure"
+    assert build["observation"]["detail"]["text"] == "compiler tail"
+
+
 def completed_campaign_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, reports: Path | None = None
 ) -> dict[str, Any]:

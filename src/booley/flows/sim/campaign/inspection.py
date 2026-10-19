@@ -163,7 +163,6 @@ def _retention_inventory(
     store: CampaignStore, recovery: CampaignRecovery
 ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     retention_files = set(store.retention_files)
-    retention_files.update(firing.path.absolute() for firing in store.read_pre_sim_firings())
     attempts = {
         path.parent
         for path in retention_files
