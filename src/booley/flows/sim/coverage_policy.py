@@ -61,7 +61,7 @@ def _json_value(value: FrozenJson) -> object:
     return value
 
 
-def _number(value: Fraction) -> int | float:
+def threshold_number(value: Fraction) -> int | float:
     return value.numerator if value.denominator == 1 else float(value)
 
 
@@ -102,7 +102,7 @@ def _metric_result(rollup: CoverageRollup, threshold: CoverageThreshold) -> dict
         "actual_numerator": rollup.covered_points * 100,
         "actual_denominator": rollup.eligible_points,
         "actual_percent": rollup.percent,
-        "minimum_percent": _number(threshold.minimum_percent),
+        "minimum_percent": threshold_number(threshold.minimum_percent),
         "verdict": "pass" if actual >= threshold.minimum_percent else "fail",
     }
 
@@ -186,7 +186,7 @@ def _blocked_campaign(
             "required": sorted(required_tests),
             "selected": sorted(campaign.selected_tests),
         },
-        "thresholds": {item.metric: _number(item.minimum_percent) for item in ordered},
+        "thresholds": {item.metric: threshold_number(item.minimum_percent) for item in ordered},
         "metrics": [],
         "diagnostics": diagnostics,
     }
@@ -315,7 +315,7 @@ def _scored_campaign(
             "required": sorted(required_tests),
             "selected": sorted(campaign.selected_tests),
         },
-        "thresholds": {item.metric: _number(item.minimum_percent) for item in ordered},
+        "thresholds": {item.metric: threshold_number(item.minimum_percent) for item in ordered},
         "metrics": results,
         "diagnostics": [],
     }

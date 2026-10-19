@@ -1993,6 +1993,8 @@ def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
     assert detail["simulation"] == "pass"
     assert detail["collection"] == "complete"
     assert detail["evaluation"] == "not_requested"
+    assert "coverage_metrics" in detail
+    assert detail["coverage_metrics"]["line"] == {"percent": 100.0, "threshold": None, "met": None}
 
 
 def test_reference_authentication_failure_drops_only_reference(tmp_path, monkeypatch):
@@ -2999,3 +3001,52 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
     (data / "linked").symlink_to(data / "reports", target_is_directory=True)
     with pytest.raises(ValueError, match=r"link|traversal"):
         read_coverage_campaign(alias / "linked/sim/1/targets/sim_0/coverage.json")
+
+
+def test_job_report_coverage_metrics_match_campaign(tmp_path, monkeypatch):
+    from booley.criteria.state import CriterionEntry
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator", "verilator"))
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n[sim_1]\ntests = ["reset"]\n')
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.criteria = {
+        "coverage_sim_0": CriterionEntry(
+            params={
+                "target": "sim_0",
+                "tests": ["reset"],
+                "metrics": {"line": {"min_pct": 100}, "branch": {"min_pct": 100}},
+            }
+        )
+    }
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    reports = tmp_path / "reports"
+    result = SimulateFlow(coverage_execution=lambda *_args: _SplitMetricsExecution()).execute(
+        SimRequest(target="sim_0,sim_1", work_dir=tmp_path, coverage=True, report_dir=reports)
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+    report = json.loads((reports / "sim/1/report.json").read_text())
+    for selector in ("sim_0", "sim_1"):
+        detail = report["detail"]["targets"][selector]
+        assert "coverage_metrics" in detail
+        public = reports / f"sim/1/targets/{selector}/coverage.json"
+        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+        floors = campaign.evaluation["thresholds"]
+        assert detail["coverage_metrics"] == {
+            r.metric: {
+                "percent": r.percent,
+                "threshold": floors.get(r.metric),
+                "met": r.percent == 100 if r.metric in floors else None,
+            }
+            for r in campaign.rollups
+        }
+        assert detail["simulation"] == "pass" and detail["collection"] == "complete"
+        assert detail["evaluation"] == ("fail" if selector == "sim_0" else "not_requested")
+        assert detail["target"] == selector and detail["abort_remaining"] is False
+        assert detail["coverage_campaign"] and "coverage_overall" not in detail
+    assert report["detail"]["targets"]["sim_0"]["coverage_metrics"]["line"]["met"] is True
