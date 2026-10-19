@@ -273,7 +273,9 @@ def test_serial_publication_boundary_resume_matrix(
     from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, RESULT_SCHEMA
 
     assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
-    for path in store.root.glob("work-items/*/result.json"):
+    result_paths = list(store.root.glob("work-items/*/result.json"))
+    assert len(result_paths) == len(manifest.document["work_items"])
+    for path in result_paths:
         result = json.loads(path.read_bytes())
         assert result["$schema"] == RESULT_SCHEMA
         assert all("test_run" in observation for observation in result["observations"])

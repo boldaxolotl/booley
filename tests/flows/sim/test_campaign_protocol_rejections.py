@@ -445,10 +445,12 @@ def test_unfiltered_cocotb_infrastructure_abort_requires_provenance(tmp_path: Pa
 @pytest.mark.parametrize("kind", ["entries", "retired"])
 def test_child_reader_rejects_corrupt_record(tmp_path, kind, error):
     from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.runtime.execution_records import _campaign_child_records
     from tests.flows.sim.test_campaign_phase6 import _publish_retired_child, _retained_invocation
 
     reports, project_data, store = _retained_invocation(tmp_path)
     execution_id = _publish_retired_child(project_data, store)
+    assert f"{execution_id}.json" in _campaign_child_records(store.root / "child-executions")
     control = tmp_path / "control"
     control.mkdir()
     valid_reports, valid_project, valid_store = _retained_invocation(control)

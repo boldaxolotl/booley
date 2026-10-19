@@ -1852,7 +1852,7 @@ def test_copyto_prepared_digest_diagnostic_uses_declared_source():
 
 
 @pytest.mark.parametrize("flag", [False, 1, "true"])
-def test_v3_no_waivers_requires_literal_true(flag):
+def test_current_no_waivers_requires_literal_true(flag):
     document = _manifest()
     document.pop("fingerprints")
     document["workload"]["no_waivers"] = flag

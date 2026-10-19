@@ -11,10 +11,8 @@ from booley.flows.sim.campaign.codec import (
     encode_simulation_campaign_manifest,
 )
 from booley.flows.sim.campaign.planning import finalize_manifest
-from booley.flows.test_runs import build_test_run
 from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
 from tests.flows.sim.test_campaign_manifest_codec import (
-    _names_only_work_items,
     _prepared_disclosure,
     _sha,
 )
@@ -103,27 +101,6 @@ def test_source_mapping_schema_grammar(schema, mapping):
     document = _legacy_manifest("v2" if schema == "v2" else "v1")
     document.pop("fingerprints")
     document["$schema"] = "booley.simulation-campaign-manifest/" + schema
-    if schema == "v2":
-        document["workload"]["coverage"] = True
-        document["workload"]["no_waivers"] = True
-        workload = document["workload"]
-        from booley.flows.sim.campaign.flow_planning import _variant_document, _work_items
-
-        variant = _variant_document(workload, [], False)
-        variants, items = (
-            [variant],
-            _names_only_work_items(
-                _work_items(
-                    [(build_test_run(None),)],
-                    document["target"],
-                    variant,
-                    "run",
-                    "literal",
-                    kind="ordinary_hdl",
-                )
-            ),
-        )
-        document["build_variants"], document["work_items"] = variants, items
     entry = {
         "path": "staged.hex",
         "bytes": 1,
