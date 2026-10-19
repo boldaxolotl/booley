@@ -404,6 +404,54 @@ def _target_summary_line(result: LintConfigResult) -> str:
     )
 
 
+def _lint_findings(
+    targets: list[str],
+    warnings: list[LintWarning],
+    results: list[LintConfigResult],
+) -> dict[str, Any]:
+    """Bound the preview while counting all scoped, distinct warning provenance."""
+    findings = [
+        {
+            "severity": "warning",
+            "rule": warning.rule,
+            "file": warning.file,
+            "line": warning.line,
+            "message": warning.message,
+            "target": warning.target,
+        }
+        for warning in warnings[:20]
+    ]
+    counts = {target: {"warnings": 0, "errors": 0} for target in targets}
+    for warning in warnings:
+        for target in warning.targets or (warning.target,):
+            counts[target]["warnings"] += 1
+    total = len(warnings)
+    for result in results:
+        if not result.error:
+            continue
+        total += 1
+        counts[result.target]["errors"] += 1
+        if len(findings) < 20:
+            findings.append(
+                {
+                    "severity": "error",
+                    "rule": None,
+                    "file": None,
+                    "line": None,
+                    "message": result.error,
+                    "target": result.target,
+                }
+            )
+    detail: dict[str, Any] = {
+        "findings": findings,
+        "findings_total": total,
+        "findings_truncated": total > 20,
+    }
+    if len(targets) > 1:
+        detail["findings_by_target"] = counts
+    return detail
+
+
 def _lint_result_parts(
     targets: list[str],
     unique: list[LintWarning],
@@ -421,6 +469,7 @@ def _lint_result_parts(
     detail: dict[str, Any] = {
         "targets": targets,
         "total_warnings": len(unique),
+        **_lint_findings(targets, unique, target_results or []),
         "elapsed_s": round(elapsed, 2),
     }
     eda_tools = sorted({cr.eda_tool for cr in (target_results or []) if cr.eda_tool})

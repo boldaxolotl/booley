@@ -84,6 +84,7 @@ from booley.flows.sim.coverage_campaign import (
 )
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
+from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
@@ -1387,6 +1388,7 @@ def _coverage_compatibility_targets(
             "simulation": simulation_status_from_observations(outcome.observations),
             "collection": campaign.collection["status"],
             "evaluation": campaign.evaluation["status"],
+            "coverage_metrics": coverage_metrics(campaign),
             "abort_remaining": False,
         }
         reference = _coverage_reference_artifact(
@@ -1434,6 +1436,7 @@ def _failed_campaign_outcome_projection(
     detail.update(
         collection=campaign.collection["status"],
         evaluation=campaign.evaluation["status"],
+        coverage_metrics=coverage_metrics(campaign),
     )
     _attach_failure_reference(
         detail,
