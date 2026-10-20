@@ -1,0 +1,82 @@
+{#-
+  Datasheet page shell. Replaces Material's base.html outright: no Material
+  stylesheet, JavaScript, search, or drawer markup is emitted, so
+  stylesheets/datasheet.css owns every pixel. Material remains the theme
+  only for its blog plugin, whose templates (blog.html, blog-post.html) are
+  overridden next to this file and fill the `container` block.
+-#}
+<!doctype html>
+<html lang="{{ config.theme.language | d('en') }}">
+  <head>
+    {% block site_meta %}
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      {% if page and page.meta and page.meta.description %}
+        <meta name="description" content="{{ page.meta.description }}">
+      {% elif config.site_description %}
+        <meta name="description" content="{{ config.site_description }}">
+      {% endif %}
+      {% if page and page.canonical_url %}
+        <link rel="canonical" href="{{ page.canonical_url }}">
+      {% endif %}
+      {% if config.site_author %}
+        <meta name="author" content="{{ config.site_author }}">
+      {% endif %}
+    {% endblock %}
+    {% block htmltitle %}
+      {% if page and page.meta and page.meta.title %}
+        <title>{{ page.meta.title }} - {{ config.site_name }}</title>
+      {% elif page and page.title and not page.is_homepage %}
+        <title>{{ page.title | striptags }} - {{ config.site_name }}</title>
+      {% else %}
+        <title>{{ config.site_name }}: open-source agentic RTL IDE for FPGA and ASIC work</title>
+      {% endif %}
+    {% endblock %}
+    {#- Preload the two faces every page paints first. -#}
+    <link rel="preload" href="{{ 'assets/fonts/archivo-latin-standard-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="{{ 'assets/fonts/literata-latin-opsz-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin>
+    {% for path in config.extra_css %}
+      <link rel="stylesheet" href="{{ path | url }}">
+    {% endfor %}
+    {% block extrahead %}{% endblock %}
+  </head>
+  <body>
+    <a class="skip" href="#content">Skip to content</a>
+
+    {% block header %}
+      <header class="hdr">
+        <div class="hdr__in">
+          <a class="hdr__logo" href="{{ nav.homepage.url | url }}">{{ config.site_name }}</a>
+          <nav aria-label="Site">
+            {% for item in nav %}
+              {#- A section (the blog) is current on any of its pages; posts included. -#}
+              {% set current = item.active or (item.is_page and item == page) %}
+              <a href="{{ item.url | url }}"{% if current %} aria-current="page"{% endif %}>{{ item.title }}</a>
+            {% endfor %}
+          </nav>
+        </div>
+      </header>
+    {% endblock %}
+
+    <main class="page" id="content">
+      {% block container %}
+        {% block content %}
+          {{ page.content }}
+        {% endblock %}
+      {% endblock %}
+    </main>
+
+    {% block footer %}
+      <footer class="foot">
+        <dl class="foot__in">
+          {#- 404.html renders with no page. -#}
+          {% set document = (page.meta.document or page.title | striptags) if page else "Page not found" %}
+          <div><dt>Document</dt><dd>{{ document or config.site_name }}</dd></div>
+          <div><dt>Package</dt><dd><a href="https://pypi.org/project/booley-rtl/">booley-rtl</a> on PyPI</dd></div>
+          <div><dt>Source</dt><dd><a href="https://github.com/boldaxolotl/booley">github.com/boldaxolotl/booley</a></dd></div>
+          <div><dt>Last revised</dt><dd>{{ build_date_utc.strftime("%-d %B %Y") }}, {{ config.site_author }}</dd></div>
+        </dl>
+      </footer>
+    {% endblock %}
+  </body>
+</html>
