@@ -11,7 +11,6 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import NamedTuple
-from uuid import uuid4
 
 from booley.config.sandbox import project_image_name_for_identity
 from booley.core.boundary import require_dict, require_list, require_str
@@ -21,9 +20,8 @@ from booley.runtime import interactive_docker
 from booley.runtime.devcontainer import state_volume_names
 from booley.runtime.image_lifecycle import (
     ImageReference,
+    OwnedImages,
     cleanup_owned_images,
-    owned_image_ids,
-    record_owned_images,
 )
 from booley.runtime.session_issuance import keeper_image_for_identity
 
@@ -96,7 +94,7 @@ def _images(identity: str) -> tuple[Leftover, ...]:
     """
     tags: dict[str, list[str]] = {}
     sizes: dict[str, str] = {}
-    owned = set(owned_image_ids(identity))
+    owned = set(OwnedImages(identity).ids)
     mine = set(owned)
     for row in _image_rows():
         sizes[row.image] = row.size
@@ -202,7 +200,7 @@ def purge(identity: str) -> PurgeResult:
     removed: list[str] = []
     try:
         untagged = _release_own_tags(identity, removed)
-        recorded = set(owned_image_ids(identity)) & {row.image for row in _image_rows()}
+        recorded = set(OwnedImages(identity).ids) & {row.image for row in _image_rows()}
         kept = list(cleanup_owned_images(identity))
         present = {row.image for row in _image_rows()}
         removed.extend(sorted(recorded - present))
@@ -255,5 +253,5 @@ def record_superseded_images(
         )
     )
     if moved:
-        record_owned_images(Path(identity), "init-superseded-" + uuid4().hex, {}, moved)
+        OwnedImages(Path(identity)).record({}, moved)
     return moved
