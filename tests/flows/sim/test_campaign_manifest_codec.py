@@ -1438,7 +1438,9 @@ def _prepared_diagnostic_pair():
     [
         json.loads(line)
         for name in ("prepared_manifest_pairs", "v4_manifest_pairs")
-        for line in (Path(__file__).parent / f"fixtures/{name}.jsonl").read_text().splitlines()
+        for line in (Path(__file__).parent / f"fixtures/{name}.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ],
     ids=lambda case: case["id"],
 )
