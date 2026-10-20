@@ -39,7 +39,7 @@ warning. Resolve the inspection limitation or accept it through a targeted
 waiver; do not remove a valid local rule or prune registrations to hide it.
 
 Deep Doctor is **current** when a qualifying deep run matches the executing
-Booley version and active immutable Sandbox Image, and no later completed failed,
+Booley version and active immutable Sandbox Image, and no later saved completed failed,
 warning-blocked, or incomplete deep attempt supersedes it. The recorded date is
 informational;
 deep evidence has no age expiry. Current means prior qualifying setup validation;
@@ -85,7 +85,7 @@ FuseSoC resolution inside that Sandbox does not require Docker on its PATH.
 A host-side deep invocation cannot qualify when it skips the in-Sandbox Specialist
 provider probe; run deep Doctor inside the Sandbox for full evidence.
 
-A completed failed, warning-blocked, or incomplete deep attempt retains historical
+A saved completed failed, warning-blocked, or incomplete deep attempt retains historical
 success but makes deep Doctor due until a later qualifying run succeeds. Warning-only
 attempts say “did not qualify” and name the unwaived warning IDs; actual failures
 say “failed.” Older unsuccessful records with unknown health details say “did not
@@ -112,10 +112,10 @@ of the existing plain stamp's configuration fingerprint and age policy.
 Plain Doctor and `booley session up` report **current** with version/date or
 **due** with all applicable reasons. Manual and automatic structured reports at
 `<booley_dir>/runtime/doctor/last.json` include `deep_status` with the same status,
-reason codes, historical success, and evidence-storage failure indicator.
-Storage failures are informational and do not claim new saved success. A known
-unsuccessful result still makes that invocation due when saving fails; later
-commands can only observe evidence that was successfully saved.
+reason codes and messages, and historical success.
+If saving fails, Doctor logs one informational line: “deep result was not saved”.
+Status is computed from the saved record, whose bytes remain intact;
+no new saved success is claimed.
 
 Deep due is advisory: it does not affect health warnings, exit codes or execution, and never schedules or automatically launches deep
 checks. Automatic plain Doctor retains its existing scheduling policy.
