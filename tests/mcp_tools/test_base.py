@@ -35,6 +35,7 @@ from booley.mcp.base import (
 )
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EndpointOutcome
+from tests.flows.report_headline import final_report_omits_headline
 
 
 class ConcreteMcpTool(McpTool):
@@ -2202,30 +2203,29 @@ def test_generic_submission_none_key_is_preserved(tmp_path):
     assert report["criterion_met"] is None
 
 
-@pytest.mark.parametrize("aliases", [["sim_pass_atomic"], ["sim_pass_atomic", "sim_pass_other"]])
-def test_effective_aliases_and_thresholds_drive_final_report(tmp_path, aliases):
+def unbound_specialist(tmp_path, *argv):
+    """A parsed Specialist-kind tool with loaded state and no acceptance owner."""
     tool = ConcreteMcpTool()
     tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
+    tool.parse_args([*argv, "--report-dir", str(tmp_path / "reports")])
     tool.read_state()
+    return tool
+
+
+@pytest.mark.parametrize("aliases", [["sim_pass_atomic"], ["sim_pass_atomic", "sim_pass_other"]])
+def test_effective_aliases_and_thresholds_drive_final_report(tmp_path, aliases):
+    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
     tool.state.init_criteria(
         dict.fromkeys(aliases, True), flow_key_aliases={"sim_pass_default": aliases}
     )
     tool.set_criterion("sim_pass_default", True, detail={"pending": ["unresolved defect"]})
     result = McpToolResult(criterion_key="sim_pass_default", criterion_met=True)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(result).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    final_report_omits_headline(tool, result)
     assert all(tool.state.criteria[alias].met is False for alias in aliases)
 
 
 def test_recording_failure_retains_effective_report_verdict(tmp_path, monkeypatch):
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
     tool.state._file_path = tmp_path / "state.json"
     tool.state.init_criteria({"actual": True}, strict=True)
 
@@ -2235,58 +2235,33 @@ def test_recording_failure_retains_effective_report_verdict(tmp_path, monkeypatc
     monkeypatch.setattr(tool, "_record_acceptance_changes", fail)
     with pytest.raises(OSError):
         tool.set_criterion("actual", False)
-    result = McpToolResult(exit_code=2)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(result).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    report = final_report_omits_headline(tool, McpToolResult(exit_code=2))
     assert tool.state.criteria["actual"].met is False
     assert report["passed"] is False
 
 
 def test_effective_metric_threshold_overrides_raw_true_in_final_report(tmp_path):
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path)
     tool.state.init_criteria(
         {"synthesis_ok_demo": True}, criterion_params={"synthesis_ok_demo": {"area_max": 100}}
     )
     tool.set_criterion("synthesis_ok_demo", True, detail={"area_um2": 200})
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(McpToolResult(criterion_met=True)).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    final_report_omits_headline(tool, McpToolResult(criterion_met=True))
     assert tool.state.criteria["synthesis_ok_demo"].met is False
     assert tool.state.criteria["synthesis_ok_demo"].detail["area_um2"] == 200
 
 
 def test_strict_rejected_evaluation_has_null_final_report(tmp_path):
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path)
     tool.state.strict_criteria = True
     tool.set_criterion("undeclared", False)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(
-        tool.write_report(
-            McpToolResult(criterion_key="undeclared", criterion_met=False)
-        ).read_text()
-    )
-    assert "criterion_key" not in report and "criterion_met" not in report
+    result = McpToolResult(criterion_key="undeclared", criterion_met=False)
+    final_report_omits_headline(tool, result)
     assert "undeclared" not in tool.state.criteria
 
 
 def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, monkeypatch):
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path)
     tool.set_criterion("actual", False)
 
     def refresh(result):
@@ -2295,29 +2270,16 @@ def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, mo
         result.detail["artifact"] = "retained"
 
     monkeypatch.setattr(tool, "refresh_campaign_report_detail", refresh, raising=False)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(McpToolResult()).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    report = final_report_omits_headline(tool, McpToolResult())
     assert tool.state.criteria["actual"].met is False
     assert report["detail"]["artifact"] == "retained"
 
 
 def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path)
     tool.state.init_criteria({"prior": True})
     tool.state.criteria["prior"].met = True
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(
-        tool.write_report(McpToolResult(criterion_key="prior", criterion_met=True)).read_text()
-    )
-    assert "criterion_key" not in report and "criterion_met" not in report
+    final_report_omits_headline(tool, McpToolResult(criterion_key="prior", criterion_met=True))
     assert tool.state.criteria["prior"].met is True
 
 

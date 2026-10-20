@@ -3123,6 +3123,7 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
     from booley.flows.sim.build import BuildOutcome
     from booley.flows.sim.flow import ElabOnlyTargetResult
     from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.report_headline import final_report_omits_headline
 
     flow = _make_flow(tmp_path, config="lite", extra_args=["--mode", "elab-only"])
     flow.args.state_file = None
@@ -3135,11 +3136,7 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
     flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
     result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
     with flow.context.publication_resources:
-        from booley.flows.endpoint_report_criteria import freeze
-
-        freeze(flow.context)
-        report = json.loads(flow.context.write_report(result).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+        report = final_report_omits_headline(flow.context, result)
     assert report["exit_code"] == result.exit_code
     if met is None:
         assert "elab_pass_lite" not in flow.state.criteria

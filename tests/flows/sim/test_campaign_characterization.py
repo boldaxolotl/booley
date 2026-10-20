@@ -37,6 +37,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
+from tests.flows.report_headline import final_report_omits_headline
 from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
@@ -765,15 +766,7 @@ def test_standalone_legacy_simulation_final_report_is_run_local(
         flow.context.publication_resources,
     ):
         outcome = flow._run()
-        from booley.flows.endpoint_report_criteria import freeze
-
-        freeze(flow.context)
-        path = flow.context.write_report(outcome)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(flow.context)
-    report = json.loads(path.read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+        final_report_omits_headline(flow.context, outcome)
     assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None

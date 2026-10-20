@@ -1027,16 +1027,12 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
 
 
 def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
-    import json
-
     from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
+    from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
-    from tests.mcp_tools.test_base import ConcreteMcpTool
+    from tests.mcp_tools.test_base import unbound_specialist
 
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
     tool.state._file_path = tmp_path / "state.json"
     tool.state.init_criteria({"sim_pass_sim": True}, strict=True)
 
@@ -1059,37 +1055,26 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
     )
     with pytest.raises(OSError):
         SimulationAcceptanceCoordinator().reconcile(outcome, context)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    report = final_report_omits_headline(tool, EndpointOutcome(exit_code=2))
     assert report["passed"] is False
     assert tool.state.criteria["sim_pass_sim"].met is False
 
 
 @pytest.mark.parametrize("conclusive", [True, False])
 def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_path, conclusive):
-    import json
     from dataclasses import replace
 
     from booley.flows.sim.acceptance import _record_standalone_campaign
+    from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
-    from tests.mcp_tools.test_base import ConcreteMcpTool
+    from tests.mcp_tools.test_base import unbound_specialist
 
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
     outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
     if not conclusive:
         outcome = replace(outcome, complete=False)
     _record_standalone_campaign(tool, outcome)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(EndpointOutcome()).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    final_report_omits_headline(tool, EndpointOutcome())
     if conclusive:
         assert tool.state.criteria["sim_pass_sim"].met is True
         assert tool.state.criteria["sim_pass_sim"].detail["selected_tests"] == ["smoke"]
