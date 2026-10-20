@@ -121,6 +121,17 @@ def test_missing_canonical_source_aborts_build(
         build_project_git_hook_bundle()
 
 
+def test_unreadable_canonical_source_aborts_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A source path that cannot be read as a file gets the same clear error."""
+    (tmp_path / bundle_module._SOURCE_INVENTORY[0][1]).mkdir(parents=True)
+    monkeypatch.setattr(bundle_module, "_source_package_root", lambda: tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="canonical hook source"):
+        build_project_git_hook_bundle()
+
+
 @pytest.mark.parametrize("minimum", [False, True], ids=["current", "minimum-2.37.2"])
 def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(
     tmp_path: Path, minimum: bool

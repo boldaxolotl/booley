@@ -43,7 +43,7 @@ def _normalized_source(source: Path) -> bytes:
     try:
         with source.open("r", encoding="utf-8", newline="") as handle:
             content = handle.read()
-    except FileNotFoundError as exc:
+    except OSError as exc:
         raise FileNotFoundError(f"canonical hook source is unavailable: {source}") from exc
     return content.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 

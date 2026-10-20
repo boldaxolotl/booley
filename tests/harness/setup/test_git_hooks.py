@@ -683,7 +683,6 @@ class TestProjectGitHookMigration:
     def test_reconciliation_transaction_restores_files_directories_and_missing_paths(
         self, tmp_path: Path
     ) -> None:
-
         existing = tmp_path / "existing.txt"
         existing.write_bytes(b"before")
         directory = tmp_path / "directory"
@@ -706,7 +705,6 @@ class TestProjectGitHookMigration:
 
     @pytest.mark.skipif(os.name == "nt", reason="symlink privileges are unavailable on CI")
     def test_reconciliation_transaction_restores_symlinks(self, tmp_path: Path) -> None:
-
         target = tmp_path / "target"
         target.write_text("target", encoding="utf-8")
         link = tmp_path / "link"
@@ -720,7 +718,6 @@ class TestProjectGitHookMigration:
         assert link.resolve() == target
 
     def test_non_git_project_skips_project_hook_reconciliation(self, tmp_path: Path) -> None:
-
         ctx = _ctx(tmp_path)
         step_project_git_hooks(ctx)
 
@@ -743,7 +740,6 @@ class TestProjectGitHookMigration:
         assert "timed out" in ctx.results[-1].detail
 
     def test_previous_bundle_hashes_ignore_non_mapping_hashes(self, tmp_path: Path) -> None:
-
         bundle = tmp_path / "bundle.pyz"
         with zipfile.ZipFile(bundle, "w") as archive:
             archive.writestr(
@@ -754,7 +750,6 @@ class TestProjectGitHookMigration:
         assert _previous_bundle_hashes(bundle) == {}
 
     def test_shell_bundle_resolution_supports_external_bundle(self, tmp_path: Path) -> None:
-
         result = _shell_bundle_resolution(
             tmp_path / "project", tmp_path / "managed" / "bundle.pyz"
         )
@@ -870,7 +865,6 @@ class TestCommitMsgHookBody:
     Store nag, and winget's Python ships python.exe with no python3.exe."""
 
     def test_body_probes_interpreters_instead_of_bare_python3(self, tmp_path: Path):
-
         body = _build_commit_msg_hook_body(
             tmp_path,
             tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz",
