@@ -102,13 +102,20 @@ def build_status(
     work_dir: Path | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
     observational: bool = False,
+    campaign_reader: CampaignResultsReader | None = None,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
     from booley.runtime.booley_dir_migration import is_archived_record
 
     observational = observational or is_archived_record(store.booley_dir, record.id)
     with store.record_lock(record.id, existing_only=observational):
-        return _build_status(store, store.load(record.id), work_dir=work_dir, resolvers=resolvers)
+        return _build_status(
+            store,
+            store.load(record.id),
+            work_dir=work_dir,
+            resolvers=resolvers,
+            campaign_reader=campaign_reader,
+        )
 
 
 def _build_status(
@@ -117,6 +124,7 @@ def _build_status(
     *,
     work_dir: Path | None,
     resolvers: GoalFreshnessResolvers,
+    campaign_reader: CampaignResultsReader | None,
 ) -> GoalStatusView:
     from booley.runtime.booley_dir_migration import archival_path, is_archived_record
 
@@ -141,9 +149,10 @@ def _build_status(
     drift = ("Goal apply is interrupted; recovery is required" if interrupted else "") or (
         protected[0] if protected else checkout_violation(store, record, root)
     )
-    unaccounted = campaign_accounting.unaccounted_goals(store, record, state)
+    unaccounted = campaign_accounting.unaccounted_goals(
+        store, record, state, history, campaign_reader
+    )
     goals = _goal_statuses(record, state, history, store, root, drift, resolvers, unaccounted)
-    goals = _with_unfinished_runs(goals, campaign_accounting.started_without_result(store, record))
     return GoalStatusView(
         record,
         goals,
@@ -197,20 +206,6 @@ def _goal_statuses(
             status = replace(status, sim_transitions=tuple(transitions))
         statuses.append(status)
     return tuple(statuses)
-
-
-def _with_unfinished_runs(
-    goals: tuple[GoalStatus, ...], notes: Mapping[str, str]
-) -> tuple[GoalStatus, ...]:
-    """Say of an unmet Goal that a frozen run of it was started and left no result."""
-    return tuple(
-        replace(
-            goal, reason=f"{goal.reason}; {notes[goal.key]}" if goal.reason else notes[goal.key]
-        )
-        if goal.key in notes and goal.status == "unmet"
-        else goal
-        for goal in goals
-    )
 
 
 def _entry_facts(entry: Any) -> dict[str, Any] | None:
@@ -335,7 +330,13 @@ def select_status(
         record = _brought_up_to_date(store, record, found[0], campaign_reader)
     records = (record,) if record is not None else scan.records
     views = tuple(
-        build_status(store, rec, work_dir=work_dir if rec is record else None) for rec in records
+        build_status(
+            store,
+            rec,
+            work_dir=work_dir if rec is record else None,
+            campaign_reader=campaign_reader,
+        )
+        for rec in records
     )
     return GoalStatusSelection(views, project_wide=record is None)
 
