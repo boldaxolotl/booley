@@ -3,11 +3,12 @@
 import json
 import os
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import require_dict
-from booley.flows.progress_lifecycle import read_progress_document, read_progress_for_run
+from booley.flows.progress_lifecycle import validate_progress_shape
 
 MAX_ARTIFACTS = 4096
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
@@ -16,12 +17,11 @@ FileEntry = tuple[int, int, dict[str, Any] | None]
 
 
 def _absolute(path: Path) -> Path:
-    # Resolving would erase the symlink evidence required by the lexical guard.
     return Path(os.path.abspath(path))  # noqa: PTH100 — preserve symlinks
 
 
 class JobArtifactCache:
-    """Retain the files read by the last successful refresh."""
+    """Reuse parsed artifacts present in successful refreshes."""
 
     def __init__(self, project: Path) -> None:
         self._project = _absolute(project)
@@ -31,8 +31,7 @@ class JobArtifactCache:
     def begin(self) -> None:
         self._next: dict[Path, FileEntry] = {}
         self._indexes: dict[tuple[Path, str], dict[tuple[str, str], Artifact]] = {}
-        self._truncated: set[tuple[Path, str]] = set()
-        self._fallbacks: dict[tuple[Path, str, str], Artifact | None] = {}
+        self._overflow: dict[tuple[Path, str], Iterator[tuple[int, int, Path]]] = {}
         self._directories: set[Path] = set()
         self.diagnostics: list[str] = []
 
@@ -44,22 +43,14 @@ class JobArtifactCache:
         key = root, endpoint
         if key not in self._indexes:
             self._indexes[key] = self._index(root, endpoint)
-        found = self._indexes[key].get((kind, run_id))
-        if found is None and kind == "progress" and key in self._truncated:
-            fallback_key = root, endpoint, run_id
-            if fallback_key not in self._fallbacks:
-                roots = (root.parent / "flow-reports", root.parent / "mcp-tool-reports")
-                progress = read_progress_for_run(
-                    roots, endpoint, run_id, trusted_path_validator=self._validate
-                )
-                self._fallbacks[fallback_key] = (
-                    None if progress is None else (progress[1], progress[0])
-                )
-            found = self._fallbacks[fallback_key]
-        return found
-
-    def _validate(self, path: Path) -> None:
-        self._inspect(path)
+        index = self._indexes[key]
+        if (kind, run_id) not in index and kind == "progress":
+            for entry in self._overflow.get(key, ()):
+                if entry[2].name == "progress.json":
+                    self._load(entry, endpoint, index)
+                    if (kind, run_id) in index:
+                        break
+        return index.get((kind, run_id))
 
     def _inspect(self, path: Path, *, directory: bool = False) -> os.stat_result | None:
         path = _absolute(path)
@@ -102,7 +93,11 @@ class JobArtifactCache:
         try:
             info = self._inspect(path)
             if info is not None and stat.S_ISREG(info.st_mode) and info.st_size <= 2 * 1024 * 1024:
-                candidates.append((info.st_mtime_ns, info.st_size, path))
+                entry = info.st_mtime_ns, info.st_size, path
+                candidates.append(entry)
+                cached = self._committed.get(path)
+                if path.name == "progress.json" and cached and cached[:2] == entry[:2]:
+                    self._next[path] = cached
         except OSError:
             pass
 
@@ -112,39 +107,44 @@ class JobArtifactCache:
             self.diagnostics.append(f"Job artifact root unavailable: {root}")
             return result
         total = 0
-        for index, (stamp, size, path) in enumerate(self._candidates(root, endpoint)):
-            total += size
+        candidates = self._candidates(root, endpoint)
+        for index, entry in enumerate(candidates):
+            total += entry[1]
             if index >= MAX_ARTIFACTS or total > MAX_ARTIFACT_BYTES:
-                self._truncated.add((root, endpoint))
+                self._overflow[root, endpoint] = iter(candidates[index:])
                 self.diagnostics.append(
                     f"Job artifact history exceeds scan bound: {root}/{endpoint}"
                 )
                 break
-            cached = self._committed.get(path)
-            try:
-                if cached is None or cached[:2] != (stamp, size):
-                    cached = stamp, size, self._read(path)
-            except OSError:
-                continue
-            self._next[path] = cached
-            data = cached[2]
-            if data is None or not isinstance(data.get("run_id"), str):
-                continue
-            kind = "progress" if path.name == "progress.json" else "report"
-            if kind == "progress" and data.get("flow") != endpoint:
-                continue
-            result.setdefault((kind, data["run_id"]), (data, path))
+            self._load(entry, endpoint, result)
         return result
+
+    def _load(
+        self,
+        entry: tuple[int, int, Path],
+        endpoint: str,
+        result: dict[tuple[str, str], Artifact],
+    ) -> None:
+        stamp, size, path = entry
+        cached = self._next.get(path, self._committed.get(path))
+        try:
+            if cached is None or cached[:2] != (stamp, size):
+                cached = stamp, size, self._read(path)
+        except OSError:
+            return
+        self._next[path] = cached
+        data = cached[2]
+        if data is None or not isinstance(data.get("run_id"), str):
+            return
+        kind = "progress" if path.name == "progress.json" else "report"
+        if kind != "progress" or data.get("flow") == endpoint:
+            result.setdefault((kind, data["run_id"]), (data, path))
 
     def _read(self, path: Path) -> dict[str, Any] | None:
         try:
+            data = require_dict(json.loads(path.read_bytes()), field="Job artifact")
             if path.name == "progress.json":
-                return read_progress_document(
-                    path,
-                    (path.parents[2],),
-                    trusted_path_validator=self._validate,
-                    raise_io_errors=True,
-                )
-            return require_dict(json.loads(path.read_bytes()), field="Job report")
+                validate_progress_shape(data)
+            return data
         except (ValueError, UnicodeError):
             return None

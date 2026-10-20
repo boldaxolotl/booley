@@ -18,10 +18,11 @@ def report(root: Path, endpoint: str, number: int, namespace: str = "flow-report
     return path
 
 
-def progress(path, run="1"):
+def progress(path, run="1", **updates):
     data = progress_document(
         flow="sim", run_id=run, phase="complete", targets=[], completed_targets=[], detail={}
     )
+    data.update(updates)
     path.write_text(json.dumps(data))
     return path
 
@@ -48,7 +49,6 @@ def test_multi_root_history_reuses_parses(tmp_path, monkeypatch):
     checkpoints = [progress(root.parent / "flow-reports/sim/1/progress.json") for root in roots]
     before = {p: p.read_bytes() for p in paths + checkpoints}
     reads = spy(monkeypatch, Path, "read_bytes")
-    progress_reads = spy(monkeypatch, job_artifacts, "read_progress_document")
     cache = JobArtifactCache(tmp_path)
     for refresh in range(3):
         cache.begin()
@@ -56,11 +56,9 @@ def test_multi_root_history_reuses_parses(tmp_path, monkeypatch):
             assert cache.find(root, "sim", "1", "report") is not None
             assert cache.find(root, "sim", "absent", "progress") is None
         cache.complete()
-        expected = paths if refresh == 0 else [paths[0]] if refresh == 2 else []
+        expected = paths + checkpoints if refresh == 0 else [paths[0]] if refresh == 2 else []
         assert sorted(reads) == sorted(expected)
-        assert len(progress_reads) == (3 if refresh == 0 else 0)
         reads.clear()
-        progress_reads.clear()
         if refresh == 1:
             info = paths[0].stat()
             os.utime(paths[0], ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
@@ -68,56 +66,67 @@ def test_multi_root_history_reuses_parses(tmp_path, monkeypatch):
     assert {p: p.read_bytes() for p in before} == before
 
 
-def test_missing_progress_does_not_reparse_unrelated_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize("invalid", [False, True])
+def test_overflow_reuses_unchanged_documents(tmp_path, monkeypatch, invalid):
     root = tmp_path / "jobs"
-    path = report(root, "sim", 1).with_name("progress.json")
-    progress(path, "other")
-    reads = spy(monkeypatch, job_artifacts, "read_progress_document")
+    paths = [progress(report(root, "sim", n).with_name("progress.json"), str(n)) for n in range(3)]
+    progress(paths[2], "0", flow="lint")
+    if invalid:
+        paths[1].write_text("invalid")
+    for n, path in enumerate(paths):
+        os.utime(path, (100 + n, 100 + n))
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0)
+    parses = spy(monkeypatch, json, "loads")
     cache = JobArtifactCache(tmp_path)
+    for _refresh in range(2):
+        cache.begin()
+        assert cache.find(root, "sim", "0", "progress")[1] == paths[0]
+        assert cache.find(root, "sim", "absent", "progress") is None
+        assert cache.find(root, "sim", "another", "progress") is None
+        cache.complete()
+        assert len(parses) == 3, "unchanged overflow documents were re-parsed"
+    progress(paths[1], "1")
+    os.utime(paths[1], (200, 200))
     cache.begin()
-    assert cache.find(root, "sim", "absent", "progress") is None
+    assert cache.find(root, "sim", "1", "progress")[1] == paths[1]
+    assert len(parses) == 4
     cache.complete()
-    reads.clear()
     cache.begin()
-    assert cache.find(root, "sim", "absent", "progress") is None
-    assert reads == []
+    assert cache.find(root, "sim", "0", "progress")[1] == paths[0]
+    assert len(parses) == 4
 
 
-def test_project_boundary_accepts_only_links_above_project(tmp_path):
+@pytest.mark.parametrize("kind", ["report", "progress"])
+def test_project_boundary_accepts_only_links_above_project(tmp_path, monkeypatch, kind):
     real = tmp_path / "real"
     root = real / "project" / "jobs"
-    report(root, "sim", 1)
+    progress(report(root, "sim", 1).with_name("progress.json"))
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0 if kind == "progress" else 100)
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     cache = JobArtifactCache(alias / "project")
     cache.begin()
-    assert cache.find(alias / "project/jobs", "sim", "1", "report") is not None
+    assert cache.find(alias / "project/jobs", "sim", "1", kind) is not None
     linked_project = tmp_path / "linked"
     linked_project.symlink_to(real / "project", target_is_directory=True)
     cache = JobArtifactCache(linked_project)
     cache.begin()
-    assert cache.find(linked_project / "jobs", "sim", "1", "report") is None
+    assert cache.find(linked_project / "jobs", "sim", "1", kind) is None
 
 
-@pytest.mark.parametrize("kind", ["report", "progress"])
-def test_transient_report_and_progress_io_is_retried(tmp_path, monkeypatch, kind):
-    from booley.flows import progress_lifecycle
-
+@pytest.mark.parametrize("kind,limit", [("report", 100), ("progress", 100), ("progress", 0)])
+def test_transient_report_and_progress_io_is_retried(tmp_path, monkeypatch, kind, limit):
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
     progress(path.with_name("progress.json"))
-    owner, name = (
-        (Path, "read_bytes")
-        if kind == "report"
-        else (progress_lifecycle, "_read_json_object_nofollow")
-    )
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", limit)
     cache = JobArtifactCache(tmp_path)
     with monkeypatch.context() as fault:
 
         def read(*args, **kwargs):
             raise OSError("transient I/O")
 
-        fault.setattr(owner, name, read)
+        fault.setattr(json, "loads", read)
         cache.begin()
         assert cache.find(root, "sim", "1", kind) is None
         cache.complete()
@@ -130,20 +139,24 @@ def test_scan_bounds(tmp_path, monkeypatch, file_limit, byte_limit):
     monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", file_limit)
     monkeypatch.setattr(job_artifacts, "MAX_ARTIFACT_BYTES", byte_limit)
     root = tmp_path / "jobs"
-    for n in range(3):
-        report(root, "sim", n)
+    paths = [report(root, "sim", n) for n in range(3)]
+    for n, path in enumerate(paths):
+        path.write_text(json.dumps({"run_id": "same", "passed": bool(n)}))
+        os.utime(path, (100 + n, 100 + n))
     reads = spy(monkeypatch, Path, "read_bytes")
     cache = JobArtifactCache(tmp_path)
     cache.begin()
-    cache.find(root, "sim", "1", "report")
+    assert cache.find(root, "sim", "same", "report")[1] == paths[-1]
+    assert cache.find(root, "sim", "missing", "report") is None
     assert len(reads) == 2
     assert cache.diagnostics == [f"Job artifact history exceeds scan bound: {root}/sim"]
 
 
-def test_invalid_documents_reused_until_metadata_changes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("bad", ["invalid", "[]", '{"run_id": 1}'])
+def test_invalid_documents_reused_until_metadata_changes(tmp_path, monkeypatch, bad):
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
-    path.write_text("invalid")
+    path.write_text(bad)
     reads = spy(monkeypatch, Path, "read_bytes")
     cache = JobArtifactCache(tmp_path)
     for _ in range(2):
@@ -185,25 +198,28 @@ def test_directory_checks_shared_once_and_refreshed_after_link_change(tmp_path, 
     assert cache.find(root, "sim", "1", "report") is None
 
 
-@pytest.mark.parametrize("component", ["runtime", "namespace", "endpoint", "run", "file"])
-def test_internal_symlinks_refused_including_complete_fallback(tmp_path, monkeypatch, component):
-    root = tmp_path / "logs/.runtime/jobs"
-    path = report(root, "sim", 1)
-    checkpoint = progress(path.with_name("progress.json"))
-    source = {
-        "runtime": path.parents[3],
-        "namespace": path.parents[2],
-        "endpoint": path.parents[1],
-        "run": path.parent,
-        "file": checkpoint,
-    }[component]
+@pytest.mark.parametrize("component", range(7))
+@pytest.mark.parametrize("refusal", ["link", "dangling", "non-directory"])
+@pytest.mark.parametrize("limit", [0, 100])
+def test_internal_components_refused(tmp_path, monkeypatch, component, refusal, limit):
+    project = tmp_path / "project"
+    root = project / "logs/.runtime/jobs"
+    path = progress(report(root, "sim", 1).with_name("progress.json"))
+    kind = "report" if limit else "progress"
+    path = path.with_name(kind + ".json")
+    source = (path, *path.parents)[component]
     moved = tmp_path / "moved"
     source.rename(moved)
-    source.symlink_to(moved, target_is_directory=component != "file")
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0)
-    cache = JobArtifactCache(tmp_path)
+    if refusal == "non-directory":
+        source.write_text("not a directory or JSON document")
+    else:
+        source.symlink_to(
+            moved if refusal == "link" else tmp_path / "missing", target_is_directory=component > 0
+        )
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", limit)
+    cache = JobArtifactCache(project)
     cache.begin()
-    assert cache.find(root, "sim", "1", "progress") is None
+    assert cache.find(root, "sim", "1", kind) is None
 
 
 def test_relative_lexical_project_spelling_and_outside_root(tmp_path, monkeypatch):
@@ -220,46 +236,6 @@ def test_relative_lexical_project_spelling_and_outside_root(tmp_path, monkeypatc
     assert f"Job artifact root unavailable: {outside}" in cache.diagnostics
 
 
-def test_symlinked_report_file_and_non_directory_ancestor_refused(tmp_path):
-    root = tmp_path / "jobs"
-    path = report(root, "sim", 1)
-    moved = tmp_path / "payload.json"
-    path.rename(moved)
-    path.symlink_to(moved)
-    cache = JobArtifactCache(tmp_path)
-    cache.begin()
-    assert cache.find(root, "sim", "1", "report") is None
-    path.unlink()
-    path.symlink_to(tmp_path / "missing.json")
-    cache.begin()
-    assert cache.find(root, "sim", "1", "report") is None
-    path.unlink()
-    path.parent.rmdir()
-    path.parent.write_text("not a directory")
-    cache.begin()
-    assert cache.find(root, "sim", "1", "report") is None
-
-
-def test_complete_fallback_memo_is_ephemeral(tmp_path, monkeypatch):
-    root = tmp_path / "jobs"
-    for number in range(8):
-        path = report(root, "sim", number).with_name("progress.json")
-        progress(path, str(number))
-        os.utime(path, (100 + number, 100 + number))
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 1)
-    calls = spy(monkeypatch, job_artifacts, "read_progress_for_run")
-    cache = JobArtifactCache(tmp_path)
-    cache.begin()
-    assert cache.find(root, "sim", "0", "progress") is not None
-    assert cache.find(root, "sim", "0", "progress") is not None
-    assert cache.find(root, "sim", "missing", "progress") is None
-    assert cache.find(root, "sim", "missing", "progress") is None
-    assert len(calls) == 2
-    cache.begin()
-    assert cache.find(root, "sim", "0", "progress") is not None
-    assert len(calls) == 3
-
-
 def test_shared_refuse_symlinks_keeps_whole_ancestor_guard(tmp_path):
     from booley.runtime.safe_storage import refuse_symlinks
 
@@ -272,14 +248,18 @@ def test_shared_refuse_symlinks_keeps_whole_ancestor_guard(tmp_path):
         refuse_symlinks(alias / path.relative_to(real))
 
 
-@pytest.mark.parametrize("component", ["endpoint", "run"])
-def test_indexed_report_rejects_linked_directories(tmp_path, component):
+@pytest.mark.parametrize("limit", [0, 100])
+def test_progress_shape_identity_and_size_limit(tmp_path, monkeypatch, limit):
     root = tmp_path / "jobs"
-    path = report(root, "sim", 1)
-    directory = path.parent if component == "run" else path.parents[1]
-    moved = tmp_path / "moved"
-    directory.rename(moved)
-    directory.symlink_to(moved, target_is_directory=True)
+    path = report(root, "sim", 1).with_name("progress.json")
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", limit)
     cache = JobArtifactCache(tmp_path)
+    for updates in ({"complete": False}, {"flow": "lint"}, {"run_id": "other"}, {"run_id": 1}):
+        progress(path, **updates)
+        cache.begin()
+        assert cache.find(root, "sim", "1", "progress") is None
+    progress(path)
+    with path.open("a") as stream:
+        stream.write(" " * (2 * 1024 * 1024))
     cache.begin()
-    assert cache.find(root, "sim", "1", "report") is None
+    assert cache.find(root, "sim", "1", "progress") is None

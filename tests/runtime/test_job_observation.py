@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.runtime.test_job_artifacts import progress, spy
 
 from booley.runtime import job_records, job_slots
 from booley.runtime.job_observation import JobObserver, _observer
@@ -151,13 +152,7 @@ def test_successful_refresh_retires_absent_history_without_repair_or_deletion(
     observer.read(roots)
     observer.read(roots[:1])
     original = Path.read_bytes
-    reads = []
-
-    def read_bytes(path):
-        reads.append(path)
-        return original(path)
-
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    reads = spy(monkeypatch, Path, "read_bytes")
     restored = observer.read(roots)
 
     assert len(restored.jobs) == 2
@@ -249,37 +244,14 @@ def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypa
 
 
 def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
-    from booley.flows.progress_lifecycle import progress_document
-    from booley.runtime.job_observation import _artifacts as job_artifacts
-
     real = tmp_path / "real"
     project = real / "project"
     root = project / "logs/.runtime/jobs"
-    job_records.write_record(rec(status="done"), root)
-    directory = root.parent / "flow-reports/sim/1"
-    directory.mkdir(parents=True)
-    (directory / "report.json").write_text(json.dumps({"run_id": "one", "passed": True}))
-    (directory / "progress.json").write_text(
-        json.dumps(
-            progress_document(
-                flow="sim",
-                run_id="one",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-                extra={"stage": "simulation"},
-            )
-        )
-    )
+    path = write_job(root, "one")
+    progress(path.with_name("progress.json"), "one", stage="simulation")
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     before = files(real)
-    monkeypatch.setattr(
-        job_artifacts,
-        "read_progress_for_run",
-        lambda *_a, **_k: pytest.fail("indexed progress used fallback"),
-    )
     view = JobObserver(alias / "project").read((alias / "project/logs/.runtime/jobs",)).jobs[0]
     assert view.report["passed"] is True
     assert view.stage == "simulation"
@@ -287,32 +259,12 @@ def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, mon
 
 
 def test_snapshot_missing_progress_reuses_unrelated_checkpoint(tmp_path, monkeypatch):
-    from booley.flows import progress_lifecycle
-
     root = tmp_path / "jobs"
     job_records.write_record(rec("absent", status="done"), root)
     path = root.parent / "flow-reports/sim/1/progress.json"
     path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps(
-            progress_lifecycle.progress_document(
-                flow="sim",
-                run_id="other",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-            )
-        )
-    )
-    original = progress_lifecycle._read_json_object_nofollow
-    reads = []
-
-    def read(*args, **kwargs):
-        reads.append(args[0])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(progress_lifecycle, "_read_json_object_nofollow", read)
+    progress(path, "other")
+    reads = spy(monkeypatch, Path, "read_bytes")
     observer = JobObserver(tmp_path)
     observer.read((root,))
     reads.clear()
@@ -331,27 +283,16 @@ def test_snapshot_shared_artifact_directory_checked_once(tmp_path, monkeypatch):
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"run_id": endpoint, "passed": True}))
     namespace = root.parent / "flow-reports"
-    original = Path.lstat
-    checks = []
-
-    def lstat(path, *args, **kwargs):
-        if path == namespace:
-            checks.append(path)
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "lstat", lstat)
+    checks = spy(monkeypatch, Path, "lstat")
     JobObserver(tmp_path).read((root,))
-    assert checks == [namespace]
+    assert checks.count(namespace) == 1
 
 
 def test_outside_project_interactive_job_remains_observable_without_artifacts(tmp_path):
     root = tmp_path / "outside/jobs"
     project = tmp_path / "project"
     project.mkdir()
-    job_records.write_record(rec(status="done"), root)
-    directory = root.parent / "flow-reports/sim/1"
-    directory.mkdir(parents=True)
-    (directory / "report.json").write_text(json.dumps({"run_id": "one", "passed": True}))
+    write_job(root, "one")
     snapshot = JobObserver(project).read((root,))
     assert len(snapshot.jobs) == 1
     assert snapshot.jobs[0].report is None
