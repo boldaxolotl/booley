@@ -11,22 +11,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from booley.runtime.compiler_cache import COMPILER_CACHE_SEGMENTS
-
 logger = logging.getLogger(__name__)
 
-
-BOOLEY_COPY_EXCLUDES = (
-    ".git",
-    ".venv",
-    "worktrees",
-    "tmp",
-    "target",
-    ".pytest_cache",
-    ".ruff_cache",
-    "__pycache__",
-    "*.pyc",
-)
 
 # Windows refuses to rename onto a file that another handle holds open without
 # FILE_SHARE_DELETE, which is how Python's open() opens files. A reader polling
@@ -103,24 +89,3 @@ def safe_rmtree(path: str | Path, *, protect_git_root: bool = True) -> None:
         func(failed_path)
 
     shutil.rmtree(root, onerror=_on_error)
-
-
-def copy_booley_tree(src: Path, dst: Path) -> None:
-    """Copy a .booley tree using the canonical infrastructure exclusions."""
-    if dst.exists():
-        # Worktree copies may contain a stale .git/ from prior runs;
-        # safe to remove since this is a copy, not the real repo.
-        safe_rmtree(dst, protect_git_root=False)
-    standard_ignore = shutil.ignore_patterns(*BOOLEY_COPY_EXCLUDES)
-    # Legacy trees nest Booley Directory under ``project/``. Skip the shared
-    # compiler cache's top directory there, keeping its runtime neighbors.
-    cache_parent = src.joinpath("project", *COMPILER_CACHE_SEGMENTS[:-2])
-    cache_top = COMPILER_CACHE_SEGMENTS[-2]
-
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        excluded = set(standard_ignore(directory, names))
-        if Path(directory) == cache_parent:
-            excluded.add(cache_top)
-        return excluded
-
-    shutil.copytree(src, dst, ignore=ignore)
