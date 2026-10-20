@@ -852,6 +852,9 @@ def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path,
         journal,
         phase=session_refresh._RefreshPhase.VERIFIED,
         direction=session_refresh._RecoveryDirection.COMMITTED_FORWARD,
+        prepared_images=(
+            session_refresh.RefreshPreparedImage("ref", "ref-candidate", "sha256:c", None),
+        ),
         replacement_issuance=_issuance(tmp_path, "sha256:fresh"),
     )
     session_refresh._write_journal(journal)

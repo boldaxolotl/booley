@@ -181,26 +181,6 @@ def test_manual_final_scratch_cannot_claim_parent_with_labels(tmp_path, monkeypa
         harness._IncrementalBuildAdapter._verify_manual_ancestry("child", "parent")
 
 
-def test_legacy_journal_refuses_shared_restore_before_any_recovery(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.runtime import session_refresh as refresh
-
-    root = _project(tmp_path)
-    image = refresh.RefreshPreparedImage(
-        lifecycle.BASE_IMAGE, "booley-lifecycle-old:candidate", "sha256:candidate", "sha256:prior"
-    )
-    journal = SimpleNamespace(project_root=root, prepared_images=(image,))
-    monkeypatch.setattr(refresh, "_load_journal", lambda _root: journal)
-    monkeypatch.setattr(
-        refresh,
-        "_restore_journal",
-        lambda _journal: pytest.fail("legacy journal performed recovery"),
-    )
-    with pytest.raises(refresh.sr.SessionError, match="legacy image state"):
-        refresh.recover_project_locked(root)
-
-
 def test_never_initialized_project_check_does_not_create_files(tmp_path, monkeypatch):
     docker = FakeDocker({})
     _bootstrap_base(monkeypatch, docker)

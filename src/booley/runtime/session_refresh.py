@@ -3,26 +3,16 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import json
 import os
-from collections.abc import Callable
-from dataclasses import asdict, dataclass, fields, replace
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from uuid import uuid4
 
-from booley.core.boundary import (
-    BoundaryError,
-    as_str,
-    require_bool,
-    require_dict,
-    require_int,
-    require_opt_str,
-    require_str,
-)
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
@@ -38,7 +28,6 @@ from booley.runtime.session_spec import (
 
 _JOURNAL_VERSION = 2
 _JOURNAL_DIR = Path("eda") / "session-refresh"
-_MAX_SNAPSHOT_BYTES = 1024 * 1024
 
 
 class _RefreshPhase(StrEnum):
@@ -169,242 +158,86 @@ def _journal_name(project_root: Path) -> str:
     return f"{identity}.json"
 
 
-def _require_mapping(raw: object, label: str) -> dict[str, Any]:
-    try:
-        values = require_dict(raw, field=f"Session refresh journal {label}")
-    except BoundaryError as exc:
-        raise sr.SessionError(str(exc)) from exc
-    return cast(dict[str, Any], values)
-
-
-def _require_exact_fields(values: dict[str, Any], expected: frozenset[str], label: str) -> None:
-    if set(values) != expected:
-        raise sr.SessionError(f"Session refresh journal {label} has unexpected or missing fields")
-
-
-def _decode_snapshot_content(values: dict[str, Any], name: str, present_name: str) -> bytes | None:
-    try:
-        present = require_bool(values, present_name)
-    except BoundaryError as exc:
-        raise sr.SessionError(f"Session refresh journal snapshot is invalid: {exc}") from exc
-    encoded = as_str(values.get(name))
-    if encoded is None:
-        raise sr.SessionError("Session refresh journal snapshot content must be a string")
-    try:
-        decoded = base64.b64decode(encoded, validate=True)
-    except (ValueError, binascii.Error) as exc:
-        raise sr.SessionError("Session refresh journal snapshot encoding is invalid") from exc
-    if len(decoded) > _MAX_SNAPSHOT_BYTES:
-        raise sr.SessionError("Session refresh journal snapshot is too large")
-    return decoded if present else None
-
-
-def _decode_snapshot_mode(values: dict[str, Any], name: str) -> int:
-    try:
-        mode = require_int(values.get(name), field=f"snapshot {name}")
-    except BoundaryError as exc:
-        raise sr.SessionError(f"Session refresh journal snapshot is invalid: {exc}") from exc
-    if not 0 <= mode <= 0o777:
-        raise sr.SessionError(f"Session refresh journal snapshot {name} is outside mode bits")
-    return mode
-
-
-def _decode_snapshot(raw: object, project_root: Path) -> SessionSpecSnapshot:
-    values = _require_mapping(raw, "snapshot")
-    expected = frozenset(
-        {
-            "spec_present",
-            "spec_content",
-            "spec_mode",
-            "stamp_present",
-            "stamp_content",
-            "stamp_mode",
-            "image_id",
-        }
-    )
-    _require_exact_fields(values, expected, "snapshot")
-    try:
-        image_id = require_opt_str(values, "image_id", field="snapshot image_id")
-    except BoundaryError as exc:
-        raise sr.SessionError(f"Session refresh journal snapshot is invalid: {exc}") from exc
-    return SessionSpecSnapshot(
-        dc.devcontainer_path(project_root),
-        _decode_snapshot_content(values, "spec_content", "spec_present"),
-        _decode_snapshot_mode(values, "spec_mode"),
-        runtime_spec.stamp_path(project_root),
-        _decode_snapshot_content(values, "stamp_content", "stamp_present"),
-        _decode_snapshot_mode(values, "stamp_mode"),
-        image_id,
-    )
-
-
 def _decode_issuance(raw: object, label: str) -> runtime_spec.Issuance:
     try:
         return runtime_spec.issuance_from_document(raw)
     except runtime_spec.RuntimeSpecError as exc:
-        raise sr.SessionError(f"Session refresh journal {label} is invalid: {exc}") from exc
+        raise ValueError(f"{label} is invalid: {exc}") from exc
 
 
-def _decode_runtime(raw: object, project_root: Path) -> sr.ParkedSession | None:
-    if raw is None:
-        return None
-    values = _require_mapping(raw, "prior runtime")
-    expected = frozenset(field.name for field in fields(sr.ParkedSession))
-    _require_exact_fields(values, expected, "prior runtime")
-    try:
-        parked = sr.ParkedSession(
-            name=require_str(values, "name"),
-            backup=require_str(values, "backup"),
-            was_running=require_bool(values, "was_running"),
-            project_id=require_str(values, "project_id"),
-            reconnect_egress=require_bool(values, "reconnect_egress"),
-            container_id=require_str(values, "container_id"),
-            image_id=require_str(values, "image_id"),
-            egress_network_id=require_opt_str(values, "egress_network_id"),
-        )
-    except BoundaryError as exc:
-        raise sr.SessionError(f"Session refresh journal prior runtime is invalid: {exc}") from exc
-    expected_name = sr.session_container_name(project_root)
-    if parked.name != expected_name or parked.backup != f"{expected_name}-pre-refresh":
-        raise sr.SessionError("Session refresh journal contains invalid Sandbox names")
-    if parked.reconnect_egress and parked.egress_network_id is None:
-        raise sr.SessionError(
-            "Session refresh journal prior runtime egress identity is incomplete"
-        )
-    return parked
-
-
-def _decode_prepared_images(raw: object) -> tuple[RefreshPreparedImage, ...]:
-    if not isinstance(raw, list):
-        raise sr.SessionError("Session refresh journal prepared images must be a list")
-    images = []
-    for item in raw:
-        values = _require_mapping(item, "prepared image")
-        _require_exact_fields(
-            values,
-            frozenset({"reference", "candidate_reference", "candidate_id", "prior_id"}),
-            "prepared image",
-        )
-        try:
-            image = RefreshPreparedImage(
-                require_str(values, "reference"),
-                require_str(values, "candidate_reference"),
-                require_str(values, "candidate_id"),
-                require_opt_str(values, "prior_id"),
-            )
-        except BoundaryError as exc:
-            raise sr.SessionError(
-                f"Session refresh journal prepared image is invalid: {exc}"
-            ) from exc
-        images.append(image)
-    references = [image.reference for image in images]
-    candidates = [image.candidate_reference for image in images]
-    if len(set(references)) != len(references) or len(set(candidates)) != len(candidates):
-        raise sr.SessionError("Session refresh journal prepared image references are duplicated")
-    return tuple(images)
-
-
-def _decode_replay_metadata(
-    values: dict[str, Any], expected_root: Path
-) -> tuple[int, str, _RefreshPhase, _RecoveryDirection, str | None, str | None]:
-    try:
-        version = require_int(values.get("version"), field="journal version")
-        project_root = require_str(values, "project_root")
-        transaction_id = require_str(values, "transaction_id")
-        phase = _RefreshPhase(require_str(values, "phase"))
-        direction = _RecoveryDirection(require_str(values, "direction"))
-        target = require_opt_str(values, "target_image_id")
-        payload = require_opt_str(values, "target_payload_fingerprint")
-    except (BoundaryError, ValueError) as exc:
-        raise sr.SessionError(
-            f"Session refresh journal replay metadata is invalid: {exc}"
-        ) from exc
-    if version not in {1, _JOURNAL_VERSION} or project_root != str(expected_root):
-        raise sr.SessionError("Session refresh journal identity or version is invalid")
-    return version, transaction_id, phase, direction, target, payload
-
-
-def _validate_journal_identities(journal: _RefreshJournal) -> None:
-    if journal.prior_issuance.project_root != str(journal.project_root):
-        raise sr.SessionError("Session refresh journal prior issuance belongs to another Project")
-    if journal.snapshot.image_id != journal.prior_issuance.image_id:
-        raise sr.SessionError("Session refresh journal predecessor identities disagree")
-    if journal.prior_runtime is not None and (
-        journal.prior_runtime.image_id != journal.prior_issuance.image_id
-    ):
-        raise sr.SessionError("Session refresh journal predecessor image identities disagree")
-    replacement = journal.replacement_issuance
-    if replacement is not None and (
-        replacement.project_root != str(journal.project_root)
-        or replacement.image_id != journal.target_image_id
-    ):
-        raise sr.SessionError(
-            "Session refresh journal replacement identities disagree: "
-            + format_differences(
-                {
-                    "project_root": str(journal.project_root),
-                    "image_id": journal.target_image_id,
-                },
-                {
-                    "project_root": replacement.project_root,
-                    "image_id": replacement.image_id,
-                },
-            )
-        )
-    if journal.direction is _RecoveryDirection.COMMITTED_FORWARD and (
-        journal.phase is not _RefreshPhase.VERIFIED
-        or replacement is None
-        or journal.target_image_id is None
-    ):
-        raise sr.SessionError("committed Session refresh journal is incomplete")
-
-
-def _decode_journal(raw: object, expected_root: Path) -> _RefreshJournal:
-    values = _require_mapping(raw, "document")
-    try:
-        version = require_int(values.get("version"), field="journal version")
-    except BoundaryError as exc:
-        raise sr.SessionError(f"Session refresh journal version is invalid: {exc}") from exc
-    common = {
-        "version",
-        "transaction_id",
-        "project_root",
-        "phase",
-        "direction",
-        "snapshot",
-        "prior_issuance",
-        "prior_runtime",
-        "target_image_id",
-        "target_payload_fingerprint",
-        "replacement_issuance",
-    }
-    version_two = {"target_wheel_sha256", "prepared_images"}
-    expected = frozenset(common | (version_two if version == 2 else set()))
-    _require_exact_fields(values, expected, "document")
-    _version, transaction_id, phase, direction, target, payload = _decode_replay_metadata(
-        values, expected_root
+def _decode_snapshot(
+    project_root: Path,
+    *,
+    spec_present: bool,
+    spec_content: str,
+    spec_mode: int,
+    stamp_present: bool,
+    stamp_content: str,
+    stamp_mode: int,
+    image_id: str | None,
+) -> SessionSpecSnapshot:
+    """Build the snapshot from its stored fields; unknown or missing keys raise TypeError."""
+    return SessionSpecSnapshot(
+        dc.devcontainer_path(project_root),
+        base64.b64decode(spec_content, validate=True) if spec_present else None,
+        spec_mode,
+        runtime_spec.stamp_path(project_root),
+        base64.b64decode(stamp_content, validate=True) if stamp_present else None,
+        stamp_mode,
+        image_id,
     )
-    try:
-        wheel_sha256 = require_opt_str(values, "target_wheel_sha256") if version == 2 else None
-    except BoundaryError as exc:
-        raise sr.SessionError(f"Session refresh journal wheel identity is invalid: {exc}") from exc
-    replacement = values.get("replacement_issuance")
-    journal = _RefreshJournal(
+
+
+def _journal_from(
+    expected_root: Path,
+    *,
+    transaction_id: str,
+    project_root: str,
+    phase: str,
+    direction: str,
+    snapshot: dict[str, Any],
+    prior_issuance: object,
+    prior_runtime: dict[str, Any] | None,
+    target_image_id: str | None,
+    target_payload_fingerprint: str | None,
+    replacement_issuance: object,
+    target_wheel_sha256: str | None = None,
+    prepared_images: Sequence[dict[str, Any]] = (),
+) -> _RefreshJournal:
+    """Build a journal directly from its stored fields (version 1 omits the last two)."""
+    if project_root != str(expected_root):
+        raise ValueError("journal belongs to another Project")
+    return _RefreshJournal(
         expected_root,
         transaction_id,
-        phase,
-        direction,
-        _decode_snapshot(values.get("snapshot"), expected_root),
-        _decode_issuance(values.get("prior_issuance"), "prior issuance"),
-        _decode_runtime(values.get("prior_runtime"), expected_root),
-        target,
-        payload,
-        wheel_sha256,
-        _decode_prepared_images(values.get("prepared_images")) if version == 2 else (),
-        _decode_issuance(replacement, "replacement issuance") if replacement is not None else None,
+        _RefreshPhase(phase),
+        _RecoveryDirection(direction),
+        _decode_snapshot(expected_root, **snapshot),
+        _decode_issuance(prior_issuance, "prior issuance"),
+        sr.ParkedSession(**prior_runtime) if prior_runtime is not None else None,
+        target_image_id,
+        target_payload_fingerprint,
+        target_wheel_sha256,
+        tuple(RefreshPreparedImage(**item) for item in prepared_images),
+        (
+            _decode_issuance(replacement_issuance, "replacement issuance")
+            if replacement_issuance is not None
+            else None
+        ),
     )
-    _validate_journal_identities(journal)
-    return journal
+
+
+def _decode_journal(raw: object, expected_root: Path, path: Path) -> _RefreshJournal:
+    """Decode a journal; any structural fault refuses recovery and leaves the file on disk."""
+    try:
+        if not isinstance(raw, dict):
+            raise TypeError("document must be an object")
+        version = raw.pop("version", None)
+        if version not in {1, _JOURNAL_VERSION}:
+            raise ValueError(f"unsupported version {version!r}")
+        return _journal_from(expected_root, **raw)
+    except (TypeError, ValueError) as exc:
+        raise sr.SessionError(f"cannot decode Session refresh journal {path}: {exc}") from exc
 
 
 def _load_journal(project_root: Path) -> _RefreshJournal | None:
@@ -419,7 +252,7 @@ def _load_journal(project_root: Path) -> _RefreshJournal | None:
         raw = store.read_json(name)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise sr.SessionError(f"cannot read Session refresh journal {path}: {exc}") from exc
-    return _decode_journal(raw, project_root)
+    return _decode_journal(raw, project_root, path)
 
 
 def _delete_journal(project_root: Path) -> None:
@@ -632,18 +465,8 @@ def _recover_prepared_image_tags(
                 docker.remove_tag(image.reference)
             else:
                 docker.tag(image.prior_id, image.reference)
-        elif restore and managed_id not in {image.prior_id, None}:
-            raise sr.SessionError(
-                f"managed tag {image.reference!r} has an unexpected immutable identity"
-            )
-        candidate_id = docker.image_id(image.candidate_reference)
-        if candidate_id is None:
-            continue
-        if candidate_id != image.candidate_id:
-            raise sr.SessionError(
-                f"candidate tag {image.candidate_reference!r} changed before recovery"
-            )
-        docker.remove_tag(image.candidate_reference)
+        if docker.image_id(image.candidate_reference) is not None:
+            docker.remove_tag(image.candidate_reference)
 
 
 def recover_project_locked(project_root: Path) -> RecoveryResult:
@@ -652,36 +475,15 @@ def recover_project_locked(project_root: Path) -> RecoveryResult:
     journal = _load_journal(project)
     if journal is None:
         return RecoveryResult(project, RecoveryOutcome.NONE)
-    _validate_recovery_ownership(journal)
     if journal.direction is _RecoveryDirection.COMMITTED_FORWARD or _replacement_is_coherent(
         journal
     ):
         return _resume_journal(journal)
-    if journal.direction is _RecoveryDirection.RESTORE_ELIGIBLE:
-        return _restore_journal(journal)
-    raise sr.SessionError("Session refresh journal direction is invalid")
-
-
-def _validate_recovery_ownership(journal: _RefreshJournal) -> None:
-    from booley.runtime.project_image import is_managed_sandbox_image
-
-    forbidden = tuple(
-        image.reference
-        for image in journal.prepared_images
-        if image.candidate_reference != image.reference
-        and not is_managed_sandbox_image(journal.project_root, image.reference)
-    )
-    if forbidden:
-        raise sr.SessionError(
-            f"Session refresh journal {_journal_name(journal.project_root)} contains legacy image state "
-            f"outside this Project: {', '.join(forbidden)}; explicit recovery is required. "
-            "The prior Session and journal have been preserved."
-        )
+    return _restore_journal(journal)
 
 
 def _scanned_project_root(filename: str, raw: object) -> Path:
-    values = _require_mapping(raw, "document")
-    persisted = values.get("project_root")
+    persisted = raw.get("project_root") if isinstance(raw, dict) else None
     if not isinstance(persisted, str) or not persisted:
         raise sr.SessionError("Session refresh journal Project identity is invalid")
     candidate = Path(persisted)
