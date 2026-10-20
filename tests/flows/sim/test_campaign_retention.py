@@ -398,8 +398,9 @@ def test_native_pruning_is_retryable_at_each_filesystem_boundary(tmp_path, monke
 
     def fail_delete(path, *args, **kwargs):
         if boundary == "delete":
-            # Model interruption after deleting a subset of native files.
-            next(path.rglob("*.dat")).unlink()
+            # Model interruption after deleting a recorded native file; the retry
+            # must not re-run the missing-payload check.
+            (path / "raw/001-reset@1.dat").unlink()
             raise OSError("injected cleanup failure")
         return rmtree(path, *args, **kwargs)
 

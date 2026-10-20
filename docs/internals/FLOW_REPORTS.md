@@ -303,8 +303,8 @@ exact run. Nothing is ever deleted automatically. Usage is in
 algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 
-- **`--native-target <target>`** removes only that Target's raw and merged
-  Verilator databases. `coverage.json` and the point store stay, so the
+- **`--native-target <target>`** removes that Target's `native/` directory (raw and
+  merged Verilator databases). `coverage.json` and the point store stay, so the
   Campaign can still be analyzed. `availability.json` in the Target directory
   records the pruning.
 - **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so

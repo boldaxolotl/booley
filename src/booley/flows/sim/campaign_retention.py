@@ -201,7 +201,7 @@ def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
 
 
 def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Path:
-    """Remove one exact Target's native databases; return its availability sidecar."""
+    """Remove one exact Target's `native/` directory; return its availability sidecar."""
     root = _invocation(reports_root, invocation)
     with _retention_invocation_lock(root):
         return _prune_native(root, target)
