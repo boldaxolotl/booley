@@ -56,7 +56,6 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
-from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_older_schema
 from tests.flows.sim.test_campaign_crash_matrix import (
     _build_execution,
     _CrashOnce,
@@ -480,27 +479,24 @@ def _run_coverage_campaign(
     return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
 
 
-def _rewrite_nested_coverage_v3(path: Path, *, invalid_scores: bool = False) -> None:
-    document = json.loads(path.read_text())
-    if document["$schema"] == "booley.coverage-campaign/v5":
-        rewrite_manifest_as_older_schema(document, 3)
-    if invalid_scores:
-        document["collection"]["status"] = "collector_error"
-        document["normalization"]["status"] = "partial"
-    path.write_text(json.dumps(document))
-
-
-def _retain_v3_before_reference(monkeypatch: pytest.MonkeyPatch, *, invalid_scores=False) -> None:
+def _retain_score_bearing_invalid_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publish a nested Campaign whose scoring is invalid but still carries rollups."""
     from booley.flows.sim import coverage_transaction
 
     original = coverage_transaction.publish_coverage_campaign
 
-    def publish_v3_campaign(target_dir, campaign):
+    def publish_invalid_campaign(target_dir, campaign):
         paths = original(target_dir, campaign)
-        _rewrite_nested_coverage_v3(paths.campaign, invalid_scores=invalid_scores)
+        document = json.loads(paths.campaign.read_text())
+        document["collection"]["status"] = "collector_error"
+        document["normalization"]["status"] = "partial"
+        document["scoring"] = {"status": "invalid", "reason": "collector_error"}
+        paths.campaign.write_text(json.dumps(document))
         return paths
 
-    monkeypatch.setattr(coverage_transaction, "publish_coverage_campaign", publish_v3_campaign)
+    monkeypatch.setattr(
+        coverage_transaction, "publish_coverage_campaign", publish_invalid_campaign
+    )
 
 
 def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
@@ -525,10 +521,7 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     assert native.executed_original is False
 
 
-def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _retain_v3_before_reference(monkeypatch)
+def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
     plan, target = _coverage_campaign_plan(tmp_path)
     native = NativeExecution()
     executor = CoverageAggregateExecutor(
@@ -567,14 +560,14 @@ def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
     assert resumed.complete is True
     assert len(native.runs) == 2
     assert resumed.coverage_reference["coverage_campaign"]["schema"] == (
-        "booley.coverage-campaign/v3"
+        "booley.coverage-campaign/v5"
     )
 
 
-def test_coverage_campaign_rejects_score_bearing_invalid_v3_nested_result(
+def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _retain_v3_before_reference(monkeypatch, invalid_scores=True)
+    _retain_score_bearing_invalid_campaign(monkeypatch)
 
     with pytest.raises(
         CampaignPublicationError, match="nested Coverage Campaign cannot be authenticated"

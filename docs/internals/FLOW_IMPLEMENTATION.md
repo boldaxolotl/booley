@@ -1049,7 +1049,7 @@ without inline Coverage Points. The
 scoring and retained diagnostic evidence. Source rollups cover line, branch,
 expression, and toggle with overall eligibility and waiver policy;
 they never aggregate by instance hierarchy. The manifest integrity-binds the
-compressed JSON Lines point store. Manifest summary/deep readers validate the current Campaign manifest at the
+compressed JSON Lines point store. Manifest readers validate the current Campaign manifest at the
 resolved nested path; the Target reference is a separate schema. The Coverage
 Analyst requires the canonical Target-level reference and matching completed
 `simulation.json`; it resolves and authenticates the nested manifest internally

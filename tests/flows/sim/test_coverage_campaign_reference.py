@@ -18,7 +18,6 @@ from booley.flows.sim.coverage_campaign import (
     decode_coverage_campaign,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V3,
     CoverageCampaignStoreError,
     publish_coverage_campaign,
 )
@@ -34,8 +33,7 @@ from booley.flows.sim.coverage_reference import (
     resolve_persisted_coverage_campaign_reference,
 )
 from tests.flows.sim.coverage_campaign_test_support import (
-    corrupt_v3_campaign_with_duplicate_negative_point,
-    rewrite_manifest_as_older_schema,
+    corrupt_campaign_with_duplicate_negative_point,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -349,7 +347,7 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_campaign(target)
     reference = _reference(target, nested)
-    corrupt_v3_campaign_with_duplicate_negative_point(nested)
+    corrupt_campaign_with_duplicate_negative_point(nested)
     nested_bytes = nested.read_bytes()
     reference = decode_coverage_campaign_reference(
         _rewrite_reference(reference, ("coverage_campaign", "bytes"), len(nested_bytes))
@@ -372,27 +370,13 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
     assert "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset" in message
 
 
-def test_reference_authenticates_retained_valid_v3_nested_campaign(tmp_path: Path) -> None:
+def test_reference_rejects_score_bearing_invalid_nested_campaign(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_campaign(target)
     manifest = json.loads(nested.read_text())
-    rewrite_manifest_as_older_schema(manifest, 3)
-    nested.write_text(json.dumps(manifest))
-    path = target / "coverage.json"
-    publish_coverage_campaign_reference(path, _reference(target, nested))
-
-    resolved = resolve_coverage_campaign_reference(path)
-
-    assert resolved.loaded.summary.source_schema == CAMPAIGN_SCHEMA_V3
-
-
-def test_reference_rejects_score_bearing_invalid_v3_nested_campaign(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
-    manifest = json.loads(nested.read_text())
-    rewrite_manifest_as_older_schema(manifest, 3)
     manifest["collection"]["status"] = "collector_error"
     manifest["normalization"]["status"] = "partial"
+    manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
     nested.write_text(json.dumps(manifest))
 
     with pytest.raises(CoverageCampaignStoreError, match="Invalid scoring state"):
