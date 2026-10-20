@@ -237,7 +237,7 @@ def execution_environment(
     ambient: Mapping[str, str],
     build_root: Path | None = None,
 ) -> dict[str, str]:
-    """Finalize availability only when a build will execute; never use a home cache."""
+    """Finalize availability only when a build will execute; Booley never selects a home cache."""
     result = dict(environment)
     if policy is None:
         return result
