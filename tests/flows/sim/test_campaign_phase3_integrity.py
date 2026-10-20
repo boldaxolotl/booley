@@ -556,8 +556,8 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
 
 
-def _maximum_hook_selection_plan(names):
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+def _maximum_hook_selection_manifest(names):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_manifest
 
     def transform(document):
         workload = document["workload"]
@@ -577,8 +577,14 @@ def _maximum_hook_selection_plan(names):
             source_sha256="sha256:" + hashlib.sha256(source).hexdigest(),
         )
 
-    plan, _disclosures = _pre_sim_plan("immutable", ("true",), transform)
-    return plan, _disclosures
+    return _pre_sim_manifest("immutable", ("true",), transform)
+
+
+def _maximum_hook_selection_plan(names):
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+
+    manifest, disclosures = _maximum_hook_selection_manifest(names)
+    return create_simulation_campaign_plan(manifest), disclosures
 
 
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
@@ -589,13 +595,11 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
-    plan, _disclosures = _maximum_hook_selection_plan(names)
+    manifest, _disclosures = _maximum_hook_selection_manifest(names)
     invocation = tmp_path / "reports/1"
     store = CampaignStore(invocation / "targets/sim/campaign")
-    store.publish_manifest(plan.manifest)
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
-    )
+    store.publish_manifest(manifest)
+    request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
     evidence = PreSimEvidence(
         ("true",),

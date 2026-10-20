@@ -62,11 +62,10 @@ def _refresh_hook_workload_identity(document):
     item["work_item_id"] = "item:0000:" + digest.removeprefix("sha256:")[:16]
 
 
-def _pre_sim_plan(access, commands, transform):
+def _pre_sim_manifest(access, commands, transform):
     import json
 
     from booley.flows.sim.campaign.codec import canonical_json_bytes
-    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
     from booley.flows.sim.campaign.planning import finalize_manifest
     from tests.flows.sim.test_campaign_phase3_integrity import _legacy_disclosures, _manifest_for
 
@@ -79,8 +78,14 @@ def _pre_sim_plan(access, commands, transform):
     disclosures = _legacy_disclosures() if access == "legacy-per-test" else {}
     if disclosures:
         document["planning_disclosures"] = [disclosures["alpha"]]
-    plan = create_simulation_campaign_plan(finalize_manifest(document))
-    return plan, disclosures
+    return finalize_manifest(document), disclosures
+
+
+def _pre_sim_plan(access, commands, transform):
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+
+    manifest, disclosures = _pre_sim_manifest(access, commands, transform)
+    return create_simulation_campaign_plan(manifest), disclosures
 
 
 def _hook_project(tmp_path, commands, live_commands):
