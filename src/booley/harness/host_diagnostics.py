@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.harness import bootstrap
-from booley.harness.image_lifecycle import Intent
 from booley.runtime import runtime_context
 from booley.runtime.host_install import (
     HostInstallationError,
@@ -17,6 +16,7 @@ from booley.runtime.host_install import (
     host_identity_differences,
     load_host_installation,
 )
+from booley.runtime.image_lifecycle import Intent
 from booley.runtime.paths import skills_dir
 
 MIN_PY = (3, 11)

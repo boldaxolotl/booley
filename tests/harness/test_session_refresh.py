@@ -526,13 +526,13 @@ def test_harness_runtime_image_wrappers_delegate(monkeypatch, tmp_path: Path) ->
 
 def test_init_runtime_image_inspection_reports_stale_steps(monkeypatch, tmp_path: Path) -> None:
     from booley.harness import init_cmd
-    from booley.runtime.image_lifecycle import PlanAction
+    from booley.runtime.image_lifecycle import ImageRole, PlanAction
 
     plan = SimpleNamespace(
         selected_reference="booley-sandbox",
         nodes=(
             SimpleNamespace(
-                role=init_cmd.image_lifecycle.ImageRole.WHEEL_OVERLAY,
+                role=ImageRole.WHEEL_OVERLAY,
                 wheel_source_fingerprint="wheel",
             ),
         ),
