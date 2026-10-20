@@ -1,18 +1,16 @@
 """Git commit-msg hook generation and installation for ``booley init``.
 
 Extracted from ``init_cmd.py`` (Single Responsibility): the ``git_hooks`` step
-installs the leak guard into the project-agnostic ``.booley/`` repo, and the
-``project_git_hooks`` step publishes one standalone policy bundle under
-``.booley/.managed/`` and installs repo-relative adapters into the
-project's own ``.git/hooks/``. ``.booley/hooks/`` remains reserved for
-Project-authored lifecycle hooks. Steps are named by their
+installs the leak guard into the project-agnostic ``.booley/`` repo. The
+``project_git_hooks`` step lives in ``project_git_hook_reconcile``.
+``.booley/hooks/`` remains reserved for Project-authored lifecycle hooks.
+Steps are named by their
 record key, never by a display number — the banner numbers are allocated at
 print time from the steps that actually run (see :meth:`InitContext.step_banner`),
 so a hardcoded display number in a comment drifts the moment a step is
 added or skipped (fpu F-12).
 
-Depends only on ``init_common`` for console output and :class:`InitContext`;
-it never imports back from ``init_cmd``.
+It never imports back from ``init_cmd``.
 """
 
 from __future__ import annotations
@@ -48,21 +46,6 @@ from booley.harness.setup.line_endings import (
     reconcile_project_line_endings,
     unknown_attributes_policy_details,
 )
-from booley.harness.setup.project_git_hook_reconcile import (
-    _LEGACY_MANAGED_HOOKS,
-)
-from booley.harness.setup.project_git_hook_reconcile import (
-    _build_commit_msg_hook_body as _managed_build_commit_msg_hook_body,
-)
-from booley.harness.setup.project_git_hook_reconcile import (
-    _build_hook_delegator_body as _managed_build_hook_delegator_body,
-)
-from booley.harness.setup.project_git_hook_reconcile import (
-    _build_pre_push_hook_body as _managed_build_pre_push_hook_body,
-)
-from booley.harness.setup.project_git_hook_reconcile import (
-    step_project_git_hooks as _managed_step_project_git_hooks,
-)
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 
@@ -70,15 +53,6 @@ def _step_git_hooks(ctx: InitContext) -> None:
     """Embedded Booley source checkouts are retired; Project hooks reconcile separately."""
     ctx.record("git_hooks", "skip", "Project policy bundle is reconciled separately")
 
-
-# Project Git-hook reconciliation lives in a focused module. Keep these names here
-# because init_cmd and older integrations import this setup facade.
-_PROJECT_HOOK_SCRIPTS = _LEGACY_MANAGED_HOOKS
-_PROJECT_HOOK_HELPERS: dict[str, Path] = {}
-_build_hook_delegator_body = _managed_build_hook_delegator_body
-_build_commit_msg_hook_body = _managed_build_commit_msg_hook_body
-_build_pre_push_hook_body = _managed_build_pre_push_hook_body
-_step_project_git_hooks = _managed_step_project_git_hooks
 
 _OBSERVATION_MESSAGES = {
     LineEndingObservationCode.CRLF_MISMATCH: (
