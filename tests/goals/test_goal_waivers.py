@@ -664,5 +664,5 @@ def test_candidate_campaign_mismatch_is_ineligible(layout):
     value = json.loads(path.read_text())
     next(iter(value["candidates"].values()))["campaign_id"] = "different-campaign"
     path.write_text(json.dumps(value))
-    with pytest.raises(ProposalError):
+    with pytest.raises(ProposalError, match="not eligible"):
         propose(layout, env, candidate)

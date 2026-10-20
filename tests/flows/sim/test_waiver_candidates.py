@@ -97,8 +97,8 @@ def test_first_proposal_creates_the_record_lazily(tmp_path: Path) -> None:
     assert record == CandidateRecord()
     assert record.is_empty
     assert not waiver_candidates_path(tmp_path).exists()
-    assert store.load(tmp_path / "another-record").is_empty
     outcome = _record(tmp_path)
+    assert store.load(tmp_path / "another-record").is_empty
 
     expected_id = (
         "wc-"
@@ -380,7 +380,10 @@ def isolated_owner(tmp_path, monkeypatch):
 
 
 def test_internal_record_construction_does_not_validate_fields() -> None:
-    with patch.object(store, "_point_id", wraps=store._point_id) as validate:
+    with (
+        patch.object(store, "_timestamp", wraps=store._timestamp) as timestamp,
+        patch.object(store, "_point_id", wraps=store._point_id) as validate,
+    ):
         binding, proposal, rejection = _binding(), _proposal(), _rejection()
         candidate = store.WaiverCandidate(
             binding, proposal, 1, "2026-09-30T12:00:00Z", "2026-09-30T12:00:00Z", "inv"
@@ -389,6 +392,7 @@ def test_internal_record_construction_does_not_validate_fields() -> None:
         record = CandidateRecord(candidates={candidate.key: replace(candidate, proposal_count=2)})
         store.rejected_record(record, [rejection])
         assert validate.call_count == 0, "trusted construction repeated field validation"
+        assert timestamp.call_count == 0
 
 
 def test_proposal_ingress_validates_once(tmp_path: Path) -> None:
