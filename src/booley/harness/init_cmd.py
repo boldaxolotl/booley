@@ -121,11 +121,8 @@ from booley.harness.setup.docker_image import (
     source_fingerprint_mismatch,
 )
 from booley.harness.setup.git_hooks import (
-    _PROJECT_HOOK_SCRIPTS,
-    _build_commit_msg_hook_body,
     _step_git_hooks,
     _step_line_endings,
-    _step_project_git_hooks,
     _step_worktree_link_policy,
     _step_worktree_prune_guard,
 )
@@ -139,6 +136,9 @@ from booley.harness.setup.line_endings import (
     sample_worktree_cleanliness,
 )
 from booley.harness.setup.plan import InitPlan, InitPlanBlockedError, InitPreconditionError
+from booley.harness.setup.project_git_hook_reconcile import (
+    step_project_git_hooks as _step_project_git_hooks,
+)
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills

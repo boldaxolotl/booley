@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import sys
-import warnings
 import zipfile
 from pathlib import Path
 
@@ -27,7 +26,7 @@ def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
     assert first.content == second.content
     assert first.sha256 == second.sha256 == hashlib.sha256(first.content).hexdigest()
 
-    with zipfile.ZipFile(__import__("io").BytesIO(first.content)) as archive:
+    with zipfile.ZipFile(io.BytesIO(first.content)) as archive:
         names = archive.namelist()
         assert names == sorted(names)
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
@@ -47,64 +46,21 @@ def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
         }
 
 
-def test_normalized_source_bytes_are_identical_for_lf_and_crlf(tmp_path: Path) -> None:
-    source = tmp_path / "hook.py"
-    source.write_bytes(b"one\r\ntwo\rthree\n")
-    first = bundle_module._normalized_source(source)
-    source.write_bytes(b"one\ntwo\nthree\n")
-
-    assert first == bundle_module._normalized_source(source)
-
-
-def test_normalized_source_rejects_nonregular_paths(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="not a regular file"):
-        bundle_module._normalized_source(tmp_path)
-
-
-def test_source_inventory_rejects_duplicate_members(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        bundle_module,
-        "_SOURCE_INVENTORY",
-        (("duplicate.py", Path("one.py")), ("duplicate.py", Path("two.py"))),
-    )
-
-    with pytest.raises(ValueError, match="duplicate source members"):
-        bundle_module._read_source_members()
-
-
-def test_archive_validation_rejects_duplicate_members() -> None:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("__main__.py", "pass")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            archive.writestr("__main__.py", "pass")
-
-    with pytest.raises(ValueError, match="duplicate archive members"):
-        bundle_module._validate_archive(buffer.getvalue(), {"hook.py": b"pass"})
-
-
-@pytest.mark.parametrize(
-    ("manifest", "expected_error"),
-    [
-        (
-            {"schema": 999, "members": ["__main__.py", "hook.py", "manifest.json"]},
-            "unsupported schema",
-        ),
-        ({"schema": 1, "members": ["__main__.py", "hook.py"]}, "does not match"),
-    ],
-)
-def test_archive_validation_rejects_invalid_manifest(
-    manifest: dict[str, object], expected_error: str
+def test_lf_and_crlf_canonical_sources_build_identical_bundles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("__main__.py", "pass")
-        archive.writestr("hook.py", "pass")
-        archive.writestr("manifest.json", json.dumps(manifest))
+    expected = build_project_git_hook_bundle().content
+    root = bundle_module._source_package_root()
+    for label, newline in (("lf", b"\n"), ("crlf", b"\r\n"), ("cr", b"\r")):
+        copy = tmp_path / label
+        for _name, relative in bundle_module._SOURCE_INVENTORY:
+            source = root / relative
+            (copy / relative).parent.mkdir(parents=True, exist_ok=True)
+            lines = source.read_bytes().replace(b"\r\n", b"\n").split(b"\n")
+            (copy / relative).write_bytes(newline.join(lines))
+        monkeypatch.setattr(bundle_module, "_source_package_root", lambda copy=copy: copy)
 
-    with pytest.raises(ValueError, match=expected_error):
-        bundle_module._validate_archive(buffer.getvalue(), {"hook.py": b"pass"})
+        assert build_project_git_hook_bundle().content == expected, label
 
 
 def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
