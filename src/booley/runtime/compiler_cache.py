@@ -1,8 +1,7 @@
 """Fixed compiler-cache identity within the authorized Booley Directory mount.
 
-The Sandbox renderer, Session Issuance, the legacy-tree copier, and the
-Simulation Flow all derive cache locations from this module, so the layout is
-spelled once.
+The Sandbox renderer, Session Issuance, and the Simulation Flow derive cache
+locations from this module, so the layout is spelled once.
 """
 
 from __future__ import annotations

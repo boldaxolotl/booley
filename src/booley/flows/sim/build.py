@@ -40,7 +40,6 @@ from .compiler_cache import (
     compose_environment,
     execution_environment,
     resolve_policy,
-    validate_make_assignments,
 )
 
 if TYPE_CHECKING:
@@ -198,7 +197,7 @@ def _prepare_simulation_build(
     build_environment = dict(environment or {})
     if eda_tool == "verilator":
         cache_policy, build_environment = _verilator_cache_environment(
-            root, inspection, build_environment, Path(resolved.build_root)
+            root, build_environment, Path(resolved.build_root)
         )
         core_closure = capture_core_closure(resolved.edam_path, root)
     _stage_doctor_overlay(root, resolved.build_root)
@@ -225,12 +224,10 @@ def _prepare_simulation_build(
 
 def _verilator_cache_environment(
     root: Path,
-    inspection: TargetInspection,
     environment: Mapping[str, str],
     build_root: Path,
 ) -> tuple[CompilerCachePolicy, dict[str, str]]:
     """Resolve the compiler-cache policy and its managed build environment."""
-    validate_make_assignments(inspection, {**os.environ, **environment})
     policy = resolve_policy(root, issued=read_issued_identity(os.environ))
     return policy, compose_environment(
         policy, environment, ambient=os.environ, build_root=build_root
