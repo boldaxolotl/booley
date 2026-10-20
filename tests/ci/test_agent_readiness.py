@@ -328,7 +328,7 @@ def test_waiting_bootstrap_reuses_the_published_environment(monkeypatch, tmp_pat
     monkeypatch.setattr(module, "_build", lambda *_args: pytest.fail("rebuilt"))
     argv = ["--environment", str(tmp_path / "fp"), "--fingerprint", "fp"]
     lock = tmp_path / ".fp.lock"
-    with lock.open("a+", encoding="utf-8") as first, ThreadPoolExecutor() as pool:
+    with ThreadPoolExecutor() as pool, lock.open("a+", encoding="utf-8") as first:
         acquire(first)
         second = pool.submit(module.main, argv)
         assert contended.wait(30)
@@ -587,7 +587,10 @@ def test_environment_check_emits_bootstrap_commands(monkeypatch, tmp_path):
 def test_dependency_helpers_and_platform_paths(monkeypatch, tmp_path):
     root = Path(__file__).parents[2]
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
-    assert len(readiness.dependency_fingerprint(root)) == 32
+    fingerprint = readiness.dependency_fingerprint(root)
+    assert len(fingerprint) == 32
+    monkeypatch.setattr(readiness, "RECEIPT_SCHEMA_VERSION", 1)
+    assert readiness.dependency_fingerprint(root) != fingerprint
     assert readiness.dependency_argv(root)[0] == "install"
     monkeypatch.setattr(readiness.sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))

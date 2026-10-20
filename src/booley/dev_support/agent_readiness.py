@@ -36,7 +36,8 @@ PINNED_RUNNERS = {
     "pytest-cov": "7.1.0",
     "ruff": "0.17.0",
 }
-# Version 2 retires every receipt published before validation trusted receipts.
+# Part of the environment fingerprint, so checkouts speaking another receipt
+# schema build a different tree under a different lock and never overwrite this one.
 RECEIPT_SCHEMA_VERSION = 2
 _BRANCH_RE = re.compile(r"^codex/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _STATUS_ORDER = {"ready": 0, "degraded": 1, "escalation-required": 2, "blocked": 3}
@@ -568,6 +569,7 @@ def dependency_fingerprint(root: Path) -> str:
         "python": [platform.python_implementation(), *map(str, sys.version_info[:2])],
         "platform": [sys.platform, platform.machine()],
         "dependencies": data,
+        "receipt_schema": RECEIPT_SCHEMA_VERSION,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:32]

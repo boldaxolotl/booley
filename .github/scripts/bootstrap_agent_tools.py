@@ -22,7 +22,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.core.file_lock import wait_for_file_lock
 from booley.dev_support import agent_readiness as readiness
 
 VENV_TIMEOUT_SECONDS = 120
@@ -41,15 +41,12 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parents[2]
     environment: Path = args.environment
     environment.parent.mkdir(parents=True, exist_ok=True)
-    # An OS lock: the kernel releases it when a builder dies, so nothing goes stale.
+    # An OS lock: closing the handle (or a dying builder) releases it, so nothing goes stale.
     with environment.with_name(f".{environment.name}.lock").open("a+", encoding="utf-8") as lock:
         wait_for_file_lock(lock, timeout_s=LOCK_WAIT_SECONDS)
-        try:
-            python = readiness.venv_python(environment)
-            if not readiness.validate_environment(environment, args.fingerprint, python)[0]:
-                _rebuild(environment, root, args.fingerprint, readiness.PINNED_RUNNERS)
-        finally:
-            release_file_lock(lock)
+        python = readiness.venv_python(environment)
+        if not readiness.validate_environment(environment, args.fingerprint, python)[0]:
+            _rebuild(environment, root, args.fingerprint, readiness.PINNED_RUNNERS)
     return 0
 
 
@@ -59,8 +56,8 @@ def _rebuild(environment: Path, root: Path, fingerprint: str, pins: dict[str, st
     The caller holds the lock. A failed build leaves neither a tree nor a
     receipt and re-raises its own error; a failed cleanup is noted on it.
     """
-    _remove(environment)
     try:
+        _remove(environment)
         _build(environment, root, fingerprint, pins)
     except BaseException as error:
         try:
