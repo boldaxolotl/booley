@@ -226,7 +226,9 @@ def test_materialize_renders_no_report_and_reads_no_environment(tmp_path, monkey
 def test_materialized_attachment_renders_identical_report_and_export(tmp_path: Path) -> None:
     booley_dir = _project(tmp_path)
     source = tmp_path / "attached.log"
-    source.write_text("".join(f"line {n} {'x' * 80}\n" for n in range(200)), encoding="utf-8")
+    source.write_text(
+        "".join(f"line {n} {'x' * 80}\n" for n in range(200)) + "\n", encoding="utf-8"
+    )
     append(Finding(title="finding", attachments=[str(source)]), booley_dir)
     environment = Environment()
 

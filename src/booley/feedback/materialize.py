@@ -59,7 +59,9 @@ def _snapshot(booley_dir: Path, finding: Finding, row: int, index: int, source: 
     target = target / f"{finding.id or 'finding'}-{row}-{index}-{name}.txt"
     target.parent.mkdir(parents=True, exist_ok=True)
     meta = json.dumps(metadata, indent=2, sort_keys=True) + "\n"
-    for path, text in ((target, content), (target.with_name(f"{target.name}.json"), meta)):
+    # The renderer re-reads the snapshot with splitlines(), which drops one trailing newline; pad it back.
+    padded = content + "\n" if content.endswith("\n") else content
+    for path, text in ((target, padded), (target.with_name(f"{target.name}.json"), meta)):
         temporary = path.with_name(f".{path.name}.tmp")
         temporary.write_text(text, encoding="utf-8")
         temporary.replace(path)
