@@ -298,19 +298,45 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
     assert not baseline.exists()
 
 
-def test_prepare_resets_report_only_metadata_before_early_gate(monkeypatch):
+def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):
     from booley.flows.endpoint_session import prepare_execution
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
 
     flow = SimulateFlow()
-    context = flow.context
-    previous = (object(),)
-    context._simulation_report_outcomes = previous
-    context._simulation_campaign_outcomes = previous
+    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "rejected")
+    flow._campaign_endpoint_outcome([campaign])
+    previous = flow.context._simulation_campaign_outcomes
+    flow.context.record_eda_tool("previous", "verilator")
     rejected = EndpointOutcome(exit_code=2)
 
     def gate():
-        assert context._simulation_report_outcomes == ()
-        assert context._simulation_campaign_outcomes is previous
+        assert flow.context._eda_tool is None
+        assert flow.context._eda_tools == {"sim": None}
+        with flow.context.publication_resources:
+            path = flow.context.write_report(flow.context._adapt_outcome(rejected))
+        assert '"cycle_counts"' not in path.read_text()
+        assert flow.context._simulation_campaign_outcomes is previous
+        return rejected
+
+    monkeypatch.setattr(flow.context, "_apply_pre_state_gate", gate)
+    assert prepare_execution(flow.context) is rejected
+
+
+@pytest.mark.parametrize("target", ["sim_core", "sim_core, sim_other", ["sim_core", "sim_other"]])
+def test_prepare_early_gate_keeps_unresolved_report_target_cardinality(monkeypatch, target):
+    from booley.flows.endpoint_session import prepare_execution
+
+    context = SimulateFlow().context
+    context._args = SimpleNamespace(target=target)
+    context.record_eda_tool("previous", "verilator")
+    rejected = EndpointOutcome(exit_code=2)
+    selected = ["sim_core"] if target == "sim_core" else ["sim_core", "sim_other"]
+
+    def gate():
+        assert context._eda_tool is None
+        assert context._eda_tools == dict.fromkeys(selected)
         return rejected
 
     monkeypatch.setattr(context, "_apply_pre_state_gate", gate)

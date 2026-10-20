@@ -758,6 +758,36 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("width", [90, 140])
+@pytest.mark.parametrize("state", ["completed", "orphaned"])
+async def test_missing_report_resource_line_is_dim(tmp_path, width, state):
+    from rich.text import Text
+
+    record = JobRecord("fast", "sim", STAMP, 60, status="done", exit_code=0)
+    job = JobView(tmp_path, record, state)
+    current = replace(snapshot(1), jobs=JobSnapshot((job,)))
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("job", selected=json.dumps(job.key))
+    async with app.run_test(size=(width, 40)):
+        app.render_snapshot()
+        rendered = app.query_one("#detail", Static).content
+        assert isinstance(rendered, Text)
+        start = rendered.plain.index("resources not recorded (no report)")
+        assert any(span.start == start and str(span.style) == "dim" for span in rendered.spans)
+        # Report-controlled matching words must never acquire the generated style.
+        old = replace(job, report={"report_text": "resources not recorded (no report)"})
+        app.snapshot = replace(current, jobs=JobSnapshot((old,)))
+        app._render_detail()
+        rendered = app.query_one("#detail", Static).content
+        assert "resources not recorded (no report)" in rendered.plain
+        start = rendered.plain.index("resources not recorded (no report)")
+        assert not any(
+            span.start <= start < span.end and str(span.style) == "dim" for span in rendered.spans
+        )
+
+
+@pytest.mark.asyncio
 async def test_time_display_pilot_snapshots(monkeypatch):
     from booley.harness.dashboard.app import job_detail
     from booley.runtime.session_activity import WORKING, Activity

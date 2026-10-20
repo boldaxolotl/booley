@@ -25,7 +25,12 @@ from booley.goals.completion_history import (
     validate_canonical_ownership,
 )
 from booley.goals.ended_records import schedule_ended_cleanup
-from booley.goals.finish_presentation import freeze_presentation, frozen_response, html_bytes
+from booley.goals.finish_presentation import (
+    freeze_presentation,
+    frozen_response,
+    html_bytes,
+    render_goal_briefing,
+)
 from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
 from booley.goals.generated_artifacts import (
     ArtifactEpoch,
@@ -78,7 +83,6 @@ from booley.goals.warnings import protected_warnings
 from booley.review.goal_package import (
     GoalCompletionPackage,
     GoalReviewContext,
-    render_goal_briefing,
 )
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.history_commit import FileCommitError

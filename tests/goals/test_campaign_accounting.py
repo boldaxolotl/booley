@@ -34,10 +34,10 @@ from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.status import select_status
 from booley.goals.store import GoalStore
-from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
 from tests.goals.conftest import SIM_KEY, bind, campaign_facts, enter_goals, run_row
 from tests.goals.test_test_run_evidence import (
     TWO_TESTS,
+    _contributors,
     _edit_rtl,
     _interrupt,
     _InterruptedError,
@@ -145,9 +145,9 @@ def test_failure_of_a_killed_campaign_is_sticky_for_the_next_campaign(
     campaign.start("run-1")
     campaign.rows = [run_row(A, "fail")]  # ``b`` never ran: the campaign was killed
 
-    detail = _record(two, "run-2", [run_row(A), run_row(B)])
+    _record(two, "run-2", [run_row(A), run_row(B)])
 
-    assert _outcomes(detail) == {"a@1": "failed", "b@1": "passed"}
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     status = _status(two)
     assert status.status == "unmet" and status.reason.startswith("goal-test-run-failed")
     # ``b`` never got a result: the campaign is not settled, and it blocks nothing.
@@ -213,12 +213,12 @@ def test_a_campaign_read_before_it_started_is_read_again_after_it_failed(
     campaign.error = None
     campaign.rows = [run_row(A, "fail")]
     campaign.unfinished = ((B.name, B.fingerprint),)
-    detail = _record(two, "run-3", [run_row(A), run_row(B)])
-    assert _outcomes(detail) == {"a@1": "failed", "b@1": "passed"}
+    _record(two, "run-3", [run_row(A), run_row(B)])
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
     # Still open: it is read again, and nothing is adopted twice.
-    again = _record(two, "run-4", [run_row(A), run_row(B)])
-    assert len(again[LEDGER_DETAIL_KEY]["source_evidence"]) == 3
+    _record(two, "run-4", [run_row(A), run_row(B)])
+    assert len(_contributors(two)) == 3
     assert campaign.registration().settled is False
 
 
@@ -268,7 +268,7 @@ def test_seeds_that_passed_before_an_interruption_are_kept(
 
     entry = _entry(two)
     assert entry["met"] is False
-    assert _outcomes(entry["detail"]) == {"a@1": "passed", "b@1": "missing"}
+    assert _outcomes(two) == {"a@1": "passed", "b@1": "missing"}
     assert entry["detail"][ADOPTED_DETAIL_KEY]["campaign_id"] == CAMPAIGN
     # The other seed passes in a later campaign: the Goal is met across the two.
     _record(two, "run-2", [run_row(B)])
@@ -284,14 +284,14 @@ def test_adopted_results_carry_the_contents_the_campaign_started_at(
     campaign.rows = [run_row(A, "fail")]
     _edit_rtl(two, "module top; wire fixed; endmodule\n")
 
-    passed = _record(two, "run-2", [run_row(A), run_row(B)])
+    _record(two, "run-2", [run_row(A), run_row(B)])
     # Adopted, but stamped with the old contents: it does not fold with the new ones.
-    assert _outcomes(passed) == {"a@1": "passed", "b@1": "passed"}
+    assert _outcomes(two) == {"a@1": "passed", "b@1": "passed"}
     assert _status(two).status == "met"
 
     (two.worktree / "rtl.v").write_bytes(original)
-    again = _record(two, "run-3", [run_row(A), run_row(B)])
-    assert _outcomes(again)["a@1"] == "failed"
+    _record(two, "run-3", [run_row(A), run_row(B)])
+    assert _outcomes(two)["a@1"] == "failed"
 
 
 def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
@@ -325,7 +325,7 @@ def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
         patched.setattr(campaign_accounting, "_write", stop)
         with pytest.raises(_InterruptedError):
             _account(two)
-    assert _entry(two)["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"] == "failed"
+    assert _outcomes(two)["a@1"] == "failed"
     from booley.criteria.evidence_ledger import validated_evidence_records
     from booley.goals.recorder import GOAL_SCOPE
     from booley.goals.state_store import load_goal_state
@@ -399,7 +399,7 @@ def test_passes_are_not_adopted_once_the_starting_run_could_no_longer_publish(
 
     _account(two)
 
-    assert _outcomes(_entry(two)["detail"]) == {"a@1": "missing", "b@1": "failed"}
+    assert _outcomes(two) == {"a@1": "missing", "b@1": "failed"}
     assert campaign.registration().blocked == ""
 
 
@@ -462,9 +462,9 @@ def test_failure_in_a_stopped_transaction_is_folded_by_the_next_campaign(
         _transaction(two, stopped, "11111111-1111-4111-8111-111111111111", [run_row(A, "fail")])
     assert _entry(two)["met"] is False
 
-    detail = _record(two, "run-b", [run_row(A), run_row(B)])
+    _record(two, "run-b", [run_row(A), run_row(B)])
 
-    assert _outcomes(detail) == {"a@1": "failed", "b@1": "passed"}
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
@@ -498,9 +498,9 @@ def test_appended_records_that_were_never_selected_are_selected(two: SimpleNames
         state, changes, invocation_id="x", producer="sim", transaction_id="e" * 64
     )  # the writer stops here: no state save, no selection
 
-    detail = _record(two, "run-b", [run_row(A), run_row(B)])
+    _record(two, "run-b", [run_row(A), run_row(B)])
 
-    assert _outcomes(detail) == {"a@1": "failed", "b@1": "passed"}
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     selected = json.loads(_state_file(two).read_text(encoding="utf-8"))["acceptance_transactions"]
     assert "e" * 64 in selected
 
@@ -592,7 +592,7 @@ def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_
 
 
 def test_the_review_package_lists_campaigns_that_were_never_fully_accounted_for() -> None:
-    from booley.review.goal_package import _unsettled_campaign_lines
+    from booley.goals.finish_presentation import _unsettled_campaign_lines
 
     assert _unsettled_campaign_lines({}) == []
     listed = [{"state": "quarantined", "file": "x.json"}]

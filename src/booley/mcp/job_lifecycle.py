@@ -143,15 +143,12 @@ class JobLifecycle:
         cmd: list[str],
         timeout: int,
     ) -> jobrec.JobRecord:
-        from booley.runtime.execution_lease import current_lease_id
-
         return jobrec.JobRecord(
             run_id=run_id,
             endpoint=name,
             started_at=utc_now_rfc3339(),
             timeout_s=timeout,
             argv=cmd,
-            lease_id=current_lease_id(),
             display_scope=DisplayScope.current(),
         )
 

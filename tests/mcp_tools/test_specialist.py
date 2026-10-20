@@ -676,3 +676,19 @@ def test_specialist_note_describes_both_matching_tiers(tmp_path):
     assert "agent" in note and "quokka" in note
     assert "CamelCase" in note and "banned_substrings match anywhere" in note
     assert "word-boundary" not in note
+
+
+@pytest.mark.parametrize("target", ["", "sim,other"])
+def test_specialist_without_eda_omits_report_tool(tmp_path, target):
+    import json
+
+    endpoint = ReviewSpecialist()
+    endpoint.parse_args(["--report-dir", str(tmp_path), "--target", target])
+    path = endpoint.write_report(McpToolResult(report_text="review complete"))
+    report = json.loads(path.read_text())
+    assert "eda_tool" not in report
+    assert "eda_tools" not in report
+    endpoint.record_eda_tool("sim", "verilator")
+    endpoint.reset_report_metadata()
+    path = endpoint.write_report(McpToolResult(report_text="second review"))
+    assert "eda_tool" not in json.loads(path.read_text())

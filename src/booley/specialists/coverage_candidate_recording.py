@@ -36,7 +36,6 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 class GoalCandidateContext:
     """Where one Goal Record's candidates live and how Campaign paths are anchored."""
 
-    slug: str
     flow_reports_root: Path
     record_dir: Path
 
@@ -141,13 +140,12 @@ def record_goal_candidates(
         binding = _binding(campaign, summary, campaign_path, context.flow_reports_root)
         outcome = store.record_proposals(
             context.record_dir,
-            context.slug,
             binding,
             _proposals(screened, campaign),
             invocation_id=invocation_id,
             now=now or datetime.now(UTC),
         )
-        record = store.load(context.record_dir, context.slug)
+        record = store.load(context.record_dir)
         verdicts = _provisional_block(campaign, binding, record)
     except (
         OSError,

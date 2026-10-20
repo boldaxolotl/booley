@@ -102,6 +102,7 @@ def derive_changes(
         goal = proposal.after if is_changed else goals[key]
         params = proposal.runtime_params if is_changed else row["params"]
         detail = copy.deepcopy(row["detail"])
+        detail.pop("test_run_ledger", None)
         met = _evaluate(goal, params, detail, row["met"], coverage) if is_changed else row["met"]
         derived.append(_derived(proposal, goal, params, detail, met, row))
     # A changed Goal without selected/fresh producer evidence stays unmet.

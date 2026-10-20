@@ -122,7 +122,7 @@ def prepared(
         state, changes, invocation_id="coverage", producer="simulation_campaign"
     )
     state.save()
-    candidate = fixture_candidate(paths, campaign, loaded, persisted, source_sha, layout.record.id)
+    candidate = fixture_candidate(paths, campaign, loaded, persisted, source_sha)
     return (
         ChangeEnvironment(EntryEnvironment(layout.control), service),
         candidate,
@@ -172,7 +172,7 @@ def fixture_point(seed, index, *, hit):
     return point
 
 
-def fixture_candidate(paths, campaign, loaded, persisted, source_sha, record_id):
+def fixture_candidate(paths, campaign, loaded, persisted, source_sha):
     item = WaiverProposal(
         _POINT_ID,
         "rtl/counter.sv",
@@ -191,7 +191,6 @@ def fixture_candidate(paths, campaign, loaded, persisted, source_sha, record_id)
     )
     outcome = record_proposals(
         paths.root,
-        record_id,
         binding,
         (item,),
         invocation_id="analyst",
@@ -510,7 +509,7 @@ def test_rejection_is_terminal_and_written_to_goal_candidate_store(layout):
     env, candidate, root = prepared(layout)
     view = propose(layout, env, candidate)
     approve(layout, env, view.proposal.id, answer="reject")
-    store = load(record_paths(layout.control, layout.record.id).root, layout.record.id)
+    store = load(record_paths(layout.control, layout.record.id).root)
     assert not store.candidates and len(store.rejections) == 1
     assert not list(root.rglob("*.toml"))
 
@@ -700,3 +699,13 @@ def test_prediction_uses_captured_after_bytes_once(layout, monkeypatch, anchor, 
     assert [spy.call_count for spy in spies] == [1, 1, 1]
     assert len(seen) == 2
     assert seen == {e.path.relative_to(root): e.after for e in captured}
+
+
+def test_candidate_campaign_mismatch_is_ineligible(layout):
+    env, candidate, _ = prepared(layout)
+    path = record_paths(layout.control, layout.record.id).root / "waiver-candidates.json"
+    value = json.loads(path.read_text())
+    next(iter(value["candidates"].values()))["campaign_id"] = "different-campaign"
+    path.write_text(json.dumps(value))
+    with pytest.raises(ProposalError, match="not eligible"):
+        propose(layout, env, candidate)

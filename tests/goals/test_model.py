@@ -260,7 +260,9 @@ def test_terminal_states_have_no_exit() -> None:
 # --- Goal Record format -------------------------------------------------------
 
 
-def test_record_round_trips_through_json() -> None:
+@pytest.mark.parametrize("family", list(GoalFamily))
+@pytest.mark.parametrize("state", list(GoalState))
+def test_record_round_trips_through_json(family: GoalFamily, state: GoalState) -> None:
     original = record(
         session_key="pid:12:34",
         goalsets_used=("bugfix",),
@@ -269,6 +271,10 @@ def test_record_round_trips_through_json() -> None:
         validated_head="c" * 64,
         package_digest="sha256:" + "d" * 64,
         ended_at="2026-10-06T11:00:00Z",
+    )
+    goal = original.goals[0]
+    original = replace(
+        original, state=state, goals=(replace(goal, spec=replace(goal.spec, family=family)),)
     )
     encoded = json.loads(json.dumps(original.to_json()))
     assert GoalRecord.from_json(encoded) == original
@@ -293,17 +299,6 @@ def test_record_fields_are_validated(field: str, value: object, message: str) ->
     raw = record().to_json()
     raw[field] = value
     with pytest.raises(GoalRecordFormatError, match=message):
-        GoalRecord.from_json(raw)
-
-
-def test_record_rejects_unknown_and_missing_fields() -> None:
-    raw = record().to_json()
-    raw["extra"] = 1
-    with pytest.raises(GoalRecordFormatError, match="unknown fields"):
-        GoalRecord.from_json(raw)
-    raw = record().to_json()
-    del raw["branch"]
-    with pytest.raises(GoalRecordFormatError, match="missing"):
         GoalRecord.from_json(raw)
 
 
@@ -354,7 +349,9 @@ def test_a_record_from_a_newer_booley_is_refused_with_that_reason() -> None:
         GoalRecord.from_json(raw)
 
 
-@pytest.mark.parametrize("required", ["id", "worktree", "base_sha", "entered_at", "schema"])
+@pytest.mark.parametrize(
+    "required", ["id", "worktree", "base_sha", "entered_at", "schema", "branch"]
+)
 def test_required_fields_stay_required(required: str) -> None:
     raw = record().to_json()
     del raw[required]

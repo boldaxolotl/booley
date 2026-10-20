@@ -10,7 +10,6 @@ reason when they do not:
 - a frozen run whose Test or Test Variant is gone from the Target, or whose
   declared arguments or environment changed: only an approved retarget
   freezes the Goal again;
-- a stored ledger that no longer equals its recomputation;
 - a required run that failed, or has not passed yet. Not for a coverage
   Goal: it is judged by its coverage floors alone
   (:func:`~booley.goals.test_run_evidence.outcomes_decide`).
@@ -33,13 +32,11 @@ from booley.goals.test_run_evidence import (
     REASON_CHANGED,
     REASON_MISSING,
     REASON_UNRESOLVABLE,
-    LedgerFormatError,
-    LedgerScope,
-    ledger_defect,
-    ledger_runs,
+    HistoryScope,
     outcome_defect,
     outcomes_decide,
     requirement_defect,
+    run_outcomes,
 )
 from booley.goals.test_run_freezing import (
     TargetPlanError,
@@ -101,32 +98,33 @@ def judge_test_runs(
 
     *history* is every validated observation of the record. The reason is
     empty only when the Goal's resolution is complete and non-empty, every
-    frozen run still is what the Target declares, the stored ledger equals
-    its recomputation, and every run passed. Whether the runs passed is left
+    frozen run still is what the Target declares, every applicable run passed. Whether the runs passed is left
     out for a Goal their outcomes do not decide (a coverage Goal).
     """
     key, target = goal.spec.key, goal.spec.target
     assert target is not None
     resolution = record.test_run_resolution(key)
     required = () if resolution is None else resolution.test_runs
-    try:
-        stored = None if evidence is None else ledger_runs(evidence["detail"])
-    except LedgerFormatError:
-        stored = None  # ``ledger_defect`` names it below
-    outcomes = {(run["name"], run["fingerprint"]): run["outcome"] for run in stored or ()}
+    runs = (
+        []
+        if evidence is None
+        else run_outcomes(
+            HistoryScope.of(record, goal),
+            required,
+            evidence["detail"],
+            history,
+            before=evidence["sequence"],
+        )
+    )
+    outcomes = {(run["name"], run["fingerprint"]): run["outcome"] for run in runs}
     defect = (
         _pending_defect(goal, resolution, plans)
         or requirement_defect(resolution)
         or _declaration_defect(required, target, plans)
     )
     blocking = defect is not None
-    if defect is None and evidence is not None:
-        scope = LedgerScope.of(record, goal)
-        defect = ledger_defect(evidence, history, scope, required)
-        if defect is not None:
-            outcomes = {}
-        elif stored is not None and outcomes_decide(goal):
-            defect = outcome_defect(stored)
+    if defect is None and evidence is not None and outcomes_decide(goal):
+        defect = outcome_defect(runs)
     code, text = defect or ("", "")
     if defect is None and evidence is None:
         text = "no Test Run of the Goal has been recorded"

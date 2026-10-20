@@ -1,37 +1,9 @@
-"""Evidence of a Goal's frozen Test Runs: matching, the ledger, and its check (ADR 0072).
+"""Match and fold a Goal's frozen Test Runs over applicable evidence history (ADR 0072).
 
-A Test Run is evidence for a Goal only when its resolved name and its
-declared-inputs fingerprint equal one of the Goal's frozen Test Runs. Every
-observation of such a Goal carries
-
-- ``test_runs``: the matching runs of its own invocation (immutable facts);
-- ``test_run_ledger``: one entry per frozen run, ``passed``, ``failed`` or
-  ``missing``, **materialized when the observation is recorded** by one pure
-  fold (:func:`fold_test_run_outcomes`) over every earlier observation of the
-  Goal at the same specification revision and the same dependent file
-  contents, plus the new invocation. A failure is absorbing: a later pass at
-  the same contents never cancels it. The earlier observations that
-  contributed are linked by ledger sequence and digest (``source_evidence``).
-
-Goal status keeps judging one selected observation, but it **recomputes** the
-fold over the ledger rows up to that observation and compares
-(:func:`ledger_defect`). A Simulation Campaign transaction is frozen before
-it is published and can be recovered later at a higher sequence; the ledger
-inside it may predate a failure recorded in between. Such an observation no
-longer equals its recomputation and the Goal is unmet until the Flow runs
-again, which folds the failure in.
-
-A simulation or Cycle Count Goal is met only when its resolution is complete,
-it requires at least one Test Run, and every required run is ``passed``.
-
-A coverage Goal is judged by its coverage floors alone
-(:func:`outcomes_decide`). Its frozen Test Runs say which runs one coverage
-campaign must run to measure it (:meth:`GoalTestRuns.measured_by`); whether
-those runs passed is another Goal's concern and never makes it unmet. Its
-ledger therefore accumulates nothing: it holds the outcomes of the runs of
-the invocation its observation records, for people to read. An invocation
-that does not measure the Goal changes nothing a measurement at the same
-file contents established.
+Observations retain only their own matching runs. Simulation and Cycle Count
+failures are sticky within one specification revision and dependent-contents
+fingerprint. Coverage shows only its selected measurement's runs; its floors
+alone decide whether the Goal is met.
 """
 
 from __future__ import annotations
@@ -44,12 +16,6 @@ from typing import Any, cast
 from booley.criteria.evidence_ledger import canonical_json
 from booley.criteria.state import CriterionChange
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
-from booley.evidence.test_run_ledger import (
-    LEDGER_DETAIL_KEY,
-    LEDGER_SCHEMA,
-    LedgerFormatError,
-    decode_ledger,
-)
 from booley.flows.frozen_test_runs import (
     OUTCOMES_ONLY_DETAIL_KEY,
     FrozenTestRuns,
@@ -71,12 +37,9 @@ REASON_PENDING = "goal-test-run-pending"
 REASON_EMPTY = "goal-simulation-suite-empty"
 REASON_FAILED = "goal-test-run-failed"
 REASON_INCOMPLETE = "goal-test-run-incomplete"
-REASON_OUTDATED = "goal-test-run-ledger-outdated"
-REASON_NO_LEDGER = "goal-test-run-ledger-missing"
 REASON_MISSING = "goal-test-run-missing"
 REASON_CHANGED = "goal-test-run-changed"
 REASON_NOT_MEASURED = "goal-test-run-metric-missing"
-REASON_MALFORMED = "goal-test-run-ledger-malformed"
 REASON_UNRESOLVABLE = "goal-test-run-unresolvable"
 
 # What to run so that one invocation measures a Goal's metric, by family.
@@ -184,11 +147,11 @@ def _member(value: object, name: str) -> object:
 
 
 @dataclass(frozen=True)
-class LedgerScope:
+class HistoryScope:
     """Which observations accumulate with one another: one Goal at one revision.
 
     ``accumulates`` is false for a Goal its runs' outcomes do not decide
-    (:func:`outcomes_decide`): each of its ledgers folds one invocation only.
+    (:func:`outcomes_decide`): each observation folds one invocation only.
     """
 
     record_id: str
@@ -197,14 +160,14 @@ class LedgerScope:
     accumulates: bool = True
 
     @classmethod
-    def of(cls, record: GoalRecord, goal: RecordedGoal) -> LedgerScope:
+    def of(cls, record: GoalRecord, goal: RecordedGoal) -> HistoryScope:
         """The scope of *goal* in *record* at its current specification revision."""
         return cls(record.id, goal.spec.key, goal.spec_revision, outcomes_decide(goal))
 
     def accumulating(
         self, history: Sequence[Mapping[str, Any]], stamp: str | None, *, before: int | None
     ) -> list[Mapping[str, Any]]:
-        """The earlier observations a ledger at *stamp* folds: none unless it accumulates."""
+        """The earlier observations an observation at *stamp* folds: none unless it accumulates."""
         return self.at_contents(history, stamp, before=before) if self.accumulates else []
 
     def at_contents(
@@ -225,52 +188,42 @@ class LedgerScope:
         ]
 
 
-def row_digest(row: Mapping[str, Any]) -> str:
-    """The digest that links a ledger row as contributing evidence."""
-    return hashlib.sha256(canonical_json(row)).hexdigest()
-
-
-def build_ledger(
-    earlier: Sequence[Mapping[str, Any]],
-    own: Sequence[Mapping[str, Any]],
+def run_outcomes(
+    scope: HistoryScope,
     required: Sequence[TestRun],
-) -> dict[str, Any]:
-    """The ledger of an observation with matching rows *own*, after *earlier* observations.
+    detail: Mapping[str, Any],
+    history: Sequence[Mapping[str, Any]],
+    *,
+    before: int | None = None,
+) -> list[dict[str, str]]:
+    """Fold applicable earlier observations and the selected/new observation's own rows."""
+    earlier = scope.accumulating(history, freshness_stamp(scope.key, detail), before=before)
+    rows = [item for row in earlier for item in _rows(row["detail"])]
+    return fold_test_run_outcomes([*rows, *_rows(detail)], required)
 
-    Every earlier observation that observed a required run contributed and
-    is linked in ``source_evidence``.
-    """
-    contributors = [
-        (row, graded)
-        for row in earlier
-        if (graded := _graded(matching_rows(row["detail"], required)))
+
+def contributing_observations(
+    row: Mapping[str, Any],
+    history: Sequence[Mapping[str, Any]],
+    scope: HistoryScope,
+    required: Sequence[TestRun] | None = None,
+) -> list[Mapping[str, Any]]:
+    """Earlier graded observations in the row's scope, optionally matched to current runs."""
+    earlier = scope.accumulating(
+        history, freshness_stamp(scope.key, row["detail"]), before=row["sequence"]
+    )
+    return [
+        item
+        for item in earlier
+        if any(
+            run.get("grade") in {"pass", "fail"}
+            for run in (
+                _rows(item["detail"])
+                if required is None
+                else matching_rows(item["detail"], required)
+            )
+        )
     ]
-    rows = [item for _, graded in contributors for item in graded]
-    return {
-        "schema": LEDGER_SCHEMA,
-        "runs": fold_test_run_outcomes([*rows, *own], required),
-        "source_evidence": [
-            {"sequence": row["sequence"], "sha256": row_digest(row)} for row, _ in contributors
-        ],
-    }
-
-
-def _graded(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [row for row in rows if row.get("grade") in {"pass", "fail"}]
-
-
-# ---------------------------------------------------------------------------
-# Judging
-# ---------------------------------------------------------------------------
-
-
-def ledger_runs(detail: Mapping[str, Any]) -> list[dict[str, str]] | None:
-    """The per-run outcomes *detail* stores, or ``None`` when it stores no ledger.
-
-    Raises :class:`LedgerFormatError` for a malformed ledger.
-    """
-    ledger = decode_ledger(detail)
-    return None if ledger is None else list(ledger.runs)
 
 
 def judged_change(
@@ -279,10 +232,10 @@ def judged_change(
     record: GoalRecord,
     history: Sequence[Mapping[str, Any]],
 ) -> CriterionChange:
-    """*change* with its matching Test Run rows, its ledger, and the verdict they allow.
+    """*change* with its own matching Test Run rows and the verdict history allows.
 
     A simulation Goal is met exactly when every frozen run is ``passed`` in
-    the ledger: what one invocation ran does not decide it. A Cycle Count
+    the history fold: what one invocation ran does not decide it. A Cycle Count
     Goal additionally needs its producer's verdict on thresholds. A coverage
     Goal needs only its producer's verdict on the coverage floors: its runs'
     outcomes are recorded and decide nothing (:func:`outcomes_decide`).
@@ -291,28 +244,27 @@ def judged_change(
     frozen runs that produced the metric (:meth:`GoalTestRuns.measured_by`).
     A change that does not measure the metric never supplies a verdict. When
     it adds nothing to the Goal's selected observation, that observation is
-    recorded again (:func:`_restated`); otherwise the change is recorded with
-    its matching runs' outcomes and the Goal is unmet.
+    recorded again, subject to the same history defects; otherwise the Goal is unmet.
     """
     key = goal.spec.key
     resolution = record.test_run_resolution(key)
     frozen = goal_test_runs(goal, resolution)
     detail = dict(change.detail)
+    detail.pop("test_run_ledger", None)
     measured = not detail.get(OUTCOMES_ONLY_DETAIL_KEY) and frozen.measured_by(_rows(detail))
     own = matching_rows(detail, frozen.runs)
     detail["test_runs"] = own
-    scope = LedgerScope.of(record, goal)
+    scope = HistoryScope.of(record, goal)
     here = scope.at_contents(history, freshness_stamp(key, detail), before=None)
-    earlier = here if scope.accumulates else []
-    ledger = build_ledger(earlier, _graded(own), frozen.runs)
+    outcomes = run_outcomes(scope, frozen.runs, detail, history)
     if not measured:
         selected = _selected(key, history, here)
-        if selected is not None and _adds_nothing(selected, ledger, decisive=scope.accumulates):
-            return _restated(change, selected, earlier, frozen.runs)
-    detail[LEDGER_DETAIL_KEY] = ledger
+        if selected is not None and _adds_nothing(selected, outcomes, scope, frozen, history):
+            change = _restated(change, selected)
+            detail, measured = change.detail, True
     defect = requirement_defect(resolution)
     if defect is None and scope.accumulates:
-        defect = outcome_defect(ledger["runs"])
+        defect = outcome_defect(outcomes)
     if defect is None and not measured:
         how = _MEASURING_RUN[goal.spec.family]
         defect = REASON_NOT_MEASURED, f"this run did not measure the Goal; {how}"
@@ -342,50 +294,30 @@ def _selected(
 
 
 def _adds_nothing(
-    selected: Mapping[str, Any], ledger: Mapping[str, Any], *, decisive: bool
-) -> bool:
-    """Whether a change that measures nothing leaves the Goal as *selected* judged it.
-
-    Where outcomes decide the Goal (*decisive*), only while the change's
-    *ledger* holds the outcomes the selected observation's ledger holds: a
-    new outcome, a failure above all, must be recorded. Where they do not,
-    whenever the selected observation measured the Goal: no outcome can
-    change what a measurement established. One that measured nothing
-    established nothing, and the change's own outcomes replace it. A
-    measurement is an observation recorded with a ledger and no defect.
-    """
-    selected_detail = cast("Mapping[str, Any]", selected["detail"])
-    try:
-        recorded = ledger_runs(selected_detail)
-    except LedgerFormatError:
-        return False  # a ledger that cannot be read is never restated
-    if decisive:
-        return recorded == ledger["runs"]
-    # Evidence without a ledger predates Goals that name Test Runs: no measurement.
-    return recorded is not None and "goal_contract_violation" not in selected_detail
-
-
-def _restated(
-    change: CriterionChange,
     selected: Mapping[str, Any],
-    earlier: Sequence[Mapping[str, Any]],
-    required: Sequence[TestRun],
-) -> CriterionChange:
-    """The Goal's *selected* observation again, in place of a *change* that adds nothing.
-
-    A change that does not measure the Goal's metric would otherwise replace
-    a measured observation and unmeet the Goal although nothing was learnt.
-    The selected observation is recorded again, with its own rows and
-    verdict, at the same specification revision and file contents.
-    """
-    detail = cast("Mapping[str, Any]", selected["detail"])
-    again = build_ledger(earlier, _graded(matching_rows(detail, required)), required)
-    return replace(
-        change,
-        met=bool(selected["met"]),
-        reason="outcome",
-        detail={**detail, LEDGER_DETAIL_KEY: again},
+    outcomes: list[dict[str, str]],
+    scope: HistoryScope,
+    frozen: GoalTestRuns,
+    history: Sequence[Mapping[str, Any]],
+) -> bool:
+    """An unmeasured change must preserve an unchanged verdict or coverage measurement."""
+    detail = selected["detail"]
+    if scope.accumulates:
+        return outcomes == run_outcomes(
+            scope, frozen.runs, detail, history, before=selected["sequence"]
+        )
+    return (
+        not detail.get(OUTCOMES_ONLY_DETAIL_KEY)
+        and frozen.measured_by(_rows(detail))
+        and "goal_contract_violation" not in detail
     )
+
+
+def _restated(change: CriterionChange, selected: Mapping[str, Any]) -> CriterionChange:
+    """Record the selected measurement's own rows and verdict again."""
+    detail = dict(selected["detail"])
+    detail.pop("test_run_ledger", None)
+    return replace(change, met=bool(selected["met"]), reason="outcome", detail=detail)
 
 
 def requirement_defect(resolution: TestRunResolution | None) -> tuple[str, str] | None:
@@ -406,47 +338,11 @@ def requirement_defect(resolution: TestRunResolution | None) -> tuple[str, str] 
 
 
 def outcome_defect(runs: Sequence[Mapping[str, str]]) -> tuple[str, str] | None:
-    """Why a ledger with *runs* does not meet a Goal its outcomes decide: (reason, text)."""
+    """Why a fold with *runs* does not meet a Goal its outcomes decide: (reason, text)."""
     failed = [run["name"] for run in runs if run["outcome"] == "failed"]
     if failed:
         return REASON_FAILED, f"Test Runs failed at these file contents: {', '.join(failed)}"
     missing = [run["name"] for run in runs if run["outcome"] == "missing"]
     if missing:
         return REASON_INCOMPLETE, f"Test Runs have not passed yet: {', '.join(missing)}"
-    return None
-
-
-def ledger_defect(
-    row: Mapping[str, Any],
-    history: Sequence[Mapping[str, Any]],
-    scope: LedgerScope,
-    required: Sequence[TestRun],
-) -> tuple[str, str] | None:
-    """Why the ledger stored in observation *row* cannot be trusted: (reason, text).
-
-    The stored ledger must equal the fold recomputed over the ledger rows up
-    to *row*, and every contributor it links must still be the row it names.
-    """
-    detail = cast("Mapping[str, Any]", row["detail"])
-    try:
-        stored = decode_ledger(detail)
-    except LedgerFormatError as exc:
-        return REASON_MALFORMED, f"the recorded Test Run outcomes cannot be read: {exc}"
-    if stored is None:
-        return REASON_NO_LEDGER, (
-            "the evidence predates Goals that name Test Runs; run the Simulation Flow again"
-        )
-    stamp = freshness_stamp(scope.key, detail)
-    earlier = scope.accumulating(history, stamp, before=row["sequence"])
-    recomputed = build_ledger(earlier, _graded(matching_rows(detail, required)), required)
-    indexed = {item["sequence"]: item for item in history}
-    substituted = any(
-        sequence not in indexed or row_digest(indexed[sequence]) != digest
-        for sequence, digest in stored.source_evidence
-    )
-    if substituted or recomputed["runs"] != list(stored.runs):
-        return REASON_OUTDATED, (
-            "the recorded Test Run outcomes no longer equal the recorded evidence; "
-            "rerun the Simulation Flow"
-        )
     return None

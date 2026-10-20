@@ -34,7 +34,6 @@ def environment(goal_mode):
 def test_goal_context_ignores_ticket_slug_and_environment_roots(goal_mode):
     _env, paths = environment(goal_mode)
     context = GoalCandidateContext.from_recorder(GoalFlowExecution(bind(goal_mode)))
-    assert context.slug == goal_mode.record.id
     assert context.record_dir == paths.root
     assert context.flow_reports_root == paths.runtime_dir / "flow-reports"
 
@@ -59,7 +58,7 @@ def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_m
         now=_NOW,
     )
     assert result["status"] == "recorded"
-    record = store.load(context.record_dir, context.slug)
+    record = store.load(context.record_dir)
     (candidate,) = record.candidates.values()
     assert candidate.binding.target_identity == campaign.target.identity
     assert candidate.binding.target_selector == campaign.target.selector
@@ -81,7 +80,7 @@ def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_m
     )
     assert refusal["status"] == "failed"
     assert "flow-reports" in refusal["reason"]
-    assert len(store.load(context.record_dir, context.slug).candidates) == 1
+    assert len(store.load(context.record_dir).candidates) == 1
 
 
 @pytest.mark.parametrize("raw", ["{not-json", "[]", "{}"])

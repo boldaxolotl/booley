@@ -53,7 +53,7 @@ def test_only_images_dropped_from_project_tags_become_owned(root: Path) -> None:
     moved = project_resources.record_superseded_images(identity, before, after)
 
     assert moved == (_id("1"), _id("4"))
-    assert lifecycle.owned_image_ids(identity) == (_id("1"), _id("4"))
+    assert lifecycle.OwnedImages(identity).ids == [_id("1"), _id("4")]
 
 
 def test_init_removes_unused_superseded_images_after_keeper_reissue(
@@ -70,7 +70,7 @@ def test_init_removes_unused_superseded_images_after_keeper_reissue(
     )
     docker.used_image_ids = frozenset({running})
     monkeypatch.setattr(lifecycle, "_docker_adapter", lambda: docker)
-    lifecycle.record_owned_images(root, "init-superseded-1", {}, (unused, running, shared))
+    lifecycle.OwnedImages(root).record({}, (unused, running, shared))
     ctx = InitContext(project_root=root)
     result = lifecycle.LifecycleResult(
         "image", _id("9"), lifecycle.Status.CHANGED, superseded=(unused, running, shared)
@@ -80,7 +80,7 @@ def test_init_removes_unused_superseded_images_after_keeper_reissue(
 
     assert docker.image_ids() == {running, shared}
     output = capsys.readouterr().out
-    assert f"{running}: retained (container)" in output
+    assert f"{running}: retained (conflict: unable to delete {running})" in output
     assert f"{shared}: retained (tag/keeper)" in output
     assert [(row.name, row.status) for row in ctx.results] == [("superseded_images", "warn")]
 
@@ -91,7 +91,7 @@ def test_init_reports_full_removal_and_cleanup_failure(
     unused = _id("1")
     docker = FakeDocker({unused: (unused, {})})
     monkeypatch.setattr(lifecycle, "_docker_adapter", lambda: docker)
-    lifecycle.record_owned_images(root, "init-superseded-1", {}, (unused,))
+    lifecycle.OwnedImages(root).record({}, (unused,))
     result = lifecycle.LifecycleResult(
         "image", _id("9"), lifecycle.Status.CHANGED, superseded=(unused,)
     )
