@@ -52,6 +52,16 @@ from booley.harness.setup.line_endings import (
     LineEndingStatus,
     RepositoryLineEndingReport,
 )
+from booley.harness.setup.project_git_hook_reconcile import (
+    _LEGACY_MANAGED_HOOKS,
+    _build_commit_msg_hook_body,
+    _build_pre_push_hook_body,
+    _current_source_bytes,
+    _previous_bundle_hashes,
+    _ReconciliationTransaction,
+    _shell_bundle_resolution,
+    step_project_git_hooks,
+)
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
@@ -393,17 +403,13 @@ class TestProjectCommitMsgHookVendoring:
     """Project Git policy is one managed bundle plus two outer adapters."""
 
     def test_vendors_runtime_helpers_alongside_scripts(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import (
-            _LEGACY_MANAGED_HOOKS,
-            _step_project_git_hooks,
-        )
         from booley.harness.setup.project_git_hook_bundle import BUNDLE_NAME
         from booley.runtime.booley_dir import resolve_booley_dir
 
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)
 
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         booley_dir = resolve_booley_dir(tmp_path)
         assert (booley_dir / ".managed" / BUNDLE_NAME).is_file()
@@ -420,12 +426,11 @@ class TestProjectCommitMsgHookVendoring:
         Sandbox then tries to exec ``/bin/sh\\r`` (ENOENT) and EVERY
         in-container commit fails — hence all of Ticket Mode.
         """
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
 
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)
 
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         hook = tmp_path / ".git" / "hooks" / "commit-msg"
         assert hook.is_file(), "commit-msg hook not installed"
@@ -435,7 +440,6 @@ class TestProjectCommitMsgHookVendoring:
         self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest
     ):
         """The standalone bundle hook rejects before either attribution form is altered."""
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         repo = tmp_path / "project"
@@ -459,7 +463,7 @@ class TestProjectCommitMsgHookVendoring:
         monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
         reset_cache()
         request.addfinalizer(reset_cache)
-        _step_project_git_hooks(_ctx(repo))
+        step_project_git_hooks(_ctx(repo))
 
         (repo / "change.txt").write_text("change\n", encoding="utf-8")
         _run_git(repo, "add", "change.txt")
@@ -485,14 +489,13 @@ class TestProjectCommitMsgHookVendoring:
     def test_check_only_reports_current_installation_without_mutation(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         _git_init(tmp_path)
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         reset_cache()
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
         before = {
             path: (path.read_bytes(), path.stat().st_mode)
             for path in (tmp_path / ".booley" / ".managed").iterdir()
@@ -508,7 +511,7 @@ class TestProjectCommitMsgHookVendoring:
         )
 
         ctx = _ctx(tmp_path, check_only=True)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "skip"
         assert ctx.results[-1].detail == "current"
@@ -517,19 +520,18 @@ class TestProjectCommitMsgHookVendoring:
     def test_check_only_reports_missing_vendored_script_without_creating_it(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         _git_init(tmp_path)
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         reset_cache()
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
         missing = tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz"
         missing.unlink()
 
         ctx = _ctx(tmp_path, check_only=True)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert "project-git-hooks.pyz" in ctx.results[-1].detail
@@ -538,20 +540,19 @@ class TestProjectCommitMsgHookVendoring:
     def test_check_only_reports_stale_helper_without_overwriting_it(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         _git_init(tmp_path)
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         reset_cache()
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
         helper = tmp_path / ".booley" / "hooks" / "boundary.py"
         helper.parent.mkdir(parents=True, exist_ok=True)
         helper.write_text("stale helper\n", encoding="utf-8")
 
         ctx = _ctx(tmp_path, check_only=True)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert "boundary.py" in ctx.results[-1].detail
@@ -561,19 +562,18 @@ class TestProjectCommitMsgHookVendoring:
     def test_check_only_reports_non_executable_delegator_without_chmod(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         _git_init(tmp_path)
         (tmp_path / ".booley").mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         reset_cache()
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
         hook = tmp_path / ".git" / "hooks" / "pre-push"
         hook.chmod(0o644)
 
         ctx = _ctx(tmp_path, check_only=True)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert "pre-push" in ctx.results[-1].detail
@@ -582,7 +582,6 @@ class TestProjectCommitMsgHookVendoring:
     def test_check_only_previews_foreign_hook_backup_without_writing(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         _git_init(tmp_path)
@@ -593,7 +592,7 @@ class TestProjectCommitMsgHookVendoring:
         hook.write_text("#!/bin/sh\necho foreign\n", encoding="utf-8")
 
         ctx = _ctx(tmp_path, check_only=True)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert "back up existing pre-push adapter" in ctx.results[-1].detail
@@ -605,7 +604,6 @@ class TestInstalledPrePushGuard:
     def test_launcher_derives_booley_dir_when_environment_is_absent(
         self, tmp_path: Path, monkeypatch
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         main = tmp_path / "main"
@@ -616,7 +614,7 @@ class TestInstalledPrePushGuard:
         (main / ".booley").mkdir()
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
         reset_cache()
-        _step_project_git_hooks(_ctx(main))
+        step_project_git_hooks(_ctx(main))
 
         leaked = main / ".booley" / "docs" / "example.md"
         leaked.parent.mkdir(parents=True)
@@ -632,7 +630,6 @@ class TestInstalledPrePushGuard:
     def test_external_runtime_alias_cannot_hide_tracked_project_state(
         self, tmp_path: Path, monkeypatch, request
     ):
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import reset_cache
 
         main = tmp_path / "main"
@@ -645,7 +642,7 @@ class TestInstalledPrePushGuard:
         monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
         reset_cache()
         request.addfinalizer(reset_cache)
-        _step_project_git_hooks(_ctx(main))
+        step_project_git_hooks(_ctx(main))
 
         leaked = main / ".booley" / "docs" / "example.md"
         leaked.parent.mkdir(parents=True)
@@ -686,10 +683,6 @@ class TestProjectGitHookMigration:
     def test_reconciliation_transaction_restores_files_directories_and_missing_paths(
         self, tmp_path: Path
     ) -> None:
-        from booley.harness.setup.project_git_hook_reconcile import (
-            _ReconciliationTransaction,
-        )
-
         existing = tmp_path / "existing.txt"
         existing.write_bytes(b"before")
         directory = tmp_path / "directory"
@@ -712,10 +705,6 @@ class TestProjectGitHookMigration:
 
     @pytest.mark.skipif(os.name == "nt", reason="symlink privileges are unavailable on CI")
     def test_reconciliation_transaction_restores_symlinks(self, tmp_path: Path) -> None:
-        from booley.harness.setup.project_git_hook_reconcile import (
-            _ReconciliationTransaction,
-        )
-
         target = tmp_path / "target"
         target.write_text("target", encoding="utf-8")
         link = tmp_path / "link"
@@ -729,10 +718,8 @@ class TestProjectGitHookMigration:
         assert link.resolve() == target
 
     def test_non_git_project_skips_project_hook_reconciliation(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
-
         ctx = _ctx(tmp_path)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "skip"
         assert ctx.results[-1].detail == "not a git repo"
@@ -741,21 +728,18 @@ class TestProjectGitHookMigration:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.harness.setup import project_git_hook_reconcile as reconcile
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
 
         def timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(kwargs.get("args", args[0]), 10)
 
         monkeypatch.setattr(reconcile.subprocess, "run", timeout)
         ctx = _ctx(tmp_path)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "skip"
         assert "timed out" in ctx.results[-1].detail
 
     def test_previous_bundle_hashes_ignore_non_mapping_hashes(self, tmp_path: Path) -> None:
-        from booley.harness.setup.project_git_hook_reconcile import _previous_bundle_hashes
-
         bundle = tmp_path / "bundle.pyz"
         with zipfile.ZipFile(bundle, "w") as archive:
             archive.writestr(
@@ -766,8 +750,6 @@ class TestProjectGitHookMigration:
         assert _previous_bundle_hashes(bundle) == {}
 
     def test_shell_bundle_resolution_supports_external_bundle(self, tmp_path: Path) -> None:
-        from booley.harness.setup.project_git_hook_reconcile import _shell_bundle_resolution
-
         result = _shell_bundle_resolution(
             tmp_path / "project", tmp_path / "managed" / "bundle.pyz"
         )
@@ -776,11 +758,6 @@ class TestProjectGitHookMigration:
         assert result == f"BUNDLE={shlex.quote(str(bundle))}\n"
 
     def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
-        from booley.harness.setup.project_git_hook_reconcile import (
-            _LEGACY_MANAGED_HOOKS,
-            _current_source_bytes,
-        )
         from booley.runtime.booley_dir import resolve_booley_dir
 
         _git_init(tmp_path)
@@ -789,7 +766,7 @@ class TestProjectGitHookMigration:
         for name, data in _current_source_bytes().items():
             (hooks / name).write_bytes(data.replace(b"\n", b"\r\n"))
 
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
 
         assert not list(hooks.glob("*.pre-booley.*"))
         assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
@@ -798,7 +775,6 @@ class TestProjectGitHookMigration:
         assert all((hooks / name).is_file() for name in new_members)
 
     def test_malformed_bundle_manifest_is_recovered(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import resolve_booley_dir
 
         _git_init(tmp_path)
@@ -810,7 +786,7 @@ class TestProjectGitHookMigration:
         bundle.write_bytes(buffer.getvalue())
 
         ctx = _ctx(tmp_path)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         assert ctx.results[-1].status == "ok"
         assert bundle.is_file()
@@ -819,7 +795,6 @@ class TestProjectGitHookMigration:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.harness.setup import project_git_hook_reconcile as reconcile
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import resolve_booley_dir
 
         _git_init(tmp_path)
@@ -829,7 +804,7 @@ class TestProjectGitHookMigration:
 
         monkeypatch.setattr(reconcile, "_apply_adapters", fail_after_bundle)
         ctx = _ctx(tmp_path)
-        _step_project_git_hooks(ctx)
+        step_project_git_hooks(ctx)
 
         booley_dir = resolve_booley_dir(tmp_path)
         assert ctx.results[-1].status == "err"
@@ -837,15 +812,10 @@ class TestProjectGitHookMigration:
         assert not (tmp_path / ".git" / "hooks" / "commit-msg").exists()
 
     def test_legacy_sources_and_managed_bytecode_are_removed(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
-        from booley.harness.setup.project_git_hook_reconcile import (
-            _LEGACY_MANAGED_HOOKS,
-            _current_source_bytes,
-        )
         from booley.runtime.booley_dir import resolve_booley_dir
 
         _git_init(tmp_path)
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
         booley_dir = resolve_booley_dir(tmp_path)
         hooks = booley_dir / "hooks"
         hooks.mkdir(parents=True, exist_ok=True)
@@ -858,7 +828,7 @@ class TestProjectGitHookMigration:
         (cache / "booley_commit_policy.cpython-314.pyc").write_bytes(b"foreign")
         (cache / "project.cpython-314.pyc").write_bytes(b"project-owned")
 
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
 
         assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
         new_members = set(_current_source_bytes()) - set(_LEGACY_MANAGED_HOOKS)
@@ -869,11 +839,10 @@ class TestProjectGitHookMigration:
         assert (cache / "project.cpython-314.pyc").is_file()
 
     def test_divergent_legacy_source_gets_collision_safe_backup(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_project_git_hooks
         from booley.runtime.booley_dir import resolve_booley_dir
 
         _git_init(tmp_path)
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
         hooks = resolve_booley_dir(tmp_path) / "hooks"
         hooks.mkdir(parents=True, exist_ok=True)
         legacy = hooks / "boundary.py"
@@ -883,7 +852,7 @@ class TestProjectGitHookMigration:
         occupied = hooks / f"boundary.py.pre-booley.{digest}"
         occupied.write_bytes(b"different backup\n")
 
-        _step_project_git_hooks(_ctx(tmp_path))
+        step_project_git_hooks(_ctx(tmp_path))
 
         assert not legacy.exists()
         assert occupied.read_bytes() == b"different backup\n"
@@ -896,8 +865,6 @@ class TestCommitMsgHookBody:
     Store nag, and winget's Python ships python.exe with no python3.exe."""
 
     def test_body_probes_interpreters_instead_of_bare_python3(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _build_commit_msg_hook_body
-
         body = _build_commit_msg_hook_body(
             tmp_path,
             tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz",
@@ -920,7 +887,6 @@ class TestHookInSecondaryWorktree:
     @staticmethod
     def _install(main: Path) -> None:
         """A git repo with the generated bundle and commit-msg adapter."""
-        from booley.harness.setup.git_hooks import _build_commit_msg_hook_body
         from booley.harness.setup.project_git_hook_bundle import (
             BUNDLE_NAME,
             build_project_git_hook_bundle,
@@ -1017,7 +983,6 @@ class TestPrePushFailsClosed:
     @staticmethod
     def _repo(root: Path) -> Path:
         """Repo with a bare origin, the pre-push delegator, and the bundle."""
-        from booley.harness.setup.git_hooks import _build_pre_push_hook_body
         from booley.harness.setup.project_git_hook_bundle import (
             BUNDLE_NAME,
             build_project_git_hook_bundle,
@@ -1084,10 +1049,6 @@ class TestPrePushFailsClosed:
 
     def test_only_pre_push_fails_closed(self, tmp_path: Path):
         """The two bodies are built by one helper — pin the divergence."""
-        from booley.harness.setup.git_hooks import (
-            _build_commit_msg_hook_body,
-            _build_pre_push_hook_body,
-        )
 
         bundle = tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz"
         commit_msg = _build_commit_msg_hook_body(tmp_path, bundle)
@@ -2841,7 +2802,6 @@ def _tracking_git(root: Path, *args: str) -> bytes:
 
 
 def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged):
-    from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
     from booley.runtime.booley_dir import reset_cache
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
@@ -2875,7 +2835,6 @@ def test_tracked_bundle_reports_untrack_command(
     tmp_path, monkeypatch, capsys, topology, staged, outdated, check_only
 ):
     from booley.harness.init_cmd import _print_summary
-    from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
     from booley.runtime.booley_dir import reset_cache
 
     root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged)
@@ -2941,7 +2900,6 @@ def test_tracked_bundle_probe_failure_does_not_block_publication(tmp_path, monke
 
 def _paired_hook_fixture(tmp_path, monkeypatch):
     from booley.harness import worktree_cmd
-    from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
     from booley.runtime.booley_dir import reset_cache
     from tests.harness.test_worktree_cmd import _new, python_outer, versioned_project
 
@@ -3130,7 +3088,6 @@ def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
 
 
 def test_tracked_bundle_broken_gitfile_reports_diagnostic(tmp_path, monkeypatch, capsys):
-    from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
     from booley.runtime.booley_dir import reset_cache
 
     root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, "nested", False)
