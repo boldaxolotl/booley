@@ -40,7 +40,7 @@ from booley.flows.sim.execution.engine import (
     PreparedOrdinaryGroup,
     SimulationBuildSlotError,
 )
-from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
+from tests.flows.sim.test_campaign_manifest_codec import _manifest, _selection_test_runs, _sha
 
 
 def _admission() -> AdmissionContext:
@@ -75,6 +75,7 @@ def _manifest_for(names: tuple[str, ...], *, access: str = "immutable"):
             "revision": "abc123",
             "target": target,
             "selection": {"kind": "named", "names": [name]},
+            "test_runs": _selection_test_runs((name,)),
             "arguments": [name],
             "build_variant_id": variant["build_variant_id"],
             "run_directory": {
@@ -440,8 +441,6 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     base_manifest = _manifest_for(("alpha", "beta"), access="legacy-per-test")
     manifest_document = json.loads(canonical_json_bytes(base_manifest.document))
     manifest_document.pop("fingerprints")
-    if mapped:
-        manifest_document["$schema"] = "booley.simulation-campaign-manifest/v3"
     manifest_document["planning_disclosures"] = list(disclosures.values())
     manifest = finalize_manifest(manifest_document)
     plan = create_simulation_campaign_plan(manifest)
@@ -465,7 +464,10 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         test_runs: tuple[object, ...],
     ) -> None:
         assert commands == ()
-        assert test_runs == ()  # this manifest predates recorded Test Runs
+        assert [run.name for run in test_runs] == list(names)
+        from booley.flows.test_runs import test_run_document
+
+        assert [test_run_document(run) for run in test_runs] == _selection_test_runs(names)
         hooks.append((names, expose_build_root, run_cwd))
 
     monkeypatch.setattr(serial_execution, "_run_hook", record_hook)
@@ -554,8 +556,8 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
 
 
-def _maximum_hook_selection_plan(names):
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+def _maximum_hook_selection_manifest(names):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_manifest
 
     def transform(document):
         workload = document["workload"]
@@ -564,6 +566,7 @@ def _maximum_hook_selection_plan(names):
         item.update(
             kind="coverage_aggregate",
             selection={"kind": "named", "names": names},
+            test_runs=_selection_test_runs(names),
             arguments=list(names),
         )
         suite = document["required_suite"]
@@ -574,10 +577,17 @@ def _maximum_hook_selection_plan(names):
             source_sha256="sha256:" + hashlib.sha256(source).hexdigest(),
         )
 
-    plan, _disclosures = _pre_sim_plan("immutable", ("true",), transform)
-    return plan, _disclosures
+    return _pre_sim_manifest("immutable", ("true",), transform)
 
 
+def _maximum_hook_selection_plan(names):
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+
+    manifest, disclosures = _maximum_hook_selection_manifest(names)
+    return create_simulation_campaign_plan(manifest), disclosures
+
+
+@pytest.mark.timeout(180)
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
     from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
@@ -586,13 +596,11 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
-    plan, _disclosures = _maximum_hook_selection_plan(names)
+    manifest, _disclosures = _maximum_hook_selection_manifest(names)
     invocation = tmp_path / "reports/1"
     store = CampaignStore(invocation / "targets/sim/campaign")
-    store.publish_manifest(plan.manifest)
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
-    )
+    store.publish_manifest(manifest)
+    request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
     evidence = PreSimEvidence(
         ("true",),
@@ -651,8 +659,6 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     base_manifest = _manifest_for(("alpha",))
     document = json.loads(canonical_json_bytes(base_manifest.document))
     document.pop("fingerprints")
-    if mapped:
-        document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["planning_disclosures"] = [planned]
     manifest = finalize_manifest(document)
     project = tmp_path / "project"
@@ -821,9 +827,10 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
 
 
 def _aggregate_result_bound_fixture(tmp_path):
+    from booley.flows.sim.campaign.codec import RESULT_SCHEMA
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+    from tests.flows.sim.test_campaign_codec_golden import _legacy_simulation_result
 
     names = tuple(f"test{index:04d}" for index in range(4000))
     plan, _ = _maximum_hook_selection_plan(names)
@@ -839,15 +846,19 @@ def _aggregate_result_bound_fixture(tmp_path):
             PreSimEvidence(("true",), (name,), "passed", 0.0, returncode=0),
             ordinal=ordinal,
         )
-    document = json.loads(_simulation_result("completed"))
+    document = json.loads(_legacy_simulation_result("completed"))
+    document["$schema"] = RESULT_SCHEMA
     document.update(serial_execution._common(request))
     document["attempt_id"] = request.attempt_id
     document["executable_snapshot"]["manifest"]["owner"] = request.attempt_id
     document["evidence"] = store.pre_sim_references(request.attempt_directory)
     document["observations"] = [
-        serial_execution._observation(
-            SimulationTestOutcome(name=name, verdict="pass", passed=True)
-        )
+        {
+            **serial_execution._observation(
+                SimulationTestOutcome(name=name, verdict="pass", passed=True)
+            ),
+            "test_run": name,
+        }
         for name in names
     ]
     return store, request, document
@@ -1142,6 +1153,23 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
     assert result.document["build_result"]["sharing"] == (
         "shared_variant" if route == "shared" else "private_work_item"
     )
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
+    request = _hook_publication_request(tmp_path)
+    _publish_request_hook(request)
+    assert len(request.store.read_pre_sim_firings()) == 1
+    path = request.attempt_directory / "pre-sim/0001.json"
+    document = json.loads(path.read_bytes())
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["attempt_id"]
+    path.chmod(0o600)
+    path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        request.store.read_pre_sim_firings()
 
 
 @pytest.mark.parametrize("entry", ["verify", "inspect"])
