@@ -1129,13 +1129,17 @@ root explicitly; callers obtain Booley Directory roots through
 
 - `prune_native_payload(reports_root, invocation, target)` requires an exact
   positive invocation number and one exact manifest Target selector. It validates
-  the complete Campaign pair and Simulation identities, every native path and recorded digest,
-  and the full deletion set before mutation. Symlinks, unknown payloads, changed
-  databases, unexplained missing databases, and ambiguous selections are errors.
+  the complete Campaign pair and Simulation identities and link safety before
+  mutation. Symlinks, unsafe paths, ambiguous or unknown Targets, a wrong
+  invocation, and a recorded native payload that is missing on the first attempt
+  are errors. Native files are not re-hashed, and unrecorded files under `native/`
+  are removed with it.
 - `prune_invocation(reports_root, invocation)` validates every existing Target
   and compares every file with the authenticated invocation, Campaign, and
   artifact inventory before atomically moving that invocation to `.pruned-N` and
-  removing its contents. Unknown files are named and refused without mutation;
+  removing its contents. An interrupted `.pruned-N` is finished whenever it holds
+  `.prune.json`; without that journal it is refused. Unknown files are named and
+  refused without mutation;
   changed or missing recorded native payloads are accepted because full pruning
   removes the entire invocation. Terminal attempts use only their exact
   authenticated inventory; nonterminal attempts retain directory-level ownership
@@ -1153,10 +1157,9 @@ Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign
 identity and manifest digest, and
 native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
-and native availability must not be assumed. Renaming `native/` to
-`.native-pruned/` removes all native databases from their canonical paths in one
-operation; cleanup then removes that quarantine and records `pruned`. Retrying
-the same exact selection completes interrupted cleanup. Campaign manifest and point-store bytes,
+and native availability must not be assumed. Cleanup then deletes `native/` and
+records `pruned`. Retrying the same exact selection completes interrupted cleanup
+and trusts the existing sidecar. Campaign manifest and point-store bytes,
 Simulation bytes, and hook evidence never change. Normalized Campaign evidence
 remains analyzable after native pruning; full pruning prevents re-analysis.
 

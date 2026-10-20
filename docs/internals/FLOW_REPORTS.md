@@ -311,8 +311,9 @@ algorithm is in
   the run number is not reused. It refuses when later resumed runs depend on
   this one, unless `--include-dependents` is given.
 
-Both refuse to touch a run that is still active, or any file the run did not
-produce. An interrupted cleanup is safe to retry with the same arguments.
+Both refuse to touch a run that is still active. `--full` also refuses any file
+the run did not produce; `--native-target` removes the Target's whole `native/`
+directory. An interrupted cleanup is safe to retry with the same arguments.
 
 ## `lint`
 

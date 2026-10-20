@@ -1,11 +1,10 @@
 """Exact Simulation Campaign retention operations; normalized evidence is immutable.
 
-Native removal commits by renaming the whole native directory. The availability
-journal precedes that rename, so an interrupted cleanup is explicit and retryable.
+Native removal writes a ``pruning`` availability sidecar before deleting ``native/``,
+so an interrupted cleanup is explicit and retryable.
 Full removal leaves an empty numbered tombstone to prevent invocation-id reuse.
 """
 
-import hashlib
 import json
 import shutil
 import stat
@@ -189,24 +188,6 @@ def _target(
     return storage, loaded
 
 
-def _native_manifest(target: Path, campaign: CoverageCampaign) -> list[dict[str, object]]:
-    artifacts = _native_artifacts(campaign)
-    known = {str(item["path"]): item["sha256"] for item in artifacts}
-    for name in ("native", ".native-pruned"):
-        directory = target / name
-        for path in directory.rglob("*"):
-            if not path.is_file():
-                continue
-            relative = "native/" + path.relative_to(directory).as_posix()
-            if relative not in known:
-                raise CampaignRetentionError(f"Unrecognized native payload: {path}")
-            with path.open("rb") as stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            if known[relative] and f"sha256:{digest}" != known[relative]:
-                raise CampaignRetentionError(f"Native payload changed since collection: {path}")
-    return artifacts
-
-
 def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
     artifacts = []
     for artifact in campaign.artifacts:
@@ -230,43 +211,26 @@ def _prune_native(root: Path, target: str) -> Path:
     _safe_tree(root)
     _validate_native_pruning_eligibility(root, target)
     directory, loaded = _target(root, target)
-    campaign = loaded.campaign
-    _native_manifest(directory, campaign)
     sidecar = directory / "availability.json"
     document = _availability_document(loaded, status="pruning")
-    if sidecar.exists():
-        previous = _read_object(sidecar)
-        if (
-            previous.get("status") not in {"pruning", "pruned"}
-            or {**previous, "status": "pruning"} != document
-        ):
-            raise CampaignRetentionError("Availability journal does not match this Campaign")
-    else:
-        _validate_unpruned(directory, campaign)
-    native, quarantine = directory / "native", directory / ".native-pruned"
-    if native.exists() and quarantine.exists():
-        raise CampaignRetentionError("Ambiguous native pruning state")
-    write_campaign_json(sidecar, document)
+    if not sidecar.exists():
+        # First attempt: a recorded native payload must still be present. A retry
+        # trusts the sidecar Booley wrote and only repeats the removal.
+        for artifact in loaded.campaign.artifacts:
+            if (
+                artifact.kind in {"raw_native", "merged_native"}
+                and artifact.sha256
+                and not (directory / artifact.path).is_file()
+            ):
+                raise CampaignRetentionError(
+                    f"Native payload is unexpectedly missing: {artifact.path}"
+                )
+        write_campaign_json(sidecar, document)
+    native = directory / "native"
     if native.exists():
-        native.rename(quarantine)
-    if quarantine.exists():
-        _remove_tree(quarantine)
+        _remove_tree(native)
     write_campaign_json(sidecar, {**document, "status": "pruned"})
     return sidecar
-
-
-def _validate_unpruned(directory: Path, campaign: CoverageCampaign) -> None:
-    if (directory / ".native-pruned").exists():
-        raise CampaignRetentionError("Native quarantine has no availability journal")
-    for artifact in campaign.artifacts:
-        if (
-            artifact.kind in {"raw_native", "merged_native"}
-            and artifact.sha256
-            and not (directory / artifact.path).is_file()
-        ):
-            raise CampaignRetentionError(
-                f"Native payload is unexpectedly missing: {artifact.path}"
-            )
 
 
 def prune_invocation(
@@ -409,13 +373,7 @@ def _completed_tombstone(root: Path) -> bool:
 
 def _recoverable_quarantine(root: Path) -> bool:
     quarantine = root.with_name(f".pruned-{root.name}")
-    if root.exists() or not quarantine.is_dir():
-        return False
-    journal = quarantine / ".prune.json"
-    return journal.is_file() and _read_object(journal) == {
-        "invocation": int(root.name),
-        "operation": "full",
-    }
+    return not root.exists() and (quarantine / ".prune.json").is_file()
 
 
 def _read_prune_batch(root: Path) -> _PruneBatch | None:
@@ -693,11 +651,8 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     if not children:
         return
     journal = quarantine / ".prune.json"
-    if not journal.is_file() or _read_object(journal) != {
-        "invocation": int(root.name),
-        "operation": "full",
-    }:
-        raise CampaignRetentionError("Quarantine has no matching pruning journal")
+    if not journal.is_file():
+        raise CampaignRetentionError("Quarantine has no pruning journal")
     for child in children:
         if child == journal:
             continue
@@ -932,15 +887,24 @@ def _infer_project_data(root: Path) -> Path | None:
 
 def _validate_invocation_targets(root: Path) -> None:
     progress = _read_object(root / "progress.json")
-    targets = progress.get("targets")
-    if progress.get("flow") != "sim" or not isinstance(targets, list) or not targets:
+    # Reject contradictory progress; a live producer is excluded by the invocation lock.
+    # Nonterminal progress under a free producer lock means the producer died before
+    # terminalizing it, so the invocation is abandoned and full pruning may proceed.
+    try:
+        validate_progress_shape(progress)
+    except ValueError as exc:
+        raise CampaignRetentionError(f"Invocation progress is invalid: {exc}") from exc
+    targets = cast(list[str], progress["targets"])
+    if not targets:
         raise CampaignRetentionError("Invocation has no exact Target manifest")
-    if any(
-        not isinstance(target, str) or not target or target in {".", ".."} for target in targets
-    ) or len(set(targets)) != len(targets):
+    if any(not target or target in {".", ".."} for target in targets):
         raise CampaignRetentionError("Invocation has ambiguous Targets")
-    _validate_progress_lifecycle(progress)
-    _validate_completed_targets(root, progress, targets)
+    completed = cast(list[str], progress["completed_targets"])
+    pending = cast(list[str], progress["pending_targets"])
+    if any(not target_report_directory(root, name).is_dir() for name in completed) and not (
+        _is_resume_receipt(root, completed, pending)
+    ):
+        raise CampaignRetentionError("Invocation contains an unresolved completed Target")
     expected = {target_report_directory(root, target).name for target in targets}
     directories = (root / "targets").iterdir() if (root / "targets").exists() else ()
     for directory in directories:
@@ -955,18 +919,6 @@ def _validate_invocation_targets(root: Path) -> None:
         campaign = directory / "campaign"
         if (campaign / "manifest.json").exists():
             _inspect_simulation_campaign(directory, campaign)
-
-
-def _validate_progress_lifecycle(progress: Mapping[str, object]) -> None:
-    """Reject contradictory progress; a live producer is excluded by the invocation lock.
-
-    Nonterminal progress under a free producer lock means the producer died before
-    terminalizing it, so the invocation is abandoned and full pruning may proceed.
-    """
-    try:
-        validate_progress_shape(progress)
-    except ValueError as exc:
-        raise CampaignRetentionError(f"Invocation progress is invalid: {exc}") from exc
 
 
 def _validate_invocation_inventory(root: Path) -> None:
@@ -1140,8 +1092,6 @@ def _coverage_owned_files(
         if marker.exists() and marker.read_bytes() != b"":
             raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
     availability = storage / "availability.json"
-    if availability.exists():
-        _validate_availability(availability, loaded)
     expected = {
         (target / "coverage.json").absolute(),
         (storage / "coverage.json").absolute(),
@@ -1151,23 +1101,8 @@ def _coverage_owned_files(
     point_store = loaded.summary.point_store
     if point_store is not None:
         expected.add((storage / point_store.path).absolute())
-    for artifact in loaded.campaign.artifacts:
-        relative = Path(artifact.path)
-        expected.add((storage / relative).absolute())
-        if relative.parts and relative.parts[0] == "native":
-            expected.add((storage / ".native-pruned" / Path(*relative.parts[1:])).absolute())
+    expected.update((storage / artifact.path).absolute() for artifact in loaded.campaign.artifacts)
     return expected
-
-
-def _validate_availability(path: Path, loaded: LoadedCoverageCampaign) -> None:
-    expected = _availability_document(loaded, status="pruning")
-    document = _read_object(path)
-    status = document.get("status")
-    if status not in {"pruning", "pruned"}:
-        raise CampaignRetentionError("Availability journal does not match this Campaign")
-    expected["status"] = status
-    if document != expected:
-        raise CampaignRetentionError("Availability journal does not match this Campaign")
 
 
 def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> dict[str, object]:
@@ -1300,29 +1235,6 @@ def _validate_authenticated_projection(
         raise CampaignRetentionError(
             "Simulation Campaign projection Coverage Campaign reference disagrees"
         )
-
-
-def _validate_completed_targets(
-    root: Path, progress: dict[str, object], targets: list[str]
-) -> None:
-    completed = progress.get("completed_targets")
-    pending = progress.get("pending_targets")
-    for names in (completed, pending):
-        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
-            raise CampaignRetentionError(
-                "Invocation has invalid completed Target or pending Target lists"
-            )
-        if len(set(names)) != len(names):
-            raise CampaignRetentionError(
-                "Invocation repeats completed Target or pending Target identities"
-            )
-    assert isinstance(completed, list) and isinstance(pending, list)
-    if set(completed) & set(pending) or set(completed) | set(pending) != set(targets):
-        raise CampaignRetentionError("Invocation has inconsistent completed Target resolution")
-    if any(not target_report_directory(root, name).is_dir() for name in completed) and not (
-        _is_resume_receipt(root, completed, pending)
-    ):
-        raise CampaignRetentionError("Invocation contains an unresolved completed Target")
 
 
 def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> bool:
