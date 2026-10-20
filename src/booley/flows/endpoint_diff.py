@@ -20,9 +20,9 @@ def read_source_dirs_from_toml(work_dir: Path) -> tuple[list[str], list[str]] | 
 
     Historically this read ``[sources.*].source_dirs`` from ``booley.toml``; the
     ``.core`` ``tags:[tb]`` partition is now the single source of truth, so this
-    delegates to :func:`fusesoc_registry.source_dirs_from_core`. The name is kept
-    because several callers import it. Returns ``(rtl_dirs, tb_dirs)`` — a file-vs-dir mix exactly as
-    ``[sources.*]`` used to yield (a file directly at the Project Root appears verbatim) — or
+    delegates to :func:`fusesoc_registry.source_dirs_from_core`. Returns
+    ``(rtl_dirs, tb_dirs)`` — a file-vs-dir mix exactly as ``[sources.*]`` used to
+    yield (a file directly at the Project Root appears verbatim) — or
     ``None`` when no ``.core`` is authored under *work_dir* (callers then fall
     back to their own defaults).
     """
@@ -82,7 +82,7 @@ def _load_classification_dirs(
 
 
 # Module-level fallback prefixes for pre-migration (no-``.core``) projects.
-# Kept as patchable names for the no-``work_dir`` fallback.
+# Fallback prefixes used when no ``work_dir`` is given.
 _RTL_DIRS, _TB_DIRS = _RTL_DIRS_DEFAULT, _TB_DIRS_DEFAULT
 
 
