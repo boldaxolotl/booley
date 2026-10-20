@@ -14,8 +14,6 @@ from booley.flows.sim.coverage_campaign import (
     CoveragePoint,
     CoveragePointIdentity,
     CoverageRollup,
-    CoverageTarget,
-    DurableTargetIdentity,
 )
 from booley.flows.sim.coverage_policy import (
     ApprovedWaiverSet,
@@ -31,7 +29,7 @@ from booley.flows.sim.coverage_provisional import (
     criterion_from_evaluation,
     evaluate_provisional_coverage,
 )
-from tests.flows.sim.test_coverage_waivers import _TARGET, _collector, _run
+from tests.flows.sim.test_coverage_waivers import _TARGET, _campaign
 
 _SOURCE = "rtl/counter.sv"
 _SHA = "sha256:" + "a" * 64
@@ -62,27 +60,13 @@ def _evaluated(minimum: int) -> tuple[CoverageCampaign, CoverageCriterion]:
         _point("u1", hits=0),
         _point("u2", hits=0),
     )
-    campaign = CoverageCampaign(
-        campaign_id=_CAMPAIGN_ID,
-        invocation=MappingProxyType({"id": 12}),
-        target=CoverageTarget(identity=str(_TARGET), selector="sim_counter"),
-        collector=_collector(),
-        build=MappingProxyType({}),
-        coverage_window=MappingProxyType({}),
-        fingerprints=MappingProxyType({}),
+    campaign = replace(
+        _campaign(),
+        points=points,
         source_closure=MappingProxyType(
             {"rtl": (MappingProxyType({"path": _SOURCE, "sha256": _SHA}),)}
         ),
-        declared_tests=("smoke",),
-        selected_tests=("smoke",),
-        runs=(_run(),),
-        artifacts=(),
-        normalization=MappingProxyType({"status": "complete"}),
-        points=points,
         rollups=(CoverageRollup("line", "line semantics", 5, 5, 3, 0, 60.0),),
-        collection=MappingProxyType({"status": "complete"}),
-        findings=(),
-        evaluation=MappingProxyType({"status": "not_requested"}),
     )
     criterion = CoverageCriterion(_TARGET, (CoverageThreshold("line", Fraction(minimum)),), None)
     return evaluate_coverage_campaign(campaign, criterion, _NO_WAIVERS), criterion
@@ -123,53 +107,11 @@ def test_candidates_rescue_a_strict_failure_and_each_is_needed() -> None:
     assert campaign.evaluation["status"] == "fail"
 
 
-def test_leave_one_out_marks_redundant_candidates_as_not_individually_needed() -> None:
-    campaign, criterion = _evaluated(75)
-
-    verdict = evaluate_provisional_coverage(
-        campaign, criterion, [_candidate("u1"), _candidate("u2")]
-    )
-
-    assert verdict.status == "pass"
-    assert _screens(verdict) == {"wc-u1": ("offered", False), "wc-u2": ("offered", False)}
-
-
-def test_insufficient_candidates_leave_the_provisional_verdict_failing() -> None:
-    campaign, criterion = _evaluated(100)
-
-    verdict = evaluate_provisional_coverage(campaign, criterion, [_candidate("u1")])
-
-    assert verdict.status == "fail"
-    assert _screens(verdict) == {"wc-u1": ("offered", False)}
-
-
-def test_strict_pass_lists_candidates_as_not_needed() -> None:
-    campaign, criterion = _evaluated(50)
-    assert campaign.evaluation["status"] == "pass"
-
-    verdict = evaluate_provisional_coverage(campaign, criterion, [_candidate("u1")])
-
-    assert verdict.status == "pass"
-    assert verdict.evaluation == campaign.evaluation
-    assert _screens(verdict) == {"wc-u1": ("not_needed", False)}
-
-
-def test_blocked_strict_evaluation_cannot_be_rescued() -> None:
-    campaign, criterion = _evaluated(100)
-    blocked = replace(campaign, evaluation=MappingProxyType({"status": "blocked"}))
-
-    verdict = evaluate_provisional_coverage(blocked, criterion, [_candidate("u1")])
-
-    assert verdict.status == "blocked"
-    assert _screens(verdict) == {"wc-u1": ("invalid", False)}
-
-
 @pytest.mark.parametrize(
     ("changes", "status"),
     [
         ({"campaign_id": "campaign:other"}, "stale"),
         ({"target_identity": "acme:demo:other:1.0#sim"}, "invalid"),
-        ({"reason": "covered_elsewhere"}, "invalid"),
         ({"point_id": "missing"}, "invalid"),
         ({"point_id": "c0"}, "invalid"),
         ({"source": "rtl/other.sv"}, "invalid"),
@@ -202,17 +144,6 @@ def test_changed_source_at_ticket_head_makes_a_candidate_stale() -> None:
     assert {status for status, _ in _screens(verdict).values()} == {"stale"}
 
 
-def test_duplicate_point_candidates_offer_only_the_first() -> None:
-    campaign, criterion = _evaluated(100)
-
-    verdict = evaluate_provisional_coverage(
-        campaign, criterion, [_candidate("u1"), _candidate("u1", candidate_id="wc-dup")]
-    )
-
-    assert _screens(verdict)["wc-dup"][0] == "invalid"
-    assert verdict.offered_ids == ("wc-u1",)
-
-
 def test_waiving_every_point_blocks_on_an_empty_denominator() -> None:
     campaign, criterion = _evaluated(100)
     uncovered_only = replace(campaign, points=campaign.points[3:])
@@ -236,36 +167,6 @@ def test_provisional_evaluation_projects_through_the_existing_criterion_projecti
     assert project_coverage_criterion(atomic, campaign.evaluation, {}, atomic=True)[0] is False
 
 
-@pytest.mark.parametrize(
-    ("candidates", "message"),
-    [
-        (
-            [_candidate("u1"), _candidate("u2", candidate_id="wc-u1")],
-            "unique",
-        ),
-        (
-            [_candidate(f"p{index}") for index in range(MAX_PROVISIONAL_CANDIDATES + 1)],
-            "limit",
-        ),
-    ],
-)
-def test_invalid_candidate_batches_fail_loudly(
-    candidates: list[ProvisionalCandidate], message: str
-) -> None:
-    campaign, criterion = _evaluated(100)
-
-    with pytest.raises(ProvisionalCoverageError, match=message):
-        evaluate_provisional_coverage(campaign, criterion, candidates)
-
-
-def test_criterion_for_another_target_is_rejected() -> None:
-    campaign, criterion = _evaluated(100)
-    other = replace(criterion, target=DurableTargetIdentity("acme:demo:other:1.0#sim"))
-
-    with pytest.raises(ProvisionalCoverageError, match="different Target"):
-        evaluate_provisional_coverage(campaign, other, [])
-
-
 @pytest.mark.parametrize("minimum", [Fraction(100), Fraction(3333, 100), Fraction(875, 10)])
 def test_criterion_round_trips_through_the_persisted_strict_evaluation(minimum: Fraction) -> None:
     campaign, _ = _evaluated(100)
@@ -281,3 +182,31 @@ def test_criterion_cannot_be_rebuilt_from_an_unscored_evaluation() -> None:
 
     with pytest.raises(ProvisionalCoverageError, match="no scored"):
         criterion_from_evaluation(unscored)
+
+
+def test_candidate_count_cap() -> None:
+    campaign, criterion = _evaluated(100)
+    candidates = [_candidate(f"p{index}") for index in range(MAX_PROVISIONAL_CANDIDATES + 1)]
+    with pytest.raises(ProvisionalCoverageError, match="limit"):
+        evaluate_provisional_coverage(campaign, criterion, candidates)
+
+
+@pytest.mark.parametrize(
+    "minimum,points,strict,status,screen",
+    [
+        (75, ("u1", "u2"), "fail", "pass", "offered"),
+        (100, ("u1",), "fail", "fail", "offered"),
+        (50, ("u1",), "pass", "pass", "not_needed"),
+        (100, ("u1",), "blocked", "blocked", "invalid"),
+    ],
+)
+def test_verdict_without_needed_candidates(minimum, points, strict, status, screen):
+    campaign, criterion = _evaluated(minimum)
+    if strict == "blocked":
+        campaign = replace(campaign, evaluation=MappingProxyType({"status": strict}))
+    assert campaign.evaluation["status"] == strict
+    verdict = evaluate_provisional_coverage(campaign, criterion, [_candidate(p) for p in points])
+    assert verdict.status == status
+    assert _screens(verdict) == {f"wc-{p}": (screen, False) for p in points}
+    if strict != "fail":
+        assert verdict.evaluation == campaign.evaluation

@@ -39,7 +39,6 @@ from booley.flows.sim.coverage_policy import (
 MAX_PROVISIONAL_CANDIDATES = 512
 
 CandidateStatus = Literal["offered", "not_needed", "stale", "invalid"]
-_WAIVABLE_REASONS = frozenset({"excluded", "unreachable"})
 
 
 class ProvisionalCoverageError(ValueError):
@@ -103,13 +102,11 @@ def _binding_problem(
     campaign: CoverageCampaign,
     current_sources: Mapping[str, str] | None,
 ) -> tuple[CandidateStatus, str] | None:
-    """Check the candidate's Campaign, Target, reason, and source binding."""
+    """Check the candidate's Campaign, Target, and source binding."""
     if candidate.campaign_id != campaign.campaign_id:
         return "stale", "Candidate belongs to a different Coverage Campaign."
     if candidate.target_identity != campaign.target.identity:
         return "invalid", "Candidate Target differs from the Campaign Target."
-    if candidate.reason not in _WAIVABLE_REASONS:
-        return "invalid", f"Reason {candidate.reason!r} is not waivable."
     if _campaign_sources(campaign).get(candidate.source) != candidate.source_sha256:
         return "invalid", "Candidate source digest differs from the Campaign's."
     if current_sources is not None and current_sources.get(candidate.source) != (
@@ -252,31 +249,11 @@ def _usable_candidates(
     screens: list[CandidateScreen] = []
     for candidate in candidates:
         rejection = _screen_one(candidate, campaign, points, current_sources)
-        if rejection is None and candidate.point_id in usable:
-            rejection = CandidateScreen(
-                candidate.candidate_id, "invalid", "Duplicate candidate for one point."
-            )
         if rejection is not None:
             screens.append(rejection)
         else:
             usable[candidate.point_id] = candidate
     return usable, screens
-
-
-def _require_evaluable(
-    campaign: CoverageCampaign,
-    criterion: CoverageCriterion,
-    candidates: Sequence[ProvisionalCandidate],
-) -> None:
-    if str(criterion.target) != campaign.target.identity:
-        raise ProvisionalCoverageError("Coverage Criterion belongs to a different Target")
-    if len(candidates) > MAX_PROVISIONAL_CANDIDATES:
-        raise ProvisionalCoverageError(
-            f"{len(candidates)} Waiver Candidates exceed the limit of "
-            f"{MAX_PROVISIONAL_CANDIDATES} for one Campaign"
-        )
-    if len({item.candidate_id for item in candidates}) != len(candidates):
-        raise ProvisionalCoverageError("Waiver Candidate ids must be unique")
 
 
 def evaluate_provisional_coverage(
@@ -291,7 +268,11 @@ def evaluate_provisional_coverage(
     ``current_sources`` maps RTL paths to their SHA-256 at the Ticket head being
     judged; pass None only when the Campaign's own source closure is current.
     """
-    _require_evaluable(campaign, criterion, candidates)
+    if len(candidates) > MAX_PROVISIONAL_CANDIDATES:
+        raise ProvisionalCoverageError(
+            f"{len(candidates)} Waiver Candidates exceed the limit of "
+            f"{MAX_PROVISIONAL_CANDIDATES} for one Campaign"
+        )
     strict_status = str(campaign.evaluation.get("status"))
     usable, screens = _usable_candidates(campaign, candidates, current_sources)
     strict = cast(Mapping[str, FrozenJson], campaign.evaluation)

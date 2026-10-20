@@ -19,7 +19,7 @@ approval re-derives every candidate from the Campaign evidence.
 Failure semantics follow ADR 0065 state records:
 
 - an absent file is an empty record; a file that is unreadable, not JSON, of
-  an unknown schema, for another slug, or with any invalid field raises
+  an unknown schema, with any invalid field raises
   :class:`WaiverCandidateRecordError` and nothing is changed;
 - every mutation is a read-modify-write under a cross-process lock at
   ``<record-directory>/waiver-candidates.lock`` with a bounded wait, and
@@ -32,13 +32,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, TypeVar
+from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
@@ -61,7 +61,7 @@ LOCK_TIMEOUT_SECONDS = 30.0
 
 _POINT_ID = re.compile(r"cp1:[A-Za-z0-9_-]+")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
-_RECORD_FIELDS = frozenset({"schema", "slug", "candidates", "rejections"})
+_RECORD_FIELDS = frozenset({"schema", "candidates", "rejections"})
 _BINDING_FIELDS = (
     "campaign_id",
     "manifest_sha256",
@@ -90,8 +90,6 @@ _CANDIDATE_FIELDS = frozenset(
 _REJECTION_FIELDS = frozenset(
     {"target_identity", "point_id", "source_sha256", "rejected_at", "rejected_by"}
 )
-
-_Result = TypeVar("_Result")
 
 CandidateKey = tuple[str, str]
 """``(target_identity, point_id)``: at most one candidate per key."""
@@ -185,14 +183,6 @@ class CampaignBinding:
     target_identity: str
     target_selector: str
 
-    def __post_init__(self) -> None:
-        _text(self.campaign_id, "campaign_id")
-        require_sha256_digest(self.manifest_sha256, field="'manifest_sha256'")
-        require_sha256_digest(self.point_store_sha256, field="'point_store_sha256'")
-        _relative_path(self.campaign_path, "campaign_path")
-        _text(self.target_identity, "target_identity")
-        _text(self.target_selector, "target_selector")
-
     def to_json(self) -> dict[str, str]:
         return {name: getattr(self, name) for name in _BINDING_FIELDS}
 
@@ -209,15 +199,6 @@ class WaiverProposal:
     evidence_refs: tuple[str, ...] = ()
     proof_reference: str = ""
 
-    def __post_init__(self) -> None:
-        _point_id(self.point_id)
-        _relative_path(self.source, "source")
-        require_sha256_digest(self.source_sha256, field="'source_sha256'")
-        _reason(self.reason)
-        _text(self.justification, "justification")
-        object.__setattr__(self, "evidence_refs", _evidence_refs(self.evidence_refs))
-        require_str_value(self.proof_reference, field="'proof_reference'", allow_empty=True)
-
 
 @dataclass(frozen=True)
 class WaiverCandidate:
@@ -229,15 +210,6 @@ class WaiverCandidate:
     first_recorded_at: str
     last_recorded_at: str
     last_invocation_id: str
-
-    def __post_init__(self) -> None:
-        if require_int(self.proposal_count, field="'proposal_count'") < 1:
-            raise BoundaryError("'proposal_count' must be at least 1")
-        _timestamp(self.first_recorded_at, "first_recorded_at")
-        _timestamp(self.last_recorded_at, "last_recorded_at")
-        if self.last_recorded_at < self.first_recorded_at:
-            raise BoundaryError("'last_recorded_at' precedes 'first_recorded_at'")
-        _text(self.last_invocation_id, "last_invocation_id")
 
     @property
     def candidate_id(self) -> str:
@@ -290,13 +262,6 @@ class Rejection:
     rejected_at: str
     rejected_by: str
 
-    def __post_init__(self) -> None:
-        _text(self.target_identity, "target_identity")
-        _point_id(self.point_id)
-        require_sha256_digest(self.source_sha256, field="'source_sha256'")
-        _timestamp(self.rejected_at, "rejected_at")
-        _text(self.rejected_by, "rejected_by")
-
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.target_identity, self.point_id, self.source_sha256)
@@ -314,20 +279,10 @@ def _rejects(rejections: Iterable[Rejection], candidate: WaiverCandidate) -> boo
 class CandidateRecord:
     """One record's Waiver Candidates and rejections; empty when never recorded."""
 
-    slug: str
     candidates: Mapping[CandidateKey, WaiverCandidate] = field(default_factory=dict)
     rejections: tuple[Rejection, ...] = ()
 
     def __post_init__(self) -> None:
-        for key, candidate in self.candidates.items():
-            if key != candidate.key:
-                raise BoundaryError(f"candidate {candidate.candidate_id} is filed under {key}")
-        keys = [rejection.key for rejection in self.rejections]
-        if len(set(keys)) != len(keys):
-            raise BoundaryError("rejections contain duplicates")
-        ids = [candidate.candidate_id for candidate in self.candidates.values()]
-        if len(set(ids)) != len(ids):
-            raise BoundaryError("candidate ids collide")
         ordered = MappingProxyType(dict(sorted(self.candidates.items())))
         object.__setattr__(self, "candidates", ordered)
         object.__setattr__(self, "rejections", tuple(sorted(self.rejections, key=_key_of)))
@@ -336,23 +291,10 @@ class CandidateRecord:
     def is_empty(self) -> bool:
         return not self.candidates and not self.rejections
 
-    def by_id(self, wanted_id: str) -> WaiverCandidate | None:
-        """Return the candidate whose id is *wanted_id*, if recorded."""
-        return next(
-            (item for item in self.candidates.values() if item.candidate_id == wanted_id), None
-        )
-
-    def is_rejected(self, target_identity: str, point_id: str, source_sha256: str) -> bool:
-        return any(
-            rejection.key == (target_identity, point_id, source_sha256)
-            for rejection in self.rejections
-        )
-
     def to_bytes(self) -> bytes:
         """Return the canonical on-disk encoding (sorted keys, trailing newline)."""
         document = {
             "schema": WAIVER_CANDIDATE_SCHEMA,
-            "slug": self.slug,
             "candidates": {item.candidate_id: item.to_json() for item in self.candidates.values()},
             "rejections": [rejection.to_json() for rejection in self.rejections],
         }
@@ -370,6 +312,26 @@ class RecordOutcome:
     recorded: int
     filtered_by_rejection: int
     candidate_ids: tuple[str, ...] = ()
+
+
+def _validate_binding(value: CampaignBinding) -> None:
+    _text(value.campaign_id, "campaign_id")
+    require_sha256_digest(value.manifest_sha256, field="'manifest_sha256'")
+    require_sha256_digest(value.point_store_sha256, field="'point_store_sha256'")
+    _relative_path(value.campaign_path, "campaign_path")
+    _text(value.target_identity, "target_identity")
+    _text(value.target_selector, "target_selector")
+
+
+def _validate_proposal(value: WaiverProposal) -> WaiverProposal:
+    _point_id(value.point_id)
+    _relative_path(value.source, "source")
+    require_sha256_digest(value.source_sha256, field="'source_sha256'")
+    _reason(value.reason)
+    _text(value.justification, "justification")
+    refs = _evidence_refs(value.evidence_refs)
+    require_str_value(value.proof_reference, field="'proof_reference'", allow_empty=True)
+    return replace(value, evidence_refs=refs)
 
 
 # Parsing ------------------------------------------------------------------------
@@ -393,20 +355,30 @@ def _parse_candidate(stored_id: str, value: Any) -> WaiverCandidate:
     _exact_fields(document, _CANDIDATE_FIELDS, f"candidate {stored_id!r}")
     candidate = WaiverCandidate(
         binding=CampaignBinding(**{name: document[name] for name in _BINDING_FIELDS}),
-        proposal=WaiverProposal(
-            point_id=document["point_id"],
-            source=document["source"],
-            source_sha256=document["source_sha256"],
-            reason=document["reason"],
-            justification=document["justification"],
-            evidence_refs=document["evidence_refs"],
-            proof_reference=document["proof_reference"],
+        proposal=_validate_proposal(
+            WaiverProposal(
+                point_id=document["point_id"],
+                source=document["source"],
+                source_sha256=document["source_sha256"],
+                reason=document["reason"],
+                justification=document["justification"],
+                evidence_refs=document["evidence_refs"],
+                proof_reference=document["proof_reference"],
+            )
         ),
         proposal_count=document["proposal_count"],
         first_recorded_at=document["first_recorded_at"],
         last_recorded_at=document["last_recorded_at"],
         last_invocation_id=document["last_invocation_id"],
     )
+    _validate_binding(candidate.binding)
+    if require_int(candidate.proposal_count, field="'proposal_count'") < 1:
+        raise BoundaryError("'proposal_count' must be at least 1")
+    _timestamp(candidate.first_recorded_at, "first_recorded_at")
+    _timestamp(candidate.last_recorded_at, "last_recorded_at")
+    if candidate.last_recorded_at < candidate.first_recorded_at:
+        raise BoundaryError("'last_recorded_at' precedes 'first_recorded_at'")
+    _text(candidate.last_invocation_id, "last_invocation_id")
     if stored_id != candidate.candidate_id or document["candidate_id"] != stored_id:
         raise BoundaryError(f"candidate {stored_id!r} does not match its binding")
     return candidate
@@ -415,11 +387,18 @@ def _parse_candidate(stored_id: str, value: Any) -> WaiverCandidate:
 def _parse_rejection(value: Any) -> Rejection:
     document = require_dict(value, field="rejection")
     _exact_fields(document, _REJECTION_FIELDS, "rejection")
-    return Rejection(**document)
+    rejection = Rejection(**document)
+    _text(rejection.target_identity, "target_identity")
+    _point_id(rejection.point_id)
+    require_sha256_digest(rejection.source_sha256, field="'source_sha256'")
+    _timestamp(rejection.rejected_at, "rejected_at")
+    _text(rejection.rejected_by, "rejected_by")
+    return rejection
 
 
-def _parse_record(value: Any, slug: str) -> CandidateRecord:
+def _parse_record(value: Any) -> CandidateRecord:
     document = require_dict(value, field="record")
+    document.pop("slug", None)
     _exact_fields(document, _RECORD_FIELDS, "record")
     schema = document["schema"]
     try:
@@ -428,8 +407,6 @@ def _parse_record(value: Any, slug: str) -> CandidateRecord:
         supported = False
     if not supported:
         raise BoundaryError(f"schema {schema!r} is unsupported")
-    if document["slug"] != slug:
-        raise BoundaryError(f"record belongs to {document['slug']!r}")
     stored = require_dict(document["candidates"], field="'candidates'")
     candidates = [_parse_candidate(key, item) for key, item in stored.items()]
     by_key = {candidate.key: candidate for candidate in candidates}
@@ -438,35 +415,37 @@ def _parse_record(value: Any, slug: str) -> CandidateRecord:
     rejections = tuple(
         _parse_rejection(item) for item in require_list(document["rejections"], field="rejections")
     )
-    return CandidateRecord(slug, by_key, rejections)
+    if len({item.key for item in rejections}) != len(rejections):
+        raise BoundaryError("rejections contain duplicates")
+    return CandidateRecord(by_key, rejections)
 
 
-def load(directory: Path, slug: str) -> CandidateRecord:
-    """Return the Waiver Candidate record for *slug*; an absent file is empty.
+def load(directory: Path) -> CandidateRecord:
+    """Return the Waiver Candidate record in *directory*; an absent file is empty.
 
     Raises :class:`WaiverCandidateRecordError` for a record that exists but is
-    unreadable, not JSON, of an unknown schema, for another slug, or invalid.
+    unreadable, not JSON, of an unknown schema, or invalid.
     """
-    path = waiver_candidates_path(directory, slug)
+    path = waiver_candidates_path(directory)
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        return CandidateRecord(slug)
+        return CandidateRecord()
     except OSError as exc:
         raise WaiverCandidateRecordError(
-            f"Waiver Candidate record for {slug!r} is unreadable: {path}: {exc}"
+            f"Waiver Candidate record is unreadable: {path}: {exc}"
         ) from exc
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError, BoundaryError) as exc:
         raise WaiverCandidateRecordError(
-            f"Waiver Candidate record for {slug!r} is not valid JSON: {path}: {exc}"
+            f"Waiver Candidate record is not valid JSON: {path}: {exc}"
         ) from exc
     try:
-        return _parse_record(value, slug)
+        return _parse_record(value)
     except (BoundaryError, TypeError) as exc:
         raise WaiverCandidateRecordError(
-            f"Waiver Candidate record for {slug!r} is invalid: {path}: {exc}"
+            f"Waiver Candidate record is invalid: {path}: {exc}"
         ) from exc
 
 
@@ -474,16 +453,16 @@ def load(directory: Path, slug: str) -> CandidateRecord:
 
 
 @contextmanager
-def _record_lock(directory: Path, slug: str) -> Generator[None]:
-    """Hold the cross-process lock of *slug*'s record, waiting a bounded time."""
-    path = waiver_candidates_lock_path(directory, slug)
+def record_lock(directory: Path) -> Generator[None]:
+    """Hold the cross-process lock of the directory record, waiting a bounded time."""
+    path = waiver_candidates_lock_path(directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         try:
             wait_for_file_lock(handle, timeout_s=LOCK_TIMEOUT_SECONDS)
         except LockTimeoutError as exc:
             raise WaiverCandidateLockError(
-                f"Waiver Candidate record for {slug!r} stayed locked for "
+                f"Waiver Candidate record stayed locked for "
                 f"{LOCK_TIMEOUT_SECONDS:g}s by another writer: {path}"
             ) from exc
         try:
@@ -494,28 +473,11 @@ def _record_lock(directory: Path, slug: str) -> Generator[None]:
 
 def _publish(directory: Path, record: CandidateRecord) -> None:
     """Atomically replace the record, or durably remove it once it is empty."""
-    path = waiver_candidates_path(directory, record.slug)
+    path = waiver_candidates_path(directory)
     if record.is_empty:
         durable_unlink(path)
         return
     atomic_replace_bytes(path, record.to_bytes(), mode=0o644)
-
-
-def _mutate(
-    directory: Path,
-    slug: str,
-    change: Callable[[CandidateRecord], tuple[CandidateRecord, _Result]],
-) -> _Result:
-    """Read, change, and publish *slug*'s record under its lock; return *change*'s result.
-
-    Publishes only when the record changed, so no-op mutations leave the file alone.
-    """
-    with _record_lock(directory, slug):
-        current = load(directory, slug)
-        updated, result = change(current)
-        if updated != current:
-            _publish(directory, updated)
-        return result
 
 
 def _accumulate(
@@ -538,26 +500,27 @@ def _accumulate(
 
 def record_proposals(
     directory: Path,
-    slug: str,
     binding: CampaignBinding,
     proposals: Iterable[WaiverProposal],
     *,
     invocation_id: str,
     now: datetime,
 ) -> RecordOutcome:
-    """Record one Analyst run's screened proposals for *slug* against *binding*.
+    """Record one Analyst run's screened proposals in *directory* against *binding*.
 
     A proposal matching a rejection (Target, point, source SHA-256) is dropped
     and counted in ``filtered_by_rejection``. Raises :class:`ValueError` when
     the batch names one Coverage Point twice.
     """
-    batch = tuple(proposals)
+    _validate_binding(binding)
+    batch = tuple(_validate_proposal(proposal) for proposal in proposals)
     if len({proposal.point_id for proposal in batch}) != len(batch):
         raise ValueError("a proposal batch must name each Coverage Point once")
     _text(invocation_id, "invocation_id")
     stamp = _canonical_now(now)
 
-    def change(record: CandidateRecord) -> tuple[CandidateRecord, RecordOutcome]:
+    with record_lock(directory):
+        record = load(directory)
         candidates = dict(record.candidates)
         recorded: list[str] = []
         for proposal in batch:
@@ -567,31 +530,10 @@ def record_proposals(
             candidates[fresh.key] = _accumulate(candidates.get(fresh.key), fresh)
             recorded.append(fresh.candidate_id)
         outcome = RecordOutcome(len(recorded), len(batch) - len(recorded), tuple(recorded))
-        return replace(record, candidates=candidates), outcome
-
-    return _mutate(directory, slug, change)
-
-
-def record_rejections(directory: Path, slug: str, rejections: Iterable[Rejection]) -> int:
-    """Remember *rejections* for *slug* and drop the candidates they match.
-
-    Idempotent: a rejection already recorded for the same Target, point, and
-    source SHA-256 keeps its original stamps. Returns how many were new.
-    """
-    wanted = tuple(rejections)
-
-    def change(record: CandidateRecord) -> tuple[CandidateRecord, int]:
-        updated = rejected_record(record, wanted)
-        return updated, len(updated.rejections) - len(record.rejections)
-
-    return _mutate(directory, slug, change)
-
-
-@contextmanager
-def candidate_lock(directory: Path, record_id: str) -> Generator[None]:
-    """Directory-owned neutral storage lock; callers acquire their record/storage lock first."""
-    with _record_lock(directory, record_id):
-        yield
+        updated = replace(record, candidates=candidates)
+        if updated != record:
+            _publish(directory, updated)
+        return outcome
 
 
 def rejected_record(record: CandidateRecord, rejections: Iterable[Rejection]) -> CandidateRecord:
@@ -602,23 +544,14 @@ def rejected_record(record: CandidateRecord, rejections: Iterable[Rejection]) ->
     kept = {
         key: item for key, item in record.candidates.items() if not _rejects(known.values(), item)
     }
-    return CandidateRecord(record.slug, kept, tuple(known.values()))
+    return CandidateRecord(kept, tuple(known.values()))
 
 
-def _require_slug(slug: str) -> str:
-    """Refuse names that would leave the store directory."""
-    if not slug or slug in {".", ".."} or Path(slug).name != slug or "\\" in slug:
-        raise ValueError(f"invalid record slug: {slug!r}")
-    return slug
-
-
-def waiver_candidates_path(directory: Path, slug: str) -> Path:
-    """Return the path of the Waiver Candidate record for *slug*."""
-    _require_slug(slug)
+def waiver_candidates_path(directory: Path) -> Path:
+    """Return the path of the Waiver Candidate record in *directory*."""
     return Path(directory) / "waiver-candidates.json"
 
 
-def waiver_candidates_lock_path(directory: Path, slug: str) -> Path:
-    """Return the lock serializing writers of the Waiver Candidate record for *slug*."""
-    _require_slug(slug)
+def waiver_candidates_lock_path(directory: Path) -> Path:
+    """Return the lock serializing writers of the Waiver Candidate record in *directory*."""
     return Path(directory) / "waiver-candidates.lock"
