@@ -109,6 +109,9 @@ def _three_item_manifest(execution_id: str = ""):
     }
     identity["ordinal"] = 2
     identity["selection"] = {"kind": "named", "names": ["gamma"]}
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
+    identity["test_runs"] = _selection_test_runs(("gamma",))
     identity["arguments"] = ["gamma"]
     fingerprint = _sha(identity)
     document["work_items"].append(
@@ -1479,3 +1482,18 @@ def _execute_pre_cancelled_coverage(tmp_path):
         assert not list(store.root.glob("**/pre-sim/*.json"))
         raise
     pytest.fail("actual coverage scope gate must raise PreSimScopeStoppedError")
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_child_context_reader_rejects_corrupt_record(tmp_path, monkeypatch, error):
+    project_data, child_id, _registry, _prepared, _flow = _prepared_child(tmp_path, monkeypatch)
+    paths = execution_paths(child_id, booley_dir=project_data)
+    assert child_context_matches(paths, child_id)
+    document = json.loads(paths.context.read_bytes())
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["attempt_id"]
+    paths.context.chmod(0o600)
+    paths.context.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
+    assert child_context_matches(paths, child_id) is False
