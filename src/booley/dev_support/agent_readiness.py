@@ -36,12 +36,8 @@ PINNED_RUNNERS = {
     "pytest-cov": "7.1.0",
     "ruff": "0.17.0",
 }
-# ``pip --version`` takes well under a second warm, but a cold cache or an
-# antivirus scan of a Windows launcher can take far longer. A false "broken"
-# verdict makes the bootstrap rebuild a healthy environment under its users,
-# so this matches the bootstrap's probe budget rather than the 10 s used for
-# read-only observations elsewhere in this module.
-LAUNCHER_PROBE_TIMEOUT_SECONDS = 60
+# Version 2 retires every receipt published before validation trusted receipts.
+RECEIPT_SCHEMA_VERSION = 2
 _BRANCH_RE = re.compile(r"^codex/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _STATUS_ORDER = {"ready": 0, "degraded": 1, "escalation-required": 2, "blocked": 3}
 
@@ -311,7 +307,6 @@ def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") 
     )
     environment, env_commands, shared_python = _environment_check(root)
     checks.append(environment)
-    checks.extend(_tool_checks(shared_python, root))
     checks.append(_cache_path_check(root))
     docker_check = _docker_check(require_docker)
     checks.append(docker_check)
@@ -616,109 +611,29 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
-def console_script_problem(
-    venv: Path, timeout: float = LAUNCHER_PROBE_TIMEOUT_SECONDS
-) -> str | None:
-    """Return why the environment's console-script launchers cannot start, if they cannot.
-
-    pip bakes the interpreter's absolute path into each launcher (a POSIX
-    shebang or a Windows ``.exe`` stub), so an environment moved after
-    installation keeps a working ``python`` while ``fusesoc`` and friends exit
-    127. Running ``pip``'s launcher proves that path on every platform.
-    """
-    launcher = venv_python(venv).with_name("pip.exe" if sys.platform == "win32" else "pip")
-    try:
-        result = subprocess.run(
-            (str(launcher), "--version"),
-            cwd=venv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return f"launcher {launcher} did not finish within {timeout:g} s"
-    except OSError as error:
-        return f"launcher {launcher} could not start: {error}"
-    if result.returncode != 0:
-        return f"launcher {launcher} exited {result.returncode}: {_tail(result.stderr)}"
-    return None
-
-
-def _tail(text: str | None, lines: int = 3, limit: int = 400) -> str:
-    """Return the last few non-blank lines of *text*, bounded for one-line reports."""
-    kept = [line.strip() for line in (text or "").splitlines() if line.strip()][-lines:]
-    return " | ".join(kept)[-limit:] or "(no stderr)"
-
-
 def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bool, str]:
-    receipt_path = root / "receipt.json"
+    """Trust a published receipt; shared by readiness and the bootstrap, it runs no subprocess.
+
+    The bootstrap writes the receipt last, after pip check and the runner-pin
+    check, so its schema, fingerprint, interpreter, and pins are the proof.
+    """
     try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt = json.loads((root / "receipt.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False, "shared tools environment is missing or has no valid receipt"
     if (
         not isinstance(receipt, dict)
-        or receipt.get("schema_version") != 1
+        or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION
         or receipt.get("fingerprint") != fingerprint
         or not python.is_file()
     ):
         return False, "shared tools environment receipt or interpreter is stale"
-    if not _runner_versions(receipt.get("installed", {})):
+    installed = receipt.get("installed")
+    if not isinstance(installed, dict) or any(
+        installed.get(name) != version for name, version in PINNED_RUNNERS.items()
+    ):
         return False, "shared tools environment has mismatched Ruff/Pytest runner pins"
-    problem = _runtime_problem(root, python, receipt.get("installed", {}))
-    if problem is not None:
-        return False, problem
     return True, "shared tools environment matches the repository fingerprint"
-
-
-def _runtime_problem(root: Path, python: Path, recorded: Any) -> str | None:
-    """Probe the live environment against its receipt; return the first defect."""
-    actual = _installed_versions(python)
-    if actual is None or actual != recorded:
-        return "shared tools environment distribution set differs from its receipt"
-    if not _successful(_run_child(python, ("-m", "pip", "check"), root)):
-        return "shared tools environment failed pip check"
-    if console_script_problem(root) is not None:
-        return "shared tools environment console scripts cannot start"
-    return None
-
-
-def _runner_versions(installed: Any) -> bool:
-    if not isinstance(installed, dict):
-        return False
-    return all(installed.get(name) == version for name, version in PINNED_RUNNERS.items())
-
-
-def _installed_versions(python: Path) -> dict[str, str] | None:
-    code = "import importlib.metadata as m, json; print(json.dumps({d.metadata['Name'].lower(): d.version for d in m.distributions()}))"
-    result = _run_child(python, ("-c", code), Path.cwd())
-    if not _successful(result):
-        return None
-    try:
-        value = json.loads((result.stdout or "").strip())
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _tool_checks(python: Path, root: Path) -> tuple[Check, ...]:
-    if not python.is_file():
-        return (Check("tools.runners", Status.BLOCKED, True, "shared Python is unavailable"),)
-    return (_runner_check(python, root),)
-
-
-def _runner_check(python: Path, root: Path) -> Check:
-    versions = _installed_versions(python)
-    good = versions is not None and _runner_versions(versions)
-    return Check(
-        "tools.runners",
-        Status.READY if good else Status.BLOCKED,
-        True,
-        "exact Ruff/Pytest runner stack is installed"
-        if good
-        else "exact Ruff/Pytest runner stack is unavailable",
-    )
 
 
 def _cache_path_check(root: Path) -> Check:
@@ -916,12 +831,6 @@ def _git_count(root: Path, args: Sequence[str]) -> int | None:
         return int(value) if value is not None else None
     except ValueError:
         return None
-
-
-def _run_child(
-    python: Path, args: Sequence[str], cwd: Path
-) -> subprocess.CompletedProcess[str] | None:
-    return _run_process((str(python), "-B", *args), cwd, timeout=10)
 
 
 def _run_process(
