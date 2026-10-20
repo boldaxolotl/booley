@@ -36,6 +36,7 @@ from booley.dev_support.commit_git_io import (
     _save_files_to_logs,
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
+from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
@@ -139,11 +140,11 @@ class Specialist(McpTool):
             default=self.default_max_turns,
             help="Maximum Specialist conversation turns",
         )
-        parser.add_argument(
-            "--timeout-ms",
-            type=parse_positive_int_arg,
+        add_timeout_args(
+            parser,
+            human=isinstance(parser, HumanParser),
             default=self.default_timeout * 1000,
-            help="Specialist model-call timeout in positive milliseconds",
+            help_text="Specialist model-call timeout in positive milliseconds",
         )
         self._add_agent_args(parser)
 

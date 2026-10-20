@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import require_str_value
 from booley.flows.cli_arguments import add_project_args
@@ -23,6 +24,26 @@ logger = logging.getLogger(__name__)
 # A leading `C:`-style component. On Windows pathlib parses this as the drive of
 # an ABSOLUTE path; on POSIX it is just an ordinary relative directory name.
 _DRIVE_COMPONENT_RE = re.compile(r"^[A-Za-z]:$")
+
+
+def parser_settings(parser: argparse.ArgumentParser) -> dict[str, Any]:
+    """Constructor settings an extension parser may customize, except ``add_help``."""
+    names = (
+        "prog",
+        "usage",
+        "description",
+        "epilog",
+        "formatter_class",
+        "prefix_chars",
+        "fromfile_prefix_chars",
+        "argument_default",
+        "conflict_handler",
+        "allow_abbrev",
+        "exit_on_error",
+        "color",
+        "suggest_on_error",
+    )
+    return {name: getattr(parser, name) for name in names if hasattr(parser, name)}
 
 
 def _report_dir_arg(value: str) -> Path:
@@ -106,14 +127,41 @@ def add_common_args(
     )
 
 
-def human_endpoint_parser(endpoint) -> argparse.ArgumentParser:
-    """Build the parser a person sees: human controls, full command name, CLI wording."""
+def human_endpoint_parser(endpoint, *, durations: bool | None = None) -> argparse.ArgumentParser:
+    """Build the parser a person sees: human controls, full command name, CLI wording.
+
+    The extension's argument hook fills a fresh parser, so the cached transport
+    parser and MCP schema stay untouched. Plugin-owned spellings win collisions.
+    """
+    from booley.flows.cli_arguments import (
+        HumanParser,
+        add_canonical_project_args,
+        add_duration_option,
+    )
     from booley.flows.cli_help import present_command
-    from booley.flows.cli_selection import human_parser
+    from booley.flows.cli_selection import apply_project_selection
     from booley.specialists.specialist import Specialist
 
-    projected = human_parser(endpoint._parser, durations=isinstance(endpoint, Specialist))
-    return present_command(projected, endpoint)
+    transport = endpoint._parser
+    parser = HumanParser(add_help=transport.add_help, **parser_settings(transport))
+    add_common_args(
+        parser,
+        target_required=endpoint.target_required,
+        accepts_target=endpoint.accepts_target,
+        target_help=endpoint.target_help,
+        human=True,
+    )
+    endpoint._add_args(parser)
+    occupied = parser._option_string_actions
+    if "--project" not in occupied and "-C" not in occupied:
+        add_canonical_project_args(parser)
+    timeout = transport._option_string_actions.get("--timeout-ms")
+    if durations is None:
+        durations = isinstance(endpoint, Specialist)
+    if durations and timeout is not None and "--timeout" not in occupied:
+        add_duration_option(parser, timeout.help)
+    apply_project_selection(parser)
+    return present_command(parser, endpoint)
 
 
 def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:

@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 import pytest
 
 from booley.harness import booley as cli
+from booley.harness.endpoint_help import _parse_help, _parser_copy, _ParserSyntaxError
 from booley.mcp.base import McpTool
 from booley.mcp.registry import McpToolInfo
 
@@ -38,7 +39,7 @@ def test_host_refusal_precedes_execution_admission(
     name: str,
     tail: list[str],
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
     import booley.runtime.layout_consumers as consumers
 
@@ -46,11 +47,22 @@ def test_host_refusal_precedes_execution_admission(
         consumers, "directory_consumer", lambda *_a: pytest.fail("execution admission")
     )
     route = [command] if not tail else [command, name, *tail]
-    monkeypatch.setattr("sys.argv", ["booley", *route])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    assert "runs inside the Booley Sandbox" in capsys.readouterr().err
+    captured = cli_exit(["booley", *route], code=2)
+    assert "runs inside the Booley Sandbox" in captured.err
+
+
+@pytest.fixture
+def cli_exit(monkeypatch, capsys):
+    """Invoke the CLI and check its exit before returning captured streams."""
+
+    def run(argv, *, code):
+        monkeypatch.setattr("sys.argv", argv)
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == code
+        return capsys.readouterr()
+
+    return run
 
 
 class Custom(McpTool):
@@ -74,42 +86,38 @@ def register_custom(monkeypatch: pytest.MonkeyPatch, endpoint_type: type[McpTool
 def test_literal_help_after_separator_cannot_bypass_host_guard(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
     register_custom(monkeypatch, Custom)
     # Argparse and the dispatcher each consume one leading separator.
     # The final separator belongs to the custom parser's literal payload.
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--", "--", "--", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    captured = capsys.readouterr()
+    captured = cli_exit(["booley", "flow", "custom", "--", "--", "--", "--help"], code=2)
     assert captured.out == ""
     assert "runs inside the Booley Sandbox" in captured.err
 
 
-def test_parser_error_is_reported_once(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    register_custom(monkeypatch, Custom)
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--number", "bad", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    captured = capsys.readouterr()
+def assert_number_error(captured):
     assert captured.out == ""
     assert captured.err.count("usage:") == 1
     assert "invalid int value" in captured.err
     assert "runs inside" not in captured.err
 
 
+def test_parser_error_is_reported_once(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_exit,
+) -> None:
+    register_custom(monkeypatch, Custom)
+    captured = cli_exit(["booley", "flow", "custom", "--number", "bad", "--help"], code=2)
+    assert_number_error(captured)
+
+
 @pytest.mark.parametrize("exit_code", [0, 2, 7])
 def test_custom_exit_is_not_help(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
     exit_code: int,
 ) -> None:
     calls = []
@@ -132,11 +140,7 @@ def test_custom_exit_is_not_help(
             parser.add_argument("--version", action=ExitValue, nargs=0)
 
     register_custom(monkeypatch, Versioned)
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--version", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    captured = capsys.readouterr()
+    captured = cli_exit(["booley", "flow", "custom", "--version", "--help"], code=2)
     assert captured.out == ""
     assert "runs inside the Booley Sandbox" in captured.err
     assert calls == ["version"]
@@ -145,7 +149,7 @@ def test_custom_exit_is_not_help(
 def test_named_help_retains_metadata_admission(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
     import booley.runtime.layout_consumers as consumers
 
@@ -161,11 +165,8 @@ def test_named_help_retains_metadata_admission(
             events.append("released")
 
     monkeypatch.setattr(consumers, "directory_consumer", lease)
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "lint", "--target", "demo", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert "usage: booley flow lint" in capsys.readouterr().out
+    captured = cli_exit(["booley", "flow", "lint", "--target", "demo", "--help"], code=0)
+    assert "usage: booley flow lint" in captured.out
     assert events == ["admitted", "released"]
 
 
@@ -187,19 +188,16 @@ def test_override_cannot_run_through_host_help(
 def test_combined_quiet_help_preserves_flow_options(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "lint", "-qh"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert "--quiet" in capsys.readouterr().out
+    captured = cli_exit(["booley", "flow", "lint", "-qh"], code=0)
+    assert "--quiet" in captured.out
 
 
 def test_help_named_option_is_not_a_help_action(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
     class HelpLike(Custom):
         @property
@@ -215,19 +213,11 @@ def test_help_named_option_is_not_a_help_action(
             parser.add_argument("--help", action="store_true")
 
     register_custom(monkeypatch, HelpLike)
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    assert "runs inside the Booley Sandbox" in capsys.readouterr().err
+    captured = cli_exit(["booley", "flow", "custom", "--help"], code=2)
+    assert "runs inside the Booley Sandbox" in captured.err
 
 
-def test_help_looking_data_is_parsed_once_in_sandbox(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = []
-
+def hinted_endpoint(endpoint_type, calls, *, nested):
     class Hint(argparse.Action):
         def __call__(
             self,
@@ -238,10 +228,28 @@ def test_help_looking_data_is_parsed_once_in_sandbox(
         ) -> None:
             calls.append("hint")
 
-    class Hinted(Custom):
+    class Hinted(endpoint_type):
         def _add_args(self, parser):
             super()._add_args(parser)
+            if nested:
+                commands = next(
+                    action
+                    for action in parser._actions
+                    if isinstance(action, argparse._SubParsersAction)
+                )
+                parser = commands.choices["nested"]
             parser.add_argument("--hint", action=Hint, nargs=0)
+
+    return Hinted
+
+
+def test_help_looking_data_is_parsed_once_in_sandbox(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    Hinted = hinted_endpoint(Custom, calls, nested=False)
 
     def invoke(endpoint, argv, args):
         endpoint.parse_args(argv)
@@ -254,6 +262,16 @@ def test_help_looking_data_is_parsed_once_in_sandbox(
     monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--hint"])
     assert cli.main() == 0
     assert calls == ["hint"]
+
+
+def test_inert_probe_skips_conversion_of_unseen_string_defaults() -> None:
+    def reject(value: str) -> str:
+        raise argparse.ArgumentTypeError(value)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--value", type=reject, default="sandbox-only")
+    assert _parse_help(_parser_copy(parser, inert=True), [])[0] is None
+    assert isinstance(_parse_help(_parser_copy(parser, inert=False), [])[0], _ParserSyntaxError)
 
 
 def test_missing_project_error_precedes_host_venue_error(
@@ -283,15 +301,11 @@ class Nested(Custom):
 def test_nested_help_uses_the_dispatched_parser(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
     name: str,
 ) -> None:
     register_custom(monkeypatch, Nested)
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", name, "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    captured = capsys.readouterr()
+    captured = cli_exit(["booley", "flow", "custom", name, "--help"], code=0)
     assert "nested" in captured.out
     assert "--number" in captured.out
     assert captured.err == ""
@@ -300,217 +314,122 @@ def test_nested_help_uses_the_dispatched_parser(
 def test_nested_syntax_error_is_reported_once(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
     register_custom(monkeypatch, Nested)
-    monkeypatch.setattr(
-        "sys.argv", ["booley", "flow", "custom", "nested", "--number", "bad", "--help"]
+    captured = cli_exit(
+        ["booley", "flow", "custom", "nested", "--number", "bad", "--help"], code=2
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.count("usage:") == 1
-    assert "invalid int value" in captured.err
-    assert "runs inside" not in captured.err
+    assert_number_error(captured)
 
 
 def test_nested_custom_action_runs_once_before_help(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
 ) -> None:
     calls = []
 
-    class Hint(argparse.Action):
-        def __call__(
-            self,
-            parser: argparse.ArgumentParser,
-            namespace: argparse.Namespace,
-            values: Any,
-            option_string: str | None = None,
-        ) -> None:
-            calls.append("hint")
-
-    class Hinted(Nested):
-        def _add_args(self, parser):
-            super()._add_args(parser)
-            commands = next(
-                action
-                for action in parser._actions
-                if isinstance(action, argparse._SubParsersAction)
-            )
-            commands.choices["nested"].add_argument("--hint", action=Hint, nargs=0)
+    Hinted = hinted_endpoint(Nested, calls, nested=True)
 
     register_custom(monkeypatch, Hinted)
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "nested", "--hint", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert capsys.readouterr().err == ""
+    captured = cli_exit(["booley", "flow", "custom", "nested", "--hint", "--help"], code=0)
+    assert captured.err == ""
     assert calls == ["hint"]
 
 
-@pytest.mark.parametrize("nested", [False, True])
-@pytest.mark.parametrize("inside", [False, True])
-def test_help_preserves_registered_type_converters(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    nested: bool,
-    inside: bool,
-) -> None:
-    from booley.flows.endpoint_cli import human_endpoint_parser
+class Expand(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        parser.add_argument("--late-option", help="Added by the argument action")
+        parser.add_argument("late_payload", nargs="?", help="Added positional")
 
-    class Registered(Custom):
+
+class ReplaceHelp(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        parser.add_argument("-h", "--help", action="store_true", help="Plugin option")
+
+
+def feature_endpoint(feature, nested):
+    class Featured(Custom):
         def _add_args(self, parser):
             if nested:
                 parser = parser.add_subparsers().add_parser("nested")
-            parser.register("type", "hexadecimal", lambda value: int(value, 16))
-            parser.add_argument("--number", type="hexadecimal")
+            if feature == "registered":
+                parser.register("type", "hexadecimal", lambda value: int(value, 16))
+                parser.add_argument("--number", type="hexadecimal")
+            elif feature == "grouped":
+                group = parser.add_argument_group("Custom group")
+                exclusive = group.add_mutually_exclusive_group()
+                exclusive.add_argument("--one", action="store_true")
+                exclusive.add_argument("--two", action="store_true")
+            elif feature == "expanding":
+                parser.add_argument("--expand", action=Expand, nargs=0)
+            else:
+                parser.conflict_handler = "resolve"
+                parser._optionals.conflict_handler = "resolve"
+                parser.add_argument("--replace-help", action=ReplaceHelp, nargs=0)
 
-    register_custom(monkeypatch, Registered)
+    return Featured
+
+
+@pytest.mark.parametrize(
+    "feature,nested,inside",
+    [("registered", nested, inside) for nested in (False, True) for inside in (False, True)]
+    + [
+        (feature, nested, False)
+        for feature in ("grouped", "expanding")
+        for nested in (False, True)
+    ]
+    + [("replacing", False, False)],
+)
+def test_extension_help_matches_direct_parser(
+    project, monkeypatch, capsys, cli_exit, feature, nested, inside
+):
+    from booley.flows.endpoint_cli import human_endpoint_parser
+
+    endpoint_type = feature_endpoint(feature, nested)
+    register_custom(monkeypatch, endpoint_type)
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
-    tail = ["nested"] if nested else []
-    tail.extend(["--number", "ff", "--help"])
+    options, descriptions = {
+        "registered": (["--number", "ff"], []),
+        "grouped": ([], ["Custom group:"]),
+        "expanding": (["--expand"], ["Added by the argument action", "Added positional"]),
+        "replacing": (["--replace-help"], ["Plugin option"]),
+    }[feature]
+    tail = (["nested"] if nested else []) + options + ["--help"]
     with pytest.raises(SystemExit) as direct:
-        human_endpoint_parser(Registered()).parse_args(tail)
+        human_endpoint_parser(endpoint_type()).parse_args(tail)
     assert direct.value.code == 0
     expected = capsys.readouterr()
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert capsys.readouterr() == expected
+    for description in descriptions:
+        assert description in expected.out
+    captured = cli_exit(["booley", "flow", "custom", *tail], code=0)
+    assert captured == expected
 
 
 @pytest.mark.parametrize("command", ["flow", "specialist"])
 def test_unknown_endpoint_help_cannot_list_from_host(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    cli_exit,
     command: str,
 ) -> None:
-    monkeypatch.setattr("sys.argv", ["booley", command, "unknown-endpoint", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
-    captured = capsys.readouterr()
+    captured = cli_exit(["booley", command, "unknown-endpoint", "--help"], code=2)
     assert captured.out == ""
     assert "Available" not in captured.err
     assert "runs inside the Booley Sandbox" in captured.err
-
-
-@pytest.mark.parametrize("nested", [False, True])
-def test_help_preserves_titled_mutually_exclusive_groups(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    nested: bool,
-) -> None:
-    from booley.flows.endpoint_cli import human_endpoint_parser
-
-    class Grouped(Custom):
-        def _add_args(self, parser):
-            if nested:
-                parser = parser.add_subparsers().add_parser("nested")
-            group = parser.add_argument_group("Custom group")
-            exclusive = group.add_mutually_exclusive_group()
-            exclusive.add_argument("--one", action="store_true")
-            exclusive.add_argument("--two", action="store_true")
-
-    register_custom(monkeypatch, Grouped)
-    tail = ["nested", "--help"] if nested else ["--help"]
-    with pytest.raises(SystemExit) as direct:
-        human_endpoint_parser(Grouped()).parse_args(tail)
-    assert direct.value.code == 0
-    expected = capsys.readouterr()
-    assert "Custom group:" in expected.out
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert capsys.readouterr() == expected
-
-
-@pytest.mark.parametrize("nested", [False, True])
-def test_help_includes_options_added_by_extension_actions(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    nested: bool,
-) -> None:
-    from booley.flows.endpoint_cli import human_endpoint_parser
-
-    class Expand(argparse.Action):
-        def __call__(
-            self,
-            parser: argparse.ArgumentParser,
-            namespace: argparse.Namespace,
-            values: Any,
-            option_string: str | None = None,
-        ) -> None:
-            parser.add_argument("--late-option", help="Added by the argument action")
-            parser.add_argument("late_payload", nargs="?", help="Added positional")
-
-    class Expanding(Custom):
-        def _add_args(self, parser):
-            if nested:
-                parser = parser.add_subparsers().add_parser("nested")
-            parser.add_argument("--expand", action=Expand, nargs=0)
-
-    register_custom(monkeypatch, Expanding)
-    tail = ["nested"] if nested else []
-    tail.extend(["--expand", "--help"])
-    with pytest.raises(SystemExit) as direct:
-        human_endpoint_parser(Expanding()).parse_args(tail)
-    assert direct.value.code == 0
-    expected = capsys.readouterr()
-    assert "Added by the argument action" in expected.out
-    assert "Added positional" in expected.out
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert capsys.readouterr() == expected
-
-
-def test_extension_action_can_resolve_conflicts_with_help_options(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from booley.flows.endpoint_cli import human_endpoint_parser
-
-    class ReplaceHelp(argparse.Action):
-        def __call__(
-            self,
-            parser: argparse.ArgumentParser,
-            namespace: argparse.Namespace,
-            values: Any,
-            option_string: str | None = None,
-        ) -> None:
-            parser.add_argument("-h", "--help", action="store_true", help="Plugin option")
-
-    class Replacing(Custom):
-        def _add_args(self, parser):
-            parser.conflict_handler = "resolve"
-            parser._optionals.conflict_handler = "resolve"
-            parser.add_argument("--replace-help", action=ReplaceHelp, nargs=0)
-
-    register_custom(monkeypatch, Replacing)
-    tail = ["--replace-help", "--help"]
-    with pytest.raises(SystemExit) as direct:
-        human_endpoint_parser(Replacing()).parse_args(tail)
-    assert direct.value.code == 0
-    expected = capsys.readouterr()
-    assert "Plugin option" in expected.out
-    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 0
-    assert capsys.readouterr() == expected
 
 
 def test_diagnostic_help_is_truthful_only_on_human_surface():
