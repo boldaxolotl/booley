@@ -114,11 +114,25 @@ def _instrument(monkeypatch, name, tags, containers, owned):
             assert set(targets) <= allowed, f"foreign Docker mutation refused: {argv}"
             if targets:
                 mutations.append(tuple(argv))
-            kwargs["timeout"] = min(kwargs.get("timeout", 180), 180)
+            kwargs["timeout"] = min(kwargs.get("timeout") or 180, 180)
         return original(argv, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
     return mutations
+
+
+def _gc_keeps_conflict_then_retries(name, token, containers, project, base, tag) -> None:
+    """A stopped container keeps its untagged owned image on conflict; a later pass removes it."""
+    image = _docker("image", "inspect", tag, "--format", "{{.Id}}")
+    stopped = _start(name + "-pre-refresh", tag, token)
+    containers.append(stopped)
+    _docker("stop", "--time=0", stopped)
+    _docker("tag", base, tag)  # as a refresh moves a managed tag off the superseded image
+    (kept,) = image_lifecycle.cleanup_owned_images(project)
+    assert kept.startswith(image + ": retained (") and "conflict" in kept
+    _docker("rm", stopped)
+    assert image_lifecycle.cleanup_owned_images(project) == ()
+    assert image not in _inventory()[0]
 
 
 @pytest.mark.timeout(600)
@@ -151,9 +165,7 @@ def test_real_namespaced_rollback_and_owned_image_gc(tmp_path: Path, monkeypatch
             new_image = _docker("commit", name, tags[1])
             assert new_image not in before[0]
             owned.append(new_image)
-            image_lifecycle.record_owned_images(
-                tmp_path, token, {tags[1]: new_image}, (new_image,)
-            )
+            image_lifecycle.OwnedImages(tmp_path).record({tags[1]: new_image}, (new_image,))
             parked = session_runtime.ParkedSession(
                 name,
                 name + "-pre-refresh",
@@ -164,6 +176,7 @@ def test_real_namespaced_rollback_and_owned_image_gc(tmp_path: Path, monkeypatch
                 image_id=base,
             )
             _fail_and_restore(parked, tags[1], containers)
+            _gc_keeps_conflict_then_retries(name, token, containers, tmp_path, base, tags[1])
             _docker("image", "rm", "--no-prune", tags[1])
             assert image_lifecycle.cleanup_owned_images(tmp_path) == ()
             assert new_image not in _inventory()[0]

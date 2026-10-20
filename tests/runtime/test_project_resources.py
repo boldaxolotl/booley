@@ -110,7 +110,7 @@ def test_leftovers_lists_only_this_projects_resources(
         (_id("6"), "<none>:<none>", "4.8GB"),
         (_id("7"), f"{family}:<none>", "4.7GB"),
     ]
-    image_lifecycle.record_owned_images(Path(root), "t1", {}, (_id("5"),))
+    image_lifecycle.OwnedImages(Path(root)).record({}, (_id("5"),))
     used = f"booley-codex-state-{project_name_id(root)}"
     idle = f"booley-claude-state-{project_name_id(root)}-subscription"
     host.volumes = {
@@ -149,7 +149,7 @@ def test_leftovers_reads_records_of_a_root_since_replaced_by_a_symlink(
 ) -> None:
     root = tmp_path / "chip"
     root.mkdir()
-    image_lifecycle.record_owned_images(root, "t1", {}, (_id("5"),))
+    image_lifecycle.OwnedImages(root).record({}, (_id("5"),))
     root.rmdir()
     (tmp_path / "elsewhere").mkdir()
     root.symlink_to(tmp_path / "elsewhere", target_is_directory=True)
@@ -185,7 +185,7 @@ def _purge_host(host: FakeHost, root: str, other: str, monkeypatch: pytest.Monke
         (_id("7"), f"{project_image_name_for_identity(other)}:latest", "5GB"),
     ]
     host.layers = {_id("1"): 10, _id("2"): 12, _id("3"): 3, _id("4"): 13}
-    image_lifecycle.record_owned_images(Path(root), "t1", {}, (_id("5"),))
+    image_lifecycle.OwnedImages(Path(root)).record({}, (_id("5"),))
     used = f"booley-codex-state-{project_name_id(root)}"
     idle = f"booley-claude-state-{project_name_id(root)}"
     host.volumes = {
@@ -265,7 +265,7 @@ def test_retained_record_of_a_replaced_root_stays_readable(tmp_path: Path, host:
 
     root = tmp_path / "chip"
     root.mkdir()
-    image_lifecycle.record_owned_images(root, "t1", {}, (_id("5"), _id("6")))
+    image_lifecycle.OwnedImages(root).record({}, (_id("5"), _id("6")))
     root.rmdir()
     (tmp_path / "elsewhere").mkdir()
     root.symlink_to(tmp_path / "elsewhere", target_is_directory=True)
@@ -274,5 +274,5 @@ def test_retained_record_of_a_replaced_root_stays_readable(tmp_path: Path, host:
 
     kept = image_lifecycle.cleanup_owned_images(str(root), docker=docker)
 
-    assert kept == (f"{_id('6')}: retained (container)",)
-    assert image_lifecycle.owned_image_ids(str(root)) == (_id("6"),)
+    assert kept == (f"{_id('6')}: retained (conflict: unable to delete {_id('6')})",)
+    assert image_lifecycle.OwnedImages(str(root)).ids == [_id("6")]
