@@ -110,9 +110,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     global _EXECUTION_FINISHED_AT
-    if report.when in {"setup", "call", "teardown"}:
-        # Record only the phases pytest reported; a skipped or setup-error test has no call.
-        _PHASE_DURATIONS.setdefault(report.nodeid, {})[report.when] = report.duration
+    # Record only the phases pytest reported; a skipped or setup-error test has no call.
+    _PHASE_DURATIONS.setdefault(report.nodeid, {})[report.when] = report.duration
     if report.when == "call":
         _DURATIONS[report.nodeid] = report.duration
     if report.when == "teardown":
