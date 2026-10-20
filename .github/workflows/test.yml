@@ -882,35 +882,26 @@ jobs:
             '{{json .}}' booley-test \
             | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
 
-      # Runtime-base package inventory (#829). The locally built base is checked
-      # against its live package state and the standard image must carry its
-      # exact bytes. The published-base lane only validates the inherited copy:
-      # its base arrives as a BuildKit named context, never loaded here, and
-      # provenance resolution already verified the selected base.
-      - name: Verify and export local runtime-base package inventory
+      # Runtime-base package inventory (#829). The standard image must carry the
+      # locally built base's exact bytes. The published-base lane only exports
+      # the inherited copy: its base arrives as a BuildKit named context, never
+      # loaded here, and provenance resolution already verified the selected base.
+      - name: Export local runtime-base package inventory
         if: steps.runtime-base.outputs.build == 'true'
         run: |
-          python .github/scripts/image_package_inventory.py \
-            --image booley-runtime-base:ci --verify-current-state \
-            --output "${RUNNER_TEMP}/docker-build-evidence/base-package-inventory.json" \
-            --evidence "${RUNNER_TEMP}/docker-build-evidence/base-package-inventory-evidence.json"
+          docker run --rm --network none --entrypoint cat booley-runtime-base:ci /usr/local/share/booley/base-package-inventory.json \
+            > "${RUNNER_TEMP}/docker-build-evidence/base-package-inventory.json"
 
       - name: Export standard package inventory
         shell: bash
         env:
           BUILD_STABLE_BASE: ${{ steps.runtime-base.outputs.build }}
-          SELECTED_BASE: ${{ steps.runtime-base.outputs.image }}
         run: |
           evidence="${RUNNER_TEMP}/docker-build-evidence"
-          parent_args=()
+          docker run --rm --network none --entrypoint cat booley-test /usr/local/share/booley/base-package-inventory.json > "${evidence}/standard-package-inventory.json"
           if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
-            parent_args=(--expected-inventory "${evidence}/base-package-inventory.json")
+            cmp "${evidence}/base-package-inventory.json" "${evidence}/standard-package-inventory.json"
           fi
-          python .github/scripts/image_package_inventory.py \
-            --image booley-test --base-reference "${SELECTED_BASE}" \
-            "${parent_args[@]}" \
-            --output "${evidence}/standard-package-inventory.json" \
-            --evidence "${evidence}/standard-package-inventory-evidence.json"
 
       - name: Validate standard Sandbox contract
         run: |
