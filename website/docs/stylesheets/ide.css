@@ -115,4 +115,3 @@
 .ide__status span { display: flex; align-items: center; }
 .ide__status .dc { padding: 0 calc(12 * var(--u)); background: var(--mask); color: #fff; font-weight: 600; gap: calc(6 * var(--u)); }
 .ide__status .r { margin-left: auto; padding-right: calc(12 * var(--u)); }
-
