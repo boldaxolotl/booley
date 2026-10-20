@@ -2,8 +2,9 @@
    Application notes: blog posts (overrides/blog-post.html, wrapper
    .post) and the blog index (overrides/blog.html, .notes). Shared
    tokens, header, footer, .strip, h1, figure, figcaption and table
-   defaults live in datasheet.css; every rule here is scoped under
-   .post or .notes so it cannot leak into the other pages.
+   defaults live in datasheet.css. Every rule here is scoped under
+   .post or .notes so it cannot leak into the other pages, except the
+   site-wide scroll padding below (harmless on pages without anchors).
    Application-note mode: prose is the product.
    ------------------------------------------------------------------ */
 html { scroll-padding-top: 24px; }

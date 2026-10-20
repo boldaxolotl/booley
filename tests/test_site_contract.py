@@ -47,8 +47,8 @@ def test_features_match_the_readme_word_for_word():
     assert site_list
     site_features = [_plain(item) for item in re.findall(r"<li>(.*?)</li>", site_list[1], re.S)]
 
+    assert site_features
     assert readme_features == site_features
-    assert len(site_features) == 6
 
 
 def test_inline_goal_examples_match_the_real_goal_presentation():
@@ -108,7 +108,9 @@ def test_readme_links_resolve_to_site_sections_and_pages():
     assert anchors
     assert anchors <= set(re.findall(r'\bid="([a-z-]+)"', SITE))
     assert pages
-    assert all((WEBSITE / "docs" / f"{page}.md").is_file() for page in pages)
+    for page in pages:
+        docs = WEBSITE / "docs" / page
+        assert docs.with_suffix(".md").is_file() or (docs / "index.md").is_file(), page
 
 
 def test_generated_illustration_is_up_to_date():
