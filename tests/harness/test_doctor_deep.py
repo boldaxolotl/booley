@@ -409,12 +409,12 @@ def test_host_currency_uses_sandbox_execution_version(
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(booley, "__version__", host_version)
     probe = subprocess.CompletedProcess([], 0, f"{IMAGE}\n{sandbox_version or ''}\n", "")
-    observation = Mock(return_value=probe)
-    monkeypatch.setattr(doctor.subprocess, "run", observation)
+    run = Mock(return_value=probe)
+    monkeypatch.setattr(doctor.subprocess, "run", run)
     status = doctor.observe_deep_status(tmp_path, container="sandbox")
     assert status.current is current
     assert _codes(status) == ([] if reason is None else [reason])
-    assert "sandbox" in observation.call_args.args[0]
+    assert "sandbox" in run.call_args.args[0] and run.call_args[1]["stdin"] is subprocess.DEVNULL
 
 
 SELECTED = SimpleNamespace(container_id="selected")

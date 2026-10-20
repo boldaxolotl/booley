@@ -821,7 +821,10 @@ def _observe_sandbox_identity(
         container, ["python3", "-I", "-c", _IDENTITY_PROBE], tty=False
     )
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=15)
+        # exec_argv keeps stdin open (-i); never forward the caller's stdin into the probe.
+        result = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=15
+        )
     except (OSError, subprocess.SubprocessError):
         return None, None
     lines = result.stdout.splitlines() if result.returncode == 0 else []
