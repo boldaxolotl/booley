@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
