@@ -1162,13 +1162,14 @@ def _auth_interactive_ports(monkeypatch):
 def _auth_reseed_boundaries(project, monkeypatch):
     from booley.harness import bootstrap, host_sidecars, image_lifecycle, init_cmd
     from booley.runtime import session_issuance
+    from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 
     bootstrap_calls = []
     captured = []
 
     def full_bootstrap(*args, **kwargs):
         bootstrap_calls.append(True)
-        return bootstrap.BootstrapResult(image_lifecycle.Intent.CHECK, ())
+        return bootstrap.BootstrapResult(Intent.CHECK, ())
 
     monkeypatch.setattr(bootstrap, "reconcile_bootstrap", full_bootstrap)
     monkeypatch.setattr(init_cmd, "reconcile_bootstrap", full_bootstrap)
@@ -1179,9 +1180,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     monkeypatch.setattr(
         image_lifecycle,
         "reconcile_planned",
-        lambda *a, **k: image_lifecycle.LifecycleResult(
-            "synthetic-image", "sha256:" + "a" * 64, image_lifecycle.Status.CURRENT
-        ),
+        lambda *a, **k: LifecycleResult("synthetic-image", "sha256:" + "a" * 64, Status.CURRENT),
     )
     pdk = project.parent / "pdk"
     pdk.mkdir()
