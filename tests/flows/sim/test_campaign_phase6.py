@@ -32,6 +32,7 @@ from booley.flows.sim.campaign import (
 )
 from booley.flows.sim.campaign.codec import (
     RECORD_MAX_BYTES,
+    RESULT_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -63,7 +64,7 @@ from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from tests.criteria.ledger_support import FixtureRecorder
-from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+from tests.flows.sim.test_campaign_codec_golden import _legacy_simulation_result
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
 from tests.flows.sim.test_campaign_phase5_adversarial import _retain_v3_before_reference
@@ -223,8 +224,12 @@ class _NoEdaExecutor:
             "detail": {"reason": "synthetic no-EDA build failure"},
             "cycle_count": None,
         }
+        if "test_runs" in request.work_item:
+            observation["test_run"] = request.work_item["test_runs"][0]["name"]
         document = {
-            "$schema": "booley.simulation-result/v1",
+            "$schema": RESULT_SCHEMA
+            if "test_runs" in request.work_item
+            else "booley.simulation-result/v2",
             **common,
             "attempt_id": request.attempt_id,
             "attempt_ordinal": request.attempt_ordinal,
@@ -646,6 +651,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
     assert first_executor.calls == 1
     assert first_outcome.recovery.pending == ()
 
+    manifest_bytes = store.manifest_path.read_bytes()
     second_executor = _NoEdaExecutor()
     second_outcome = SimulationCampaign(second_executor).run(
         ResumeCampaignRunRequest(
@@ -653,7 +659,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
             preview_request.current_plan,
             project,
             None,
-            CampaignPolicy(),
+            CampaignPolicy(timeout_seconds=42, build_timeout_seconds=17, result_verbosity="full"),
             tmp_path / "reports" / "sim" / "3",
             _admission(),
         )
@@ -661,6 +667,8 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
 
     assert second_executor.calls == 0
     assert second_outcome.recovery.completed == first_outcome.recovery.completed
+
+    assert store.manifest_path.read_bytes() == manifest_bytes
 
 
 def test_acceptance_readiness_requires_strict_superset_grade() -> None:
@@ -734,7 +742,7 @@ def test_migrated_v1_result_references_hash_original_stored_bytes(
     store_root = invocation / "targets/sim/campaign"
     result_path = store_root / "work-items/0001/result.json"
     result_path.parent.mkdir(parents=True)
-    document = json.loads(_simulation_result("completed", schema=1))
+    document = json.loads(_legacy_simulation_result("completed", schema=1))
     document["observations"][0]["cycle_count"] = 12
     raw = canonical_json_bytes(document)
     result_path.write_bytes(raw)
@@ -938,19 +946,37 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
     assert persisted.timeline[-1]["criteria_set"] == [key]
 
 
+def _seed_legacy_campaign(source, schema):
+    from booley.flows.sim.campaign.planning import finalize_manifest
+    from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
+
+    document = _legacy_manifest(schema)
+    document.pop("fingerprints")
+    archive = CampaignStore(source / "campaign")
+    archive.publish_manifest(finalize_manifest(document))
+    _seed_authenticated_states(archive, source, _NoEdaExecutor())
+    result_path = next(archive.root.glob("work-items/*/result.json"))
+    result = dict(decode_simulation_result(result_path.read_bytes()).document)
+    result_path.write_bytes(canonical_json_bytes(result))
+    return archive
+
+
 def _retained_invocation(
-    tmp_path: Path, *, reports: Path | None = None
+    tmp_path: Path, *, reports: Path | None = None, legacy_schema: str | None = None
 ) -> tuple[Path, Path, CampaignStore]:
     source = tmp_path / "source"
     source.mkdir()
     (source / ".booley").mkdir()
-    complete = _completed(source)
+    if legacy_schema is None:
+        source_store = _completed(source).store
+    else:
+        source_store = _seed_legacy_campaign(source, legacy_schema)
     project_data = tmp_path / "project-data"
     reports = reports or project_data / ".runtime" / "flow-reports"
     invocation = reports / "sim" / "1"
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
-    shutil.move(str(complete.store.root), target / "campaign")
+    shutil.move(str(source_store.root), target / "campaign")
     store = CampaignStore(target / "campaign")
     store.regenerate_summary()
     manifest = store.load_manifest().document
@@ -1039,10 +1065,12 @@ def _publish_retired_child(
     return execution_id
 
 
+@pytest.mark.parametrize("legacy_schema", [None, "v1", "v2"])
 def test_complete_campaign_pruning_releases_exact_project_child_pair(
     tmp_path: Path,
+    legacy_schema,
 ) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
+    reports, project_data, store = _retained_invocation(tmp_path, legacy_schema=legacy_schema)
     execution_id = _publish_retired_child(project_data, store)
 
     prune_invocation(reports, 1)
@@ -1512,3 +1540,20 @@ def test_infrastructure_abort_preserves_simulation_criterion(
     before = state.to_dict()
     assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
     assert state.to_dict() == before
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_summary_reader_rejects_corrupt_record(tmp_path, error):
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    store.regenerate_summary()
+    document = dict(store.load_summary())
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["complete"]
+    store.summary_path.write_bytes(
+        b"{" if error == "truncated" else canonical_json_bytes(document)
+    )
+    with pytest.raises(SimulationCampaignIntegrityError):
+        store.load_summary()
