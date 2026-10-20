@@ -3601,15 +3601,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if _is_coverage_manifest(validated.manifest)
             else None
         )
-        progress = (
-            CoverageProgress(invocation, (coverage_plan.handle.selector,))
-            if coverage_plan is not None
-            else None
-        )
-        if progress is None:
+        if coverage_plan is None:
             return self._execute_ordinary_resume_progress(
                 validated, invocation, admission, manifest_published
             )
+        progress = CoverageProgress(invocation, (coverage_plan.handle.selector,))
         lifecycle = ProgressLifecycle(
             lambda phase: progress.checkpoint(complete=True, phase=phase)
         )
