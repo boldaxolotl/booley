@@ -117,10 +117,10 @@ def _scan_hdl_declarations(text: str) -> tuple[list[str], bool]:
     """(declared module names, declares-a-package-or-interface) for one file.
 
     Module names skip comments and strings; shared markers use comment-stripped
-    text. Preprocessor-conditional declarations are
-    taken at face value: a module only declared under an ``ifdef`` still gets
-    probed with defaults, which is the check's intent (default parameterization
-    / default defines must elaborate).
+    text. Preprocessor-conditional declarations are taken at face value: a
+    module only declared under an ``ifdef`` still gets probed with defaults,
+    which is the check's intent (default parameterization / default defines
+    must elaborate).
     """
     stripped = strip_comments(text)
     modules = declared_module_names(text)

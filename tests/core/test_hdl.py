@@ -14,6 +14,7 @@ from booley.core.hdl import declared_module_names, declares_module, strip_commen
         ("/*\nmodule hidden;\n*/", []),
         ('"module hidden;"', []),
         ('"first\\\nmodule hidden;"', []),
+        ('"first\\\r\nmodule hidden;"', []),
         ('string s = "/*";\nmodule top; endmodule', ["top"]),
         ("package p; endpackage", []),
         ("interface i; endinterface", []),

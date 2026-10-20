@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 _STRING = r'"(?:\\(?:\r\n|.)|[^"\\\r\n])*"'
-_TOKENS = re.compile(rf"{_STRING}|/\*.*?\*/|//[^\n]*", re.DOTALL)
+_STRINGS_AND_COMMENTS = re.compile(rf"{_STRING}|/\*.*?\*/|//[^\n]*", re.DOTALL)
+# DOTALL: `_STRING` uses `.` to span an escaped LF inside a continued string.
 _MODULES = re.compile(
     rf"{_STRING}|^\s*(?:macro)?module\s+(?:automatic\s+|static\s+)?([A-Za-z_]\w*)",
     re.MULTILINE | re.DOTALL,
@@ -14,7 +15,7 @@ _MODULES = re.compile(
 
 def strip_comments(text: str) -> str:
     """Remove comments, retaining strings and the standalone scan's spacing."""
-    return _TOKENS.sub(lambda m: m[0] if m[0].startswith('"') else "", text)
+    return _STRINGS_AND_COMMENTS.sub(lambda m: m[0] if m[0].startswith('"') else "", text)
 
 
 def declared_module_names(text: str) -> list[str]:
