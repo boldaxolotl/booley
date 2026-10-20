@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from booley.config.host_config import HostConfigError, SandboxHostPolicy
-from booley.harness import bootstrap, bootstrap_cli
+from booley.harness import bootstrap, bootstrap_cli, init_cmd
 from booley.runtime import issuance_invalidation
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
@@ -17,6 +20,7 @@ from booley.runtime.docker_capacity import (
     DockerCapacityError,
 )
 from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
+from tests.conftest import require_symlinks
 
 
 def _current(resource: str) -> bootstrap.BootstrapFinding:
@@ -278,262 +282,189 @@ def test_opt_out_prunes_qa_before_failing_prerequisites(
     ]
 
 
-def test_explicit_qa_enable_persists_before_reconciliation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+_QA_WARNING = bootstrap.BootstrapFinding("qa-skills", bootstrap.BootstrapState.WARNING, "conflict")
+_QA_PRUNED = bootstrap.BootstrapFinding("qa-skills", bootstrap.BootstrapState.CHANGED, "pruned")
+_DOCKER_ERROR = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
+
+
+@pytest.mark.parametrize(
+    ("with_qa", "findings", "selection_error", "status", "events"),
+    [
+        (True, (), None, 0, ["register", "enable", "reconcile"]),
+        (True, (_QA_WARNING,), None, 2, ["register", "enable", "reconcile"]),
+        (False, (_QA_WARNING,), None, 2, ["register", "reconcile"]),
+        (True, (), "invalid", 2, ["register", "enable"]),
+        (False, (_DOCKER_ERROR,), None, 2, ["register", "reconcile"]),
+        (False, (_QA_PRUNED, _DOCKER_ERROR), None, 2, ["register", "reconcile", "disable"]),
+        (False, (_QA_PRUNED,), "read-only", 2, ["register", "reconcile", "disable"]),
+    ],
+    ids=[
+        "enable-persists-before-reconciliation",
+        "enable-warning-overrides-nonblocking-status",
+        "opt-out-warning-overrides-nonblocking-status",
+        "enable-failure-skips-reconciliation",
+        "opt-out-keeps-selection-when-prune-did-not-run",
+        "opt-out-removes-selection-after-prune-despite-later-error",
+        "opt-out-reports-selection-removal-failure",
+    ],
+)
+def test_qa_selection_flags_order_and_status(
+    monkeypatch, capsys, with_qa, findings, selection_error, status, events
 ) -> None:
-    events: list[str] = []
-    identity = SimpleNamespace(version="1.2.3", payload_fingerprint="f" * 64, revision="a" * 12)
+    observed: list[str] = []
+
+    def change_selection(event: str, error_type: type[Exception]) -> None:
+        observed.append(event)
+        if selection_error:
+            raise error_type(selection_error)
+
     monkeypatch.setattr(
         bootstrap_cli,
         "register_host_installation",
-        lambda *_args, **_kwargs: events.append("register") or identity,
+        lambda *_a, **_kw: observed.append("register"),
     )
-    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path / "Booley")
     monkeypatch.setattr(
         bootstrap_cli,
         "enable_qa_skills",
-        lambda _root, _revision: events.append("enable"),
+        lambda _cwd: change_selection("enable", bootstrap_cli.QaSkillSelectionError),
+    )
+    monkeypatch.setattr(
+        bootstrap_cli, "disable_qa_skills", lambda: change_selection("disable", OSError)
     )
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
-        lambda intent, **_kwargs: (
-            events.append("reconcile") or bootstrap.BootstrapResult(intent, ())
+        lambda intent, **_kw: (
+            observed.append("reconcile") or bootstrap.BootstrapResult(intent, findings)
         ),
     )
+    args = SimpleNamespace(with_qa_skills=with_qa, without_qa_skills=not with_qa)
 
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-            with_qa_skills=True,
-            without_qa_skills=False,
-        )
-    )
-
-    assert status == 0
-    assert events == ["register", "enable", "reconcile"]
+    assert bootstrap_cli.run_bootstrap(args) == status
+    assert observed == events
+    if selection_error:
+        assert f"Cannot {events[-1]} QA skills: {selection_error}" in capsys.readouterr().out
 
 
-def test_explicit_qa_warning_overrides_nonblocking_status(
+def test_qa_reconciliation_relinks_on_refresh_and_prunes_on_opt_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
-    warning = bootstrap.BootstrapFinding(
-        "qa-skills", bootstrap.BootstrapState.WARNING, "link conflict"
-    )
-    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
-    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: tmp_path)
-    monkeypatch.setattr(bootstrap_cli, "enable_qa_skills", lambda *_args: None)
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (warning,)),
-    )
+    observed: list[tuple[Path, frozenset[str], bool]] = []
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: tmp_path / "packaged")
+    recorded = Mock(return_value=Path("/qa"))
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", recorded)
 
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-            with_qa_skills=True,
-            without_qa_skills=False,
-        )
-    )
-
-    assert status == 2
-
-
-def test_qa_adoption_always_requires_force(monkeypatch: pytest.MonkeyPatch) -> None:
-    observed: list[bool] = []
-    monkeypatch.setattr(
-        bootstrap,
-        "_qa_source",
-        lambda _opt_out: (Path("/qa"), bootstrap.QA_SKILL_NAMES),
-    )
-
-    def reconcile(*_args, **kwargs):
-        observed.append(kwargs["allow_exact_adoption"])
+    def reconcile(source, *, names, allow_retarget, **_kwargs):
+        observed.append((source, names, allow_retarget))
         return ()
 
     monkeypatch.setattr(bootstrap, "reconcile_host_qa_skills", reconcile)
 
-    refused = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
-    approved = bootstrap._reconcile_qa_skills(Intent.REFRESH, opt_out=False, allow_adoption=True)
-
-    assert refused is not None and refused.state is bootstrap.BootstrapState.CURRENT
-    assert approved is not None and approved.state is bootstrap.BootstrapState.CURRENT
-    assert observed == [False, True]
-
-
-def test_qa_source_inspection_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "current_host_installation",
-        lambda _source: SimpleNamespace(revision="abc1234"),
-    )
-    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
-    monkeypatch.setattr(
-        bootstrap,
-        "_skill_names",
-        lambda _source: (_ for _ in ()).throw(OSError("permission denied")),
-    )
-
-    finding = bootstrap._reconcile_qa_skills(Intent.ENSURE, opt_out=False, allow_adoption=False)
-
-    assert finding is not None
-    assert finding.state is bootstrap.BootstrapState.WARNING
-    assert "permission denied" in finding.detail
+    calls = ((Intent.ENSURE, False), (Intent.REFRESH, False), (Intent.ENSURE, True))
+    for intent, opt_out in calls:
+        finding = bootstrap._reconcile_qa_skills(intent, opt_out=opt_out)
+        assert finding is not None and finding.state is bootstrap.BootstrapState.CURRENT
+    assert observed == [
+        (Path("/qa"), bootstrap.QA_SKILL_NAMES, False),
+        (Path("/qa"), bootstrap.QA_SKILL_NAMES, True),
+        (tmp_path / "packaged", frozenset(), False),
+    ]
+    assert recorded.call_count == 2  # opt-out never reads a possibly corrupt selection
 
 
-def test_qa_source_filters_valid_skill_directories(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _record_qa_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Record a complete source checkout in the current release's selection format."""
+    _wire_current(monkeypatch)
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", Mock())
+    root = tmp_path / "Booley"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    for name in bootstrap.QA_SKILL_NAMES:
+        (root / "qa" / name).mkdir(parents=True)
+        (root / "qa" / name / "SKILL.md").write_text("# QA\n")
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    for agent in (".agents", ".claude"):
+        (home / agent / "skills").mkdir(parents=True)
+    sample = Path(__file__).parents[1] / "runtime" / "fixtures" / "qa-selection-v1.json"
+    document = {**json.loads(sample.read_text()), "checkout_root": str(root)}
+    (home / ".agents" / "booley-qa-skills.json").write_text(json.dumps(document))
+    return root
+
+
+def test_enable_links_every_agent_folder_and_refuses_linked_worktree(
+    tmp_path, monkeypatch, capsys
 ) -> None:
-    packaged = tmp_path / "packaged"
-    valid = packaged / "valid"
-    valid.mkdir(parents=True)
-    (valid / "SKILL.md").write_text("# valid\n", encoding="utf-8")
-    (packaged / "incomplete").mkdir()
+    root = _record_qa_checkout(tmp_path, monkeypatch)
+    selection = tmp_path / "home" / ".agents" / "booley-qa-skills.json"
+    (root / ".git").mkdir()  # primary checkout; branch, cleanliness and HEAD are not inspected
+    monkeypatch.chdir(root / "qa")
+    enable = SimpleNamespace(with_qa_skills=True)
 
-    assert bootstrap._skill_names(packaged) == frozenset({"valid"})
-
-    monkeypatch.setattr(bootstrap, "skills_dir", lambda: packaged)
-    assert bootstrap._qa_source(True) == (packaged, frozenset())
-
-
-def test_qa_source_reports_packaged_name_collision(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        bootstrap,
-        "current_host_installation",
-        lambda _source: SimpleNamespace(revision="abc1234"),
-    )
-    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: Path("/qa"))
-    monkeypatch.setattr(bootstrap, "_skill_names", lambda _source: bootstrap.QA_SKILL_NAMES)
-
-    with pytest.raises(bootstrap.QaSkillSelectionError, match="collide"):
-        bootstrap._qa_source(False)
+    assert bootstrap_cli.run_bootstrap(enable) == 0
+    recorded = selection.read_bytes()
+    assert json.loads(recorded) == {"checkout_root": str(root)}
+    for agent in (".agents", ".claude"):
+        for name in bootstrap.QA_SKILL_NAMES:
+            assert (tmp_path / "home" / agent / "skills" / name).resolve() == root / "qa" / name
+    (root / ".git").rmdir()
+    (root / ".git").write_text("gitdir: elsewhere\n")  # linked worktree links would dangle
+    assert bootstrap_cli.run_bootstrap(enable) == 2
+    assert "primary Booley source checkout" in capsys.readouterr().out
+    assert selection.read_bytes() == recorded
 
 
-def test_explicit_qa_enable_reports_missing_checkout(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: None)
+@pytest.mark.parametrize("equivalent", [False, True])
+def test_force_does_not_adopt_unrecorded_qa_links(tmp_path, monkeypatch, capsys, equivalent):
+    require_symlinks(tmp_path)
+    skill = _record_qa_checkout(tmp_path, monkeypatch) / "qa" / "booley-qa-run"
+    if equivalent:
+        skill = shutil.copytree(skill, tmp_path / "copy" / "booley-qa-run")
+    link = tmp_path / "home" / ".agents" / "skills" / "booley-qa-run"
+    link.symlink_to(skill, target_is_directory=True)
 
-    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
-    assert "complete primary" in capsys.readouterr().out
-
-
-def test_explicit_qa_enable_reports_validation_failure(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(bootstrap_cli, "checkout_enclosing_cwd", lambda: Path("/Booley"))
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "enable_qa_skills",
-        lambda *_args: (_ for _ in ()).throw(bootstrap_cli.QaSkillSelectionError("invalid")),
-    )
-
-    assert bootstrap_cli._apply_qa_enable(True, "abc1234") is False
-    assert "Cannot enable QA skills: invalid" in capsys.readouterr().out
+    assert bootstrap_cli.run_bootstrap(SimpleNamespace(force=True)) == 0
+    assert "desired skill name is occupied" in capsys.readouterr().out
+    assert link.resolve() == skill.resolve()  # Windows readlink adds a \\?\ prefix
+    manifest = json.loads((link.parent / ".booley-qa-skill-links.json").read_text())
+    assert "booley-qa-run" not in manifest["links"]
 
 
-def test_opt_out_keeps_selection_when_prune_did_not_run(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
-    events: list[str] = []
-    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
-    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: (
-            events.append("reconcile") or bootstrap.BootstrapResult(intent, (error,))
+# "." moves the whole recorded checkout away; pyproject.toml carries its source marker.
+@pytest.mark.parametrize(
+    "missing", [".", "pyproject.toml", *(f"qa/{n}" for n in sorted(bootstrap.QA_SKILL_NAMES))]
+)
+@pytest.mark.parametrize("consumer", ["plain", "check-only", "init"])
+def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, missing) -> None:
+    root = _record_qa_checkout(tmp_path, monkeypatch)
+    for probe in ("_inspect_installation", "_inspect_skills", "_inspect_nangate"):
+        monkeypatch.setattr(bootstrap, probe, lambda: _current("other"))
+    bootstrap.reconcile_bootstrap(Intent.ENSURE)  # record owned QA links first
+    skills = tmp_path / "home" / ".agents" / "skills"
+
+    def entries() -> dict[Path, object]:  # realpath covers junctions; lower: Windows case drift
+        return {
+            f: f.read_bytes() if f.suffix == ".json" else os.path.realpath(f).lower()
+            for f in skills.iterdir()
+        }
+
+    owned = entries()
+    (root / missing).rename(tmp_path / "moved")
+    monkeypatch.setattr(subprocess, "Popen", Mock(side_effect=AssertionError("QA ran Git")))
+    result = {
+        "plain": lambda: bootstrap.reconcile_bootstrap(Intent.ENSURE),
+        "check-only": lambda: bootstrap.inspect_bootstrap(include_images=False),
+        "init": lambda: init_cmd._reconcile_init_bootstrap(
+            init_cmd.InitContext(project_root=tmp_path), SimpleNamespace()
         ),
-    )
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "disable_qa_skills",
-        lambda: events.append("disable"),
-    )
+    }[consumer]()
 
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-            with_qa_skills=False,
-            without_qa_skills=True,
-        )
-    )
-
-    assert status == 2
-    assert events == ["reconcile"]
-
-
-def test_opt_out_removes_selection_after_prune_even_if_later_resource_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
-    events: list[str] = []
-    pruned = bootstrap.BootstrapFinding(
-        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
-    )
-    error = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState.ERROR, "offline")
-    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: (
-            events.append("reconcile") or bootstrap.BootstrapResult(intent, (pruned, error))
-        ),
-    )
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "disable_qa_skills",
-        lambda: events.append("disable"),
-    )
-
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-            with_qa_skills=False,
-            without_qa_skills=True,
-        )
-    )
-
-    assert status == 2
-    assert events == ["reconcile", "disable"]
-
-
-def test_opt_out_reports_selection_removal_failure(monkeypatch, capsys) -> None:
-    identity = SimpleNamespace(version="1", payload_fingerprint="f" * 64, revision="a" * 12)
-    pruned = bootstrap.BootstrapFinding(
-        "qa-skills", bootstrap.BootstrapState.CHANGED, "removed links"
-    )
-    monkeypatch.setattr(bootstrap_cli, "register_host_installation", lambda *_a, **_kw: identity)
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, (pruned,)),
-    )
-    monkeypatch.setattr(
-        bootstrap_cli,
-        "disable_qa_skills",
-        lambda: (_ for _ in ()).throw(OSError("read-only")),
-    )
-
-    status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(
-            force=False,
-            check_only=False,
-            verbose=False,
-            with_qa_skills=False,
-            without_qa_skills=True,
-        )
-    )
-
-    assert status == 2
-    assert "Cannot disable QA skills: read-only" in capsys.readouterr().out
+    assert len(owned) > len(bootstrap.QA_SKILL_NAMES)  # QA links plus their manifest
+    assert result is not None and result.exit_status == 0
+    qa = [finding for finding in result.findings if finding.resource == "qa-skills"]
+    assert [finding.state for finding in qa] == [bootstrap.BootstrapState.WARNING]
+    assert "--without-qa-skills" in qa[0].detail
+    assert entries() == owned  # a missing skill never prunes owned links
 
 
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1782,9 +1713,8 @@ def _inspection_installation(monkeypatch, tmp_path, recorded):
     )
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
-    monkeypatch.setattr(bootstrap, "current_host_installation", lambda _source: identity)
     monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
-    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: None)
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda: None)
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     path = host_install.host_installation_path()
     if recorded:
@@ -2077,11 +2007,13 @@ def test_complete_inspection_invalid_candidate_preserves_qa_warning(monkeypatch,
         raise host_install.HostInstallationError("invalid build; reinstall Booley")
 
     monkeypatch.setattr(host_install, "current_host_installation", invalid)
-    monkeypatch.setattr(bootstrap, "current_host_installation", invalid)
+    monkeypatch.setattr(
+        bootstrap, "active_qa_source_root", Mock(side_effect=OSError("checkout is gone"))
+    )
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
-    assert "[!!] qa-skills:" in output
+    assert "[!!] qa-skills: checkout is gone" in output
     assert "--without-qa-skills" in output
 
 

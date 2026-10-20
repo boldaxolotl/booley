@@ -201,12 +201,6 @@ def _regular_file(path: Path) -> bool:
         return False
 
 
-def _validate_manifest_filename(name: str) -> str:
-    if not name or name in {".", ".."} or "/" in name or "\\" in name:
-        raise ValueError(f"invalid skill-link manifest filename {name!r}")
-    return name
-
-
 def _discover_source(
     root: Path,
     *,
@@ -414,83 +408,32 @@ def _plan_unrecorded(
     entry: _Entry,
     *,
     allow_retarget: bool,
-    allow_exact_adoption: bool,
+    adopt_unrecorded: bool,
 ) -> _Action | None:
     if desired is None:
         return None
     if entry.kind == "missing":
         event = _event(desired.name, "created", target_dir, desired, entry)
         return _Action(event, "create", entry, _record_for(desired), None)
-    if entry.kind == "link" and entry.target == desired.target:
-        return _plan_exact_unrecorded(
-            target_dir,
-            desired,
-            entry,
-            allow_exact_adoption=allow_exact_adoption,
-        )
-    if entry.kind == "link" and entry.target and _equivalent_skill(entry.target, desired.path):
-        return _plan_equivalent_unrecorded(
-            target_dir,
-            desired,
-            entry,
-            allow_retarget=allow_retarget,
-            allow_exact_adoption=allow_exact_adoption,
-        )
+    if adopt_unrecorded and entry.kind == "link":
+        if entry.target == desired.target:
+            event = _event(desired.name, "adopted", target_dir, desired, entry)
+            return _Action(event, "none", entry, _record_for(desired), None)
+        if entry.target and _equivalent_skill(entry.target, desired.path):
+            if allow_retarget:
+                event = _event(desired.name, "retargeted", target_dir, desired, entry)
+                return _Action(event, "replace", entry, _record_for(desired), None)
+            event = _event(
+                desired.name,
+                "equivalent",
+                target_dir,
+                desired,
+                entry,
+                "equivalent packaged skill accepted without mutation; use --force to relink",
+            )
+            return _Action(event, "none", entry, None, None)
     event = _event(
         entry_name, "conflict", target_dir, desired, entry, "desired skill name is occupied"
-    )
-    return _Action(event, "none", entry, None, None)
-
-
-def _plan_exact_unrecorded(
-    target_dir: Path,
-    desired: _Desired,
-    entry: _Entry,
-    *,
-    allow_exact_adoption: bool,
-) -> _Action:
-    if not allow_exact_adoption:
-        event = _event(
-            desired.name,
-            "conflict",
-            target_dir,
-            desired,
-            entry,
-            "unmanaged exact skill link requires explicit --force ownership transfer",
-        )
-        return _Action(event, "none", entry, None, None)
-    event = _event(desired.name, "adopted", target_dir, desired, entry)
-    return _Action(event, "none", entry, _record_for(desired), None)
-
-
-def _plan_equivalent_unrecorded(
-    target_dir: Path,
-    desired: _Desired,
-    entry: _Entry,
-    *,
-    allow_retarget: bool,
-    allow_exact_adoption: bool,
-) -> _Action:
-    if not allow_exact_adoption:
-        event = _event(
-            desired.name,
-            "conflict",
-            target_dir,
-            desired,
-            entry,
-            "unmanaged equivalent skill link requires explicit --force ownership transfer",
-        )
-        return _Action(event, "none", entry, None, None)
-    if allow_retarget:
-        event = _event(desired.name, "retargeted", target_dir, desired, entry)
-        return _Action(event, "replace", entry, _record_for(desired), None)
-    event = _event(
-        desired.name,
-        "equivalent",
-        target_dir,
-        desired,
-        entry,
-        "equivalent packaged skill accepted without mutation; use --force to relink",
     )
     return _Action(event, "none", entry, None, None)
 
@@ -502,7 +445,7 @@ def _plan_actions(
     entries: dict[str, tuple[str, _Entry]],
     *,
     allow_retarget: bool,
-    allow_exact_adoption: bool,
+    adopt_unrecorded: bool,
 ) -> list[_Action]:
     actions: list[_Action] = []
     for key in sorted(desired.keys() | records.keys() | entries.keys()):
@@ -527,7 +470,7 @@ def _plan_actions(
                 entry_name,
                 entry,
                 allow_retarget=allow_retarget,
-                allow_exact_adoption=allow_exact_adoption,
+                adopt_unrecorded=adopt_unrecorded,
             )
         )
         if action is not None:
@@ -735,7 +678,7 @@ def reconcile_skill_links(
     allow_retarget: bool = False,
     manifest_name: str = MANIFEST_FILENAME,
     desired_names: frozenset[str] | None = None,
-    allow_exact_adoption: bool = True,
+    adopt_unrecorded: bool = True,
 ) -> SkillLinkReport:
     """Converge one agent skills directory while preserving foreign entries.
 
@@ -743,10 +686,6 @@ def reconcile_skill_links(
     a content-equivalent packaged skill link. A fatal report guarantees that no
     filesystem mutation occurred.
     """
-    try:
-        manifest_name = _validate_manifest_filename(manifest_name)
-    except ValueError as exc:
-        return SkillLinkReport(fatal=str(exc))
     desired, records, entries, fatal = _preflight(
         target_dir,
         packaged_dir,
@@ -761,7 +700,7 @@ def reconcile_skill_links(
         records,
         entries,
         allow_retarget=allow_retarget,
-        allow_exact_adoption=allow_exact_adoption,
+        adopt_unrecorded=adopt_unrecorded,
     )
     if dry_run:
         return SkillLinkReport(events=tuple(action.event for action in actions))
