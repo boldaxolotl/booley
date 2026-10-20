@@ -237,15 +237,13 @@ def invoke_endpoint(
         try:
             flow = getattr(endpoint, "flow", None)
             if prepared.simulation is not None and hasattr(flow, "run_prepared_simulation"):
-                raw = flow.run_prepared_simulation(prepared.simulation, admission)
+                result = flow.run_prepared_simulation(prepared.simulation, admission)
             else:
-                raw = endpoint._run()
-            result = endpoint._adapt_outcome(raw)
+                result = endpoint._run()
         except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
             result = _exception_outcome(endpoint, prepared, exc)
     finally:
         sys.stdout = witness.wrapped
-    result = endpoint._adapt_outcome(result)
     endpoint._finalize_result(result)
     return result
 
@@ -259,11 +257,10 @@ def finish_execution(
     acceptance_recorded: bool,
 ) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
-    final_outcome = endpoint._adapt_outcome(outcome)
-    report_discarded_evidence(endpoint, final_outcome)
-    project(endpoint, final_outcome)
+    report_discarded_evidence(endpoint, outcome)
+    project(endpoint, outcome)
     exit_code = endpoint._finish_main(
-        final_outcome,
+        outcome,
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
@@ -271,4 +268,4 @@ def finish_execution(
         dry_run=prepared.dry_run,
         non_persisting_dry_run=prepared.non_persisting_dry_run,
     )
-    return ExecutionResult(exit_code=exit_code, outcome=final_outcome)
+    return ExecutionResult(exit_code=exit_code, outcome=outcome)
