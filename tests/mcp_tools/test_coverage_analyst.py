@@ -30,8 +30,7 @@ from booley.runtime.agent_errors import (
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.coverage_campaign_test_support import (
-    corrupt_v3_campaign_with_duplicate_negative_point,
-    rewrite_manifest_as_older_schema,
+    corrupt_campaign_with_duplicate_negative_point,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
@@ -77,9 +76,9 @@ class Model:
         )
 
 
-def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) -> None:
+def test_cli_reports_invalid_findings_before_calling_model(tmp_path: Path) -> None:
     path = persist_campaign(tmp_path)
-    corrupt_v3_campaign_with_duplicate_negative_point(path)
+    corrupt_campaign_with_duplicate_negative_point(path)
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
@@ -96,10 +95,10 @@ def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) ->
     assert outcome.outcome.detail == {}
 
 
-def test_cli_invalid_v3_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
+def test_cli_invalid_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
     path = persist_campaign(tmp_path)
     run_id = "run:bad\n\t\x1b[31m" + "x" * 2_000
-    corrupt_v3_campaign_with_duplicate_negative_point(path, run_id=run_id)
+    corrupt_campaign_with_duplicate_negative_point(path, run_id=run_id)
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
@@ -230,23 +229,6 @@ def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_pa
     )
 
     assert result.exit_code == 0
-
-
-def test_retained_v3_analysis_uses_bounded_evidence_envelope(tmp_path: Path) -> None:
-    path = persist_campaign(tmp_path)
-    manifest = json.loads(path.read_text())
-    rewrite_manifest_as_older_schema(manifest, 3)
-    path.write_text(json.dumps(manifest))
-    model = Model()
-
-    result = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
-    )
-
-    assert result.exit_code == 0
-    assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
-    prompt = json.loads(model.calls[0].prompt)
-    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v3"
 
 
 def test_persisted_collector_error_rejects_before_provider_and_evidence_session(

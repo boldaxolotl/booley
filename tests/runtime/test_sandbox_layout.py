@@ -120,7 +120,6 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
         CoverageCampaignStoreError,
         load_coverage_campaign,
         load_coverage_campaign_bytes,
-        read_coverage_summary,
     )
     from booley.flows.sim.coverage_reference import (
         CoverageCampaignReferenceError,
@@ -136,7 +135,6 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
             lambda selected: load_coverage_campaign_bytes(selected, b"{}"),
             CoverageCampaignStoreError,
         ),
-        (lambda selected: read_coverage_summary(selected, "target"), CoverageCampaignStoreError),
         (
             lambda selected: resolve_persisted_coverage_campaign_reference(selected, {}),
             CoverageCampaignReferenceError,
