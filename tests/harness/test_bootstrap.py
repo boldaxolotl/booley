@@ -450,7 +450,6 @@ def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, mi
         }
 
     owned = entries()
-    assert len(owned) > len(bootstrap.QA_SKILL_NAMES)  # QA links plus their manifest
     (root / missing).rename(tmp_path / "moved")
     monkeypatch.setattr(subprocess, "Popen", Mock(side_effect=AssertionError("QA ran Git")))
     result = {
@@ -461,6 +460,7 @@ def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, mi
         ),
     }[consumer]()
 
+    assert len(owned) > len(bootstrap.QA_SKILL_NAMES)  # QA links plus their manifest
     assert result is not None and result.exit_status == 0
     qa = [finding for finding in result.findings if finding.resource == "qa-skills"]
     assert [finding.state for finding in qa] == [bootstrap.BootstrapState.WARNING]
