@@ -27,7 +27,7 @@ def prepare(project_root: str) -> None:
 
 
 def cancel(project_root: str) -> None:
-    """Remove work prepared for an authority mutation that did not commit."""
+    """Remove one Project's journal once its invalidation is complete."""
     _path(project_root).unlink(missing_ok=True)
 
 

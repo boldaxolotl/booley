@@ -115,11 +115,20 @@ def test_failed_add_commits_nothing_and_writes_no_journal(
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
     profile = eda_grant_support.register_license("site")
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
-    stamps = []
+    order: list[str] = []
+    monkeypatch.setattr(
+        session_refresh,
+        "shared_recovery_blocks_command",
+        lambda **_kw: order.append("recover") or False,
+    )
 
     def withdraw(root: str) -> None:
-        stamps.append(root)
+        order.append(f"stamp:{root}")
+        with (
+            pytest.raises(lifecycle_lock.LifecycleLockError),
+            lifecycle_lock.host_lifecycle_lock("probe", wait_timeout_s=0),
+        ):
+            pass
         if failure == "invalidation":
             raise OSError("stamp is read-only")
 
@@ -133,7 +142,10 @@ def test_failed_add_commits_nothing_and_writes_no_journal(
             project, "vivado", installation=None, license_profile=licence_arg
         )
 
-    assert stamps == ([str(project.resolve())] if failure == "invalidation" else [])
+    # Shared recovery runs first; the stamp is only touched while the lock is held (probe above).
+    assert order == ["recover"] + (
+        [f"stamp:{project.resolve()}"] if failure == "invalidation" else []
+    )
     assert authority.load_state().grants == ()
     assert issuance_invalidation.pending_invalidations() == ()
 

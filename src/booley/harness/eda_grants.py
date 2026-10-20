@@ -46,7 +46,12 @@ class GrantCoordinator:
             raise authority.AuthorityError(str(exc)) from exc
 
     def revoke(self, project: Path, kind: str) -> authority.ProjectGrant:
-        """Journal, persist the revocation, then withdraw the stamp and clean up."""
+        """Journal, persist the revocation, then withdraw the stamp and clean up.
+
+        The journal is written before the commit and kept if the commit fails:
+        the next recovery then withdraws the stamp and cleans up, which is safe
+        and idempotent.
+        """
         try:
             with lifecycle_lock.host_lifecycle_lock("EDA grant revoke"):
                 session_refresh.shared_recovery_blocks_command(read_only=False)
