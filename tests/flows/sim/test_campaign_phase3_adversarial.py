@@ -501,7 +501,9 @@ def _compatibility_manifest():
 
 def _normalized_result(result: object) -> dict[str, object]:
     document = json.loads(result.canonical_bytes())  # type: ignore[attr-defined]
-    document["observations"][0]["test"] = "selected"
+    observation = document["observations"][0]
+    assert observation["test_run"] == observation["test"]
+    observation["test"] = observation["test_run"] = "selected"
     return {
         "state": document["state"],
         "grade": document["grade"],
