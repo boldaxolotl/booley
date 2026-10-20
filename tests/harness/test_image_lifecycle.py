@@ -4219,6 +4219,49 @@ def test_failed_candidate_construction_releases_only_recorded_tags(tmp_path, mon
     assert list(lifecycle._owned_store().root.glob("*.json")) == []
 
 
+def test_prepare_records_built_images_and_candidate_refs_for_later_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+
+    record = lifecycle.OwnedImages(root)
+    built = {
+        image.candidate_reference: image.image_id
+        for image in prepared.candidates
+        if lifecycle._candidate_reference_is_transactional(image.candidate_reference)
+    }
+    assert built and built.items() <= record.refs.items()
+    assert set(built.values()) <= set(record.ids)
+
+
+def test_prepare_records_alias_candidate_of_a_reused_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    first = lifecycle.prepare(
+        lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker),
+        docker=docker,
+        builder=TransactionBuilder(docker),
+    )
+    for image in first.candidates:  # adopt: managed tags now carry the built bytes
+        docker.images[image.reference] = docker.images[image.candidate_reference]
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    last = planned.steps[-1]
+    docker.images["alias-source"] = docker.images[last.reference]
+    steps = (*planned.steps[:-1], replace(last, source_reference="alias-source"))
+    reused = lifecycle.prepare(
+        replace(planned, steps=steps), docker=docker, builder=TransactionBuilder(docker)
+    )
+
+    alias = reused.candidates[-1].candidate_reference
+    assert alias and lifecycle.OwnedImages(root).refs[alias] == docker.image_id("alias-source")
+
+
 @pytest.mark.parametrize("response", ["valid", "malformed", "failed", "timeout"])
 def test_docker_inventory_requires_complete_exact_id_evidence(monkeypatch, response):
     image = "sha256:" + "a" * 64
