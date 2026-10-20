@@ -522,7 +522,7 @@ def pending_refresh_projects() -> tuple[Path, ...]:
 
 
 def has_pending_refresh(project_root: Path) -> bool:
-    """Report whether one Project has a valid unfinished refresh journal."""
+    """Report whether one Project has a decodable unfinished refresh journal."""
     project = project_root.resolve(strict=True)
     return _load_journal(project) is not None
 
