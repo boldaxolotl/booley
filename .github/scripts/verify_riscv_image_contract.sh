@@ -9,11 +9,9 @@ readonly BASE_IMAGE="$3"
 readonly STANDARD_INVENTORY="$4"
 
 # First, so a later probe failure cannot lose the inherited inventory evidence.
-python .github/scripts/image_package_inventory.py \
-  --image "${IMAGE}" \
-  --expected-inventory "${STANDARD_INVENTORY}" \
-  --output "${EVIDENCE_DIR}/package-inventory.json" \
-  --evidence "${EVIDENCE_DIR}/package-inventory-evidence.json"
+docker run --rm --network none --entrypoint cat "${IMAGE}" /usr/local/share/booley/base-package-inventory.json \
+  > "${EVIDENCE_DIR}/package-inventory.json"
+cmp "${STANDARD_INVENTORY}" "${EVIDENCE_DIR}/package-inventory.json"
 PYTHONPATH=src python .github/scripts/image_contract.py \
   --image "${IMAGE}" \
   --base-image "${BASE_IMAGE}" \
