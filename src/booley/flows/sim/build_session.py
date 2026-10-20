@@ -19,11 +19,11 @@ from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from enum import StrEnum
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 import yaml
 
-from booley.core.boundary import as_dict, as_str
+from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
 from booley.core.file_lock import (
     release_file_lock,
@@ -38,7 +38,6 @@ from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
 from . import build_reuse
-from . import edam as sim_edam
 from .build import PreparedSimulationBuild
 from .build_reuse import hash_file
 
@@ -54,10 +53,6 @@ class CacheDecision(StrEnum):
     HIT = "hit"
     REUSE_UNSUPPORTED = "reuse unsupported"
     MISSING_PROVENANCE = "missing provenance"
-    MALFORMED_PROVENANCE = "malformed provenance"
-    MALFORMED_MANIFEST = "malformed manifest"
-    SCHEMA_MISMATCH = "schema mismatch"
-    WRONG_TARGET = "wrong Target"
     CHANGED_KEY = "changed source, recipe, or tool"
     CHANGED_SOURCE = "changed source"
     CHANGED_ARTIFACT = "changed artifact"
@@ -509,58 +504,12 @@ def _ambient_environment(prepared: PreparedSimulationBuild) -> dict[str, str]:
     return {name: value for name, value in os.environ.items() if name not in prepared.environment}
 
 
-def _retained_build_root(slot: Path) -> tuple[Path, Path] | None:
-    """Read a contained pointer to one successful generation."""
-    current = slot / "current.json"
-    if current.is_symlink():
-        return None
-    pointer = json.loads(current.read_text(encoding="utf-8"))
-    generation = pointer["generation"]
-    if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{16}", generation):
-        return None
-    root = slot / _GENERATION_DIR / generation
-    if root.is_symlink() or not root.is_dir() or not root.resolve().is_relative_to(slot.resolve()):
-        return None
-    relative = Path(pointer["build_root"])
-    if relative.is_absolute() or ".." in relative.parts:
-        return None
-    build_root = root / relative
-    if (
-        build_root.is_symlink()
-        or not build_root.is_dir()
-        or not build_root.resolve().is_relative_to(root.resolve())
-    ):
-        return None
-    return root, build_root
-
-
-def _matching_hashes(root: Path, raw: object) -> bool:
-    """Validate a manifest path map without following escape or symlink paths."""
-    if not isinstance(raw, dict):
-        return False
-    for name, digest in raw.items():
-        if not isinstance(name, str) or not isinstance(digest, str):
-            return False
-        relative = Path(name)
-        if relative.is_absolute() or ".." in relative.parts:
-            return False
-        path = root / relative
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or not path.resolve().is_relative_to(root.resolve())
-            or hash_file(path) != digest
-        ):
-            return False
-    return True
-
-
-def _well_formed_reusability(manifest: Mapping[str, object]) -> bool:
-    """Require a boolean ``reusable`` and, when set, its string ``input_key``."""
-    recorded = manifest.get("reusable")
-    if not isinstance(recorded, bool):
-        return False
-    return not recorded or as_str(manifest.get("input_key")) is not None
+def _matching_hashes(root: Path, recorded: Mapping[str, str]) -> bool:
+    """Whether every recorded file exists under *root* with its recorded digest."""
+    return all(
+        (root / name).is_file() and hash_file(root / name) == digest
+        for name, digest in recorded.items()
+    )
 
 
 def simulation_build_slot(handle: TargetHandle, variant: str = "") -> Path:
@@ -594,14 +543,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
     def __enter__(self) -> SimulationBuildSession:
         try:
             self.slot.mkdir(parents=True, exist_ok=True)
-            if self.slot.is_symlink() or not self.slot.resolve().is_relative_to(
-                self.handle.project_root.resolve()
-            ):
-                raise SimulationBuildSlotError(f"unsafe Simulation slot path: {self.slot}")
-            lock_path = self.slot / "lease.lock"
-            if lock_path.is_symlink():
-                raise SimulationBuildSlotError(f"Simulation lease is a symlink: {lock_path}")
-            lock = lock_path.open("a+", encoding="utf-8")
+            lock = (self.slot / "lease.lock").open("a+", encoding="utf-8")
             try:
                 wait_for_file_lock(lock, timeout_s=60)
             except BaseException:
@@ -622,10 +564,6 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         generations = self.slot / _GENERATION_DIR
         try:
             generations.mkdir(exist_ok=True)
-            if generations.is_symlink():
-                raise SimulationBuildSlotError(
-                    f"generations directory is a symlink: {generations}"
-                )
             candidate = generations / secrets.token_hex(8)
             candidate.mkdir()
             return candidate
@@ -636,8 +574,6 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
     def capture_inputs(self, prepared: PreparedSimulationBuild) -> Mapping[str, str]:
         """Capture the bytes present immediately before compilation."""
-        if self._lock is None:
-            raise SimulationBuildSlotError("Simulation slot is not leased")
         self._captured_ns.setdefault(prepared.work_root, time.time_ns())
         return snapshot_build_inputs(prepared)
 
@@ -668,55 +604,32 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         self, candidate: PreparedSimulationBuild, key: str | None
     ) -> PreparedSimulationBuild | None:
         """Validate the current pointer and reconstruct its resolved build data."""
-        if self._lock is None or key is None:
+        if key is None:
             self.cache_decision = CacheDecision.REUSE_UNSUPPORTED
             return None
         self.cache_decision = CacheDecision.MISSING_PROVENANCE
         try:
-            retained = _retained_build_root(self.slot)
-            if retained is None:
-                self.cache_decision = CacheDecision.MALFORMED_PROVENANCE
-                return None
-            root, build_root = retained
-            manifest_path = build_root / ".booley-build-manifest.json"
-            if manifest_path.is_symlink():
-                raise ValueError("manifest path is a symlink")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            rejection = self._hit_rejection(root, build_root, manifest, candidate, key)
+            pointer = json.loads((self.slot / "current.json").read_text(encoding="utf-8"))
+            root = self.slot / _GENERATION_DIR / pointer["generation"]
+            build_root = root / pointer["build_root"]
+            manifest = json.loads(
+                (build_root / ".booley-build-manifest.json").read_text(encoding="utf-8")
+            )
+            rejection = self._hit_rejection(root, build_root, manifest, key)
             if rejection is None and not self._read_closure_matches(root, manifest, candidate):
                 rejection = CacheDecision.CHANGED_SOURCE
             if rejection is not None:
                 self.cache_decision = rejection
                 return None
             selected = self._restore_prepared_build(root, candidate)
-            actual = {
-                path.relative_to(selected.build_root).as_posix()
-                for path in _runtime_artifacts(selected)
-            }
-            if actual != set(manifest["artifacts"]):
-                self.cache_decision = CacheDecision.CHANGED_ARTIFACT
-                return None
             self.cache_decision = CacheDecision.HIT
             return selected
-        except (
-            OSError,
-            KeyError,
-            TypeError,
-            ValueError,
-            RuntimeError,
-            SimulationBuildSlotError,
-        ) as exc:
-            self.cache_decision = (
-                CacheDecision.MISSING_PROVENANCE
-                if isinstance(exc, FileNotFoundError)
-                else CacheDecision.MALFORMED_PROVENANCE
-            )
+        except (OSError, KeyError, TypeError, ValueError, AttributeError, RuntimeError):
+            # A record Booley wrote is parseable; anything else is missing provenance.
             return None
 
     def retained_artifacts(self, prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
         """Return the launch artifacts of an image ``try_reuse`` just verified."""
-        if self._lock is None:
-            raise SimulationBuildSlotError("Simulation slot is not leased")
         return _runtime_artifacts(prepared)
 
     def _read_closure_matches(
@@ -741,12 +654,6 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             target=candidate.resolved.name,
             vlnv=candidate.resolved.vlnv,
         )
-        configured_tool = sim_edam.normalize_eda_tool(resolved.configured_eda_tool)
-        if configured_tool != candidate.eda_tool:
-            raise SimulationBuildSlotError(
-                "retained Simulation EDAM configured "
-                f"{configured_tool!r}, expected {candidate.eda_tool!r}"
-            )
         make_rel = edam_layer.relpath_for_make(resolved.build_root, self.handle.project_root)
         return PreparedSimulationBuild(
             target=candidate.target,
@@ -754,7 +661,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             resolved=resolved,
             work_root=root,
             build_root=resolved.build_root,
-            eda_tool=configured_tool,
+            eda_tool=candidate.eda_tool,
             toplevel=candidate.toplevel,
             make_argv=tuple(edam_layer.make_command(make_rel)),
             environment=candidate.environment,
@@ -762,47 +669,8 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             core_closure=candidate.core_closure,
         )
 
-    def verify_image(self, prepared: PreparedSimulationBuild) -> None:
-        """Reauthenticate a fresh or retained image, as its manifest records.
-
-        A promoted or reused image is retained and keyed; its sources may have
-        moved on since, but launching it only requires the recorded inputs and
-        image bytes to be intact.
-        """
-        if self._lock is None:
-            raise SimulationBuildSlotError("Simulation slot is not leased")
-        if prepared.work_root.parent != self.slot / _GENERATION_DIR:
-            raise SimulationBuildSlotError("Simulation image is outside its leased generation")
-        manifest_path = prepared.build_root / ".booley-build-manifest.json"
-        try:
-            if manifest_path.is_symlink():
-                raise SimulationBuildSlotError("Simulation manifest is a symlink")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict) or (
-                manifest.get("schema") != 1
-                or manifest.get("target_identity") != prepared.target_identity
-                or manifest.get("generation") != prepared.work_root.name
-                or not _well_formed_reusability(manifest)
-            ):
-                raise SimulationBuildSlotError("Simulation manifest identity changed")
-            if not _matching_hashes(prepared.work_root, manifest.get("inputs")):
-                raise SimulationBuildSlotError("Simulation build inputs changed")
-            if not _matching_hashes(prepared.build_root, manifest.get("artifacts")):
-                raise SimulationBuildSlotError("Simulation image changed")
-            artifacts = manifest["artifacts"]
-            actual = {
-                path.relative_to(prepared.build_root).as_posix()
-                for path in _runtime_artifacts(prepared)
-            }
-            if actual != set(artifacts):
-                raise SimulationBuildSlotError("Simulation image set changed")
-        except (OSError, KeyError, TypeError, ValueError) as exc:
-            raise SimulationBuildSlotError(f"cannot verify Simulation image: {exc}") from exc
-
     def discard_candidate(self, root: Path) -> None:
-        """Remove only the unused fresh generation after a verified hit."""
-        if self._lock is None or root.parent != self.slot / _GENERATION_DIR or root.is_symlink():
-            raise SimulationBuildSlotError(f"unsafe candidate cleanup path: {root}")
+        """Remove the unused fresh generation after a verified hit."""
         try:
             if root.exists():
                 shutil.rmtree(root)
@@ -811,32 +679,14 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
     @staticmethod
     def _hit_rejection(
-        root: Path,
-        build_root: Path,
-        manifest: object,
-        candidate: PreparedSimulationBuild,
-        key: str,
+        root: Path, build_root: Path, manifest: Mapping[str, Any], key: str
     ) -> CacheDecision | None:
-        if not isinstance(manifest, dict):
-            return CacheDecision.MALFORMED_MANIFEST
-        if (
-            manifest.get("schema") != 1
-            or manifest.get("target_identity") != candidate.target_identity
-        ):
-            return (
-                CacheDecision.SCHEMA_MISMATCH
-                if manifest.get("schema") != 1
-                else CacheDecision.WRONG_TARGET
-            )
-        if (
-            manifest.get("generation") != root.name
-            or manifest.get("input_key") != key
-            or manifest.get("reusable") is not True
-        ):
+        """Name why a manifest does not match the candidate, or ``None`` for a hit."""
+        if manifest.get("reusable") is not True or manifest.get("input_key") != key:
             return CacheDecision.CHANGED_KEY
-        if not _matching_hashes(root, manifest.get("inputs")):
+        if not _matching_hashes(root, manifest["inputs"]):
             return CacheDecision.CHANGED_SOURCE
-        if not _matching_hashes(build_root, manifest.get("artifacts")):
+        if not _matching_hashes(build_root, manifest["artifacts"]):
             return CacheDecision.CHANGED_ARTIFACT
         return None
 
@@ -846,42 +696,25 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         inputs: Mapping[str, str],
         key: str | None = None,
     ) -> tuple[Path, ...]:
-        """Record and check the image, returning its authenticated artifact paths."""
-        if self._lock is None:
-            raise SimulationBuildSlotError("Simulation slot is not leased")
-        root = prepared.build_root.resolve()
-        if not root.is_relative_to((self.slot / _GENERATION_DIR).resolve()):
-            raise SimulationBuildSlotError(f"build root escaped leased slot: {root}")
+        """Record the built image and return its launch artifact paths."""
         try:
             current_inputs = snapshot_build_inputs(prepared)
             if any(current_inputs.get(name) != digest for name, digest in inputs.items()):
                 raise SimulationBuildSlotError("Simulation build input changed during compilation")
-            if key is not None and self.reusable_key(prepared, inputs, hooks=False) != key:
-                raise SimulationBuildSlotError("Simulation recipe changed during compilation")
             closure, reason = self._fresh_read_closure(prepared, key)
             if closure is None:
                 key = None
             artifacts = _runtime_artifacts(prepared)
-            hashes = {}
-            for path in artifacts:
-                if (
-                    path.is_symlink()
-                    or not path.is_file()
-                    or not path.resolve().is_relative_to(root)
-                ):
-                    raise SimulationBuildSlotError(f"unsafe Simulation image: {path}")
-                hashes[path.relative_to(root).as_posix()] = hash_file(path)
+            hashes = {
+                path.relative_to(prepared.build_root).as_posix(): hash_file(path)
+                for path in artifacts
+            }
             self._write_manifest(prepared, inputs, key, hashes, closure or {}, reason)
-            for name, digest in hashes.items():
-                if hash_file(root / name) != digest:
-                    raise SimulationBuildSlotError(
-                        f"Simulation image changed before launch: {name}"
-                    )
             if key is not None:
                 self._promote_pointer(prepared)
             return artifacts
         except (OSError, RuntimeError) as exc:
-            raise SimulationBuildSlotError(f"cannot authorize Simulation image: {exc}") from exc
+            raise SimulationBuildSlotError(f"cannot record Simulation image: {exc}") from exc
 
     def _fresh_read_closure(
         self, prepared: PreparedSimulationBuild, key: str | None

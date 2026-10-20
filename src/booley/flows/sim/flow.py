@@ -5637,11 +5637,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         "Project compile inputs changed during elaboration preparation"
                     )
                 self._register_prepared_build(target, prepared)
-                inputs = (
-                    session.capture_inputs(prepared) if prepared.work_root == candidate else {}
-                )
+                inputs = session.capture_inputs(prepared)
                 result = self._execute_elab_only_build(target, prepared)
-                if result.outcome.passed and prepared.work_root == candidate:
+                if result.outcome.passed:
                     session.authorize_fresh_image(prepared, inputs)
                 return result
         except SimulationBuildSlotError as exc:
