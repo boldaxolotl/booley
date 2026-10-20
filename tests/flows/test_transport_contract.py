@@ -553,6 +553,7 @@ def _headline_state(runtime, monkeypatch, criteria, **options):
 
 
 def _display_events(monkeypatch):
+    """Capture every event the endpoint emits; return the live list."""
     events = []
     monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
     monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)

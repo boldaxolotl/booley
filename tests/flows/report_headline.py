@@ -38,4 +38,5 @@ def final_report_omits_headline(endpoint, result) -> dict:
     """
     freeze(endpoint)
     path = endpoint.write_report(result)
+    # write_report returns <report_dir>/<endpoint>/<N>/report.json.
     return assert_paired_headline(path.parents[2], endpoint.name, None)
