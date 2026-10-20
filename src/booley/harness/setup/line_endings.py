@@ -207,7 +207,7 @@ class _PolicyFacts:
 
 @dataclass(frozen=True)
 class _AttributesMigration:
-    """Replayable shared default and selected root snapshots for recoverable opt-out."""
+    """Replayable shared default, root snapshots and worktree topology for recoverable opt-out."""
 
     source: Path
     topology: bytes
@@ -1621,8 +1621,7 @@ def _refresh_action(plan: _RepositoryPlan) -> LineEndingActionResult:
     )
 
 
-def _attributes_replacement(path: Path) -> bytes:
-    existing = path.read_bytes() if path.exists() else b""
+def _attributes_replacement(existing: bytes) -> bytes:
     if existing and not existing.endswith(b"\n"):
         existing += b"\n"
     return GITATTRIBUTES_RULE.encode() + b"\n" + existing
@@ -1678,10 +1677,19 @@ def _publish_attributes(
             target=target,
         )
     try:
-        content = _attributes_replacement(path)
+        existing = path.read_bytes() if path.exists() else b""
     except OSError as exc:
         error = str(exc) if target.local else f"could not read .gitattributes: {exc}"
     else:
+        # Ownership was decided from an earlier read; the planned identity may postdate it.
+        if (local_policy_owned if target.local else _root_policy_owned)(existing):
+            return _action(
+                LineEndingActionKind.PUBLISH_ATTRIBUTES,
+                LineEndingActionState.REFUSED,
+                detail=f"{path}: attributes policy changed during line-ending repair",
+                target=target,
+            )
+        content = _attributes_replacement(existing)
         try:
             error = _write_attributes(path, expected, content, validate)
         except OSError as exc:

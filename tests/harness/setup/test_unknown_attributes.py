@@ -155,14 +155,9 @@ def test_unknown_sibling_blocks_every_publication_trigger(tmp_path, mode, autocr
 @pytest.mark.parametrize("source", ["system", "nonregular-sibling"])
 def test_other_unknown_sources_are_not_policy(tmp_path, monkeypatch, default, source):
     root, data, local = _checkout(tmp_path, default=default)
-    if source == "system":
+    if source == "system":  # older Git: legacy user fallback beside an unresolved system path
         monkeypatch.delenv("GIT_ATTR_NOSYSTEM")
-        real_native = line_endings._native_attribute_path
-
-        def native(root, variable):
-            return (False, None) if variable == "GIT_ATTR_SYSTEM" else real_native(root, variable)
-
-        monkeypatch.setattr(line_endings, "_native_attribute_path", native)
+        monkeypatch.setattr(line_endings, "_native_attribute_path", lambda *_: (False, None))
     else:
         sibling = tmp_path / "sibling"
         _git(root, "worktree", "add", "-qb", "sibling", str(sibling))

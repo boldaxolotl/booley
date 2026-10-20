@@ -864,7 +864,9 @@ def _race_policy(race: str, root: Path, home: Path, tmp_path: Path) -> None:
         linked = str(tmp_path / "new linked")
         assert _git(root, "worktree", "add", "-qb", "new", linked).returncode == 0
     elif race == "sibling":
-        (tmp_path / "sibling").rename(tmp_path / "parked")
+        (tmp_path / "nonregular").mkdir()
+        selected = ("config", "--worktree", "core.attributesFile", str(tmp_path / "nonregular"))
+        assert _git(tmp_path / "sibling", *selected).returncode == 0
     else:
         (root / ".gitattributes" if race == "upstream-comment" else user).write_bytes(
             b"# edited comment\n"
@@ -904,6 +906,7 @@ def test_local_publication_rechecks_fresh_policy_facts(tmp_path, monkeypatch, ra
     elif race == "sibling":
         sibling = str(tmp_path / "sibling")
         assert _git(root, "worktree", "add", "-qb", "sibling", sibling).returncode == 0
+        assert _git(root, "config", "extensions.worktreeConfig", "true").returncode == 0
     elif race == "upstream-comment":
         _commit_file(root, ".gitattributes", b"# upstream comment\n")
     elif race == "user-comment":
@@ -927,6 +930,25 @@ def test_local_publication_rechecks_fresh_policy_facts(tmp_path, monkeypatch, ra
         assert attrs.read_bytes() == b"*.txt -text\n" if race == "target" else not attrs.exists()
     if edited:
         assert edited.read_bytes() == b"# edited comment\n"
+
+
+@pytest.mark.parametrize("stealth", [True, False], ids=["local", "root"])
+def test_policy_written_during_planning_is_not_published_over(tmp_path, monkeypatch, stealth):
+    data = _stealth_repo(tmp_path, enabled=stealth)
+    assert _git(tmp_path, "config", "--unset", "core.autocrlf").returncode == 0
+    target = tmp_path / (".git/info/attributes" if stealth else ".gitattributes")
+    name = "_effective_user_inputs" if stealth else "_common_attributes"
+    real = getattr(line_endings, name)
+
+    def planning(root):
+        target.write_bytes(b"* -text\n")  # after ownership is read, before the target snapshot
+        return real(root)
+
+    monkeypatch.setattr(line_endings, name, planning)
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    states = [a.state for a in report.repositories[0].actions if a.target is not None]
+    assert states == [LineEndingActionState.REFUSED]
+    assert target.read_bytes() == b"* -text\n"
 
 
 def test_crlf_index_blob_remains_unchanged_and_meaningful_dirt_is_unsafe(tmp_path: Path):
@@ -1101,6 +1123,10 @@ def test_user_policy_selection_decides_local_default(
     local = root / ".git/info/attributes"
     assert local.exists() is published
     assert not published or local.read_bytes() == b"* text=auto eol=lf\n"
+    if case == "diff-only":
+        assert _git(root, "check-attr", "text", "eol", "--", "a.txt").stdout == (
+            b"a.txt: text: unspecified\na.txt: eol: unspecified\n"
+        )
     if case == "symlink-xdg":
         assert (home / "xdg").is_symlink() and _snapshot(attrs) == before
         assert _git(root, "check-attr", "eol", "--", "a.txt").stdout == b"a.txt: eol: crlf\n"
