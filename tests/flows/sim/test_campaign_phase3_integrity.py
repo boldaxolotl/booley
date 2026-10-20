@@ -587,6 +587,7 @@ def _maximum_hook_selection_plan(names):
     return create_simulation_campaign_plan(manifest), disclosures
 
 
+@pytest.mark.timeout(180)
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
     from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
