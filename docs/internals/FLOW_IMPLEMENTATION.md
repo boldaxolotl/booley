@@ -1098,6 +1098,15 @@ they do not turn a committed evaluation into `blocked`. Report paths are usable
 only when their publication succeeded. No later stage runs after an earlier
 publication failure, except for an observational error checkpoint.
 
+If retaining a completed coverage outcome fails while resolving its public
+reference, fresh and resumed runs keep `simulation`, `passed`, and tests from
+that outcome's in-memory observations. They report `collection:
+infrastructure_error` and `evaluation: blocked` when evaluation was requested
+(`not_requested` otherwise), without attaching a coverage reference. The Flow
+does not resolve or owner-authenticate that reference again on this failure
+path. This retention failure is distinct from a publication failure after the
+nested Coverage Campaign commit described above.
+
 All Simulation progress producers normalize a failed terminal publication onto
 the result already assembled from durable Target or Campaign outcomes. They do
 not replace that result with a generic error. A per-Target progress failure
