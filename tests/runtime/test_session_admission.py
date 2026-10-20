@@ -723,3 +723,56 @@ def test_windows_root_identity_normalizes_drive_case(monkeypatch):
 
     monkeypatch.setattr(session_admission.os.path, "normcase", ntpath.normcase)
     assert session_admission._same_project_root("C:/Users/Project", "c:/users/project")
+
+
+def _listing_only_docker(rows: list[str]):
+    """Docker stub that serves one `docker ps` listing and records inspections."""
+    inspected: list[str] = []
+
+    def run(argv: list[str], **_kwargs):
+        if argv[1] == "ps":
+            return _completed(stdout="\n".join(rows) + "\n")
+        inspected.append(argv[3])
+        return _completed(1, stderr=f"no workspace mount on {argv[3]}")
+
+    return run, inspected
+
+
+def test_project_inventory_skips_host_sidecars(tmp_path: Path) -> None:
+    """Regression #1898: reaper and egress proxy rows must not abort the inventory."""
+    project = tmp_path / "project"
+    project.mkdir()
+    run, inspected = _listing_only_docker(
+        [
+            "reaper-id\tbooley-reaper\t\t\treaper",
+            "proxy-id\tbooley-proxy\t\t\tegress-proxy",
+        ]
+    )
+
+    assert session_admission.running_project_sandboxes(project, run=run) == ()
+    assert inspected == []
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        # A sidecar role does not hide a row that carries Project identity.
+        "odd-id\todd\t\tsome-project-id\treaper",
+        "odd-id\todd\t{folder}\t\treaper",
+        # Nor does it hide a row under the local Sandbox name.
+        "odd-id\t{local}\t\t\treaper",
+        # Sandbox roles and unlabeled roles stay fail-closed too.
+        "odd-id\todd\t\t\tinteractive",
+    ],
+)
+def test_project_inventory_still_inspects_possible_sandboxes(tmp_path: Path, row: str) -> None:
+    from booley.runtime.session_runtime import session_container_name
+
+    project = tmp_path / "project"
+    project.mkdir()
+    row = row.format(folder=project, local=session_container_name(project))
+    run, inspected = _listing_only_docker([row])
+
+    with pytest.raises(session_admission.AdmissionError):
+        session_admission.running_project_sandboxes(project, run=run)
+    assert inspected == ["odd-id"]
