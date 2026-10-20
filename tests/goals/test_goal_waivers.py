@@ -6,15 +6,18 @@ import base64
 import copy
 import hashlib
 import json
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.sim import coverage_waiver_application as application
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
 from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign,
@@ -31,6 +34,7 @@ from booley.flows.sim.coverage_reference import (
     publish_coverage_campaign_reference,
 )
 from booley.flows.sim.coverage_waiver_application import evaluation_json, strict_reevaluation
+from booley.flows.sim.coverage_waivers import CoverageWaiverValidationError
 from booley.flows.sim.waiver_candidates import (
     CampaignBinding,
     WaiverProposal,
@@ -43,11 +47,12 @@ from booley.goals.change_service import create_proposal
 from booley.goals.entry import EntryEnvironment
 from booley.goals.freshness import DEFAULT_RESOLVERS
 from booley.goals.paths import record_paths
-from booley.goals.proposals import ProposalError, load_proposal
+from booley.goals.proposals import Approval, Decision, ProposalError, load_proposal
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
+from booley.mcp import goal_waivers as service
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
 from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
@@ -234,18 +239,31 @@ def persist_campaign(paths, campaign):
     return persisted, loaded
 
 
+def waiver_request(candidate, rationale):
+    return {"kind": "waiver", "goal_key": KEY, "candidate_id": candidate, "rationale": rationale}
+
+
 def propose(layout, env, candidate):
     return create_proposal(
         env,
         layout.record.id,
-        {
-            "kind": "waiver",
-            "goal_key": KEY,
-            "candidate_id": candidate,
-            "rationale": "approve this exact measured point",
-        },
+        waiver_request(candidate, "approve this exact measured point"),
         session_key=None,
     )
+
+
+def relaxation(percent, rationale):
+    return {
+        "kind": "relax",
+        "goal_key": KEY,
+        "rationale": rationale,
+        "after": {
+            "family": "COVERAGE",
+            "target": "top",
+            "tests": "all",
+            "metrics": {"line": percent},
+        },
+    }
 
 
 def public_change(layout, env, arguments):
@@ -273,32 +291,13 @@ def public_change(layout, env, arguments):
 @pytest.mark.timeout(120)
 def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_campaign(layout):
     env, candidate, _root = prepared(layout, covered=18, total=20)
-    public_change(
-        layout,
-        env,
-        {
-            "kind": "relax",
-            "goal_key": KEY,
-            "rationale": "accept measured threshold",
-            "after": {
-                "family": "COVERAGE",
-                "target": "top",
-                "tests": "all",
-                "metrics": {"line": 90},
-            },
-        },
-    )
+    public_change(layout, env, relaxation(90, "accept measured threshold"))
     record = env.store.load(layout.record.id)
     assert build_status(env.store, record).goals[0].status == "met"
     public_change(
         layout,
         env,
-        {
-            "kind": "waiver",
-            "goal_key": KEY,
-            "candidate_id": candidate,
-            "rationale": "exclude one independently reviewed zero-hit point",
-        },
+        waiver_request(candidate, "exclude one independently reviewed zero-hit point"),
     )
     record = env.store.load(layout.record.id)
     state = load_goal_state(env.store, record)
@@ -379,17 +378,7 @@ def test_numeric_derivation_keeps_checked_policy_or_refuses_drift(layout, monkey
     view = create_proposal(
         env,
         layout.record.id,
-        {
-            "kind": "relax",
-            "goal_key": KEY,
-            "rationale": "accept current bounds",
-            "after": {
-                "family": "COVERAGE",
-                "target": "top",
-                "tests": "all",
-                "metrics": {"line": 90},
-            },
-        },
+        relaxation(90, "accept current bounds"),
         session_key=None,
     )
     if race == "during":
@@ -433,10 +422,10 @@ def test_waiver_restart_confines_every_destination_before_writing(layout, attack
         effect["label"] = "candidate"
     path.write_text(json.dumps(transaction))
     paths = record_paths(layout.control, layout.record.id)
-    before = {item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()}
+    before = file_bytes(paths.root)
     with pytest.raises(ProposalError):
         recover(env.store, layout.record.id, env)
-    assert before == {item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()}
+    assert before == file_bytes(paths.root)
     assert not victim.exists() and not (root / "victim").exists()
     assert not paths.changes_file.exists() and not list(root.rglob("*.toml"))
 
@@ -455,12 +444,10 @@ def test_rejected_recovery_has_no_authority_to_publish_goal_or_approval_effects(
         FileEffect(destination, before, before or b"forged", "waiver").to_json()
     )
     path.write_text(json.dumps(transaction))
-    snapshot = {item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()}
+    snapshot = file_bytes(paths.root)
     with pytest.raises(ProposalError, match="durable decision authority"):
         recover(env.store, layout.record.id, env)
-    assert snapshot == {
-        item: item.read_bytes() for item in paths.root.rglob("*") if item.is_file()
-    }
+    assert snapshot == file_bytes(paths.root)
     assert not paths.changes_file.exists() and not list(root.rglob("*.toml"))
 
 
@@ -508,9 +495,9 @@ def test_each_waiver_effect_recovers_without_revalidating_mutable_inputs(layout,
         approve(layout, replace(env, on_boundary=crash), view.proposal.id)
     (layout.worktree / "rtl.v").write_text("module top; wire drift; endmodule\n")
     recover(env.store, layout.record.id, env)
-    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    before = file_bytes(root)
     recover(env.store, layout.record.id, env)
-    assert before == {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert before == file_bytes(root)
     assert (
         load_proposal(record_paths(layout.control, layout.record.id).root, view.proposal.id).state
         == "applied"
@@ -568,11 +555,11 @@ def test_protected_approval_file_beneath_unprotected_root_is_refused(layout):
     env, candidate, root = prepared(layout, directory="coverage-waivers", protected=True)
     view = propose(layout, env, candidate)
     before = env.store.load(layout.record.id)
-    protected = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    protected = file_bytes(root)
     with pytest.raises(ProposalError, match="protected input"):
         approve(layout, env, view.proposal.id)
     assert env.store.load(layout.record.id) == before
-    assert protected == {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert protected == file_bytes(root)
     paths = record_paths(layout.control, layout.record.id)
     assert load_proposal(paths.root, view.proposal.id).state == "approved"
     assert not paths.changes_file.exists()
@@ -605,17 +592,7 @@ def test_numeric_coverage_relaxation_reevaluates_immutable_points_without_waiver
     view = create_proposal(
         env,
         layout.record.id,
-        {
-            "kind": "relax",
-            "goal_key": KEY,
-            "after": {
-                "family": "COVERAGE",
-                "target": "top",
-                "tests": "all",
-                "metrics": {"line": 50},
-            },
-            "rationale": "accept the measured half coverage",
-        },
+        relaxation(50, "accept the measured half coverage"),
         session_key=None,
     )
     approve(layout, env, view.proposal.id)
@@ -656,6 +633,72 @@ def test_recovery_uses_captured_binding_after_producer_drift(layout, drift):
         assert Path(effect["path"]).read_bytes() == base64.b64decode(effect["after"])
     assert list(root.rglob("*.toml"))
     assert not list((layout.worktree / "new-approvals").glob("*"))
+
+
+def file_bytes(root):
+    return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def tree_snapshot(root):
+    return file_bytes(root), {
+        p.relative_to(root): p.stat().st_mode for p in (root, *root.rglob("*"))
+    }
+
+
+def observe_prediction(monkeypatch, waiver_service, candidate, refuse):
+    captured, seen = [], {}
+    promotion = waiver_service._promotion_effects
+    loader = application.load_approved_waiver_set
+
+    def capture(*args):
+        effects = promotion(*args)
+        captured.extend(effects)
+        return effects
+
+    def observe(config, roots, targets):
+        seen.update(file_bytes(getattr(roots, config.anchor) / config.directory))
+        result = loader(config, roots, targets)
+        assert result.waivers[0].waiver_id == candidate
+        if refuse:
+            raise CoverageWaiverValidationError(())
+        return result
+
+    capture_spy = Mock(side_effect=capture)
+    build = Mock(wraps=service.build_promotion)
+    render = Mock(wraps=service.render_approval_document)
+    monkeypatch.setattr(waiver_service, "_promotion_effects", capture_spy)
+    monkeypatch.setattr(application, "load_approved_waiver_set", observe)
+    for module in (application, service):
+        monkeypatch.setattr(module, "build_promotion", build, raising=False)
+        monkeypatch.setattr(module, "render_approval_document", render, raising=False)
+    return captured, seen, (capture_spy, build, render)
+
+
+@pytest.mark.parametrize("anchor", ["rtl_repository", "project_data_repository"])
+@pytest.mark.parametrize("refuse", [False, True])
+def test_prediction_uses_captured_after_bytes_once(layout, monkeypatch, anchor, refuse):
+    env, candidate, root = prepared(layout, anchor)
+    proposal = propose(layout, env, candidate).proposal
+    decision = Decision(
+        "approve",
+        "reviewed",
+        Approval.AGENT_RECORDED,
+        "approve",
+        "2026-10-19T00:00:00Z",
+        proposal.payload_digest,
+        "test-session",
+    )
+    state = load_goal_state(env.store, env.store.load(layout.record.id))
+    captured, seen, spies = observe_prediction(monkeypatch, env.waivers, candidate, refuse)
+    before = tree_snapshot(root)
+    expectation = pytest.raises(CoverageWaiverValidationError) if refuse else nullcontext()
+    with expectation:
+        effects, _ = env.waivers.prepare(proposal, decision, state)
+        assert len(effects) == 2
+    assert tree_snapshot(root) == before
+    assert [spy.call_count for spy in spies] == [1, 1, 1]
+    assert len(seen) == 2
+    assert seen == {e.path.relative_to(root): e.after for e in captured}
 
 
 def test_candidate_campaign_mismatch_is_ineligible(layout):
