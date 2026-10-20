@@ -633,14 +633,14 @@ def test_frozen_legacy_reader_and_merger_retain_success_with_new_warning_record(
     ).current
 
 
-@pytest.mark.parametrize("slot", [None, "last_success", "latest_completed_attempt"])
+@pytest.mark.parametrize("slot", [None, "last_success", "latest_completed_attempt", "complete"])
 def test_missing_record_fields_are_due(tmp_path, slot):
     assert deep.load_deep_state(tmp_path) == deep.DeepState()
     assert deep.record_deep_attempt(tmp_path, _attempt())
     path = deep.deep_stamp_path(tmp_path)
     document = json.loads(path.read_text())
-    if slot is None:
-        del document["last_success"]["image_id"]
+    if slot is None or slot == "complete":
+        del document["last_success"][slot or "image_id"]
     else:
         del document[slot]
     path.write_text(json.dumps(document))

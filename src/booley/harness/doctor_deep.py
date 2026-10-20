@@ -17,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.core.boundary import (
-    require_bool,
+    require_bool_value,
     require_dict,
     require_int,
     require_list,
@@ -198,7 +198,7 @@ def _decode_attempt(raw: object) -> DeepAttempt | None:
         require_str(values, "booley_version"),
         require_str_value(image_id) if image_id is not None else None,
         DeepOutcome(require_str(values, "outcome")),
-        require_bool(values, "complete"),
+        require_bool_value(values["complete"], field="complete"),
         tuple(require_str_value(item) for item in require_list(values.get("reasons"))),
         failures,
         warnings,
