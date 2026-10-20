@@ -118,11 +118,8 @@ def test_init_reports_unsafe_private_store_before_project_work(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
     project = tmp_path / "project"
     project.mkdir()
-    pending = issuance_invalidation.prepare(
-        str(project.resolve()),
-        cleanup_resources=False,
-    )
-    issuance_invalidation.cancel(pending)
+    issuance_invalidation.prepare(str(project.resolve()))
+    issuance_invalidation.cancel(str(project.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
     monkeypatch.setattr(

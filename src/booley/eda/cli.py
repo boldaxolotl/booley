@@ -105,7 +105,7 @@ def run(
     args: argparse.Namespace,
     _project_root: Path,
     *,
-    grant_mutator: GrantMutator | None = None,
+    grant_mutator: GrantMutator,
 ) -> int:
     """Execute one authority operation with human output or explicit JSON."""
     try:
@@ -126,7 +126,7 @@ def run(
     return 0
 
 
-def _dispatch(args: argparse.Namespace, *, grant_mutator: GrantMutator | None = None) -> _Result:
+def _dispatch(args: argparse.Namespace, *, grant_mutator: GrantMutator) -> _Result:
     group = args.eda_group
     action = args.eda_action
     if group == "installation":
@@ -179,10 +179,8 @@ def _grant_action(
     args: argparse.Namespace,
     action: str,
     *,
-    grant_mutator: GrantMutator | None,
+    grant_mutator: GrantMutator,
 ) -> _Result:
-    if grant_mutator is None:
-        raise authority.AuthorityError("EDA grant access requires host lifecycle coordination")
     if action == "list" and grant_mutator.recovery_pending():
         raise authority.AuthorityError(
             "Sandbox recovery is pending; run a host lifecycle command first"

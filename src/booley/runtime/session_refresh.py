@@ -7,7 +7,6 @@ import binascii
 import hashlib
 import json
 import os
-from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
@@ -730,11 +729,7 @@ def recover_all_locked() -> tuple[RecoveryResult, ...]:
     return tuple(recover_project_locked(project) for project in pending_refresh_projects())
 
 
-def shared_recovery_blocks_command(
-    *,
-    read_only: bool,
-    cleanup_resources: Callable[[str], tuple[str, ...]] | None = None,
-) -> bool:
+def shared_recovery_blocks_command(*, read_only: bool) -> bool:
     """Check or recover host-wide journals; report whether the command must stop."""
     from booley.runtime import issuance_invalidation
 
@@ -742,15 +737,7 @@ def shared_recovery_blocks_command(
         refreshes = pending_refresh_projects()
         invalidations = issuance_invalidation.pending_invalidations()
         return bool(refreshes or invalidations)
-    if cleanup_resources is None:
-        from booley.eda.provisioning.licensing.flexnet_docker import (
-            cleanup_project_resources_for_identity,
-        )
-
-        cleanup_resources = cleanup_project_resources_for_identity
-    invalidated = issuance_invalidation.recover_all_locked(
-        cleanup_resources=cleanup_resources,
-    )
+    invalidated = issuance_invalidation.recover_all_locked()
     refreshed = recover_all_locked()
     return bool(invalidated or refreshed)
 

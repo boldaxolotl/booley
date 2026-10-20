@@ -37,11 +37,8 @@ def _current_sidecars() -> bootstrap.host_sidecars.SidecarResult:
 
 def _prepare_empty_invalidation_store(config_root: Path, project: Path) -> Path:
     project.mkdir()
-    pending = issuance_invalidation.prepare(
-        str(project.resolve()),
-        cleanup_resources=False,
-    )
-    issuance_invalidation.cancel(pending)
+    issuance_invalidation.prepare(str(project.resolve()))
+    issuance_invalidation.cancel(str(project.resolve()))
     return config_root / "booley"
 
 

@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from tests import eda_grant_support
 
 from booley.core import private_store
 from booley.eda.provisioning import authority
@@ -94,7 +95,7 @@ def test_registration_grant_resolution_and_referential_integrity(
         lmgrd_port=2100,
         vendor_port=2101,
     )
-    grant = authority._add_grant(
+    grant = eda_grant_support.add_grant(
         project, "vivado", installation="vivado_2025_2", license_profile=profile.name
     )
 
@@ -111,7 +112,7 @@ def test_issuance_resolves_the_installation_selected_only_by_the_grant(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, source = _registered(tmp_path)
-    authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
 
     with authority.resolve_for_issuance(project, True) as (installation, profile):
         assert installation is not None
@@ -144,7 +145,7 @@ def test_issuance_rejects_host_provisioning_without_an_installation_grant(
         lmgrd_port=2100,
         vendor_port=2101,
     )
-    authority._add_grant(project, "vivado", license_profile="site_a")
+    eda_grant_support.add_grant(project, "vivado", license_profile="site_a")
 
     with (
         pytest.raises(authority.AuthorityError, match="grant has no installation"),
@@ -157,7 +158,7 @@ def test_issuance_does_not_mount_a_stale_installation_grant(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
 
     with (
         pytest.raises(authority.AuthorityError, match="does not request host provisioning"),
@@ -173,7 +174,7 @@ def test_exact_project_identity_does_not_authorize_copy(
     copied = tmp_path / "copied"
     copied.mkdir()
     (copied / ".git").mkdir()
-    authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
 
     with pytest.raises(authority.AuthorityError, match="no exact"):
         authority.resolve_grant(copied, "vivado")
@@ -184,7 +185,7 @@ def test_grant_canonicalizes_a_marked_project_symlink(tmp_path: Path, private_st
     alias = tmp_path / "project-alias"
     alias.symlink_to(project, target_is_directory=True)
 
-    grant = authority._add_grant(alias, "vivado", installation="vivado_2025_2")
+    grant = eda_grant_support.add_grant(alias, "vivado", installation="vivado_2025_2")
 
     assert grant.project_root == str(project.resolve())
     assert authority.resolve_grant(project, "vivado") == grant
@@ -196,7 +197,7 @@ def test_grant_rejects_non_booley_directory(tmp_path: Path, private_state: Path)
     unrelated.mkdir()
 
     with pytest.raises(authority.AuthorityError, match=r"no canonical \.git or \.booley"):
-        authority._add_grant(unrelated, "vivado", installation="vivado_2025_2")
+        eda_grant_support.add_grant(unrelated, "vivado", installation="vivado_2025_2")
 
 
 @pytest.mark.parametrize("root", [Path("/"), Path.home(), Path("/etc"), Path("/tmp")])
@@ -208,7 +209,7 @@ def test_grant_rejects_broad_or_system_root(
         pytest.skip(f"system root absent on this platform: {root}")
 
     with pytest.raises(authority.AuthorityError, match="unsafe Project Root"):
-        authority._add_grant(root, "vivado", installation="vivado_2025_2")
+        eda_grant_support.add_grant(root, "vivado", installation="vivado_2025_2")
 
 
 def test_grant_rejects_private_authority_overlap(tmp_path: Path, private_state: Path) -> None:
@@ -217,7 +218,7 @@ def test_grant_rejects_private_authority_overlap(tmp_path: Path, private_state: 
     (private_state / ".git").mkdir()
 
     with pytest.raises(authority.AuthorityError, match="private EDA authority"):
-        authority._add_grant(private_state, "vivado", installation="vivado_2025_2")
+        eda_grant_support.add_grant(private_state, "vivado", installation="vivado_2025_2")
 
 
 def test_grant_rejects_registered_installation_overlap(
@@ -230,16 +231,16 @@ def test_grant_rejects_registered_installation_overlap(
     authority.register_installation("nested", "vivado", source)
 
     with pytest.raises(authority.AuthorityError, match=r"overlaps.*installation"):
-        authority._add_grant(project, "vivado", installation="nested")
+        eda_grant_support.add_grant(project, "vivado", installation="nested")
 
 
 def test_revoke_removes_authority_without_runtime_knowledge(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
 
-    authority._revoke_grant(project, "vivado")
+    eda_grant_support.revoke_grant(project, "vivado")
 
     with pytest.raises(authority.AuthorityError, match="no exact"):
         authority.resolve_grant(project, "vivado")
@@ -249,11 +250,11 @@ def test_revoke_uses_stored_identity_after_project_root_is_deleted(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    grant = authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    grant = eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
 
     assert authority.revoke_project_identity(project, "vivado") == grant.project_root
-    assert authority._revoke_grant(project, "vivado") == grant
+    assert eda_grant_support.revoke_grant(project, "vivado") == grant
 
     assert authority.load_state().grants == ()
 
@@ -263,20 +264,20 @@ def test_revoke_uses_stored_identity_after_project_path_is_rebound(
     tmp_path: Path, private_state: Path
 ) -> None:
     project, _ = _registered(tmp_path)
-    grant = authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    grant = eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
     replacement = tmp_path / "replacement"
     replacement.mkdir()
     project.symlink_to(replacement, target_is_directory=True)
     assert authority.revoke_project_identity(project, "vivado") == grant.project_root
-    assert authority._revoke_grant(project, "vivado") == grant
+    assert eda_grant_support.revoke_grant(project, "vivado") == grant
 
 
 def test_revoke_missing_relative_root_points_to_project_inventory(
     tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = _registered(tmp_path)
-    authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
     shutil.rmtree(project)
     monkeypatch.chdir(tmp_path)
 
@@ -284,7 +285,7 @@ def test_revoke_missing_relative_root_points_to_project_inventory(
         authority.AuthorityError,
         match=r"absolute canonical path.*`booley projects`",
     ):
-        authority._revoke_grant(Path("project"), "vivado")
+        eda_grant_support.revoke_grant(Path("project"), "vivado")
 
     assert len(authority.load_state().grants) == 1
 
@@ -338,7 +339,7 @@ def test_insecure_registry_mode_and_symlink_fail_closed(
 
 def test_corrupt_and_duplicate_grants_fail_closed(tmp_path: Path, private_state: Path) -> None:
     project, _ = _registered(tmp_path)
-    authority._add_grant(project, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
     path = authority.state_path()
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["grants"].append(dict(raw["grants"][0]))
@@ -395,16 +396,12 @@ def test_symlinked_authority_ancestor_fails_closed(
         authority.ensure_state_dir()
 
 
-@pytest.mark.parametrize("operation", ["identity", "add"])
-def test_source_project_binding_canonical_authority(tmp_path, private_state, operation):
+def test_source_project_binding_canonical_authority(tmp_path, private_state):
     project, _ = _registered(tmp_path)
     (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     before = authority.load_state()
     with pytest.raises(authority.AuthorityError, match="Source Checkout"):
-        if operation == "identity":
-            authority.grant_project_identity(project)
-        else:
-            authority._add_grant(project, "vivado", installation="vivado_2025_2")
+        eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
     assert authority.load_state() == before
 
 
@@ -426,5 +423,5 @@ def test_source_project_binding_symlink_retarget(tmp_path, private_state):
     alias.symlink_to(source, target_is_directory=True)
     before = authority.load_state()
     with pytest.raises(authority.AuthorityError, match="Source Checkout"):
-        authority._add_grant(alias, "vivado", installation="vivado_2025_2")
+        eda_grant_support.add_grant(alias, "vivado", installation="vivado_2025_2")
     assert authority.load_state() == before

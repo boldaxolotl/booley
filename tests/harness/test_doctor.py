@@ -412,11 +412,8 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     config_root = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
-    pending = issuance_invalidation.prepare(
-        str(tmp_path.resolve()),
-        cleanup_resources=False,
-    )
-    issuance_invalidation.cancel(pending)
+    issuance_invalidation.prepare(str(tmp_path.resolve()))
+    issuance_invalidation.cancel(str(tmp_path.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
     monkeypatch.setattr(doctor.session_runtime, "up", real_up)

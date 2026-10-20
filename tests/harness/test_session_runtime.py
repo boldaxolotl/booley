@@ -3624,11 +3624,8 @@ class TestSessionRefresh:
         from booley.harness.booley import _build_parser
         from booley.runtime import session_refresh
 
-        pending = issuance_invalidation.prepare(
-            str(workspace.resolve()),
-            cleanup_resources=False,
-        )
-        issuance_invalidation.cancel(pending)
+        issuance_invalidation.prepare(str(workspace.resolve()))
+        issuance_invalidation.cancel(str(workspace.resolve()))
         booley_config = tmp_path / "xdg" / "booley"
         booley_config.chmod(0o755)
         monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)

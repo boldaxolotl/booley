@@ -3,80 +3,139 @@
 from __future__ import annotations
 
 import os
-from contextlib import nullcontext
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from booley.eda.provisioning import authority
+from booley.eda.provisioning.licensing import flexnet_docker
 from booley.harness import eda_grants
-from booley.runtime import issuance_invalidation, session_refresh
+from booley.runtime import issuance_invalidation, lifecycle_lock, session_issuance, session_refresh
+from tests import eda_grant_support
 
 
-def test_grant_add_delegates_required_callbacks_to_runtime(
+@pytest.fixture(autouse=True)
+def private_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+
+def _patch_revoke(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+    identity: str,
+    commit: Callable[[], authority.ProjectGrant],
+) -> None:
+    """Record the revoke sequence around a stubbed authority mutation."""
+
+    @contextmanager
+    def locked(_operation: str):
+        events.append("lock-enter")
+        yield
+        events.append("lock-exit")
+
+    @contextmanager
+    def prepared(_identity: str, _kind: str):
+        events.append("prepare")
+        yield commit
+
+    real_prepare = issuance_invalidation.prepare
+    monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", locked)
+    monkeypatch.setattr(
+        session_refresh,
+        "shared_recovery_blocks_command",
+        lambda **_kwargs: events.append("recover-old") or False,
+    )
+    monkeypatch.setattr(authority, "revoke_project_identity", lambda *_args: identity)
+    monkeypatch.setattr(authority, "_prepare_revoke_grant", prepared)
+    monkeypatch.setattr(
+        issuance_invalidation,
+        "prepare",
+        lambda root: (events.append("journal"), real_prepare(root))[1],
+    )
+    monkeypatch.setattr(
+        session_issuance, "invalidate_project", lambda _root: events.append("stamp")
+    )
+    monkeypatch.setattr(
+        flexnet_docker,
+        "cleanup_project_resources_for_identity",
+        lambda _root: (events.append("cleanup"), ())[1],
+    )
+
+
+def test_revoke_runs_recovery_prepare_journal_commit_then_cleanup_under_lifecycle_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    identity = str((tmp_path / "stored-project").resolve())
+    grant = authority.ProjectGrant(identity, "vivado", "registered", "site")
+    events: list[str] = []
+    _patch_revoke(monkeypatch, events, identity, lambda: events.append("commit") or grant)
+
+    assert eda_grants.GrantCoordinator().revoke(tmp_path, "vivado") == grant
+    assert events == [
+        "lock-enter",
+        "recover-old",
+        "prepare",
+        "journal",
+        "commit",
+        "stamp",
+        "cleanup",
+        "lock-exit",
+    ]
+    assert issuance_invalidation.pending_invalidations() == ()
+
+
+def test_revoke_commit_failure_keeps_journal_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = str((tmp_path / "stored-project").resolve())
+    events: list[str] = []
+
+    def failing_commit() -> authority.ProjectGrant:
+        raise RuntimeError("ambiguous write failure")
+
+    _patch_revoke(monkeypatch, events, identity, failing_commit)
+
+    with pytest.raises(RuntimeError, match="ambiguous write failure"):
+        eda_grants.GrantCoordinator().revoke(tmp_path, "vivado")
+
+    assert "stamp" not in events
+    assert issuance_invalidation.pending_invalidations() == (identity,)
+
+
+@pytest.mark.parametrize("failure", ["validation", "invalidation"])
+def test_failed_add_commits_nothing_and_writes_no_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
     project = tmp_path / "project"
-    project.mkdir()
-    grant = authority.ProjectGrant(str(project), "vivado", "registered", None)
-    captured = {}
-    monkeypatch.setattr(authority, "grant_project_identity", str)
-    monkeypatch.setattr(
-        authority,
-        "_prepare_add_grant",
-        lambda *_args, **_kwargs: nullcontext(lambda: grant),
-    )
+    (project / ".git").mkdir(parents=True)
+    profile = eda_grant_support.register_license("site")
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    stamps = []
 
-    def coordinate(**kwargs):
-        captured.update(kwargs)
-        identity = kwargs["resolve_project_identity"]()
-        with kwargs["mutation"](identity) as commit:
-            return commit()
+    def withdraw(root: str) -> None:
+        stamps.append(root)
+        if failure == "invalidation":
+            raise OSError("stamp is read-only")
 
-    monkeypatch.setattr(eda_grants.issuance_invalidation, "coordinate_mutation", coordinate)
+    monkeypatch.setattr(session_issuance, "invalidate_project", withdraw)
+    # A rejected add must stop before the stamp is touched.
+    licence_arg = profile.name if failure == "invalidation" else None
+    message = "cannot invalidate" if failure == "invalidation" else "requires an installation"
 
-    assert (
+    with pytest.raises(authority.AuthorityError, match=message):
         eda_grants.GrantCoordinator().add(
-            project,
-            "vivado",
-            installation="registered",
-            license_profile=None,
+            project, "vivado", installation=None, license_profile=licence_arg
         )
-        == grant
-    )
-    assert captured["operation"] == "EDA grant add"
-    assert captured["invalidate_before_mutation"] is True
-    assert captured["cleanup_after_mutation"] is False
-    assert captured["cleanup_resources"] is eda_grants.cleanup_project_resources_for_identity
 
-
-def test_grant_revoke_resolves_and_mutates_one_stored_identity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    stored = str(tmp_path / "stored-project")
-    grant = authority.ProjectGrant(stored, "vivado", "registered", "site")
-    mutated = []
-    monkeypatch.setattr(authority, "revoke_project_identity", lambda *_args: stored)
-    monkeypatch.setattr(
-        authority,
-        "_prepare_revoke_grant",
-        lambda identity, kind: nullcontext(lambda: mutated.append((identity, kind)) or grant),
-    )
-
-    def coordinate(**kwargs):
-        identity = kwargs["resolve_project_identity"]()
-        assert kwargs["invalidate_before_mutation"] is False
-        assert kwargs["cleanup_after_mutation"] is True
-        with kwargs["mutation"](identity) as commit:
-            return commit()
-
-    monkeypatch.setattr(eda_grants.issuance_invalidation, "coordinate_mutation", coordinate)
-
-    assert eda_grants.GrantCoordinator().revoke(project, "vivado") == grant
-    assert mutated == [(stored, "vivado")]
+    assert stamps == ([str(project.resolve())] if failure == "invalidation" else [])
+    assert authority.load_state().grants == ()
+    assert issuance_invalidation.pending_invalidations() == ()
 
 
 def test_raw_grant_mutations_are_not_public() -> None:
@@ -104,11 +163,8 @@ def test_pending_recovery_probe_preserves_private_store_diagnostic(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
     project = tmp_path / "project"
     project.mkdir()
-    pending = issuance_invalidation.prepare(
-        str(project.resolve()),
-        cleanup_resources=False,
-    )
-    issuance_invalidation.cancel(pending)
+    issuance_invalidation.prepare(str(project.resolve()))
+    issuance_invalidation.cancel(str(project.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
     monkeypatch.setattr(session_refresh, "pending_refresh_projects", lambda: ())
