@@ -9,7 +9,6 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 PROVENANCE_SCHEMA = "3"
-PREVIOUS_PROVENANCE_SCHEMA = "2"
 LEGACY_PROVENANCE_SCHEMA = "1"
 LABEL_SCHEMA = "io.booley.provenance.schema"
 LABEL_ARTIFACT_ROLE = "io.booley.artifact.role"

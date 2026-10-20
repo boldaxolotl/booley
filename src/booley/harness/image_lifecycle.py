@@ -31,6 +31,26 @@ from booley.runtime.docker_capacity import (
     ensure_docker_build_capacity,
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
+from booley.runtime.image_lifecycle import (
+    BASE_IMAGE,
+    FLAVOR_RECIPES,
+    ArtifactPolicy,
+    ArtifactSource,
+    BuildPort,
+    DockerPort,
+    HostImageScope,
+    ImageLifecycleError,
+    ImageNode,
+    ImageRole,
+    ImageScope,
+    Intent,
+    LifecyclePlan,
+    LifecycleResult,
+    PlanAction,
+    PreparedConvergence,
+    ProjectImageScope,
+    Status,
+)
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_resources import own_tag_snapshot, record_superseded_images
 from booley.runtime.version_attribution import VersionOrigin
@@ -39,28 +59,6 @@ if TYPE_CHECKING:
     from booley.harness.setup.common import InitContext
 
 logger = logging.getLogger(__name__)
-
-BASE_IMAGE = runtime_lifecycle.BASE_IMAGE
-FLAVOR_RECIPES = runtime_lifecycle.FLAVOR_RECIPES
-RISCV_SUBSTRATE_IMAGE = runtime_lifecycle.RISCV_SUBSTRATE_IMAGE
-BuildPort = runtime_lifecycle.BuildPort
-ArtifactSource = runtime_lifecycle.ArtifactSource
-ArtifactPolicy = runtime_lifecycle.ArtifactPolicy
-DockerPort = runtime_lifecycle.DockerPort
-HostImageScope = runtime_lifecycle.HostImageScope
-ImageCleanup = runtime_lifecycle.ImageCleanup
-ImageLifecycleError = runtime_lifecycle.ImageLifecycleError
-InstalledImageContractError = runtime_lifecycle.InstalledImageContractError
-ImageNode = runtime_lifecycle.ImageNode
-ImageScope = runtime_lifecycle.ImageScope
-Intent = runtime_lifecycle.Intent
-LifecycleResult = runtime_lifecycle.LifecycleResult
-ProjectImageScope = runtime_lifecycle.ProjectImageScope
-Status = runtime_lifecycle.Status
-ImageRole = runtime_lifecycle.ImageRole
-LifecyclePlan = runtime_lifecycle.LifecyclePlan
-PreparedConvergence = runtime_lifecycle.PreparedConvergence
-PlanAction = runtime_lifecycle.PlanAction
 
 
 class _LegacyBuildAdapter:
@@ -96,11 +94,6 @@ class _LegacyBuildAdapter:
     def _pull_release(self, node: ImageNode) -> str:
         from booley.harness.setup.docker_image import _try_pull_image, remote_tag
 
-        shipped = node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES
-        if not shipped:
-            raise ImageLifecycleError(
-                f"no published Sandbox Image source exists for {node.reference}"
-            )
         if not _try_pull_image(node.payload.version, node.reference, adopt=False):
             raise ImageLifecycleError(
                 f"could not pull current packaged Sandbox Image {node.reference}"
@@ -110,8 +103,6 @@ class _LegacyBuildAdapter:
     def _build_local(self, node: ImageNode, *, force: bool) -> None:
         from booley.harness.setup.common import InitContext
 
-        if node.reference != BASE_IMAGE:
-            raise ImageLifecycleError("Project images require the transaction planner")
         context = InitContext(
             project_root=self.project_root,
             force=force,
