@@ -587,14 +587,13 @@ def test_environment_check_emits_bootstrap_commands(monkeypatch, tmp_path):
 def test_dependency_helpers_and_platform_paths(monkeypatch, tmp_path):
     root = Path(__file__).parents[2]
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
-    fingerprint = readiness.dependency_fingerprint(root)
-    assert len(fingerprint) == 32
-    monkeypatch.setattr(readiness, "RECEIPT_SCHEMA_VERSION", 1)
-    assert readiness.dependency_fingerprint(root) != fingerprint
+    assert len(readiness.dependency_fingerprint(root)) == 32
     assert readiness.dependency_argv(root)[0] == "install"
     monkeypatch.setattr(readiness.sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    assert readiness.agent_tools_root() == tmp_path / "local" / "Booley" / "agent-tools"
+    assert readiness.agent_tools_root() == tmp_path / "local" / "Booley" / "agent-tools-v2"
+    monkeypatch.setattr(readiness, "RECEIPT_SCHEMA_VERSION", 1)
+    assert readiness.agent_tools_root().name == "agent-tools-v1"
     assert readiness.venv_python(tmp_path) == tmp_path / "Scripts/python.exe"
 
 
@@ -731,4 +730,4 @@ def test_remaining_probe_and_environment_branches(monkeypatch, tmp_path):
     gitfile.write_text("gitdir", encoding="utf-8")
     assert not readiness._is_linked_worktree(tmp_path)
     monkeypatch.setattr(readiness.sys, "platform", "linux")
-    assert readiness.agent_tools_root().name == "agent-tools"
+    assert readiness.agent_tools_root().name == "agent-tools-v2"
