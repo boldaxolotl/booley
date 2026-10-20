@@ -312,10 +312,11 @@ def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeyp
     rejected = EndpointOutcome(exit_code=2)
 
     def gate():
+        assert flow.context.cycle_report_json is None
         assert flow.context._eda_tool is None
         assert flow.context._eda_tools == {"sim": None}
         with flow.context.publication_resources:
-            path = flow.context.write_report(flow.context._adapt_outcome(rejected))
+            path = flow.context.write_report(rejected)
         assert '"cycle_counts"' not in path.read_text()
         assert flow.context._simulation_campaign_outcomes is previous
         return rejected
