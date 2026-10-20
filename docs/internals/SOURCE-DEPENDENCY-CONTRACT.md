@@ -145,13 +145,13 @@ observation package independent of Targets; D5/D6 already protect Runtime from
 MCP, Specialists and Harness. No composition exemption or cycle expansion is
 needed. Runtime still consumes `targets.flow_names` through `shared_infra`.
 
-The observer reuses the released read-only progress functions from
-`flows.progress_lifecycle`. That owner also contains publication, repair,
-supersession, locking and coverage-origin validation. Moving it wholesale would
-relocate unrelated behavior; choosing a shared lower-level progress owner needs
-its own investigation. Thus Runtime's Flow dependency remains explicit in this
-slice, including the existing complete exact-progress fallback past the parsed
-artifact-history limit.
+The observer reuses progress shape validation from `flows.progress_lifecycle`.
+That owner also contains publication, repair, supersession, locking and
+coverage-origin validation. Moving it wholesale would relocate unrelated
+behavior; choosing a shared lower-level progress owner needs its own
+investigation. Runtime's Flow dependency remains explicit. Exact progress past
+the parsed artifact-history limit uses the artifact cache's generation reuse,
+with overflow candidates visited newest first on a progress miss.
 
 The former internal `runtime.job_snapshot` module is replaced by the observation
 facade and Dashboard composition. All in-repository consumers migrate together;
