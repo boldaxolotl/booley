@@ -71,49 +71,22 @@ class SimulationCampaignWorkloadMismatchError(SimulationCampaignIntegrityError):
         self.diagnostic = diagnostic
 
 
-class _DiagnosticProjection:
-    def __init__(self, findings: tuple[WorkloadMismatch, ...]) -> None:
-        self.findings = findings
-        self.roots: list[str] = []
-        self.root_lines: set[str] = set()
-        self.explained: set[int] = set()
-        self.derived: set[int] = set()
-        self.fallback: set[int] = set()
-        self.pointer_indices: dict[str, set[int]] = {}
-        self.prefix_indices: dict[str, set[int]] = {}
-        for index, item in enumerate(findings):
-            self.pointer_indices.setdefault(item.pointer, set()).add(index)
-            parts = item.pointer.split("/")
-            for length in range(1, len(parts) + 1):
-                prefix = "/".join(parts[:length])
-                self.prefix_indices.setdefault(prefix, set()).add(index)
+_EXPLAINED, _DERIVED = "explained", "derived"
+_AMBIGUOUS_SOURCES = "source paths ambiguous: duplicate source path"
 
-    def indices(self, prefix: str) -> set[int]:
-        return set(self.prefix_indices.get(prefix, ()))
 
-    def explain(self, indices: set[int], lines: Sequence[str]) -> None:
-        self.explained.update(indices)
-        for line in lines:
-            self.add_root(line)
+@dataclass(slots=True)
+class _Projection:
+    """Named causes in category order plus the regions whose raw leaves they cover."""
 
-    def add_root(self, line: str, *, preserve_duplicate: bool = False) -> None:
-        if preserve_duplicate or line not in self.root_lines:
-            self.roots.append(line)
-            self.root_lines.add(line)
+    documents: tuple[Mapping[str, Any], Mapping[str, Any]]
+    regions: frozenset[tuple[str, ...]]
+    roots: list[str]
+    resolved: dict[tuple[str, ...], str]
 
-    def finish(self) -> WorkloadDiagnostic:
-        accounted = self.explained | self.derived
-        for index, item in enumerate(self.findings):
-            if index not in accounted:
-                self.fallback.add(index)
-                self.add_root(f"workload changed: {item.message}", preserve_duplicate=True)
-        assert not (
-            self.explained & self.derived
-            | self.explained & self.fallback
-            | self.derived & self.fallback
-        )
-        assert self.explained | self.derived | self.fallback == set(range(len(self.findings)))
-        return WorkloadDiagnostic(self.findings, tuple(self.roots), len(self.derived))
+    def explain(self, region: tuple[str, ...], lines: Sequence[str] = ()) -> None:
+        self.resolved[region] = _EXPLAINED
+        self.roots.extend(lines)
 
 
 def project_workload_mismatches(
@@ -122,23 +95,44 @@ def project_workload_mismatches(
     findings: tuple[WorkloadMismatch, ...] | None = None,
 ) -> WorkloadDiagnostic:
     """Summarize validated values without changing comparison or reading files."""
-    projection = _DiagnosticProjection(
-        compare_manifests(expected, current) if findings is None else findings
-    )
-    if not projection.findings:
-        return projection.finish()
-    left, right = expected.document, current.document
-    old_workload, new_workload = left["workload"], right["workload"]
-    old_recipe, new_recipe = old_workload["source_recipe"], new_workload["source_recipe"]
-    _project_sources(projection, old_recipe["sources"], new_recipe["sources"])
-    _project_parameters(projection, old_recipe["parameters"], new_recipe["parameters"])
-    _project_runtime(projection, old_workload["runtime_inputs"], new_workload["runtime_inputs"])
-    _project_suite(projection, left["required_suite"], right["required_suite"])
-    _project_prepared_sources(projection, left, right)
-    _project_variants(projection, left, right)
-    _project_items(projection, left, right)
-    _project_command_model(projection, left, right)
-    return projection.finish()
+    findings = compare_manifests(expected, current) if findings is None else findings
+    if not findings:
+        return WorkloadDiagnostic(findings, (), 0)
+    keys = [_region(item.pointer) for item in findings]
+    regions = frozenset(key[:size] for key in keys if key for size in (1, len(key)))
+    projection = _Projection((expected.document, current.document), regions, [], {})
+    for project in _PROJECTORS:
+        project(projection)
+    resolved = projection.resolved
+    kinds = [resolved.get(key, resolved.get(key[:1])) if key else None for key in keys]
+    fallback = [
+        f"workload changed: {item.message}"
+        for item, kind in zip(findings, kinds, strict=True)
+        if kind is None
+    ]
+    roots = (*dict.fromkeys(projection.roots), *fallback)
+    return WorkloadDiagnostic(findings, roots, kinds.count(_DERIVED))
+
+
+def _region(pointer: str) -> tuple[str, ...] | None:
+    """Name the manifest region whose facts can account for one raw pointer."""
+    region = None
+    match pointer.split("/")[1:]:
+        case ["workload", "source_recipe", ("sources" | "parameters") as name, *_]:
+            region = (name,)
+        case ["workload", "runtime_inputs", position, "declaration_id"]:
+            region = ("runtime_inputs", position)
+        case ["workload", "runtime_inputs", *_]:
+            region = ("runtime_inputs",)
+        case ["workload", "build_recipe", "command_model_sha256", *_]:
+            region = ("command_model",)
+        case ["required_suite", *_]:
+            region = ("required_suite",)
+        case ["planning_disclosures", position, "generated_files", entry, "bytes" | "sha256"]:
+            region = ("prepared", position, entry)
+        case [("build_variants" | "work_items") as name, position, member, *_]:
+            region = (name, position, member)
+    return region
 
 
 def _label(value: object) -> str:
@@ -150,13 +144,10 @@ def _diagnostic_value(value: object) -> str:
     return canonical_json_bytes(value).decode("utf-8").rstrip("\n")
 
 
-def _diagnostic_display(value: object) -> str:
-    return json.dumps(
-        json.loads(_diagnostic_value(value)),
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+def _diagnostic_display(text: str) -> str:
+    if text == "<absent>":
+        return text
+    return json.dumps(json.loads(text), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def _entry_map(entries: Sequence[Mapping[str, object]], key: str):
@@ -164,6 +155,13 @@ def _entry_map(entries: Sequence[Mapping[str, object]], key: str):
     if len(set(names)) != len(names):
         return None
     return {entry[key]: entry for entry in entries}
+
+
+def _source_maps(projection: _Projection):
+    return tuple(
+        _entry_map(document["workload"]["source_recipe"]["sources"], "path")
+        for document in projection.documents
+    )
 
 
 def _named_changes(old, new, *, kind: str, ignored: frozenset[str] = frozenset()):
@@ -182,36 +180,34 @@ def _named_changes(old, new, *, kind: str, ignored: frozenset[str] = frozenset()
     return lines
 
 
-def _project_sources(projection, old, new) -> None:
-    prefix = "/workload/source_recipe/sources"
-    indices = projection.indices(prefix)
-    if not indices:
+def _project_sources(projection: _Projection) -> None:
+    if ("sources",) not in projection.regions:
         return
-    old_map, new_map = _entry_map(old, "path"), _entry_map(new, "path")
+    old_map, new_map = _source_maps(projection)
     if old_map is None or new_map is None:
-        projection.add_root("source paths ambiguous: duplicate source path")
+        projection.roots.append(_AMBIGUOUS_SOURCES)
         return
-    projection.explain(indices, _named_changes(old_map, new_map, kind="source"))
+    projection.explain(("sources",), _named_changes(old_map, new_map, kind="source"))
 
 
-def _project_parameters(projection, old, new) -> None:
-    indices = projection.indices("/workload/source_recipe/parameters")
-    old_map, new_map = _entry_map(old, "name"), _entry_map(new, "name")
+def _project_parameters(projection: _Projection) -> None:
+    old_map, new_map = (
+        _entry_map(document["workload"]["source_recipe"]["parameters"], "name")
+        for document in projection.documents
+    )
     lines = []
     for name in sorted(set(old_map) | set(new_map)):
         old_value = _diagnostic_value(old_map[name]["value"]) if name in old_map else "<absent>"
         new_value = _diagnostic_value(new_map[name]["value"]) if name in new_map else "<absent>"
-        if name not in old_map or name not in new_map or old_value != new_value:
-            old_display = (
-                _diagnostic_display(old_map[name]["value"]) if name in old_map else "<absent>"
-            )
-            new_display = (
-                _diagnostic_display(new_map[name]["value"]) if name in new_map else "<absent>"
+        if old_value != new_value:
+            old_display, new_display = (
+                _diagnostic_display(old_value),
+                _diagnostic_display(new_value),
             )
             lines.append(f"parameter {_label(name)}: {old_display} → {new_display}")
     if not lines and tuple(old_map) != tuple(new_map):
         lines.append("parameter order changed")
-    projection.explain(indices, lines)
+    projection.explain(("parameters",), lines)
 
 
 def _known_preparation_pair(old, new) -> bool:
@@ -241,28 +237,22 @@ def _prepared_source_matches(entry, source) -> bool:
     )
 
 
-def _prepared_existing_cause(projection, before, after, sources) -> bool:
-    old_sources, new_sources = sources
+def _replicates_source_change(before, after, sources) -> bool:
     path = before.get("source_path", before["path"])
+    old_source, new_source = (
+        None if entries is None else entries.get(path) for entries in sources
+    )
     return (
-        after.get("source_path", after["path"]) == path
-        and old_sources is not None
-        and new_sources is not None
-        and path in old_sources
-        and path in new_sources
-        and f"source changed: {_label(path)}" in projection.root_lines
-        and _prepared_source_matches(before, old_sources[path])
-        and _prepared_source_matches(after, new_sources[path])
+        old_source is not None
+        and new_source is not None
+        and old_source != new_source
+        and _prepared_source_matches(before, old_source)
+        and _prepared_source_matches(after, new_source)
     )
 
 
-def _prepared_leaf_indices(projection, disclosure_position, entry_position) -> set[int]:
-    prefix = f"/planning_disclosures/{disclosure_position}/generated_files/{entry_position}"
-    pointers = {f"{prefix}/bytes", f"{prefix}/sha256"}
-    return set().union(*(projection.pointer_indices.get(pointer, ()) for pointer in pointers))
-
-
-def _prepared_observations(projection, left, right):
+def _prepared_changes(projection: _Projection):
+    left, right = projection.documents
     for position, (old, new) in enumerate(
         zip(left["planning_disclosures"], right["planning_disclosures"], strict=False)
     ):
@@ -277,78 +267,56 @@ def _prepared_observations(projection, left, right):
                 k: v for k, v in after.items() if k not in {"bytes", "sha256"}
             }:
                 continue
-            indices = _prepared_leaf_indices(projection, position, entry_position)
-            if indices:
-                yield before, after, indices, position
+            region = ("prepared", str(position), str(entry_position))
+            if region in projection.regions:
+                yield region, position, before, after
 
 
-def _project_prepared_sources(projection, left, right) -> None:
-    sources = (
-        _entry_map(left["workload"]["source_recipe"]["sources"], "path"),
-        _entry_map(right["workload"]["source_recipe"]["sources"], "path"),
-    )
+def _project_prepared_sources(projection: _Projection) -> None:
+    sources = _source_maps(projection)
     observations, paths = {}, {}
-    for before, after, indices, position in _prepared_observations(projection, left, right):
-        if _prepared_existing_cause(projection, before, after, sources):
-            projection.explain(indices, ())
+    for region, position, before, after in _prepared_changes(projection):
+        if _replicates_source_change(before, after, sources):
+            projection.explain(region)
             continue
         key = (before["path"], before["bytes"], before["sha256"], after["bytes"], after["sha256"])
-        grouped_indices, positions = observations.setdefault(key, (set(), set()))
-        grouped_indices.update(indices)
+        regions, positions = observations.setdefault(key, ([], set()))
+        regions.append(region)
         positions.add(position)
         paths.setdefault(before["path"], set()).add(key)
     labels = {}
-    for key, (indices, positions) in observations.items():
+    for key, (regions, positions) in observations.items():
         line = f"prepared source changed: {_label(key[0])}"
         if len(paths[key[0]]) > 1:
             noun = "planning disclosure" if len(positions) == 1 else "planning disclosures"
             line += f" ({noun} {', '.join(str(position) for position in sorted(positions))})"
-        labels.setdefault(line, []).append(indices)
+        labels.setdefault(line, []).append(regions)
     for line, candidates in labels.items():
         if len(candidates) == 1:
-            projection.explain(candidates[0], (line,))
+            projection.roots.append(line)
+            projection.resolved.update(dict.fromkeys(candidates[0], _EXPLAINED))
 
 
-def _project_runtime(projection, old, new) -> None:
-    prefix = "/workload/runtime_inputs"
-    indices = projection.indices(prefix)
-    if not indices:
+def _project_runtime(projection: _Projection) -> None:
+    if ("runtime_inputs",) not in projection.regions:
         return
+    old, new = (document["workload"]["runtime_inputs"] for document in projection.documents)
     old_map, new_map = _entry_map(old, "destination"), _entry_map(new, "destination")
     lines = _named_changes(
         old_map, new_map, kind="runtime input", ignored=frozenset({"declaration_id"})
     )
-    if not lines:
-        return
-    for index in indices:
-        finding = projection.findings[index]
-        if finding.pointer.endswith("/declaration_id"):
-            position = int(finding.pointer.split("/")[-2])
-            if (
-                position < len(old)
-                and position < len(new)
-                and old[position]["destination"] == new[position]["destination"]
-            ):
-                destination = old[position]["destination"]
-                old_declaration = {
-                    key: value
-                    for key, value in old_map[destination].items()
-                    if key != "declaration_id"
-                }
-                new_declaration = {
-                    key: value
-                    for key, value in new_map[destination].items()
-                    if key != "declaration_id"
-                }
-                if old_declaration != new_declaration:
-                    projection.derived.add(index)
-    projection.explain(indices - projection.derived, lines)
+    projection.explain(("runtime_inputs",), lines)
+    for position, (before, after) in enumerate(zip(old, new, strict=False)):
+        # The codec binds each declaration ID to its declaration, so an ID that
+        # changed at an unchanged destination only follows that declaration.
+        if before["destination"] == after["destination"]:
+            projection.resolved[("runtime_inputs", str(position))] = _DERIVED
 
 
-def _project_suite(projection, old, new) -> None:
-    indices = projection.indices("/required_suite")
-    if not indices:
+def _project_suite(projection: _Projection) -> None:
+    if ("required_suite",) not in projection.regions:
         return
+    old, new = (document["required_suite"] for document in projection.documents)
     old_names, new_names = old["names"], new["names"]
     added = [f"+{_label(name)}" for name in new_names if name not in old_names]
     removed = [f"-{_label(name)}" for name in old_names if name not in new_names]
@@ -364,62 +332,63 @@ def _project_suite(projection, old, new) -> None:
         lines.append(
             f"suite changed: {_label(new['source_path'] or old['source_path'] or '<default invocation>')}"
         )
-    projection.explain(indices, lines)
+    projection.explain(("required_suite",), lines)
 
 
-def _project_variants(projection, left, right) -> None:
+def _project_variants(projection: _Projection) -> None:
+    left, right = projection.documents
     old_sources = left["workload"]["source_recipe"]["sources"]
     new_sources = right["workload"]["source_recipe"]["sources"]
+    unique = all(entries is not None for entries in _source_maps(projection))
     for position, (old, new) in enumerate(
         zip(left["build_variants"], right["build_variants"], strict=False)
     ):
-        prefix = f"/build_variants/{position}"
-        for field in ("build_variant_id", "recipe_sha256"):
-            projection.derived.update(projection.indices(f"{prefix}/{field}"))
-        indices = projection.indices(f"{prefix}/source_closure")
-        if not indices:
+        prefix = ("build_variants", str(position))
+        for member in ("build_variant_id", "recipe_sha256"):
+            projection.resolved[(*prefix, member)] = _DERIVED
+        if (*prefix, "source_closure") not in projection.regions:
             continue
         if (
-            old["source_closure"] == old_sources
+            unique
+            and old["source_closure"] == old_sources
             and new["source_closure"] == new_sources
-            and _entry_map(old_sources, "path") is not None
-            and _entry_map(new_sources, "path") is not None
         ):
-            projection.explain(indices, ())
+            projection.explain((*prefix, "source_closure"))
         elif (
             _entry_map(old["source_closure"], "path") is None
             or _entry_map(new["source_closure"], "path") is None
-        ) and "source paths ambiguous: duplicate source path" not in projection.root_lines:
-            projection.add_root("source paths ambiguous: duplicate source path")
+        ):
+            projection.roots.append(_AMBIGUOUS_SOURCES)
 
 
-def _project_items(projection, left, right) -> None:
+def _project_items(projection: _Projection) -> None:
+    left, right = projection.documents
     old_variants = [entry["build_variant_id"] for entry in left["build_variants"]]
     new_variants = [entry["build_variant_id"] for entry in right["build_variants"]]
     for position, (old, new) in enumerate(
         zip(left["work_items"], right["work_items"], strict=False)
     ):
-        prefix = f"/work_items/{position}"
-        for field in ("work_item_id", "fingerprint_sha256"):
-            projection.derived.update(projection.indices(f"{prefix}/{field}"))
+        prefix = ("work_items", str(position))
+        for member in ("work_item_id", "fingerprint_sha256"):
+            projection.resolved[(*prefix, member)] = _DERIVED
         if (
             old["build_variant_id"] in old_variants
             and new["build_variant_id"] in new_variants
             and old_variants.index(old["build_variant_id"])
             == new_variants.index(new["build_variant_id"])
         ):
-            projection.derived.update(projection.indices(f"{prefix}/build_variant_id"))
-        for field in ("target", "revision"):
-            old_value = left["target"] if field == "target" else left["target"]["revision"]
-            new_value = right["target"] if field == "target" else right["target"]["revision"]
-            if old[field] == old_value and new[field] == new_value:
-                projection.explain(projection.indices(f"{prefix}/{field}"), ())
+            projection.resolved[(*prefix, "build_variant_id")] = _DERIVED
+        for member in ("target", "revision"):
+            old_value = left["target"] if member == "target" else left["target"]["revision"]
+            new_value = right["target"] if member == "target" else right["target"]["revision"]
+            if old[member] == old_value and new[member] == new_value:
+                projection.explain((*prefix, member))
 
 
-def _project_command_model(projection, left, right) -> None:
-    indices = projection.indices("/workload/build_recipe/command_model_sha256")
-    if not indices:
+def _project_command_model(projection: _Projection) -> None:
+    if ("command_model",) not in projection.regions:
         return
+    left, right = projection.documents
     old, new = left["workload"], right["workload"]
     concrete = any(
         _diagnostic_value(old["source_recipe"][field])
@@ -436,9 +405,21 @@ def _project_command_model(projection, left, right) -> None:
         or left["target"]["name"] != right["target"]["name"]
     )
     if concrete:
-        projection.derived.update(indices)
+        projection.resolved[("command_model",)] = _DERIVED
     else:
-        projection.explain(indices, ("build command model changed",))
+        projection.explain(("command_model",), ("build command model changed",))
+
+
+_PROJECTORS = (
+    _project_sources,
+    _project_parameters,
+    _project_runtime,
+    _project_suite,
+    _project_prepared_sources,
+    _project_variants,
+    _project_items,
+    _project_command_model,
+)
 
 
 def canonical_sha256(value: object) -> str:
