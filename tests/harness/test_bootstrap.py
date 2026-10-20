@@ -425,7 +425,7 @@ def test_force_does_not_adopt_unrecorded_qa_links(tmp_path, monkeypatch, capsys,
 
     assert bootstrap_cli.run_bootstrap(SimpleNamespace(force=True)) == 0
     assert "desired skill name is occupied" in capsys.readouterr().out
-    assert link.readlink() == skill
+    assert link.resolve() == skill.resolve()  # Windows readlink adds a \\?\ prefix
     manifest = json.loads((link.parent / ".booley-qa-skill-links.json").read_text())
     assert "booley-qa-run" not in manifest["links"]
 
@@ -442,11 +442,10 @@ def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, mi
     bootstrap.reconcile_bootstrap(Intent.ENSURE)  # record owned QA links first
     skills = tmp_path / "home" / ".agents" / "skills"
 
-    def entries() -> dict[Path, object]:
-        # Windows junctions are not symlinks; realpath covers links, junctions and dangling links.
+    def entries() -> dict[Path, object]:  # realpath covers junctions; lower: Windows case drift
         return {
-            p: p.read_bytes() if p.is_file() and not p.is_symlink() else os.path.realpath(p)
-            for p in skills.iterdir()
+            f: f.read_bytes() if f.suffix == ".json" else os.path.realpath(f).lower()
+            for f in skills.iterdir()
         }
 
     owned = entries()
