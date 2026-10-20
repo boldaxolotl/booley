@@ -757,8 +757,6 @@ def _report_deep_currency(
     persist: bool,
 ) -> DoctorRunResult:
     """Save completed deep evidence, then report the persisted policy result."""
-    storage_failed = False
-    attempt = None
     if summary is not None and persist:
         try:
             booley_dir = (
@@ -775,22 +773,19 @@ def _report_deep_currency(
                     and finding.check_id == "upgrade.review-pending"
                 )
             )
-            failures = sum(finding.severity == Severity.FAIL for finding in blockers)
-            warnings = tuple(
-                finding.check_id
-                for finding in blockers
-                if finding.severity == Severity.WARN and finding.check_id is not None
-            )
             attempt = summary.attempt(
                 version=booley.__version__,
                 clean=not blockers,
-                failure_count=failures,
-                blocking_warning_ids=warnings,
+                failure_count=sum(finding.severity == Severity.FAIL for finding in blockers),
+                blocking_warning_ids=tuple(
+                    finding.check_id
+                    for finding in blockers
+                    if finding.severity == Severity.WARN and finding.check_id is not None
+                ),
             )
-            storage_failed = not doctor_deep.record_deep_attempt(booley_dir, attempt)
-    status = observe_deep_status(project_root, unsaved_attempt=attempt if storage_failed else None)
-    if storage_failed:
-        status = replace(status, storage_failed=True)
+            if not doctor_deep.record_deep_attempt(booley_dir, attempt):
+                info("deep result was not saved")
+    status = observe_deep_status(project_root)
     info(status.render())
     return replace(result, deep_status=status)
 
@@ -799,7 +794,6 @@ def observe_deep_status(
     project_root: Path,
     *,
     container: str | None = None,
-    unsaved_attempt: doctor_deep.DeepAttempt | None = None,
 ) -> doctor_deep.DeepStatus:
     """Read and report currency without starting checks or modifying evidence."""
     state = doctor_deep.DeepState()
@@ -812,7 +806,6 @@ def observe_deep_status(
         if runtime_context.inside_session_runtime()
         else identity.booley_version,
         image_id=identity.image_id,
-        unsaved_attempt=unsaved_attempt,
     )
 
 
