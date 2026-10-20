@@ -43,9 +43,6 @@ from booley.runtime.image_provenance import (
 
 _HEX_REVISION = re.compile(r"[0-9a-fA-F]+")
 _SHA256_HEX = re.compile(r"[0-9a-fA-F]{64}")
-_MAX_ANCESTRY = 32
-_MAX_METADATA_ENTRIES = 256
-_MAX_METADATA_VALUE_LENGTH = 16_384
 
 
 class Status(StrEnum):
@@ -66,7 +63,7 @@ class Comparison:
 
 @dataclass(frozen=True, slots=True)
 class ImageMetadata:
-    """Bounded Docker metadata for one exact image reference."""
+    """Docker metadata for one exact image reference."""
 
     reference: str
     image_id: str
@@ -84,18 +81,6 @@ class BooleyBuildIdentity:
     wheel_source_fingerprint: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class LogicalSelectionNode:
-    """ID-independent compatibility projection of one image graph node."""
-
-    role: str
-    effective_inputs: str
-    recipe_fingerprint: str
-    parent_compatibility_key: str
-    runtime_base_contract: str
-    standard_substrate_contract: str
-
-
 def _available(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -103,36 +88,6 @@ def _available(value: object) -> str | None:
     if not normalized or normalized.lower() == "unknown":
         return None
     return normalized
-
-
-def _decode_labels(raw: object) -> dict[str, str]:
-    if raw is None:
-        return {}
-    values = require_dict(raw, field="Config.Labels")
-    labels = {
-        require_str_value(key, field="label name"): require_str_value(
-            value, field=f"label {key!r}", allow_empty=True
-        )
-        for key, value in values.items()
-    }
-    if len(labels) > _MAX_METADATA_ENTRIES or any(
-        len(key) > _MAX_METADATA_VALUE_LENGTH or len(value) > _MAX_METADATA_VALUE_LENGTH
-        for key, value in labels.items()
-    ):
-        raise BoundaryError("Config.Labels exceeds metadata bounds")
-    return labels
-
-
-def _decode_environment(raw: object) -> dict[str, str]:
-    if raw is None:
-        return {}
-    values = require_list(raw, field="Config.Env")
-    items = [require_str_value(item, field="Config.Env item", allow_empty=True) for item in values]
-    if len(items) > _MAX_METADATA_ENTRIES or any(
-        len(item) > _MAX_METADATA_VALUE_LENGTH for item in items
-    ):
-        raise BoundaryError("Config.Env exceeds metadata bounds")
-    return {key: value for item in items if "=" in item for key, value in (item.split("=", 1),)}
 
 
 def decode_image_metadata(reference: str, document: object) -> ImageMetadata | None:
@@ -144,8 +99,21 @@ def decode_image_metadata(reference: str, document: object) -> ImageMetadata | N
         record = require_dict(records[0], field="docker image inspect record")
         image_id = require_str(record, "Id")
         config = require_dict(record.get("Config"), field="Config")
-        labels = _decode_labels(config.get("Labels"))
-        environment = _decode_environment(config.get("Env"))
+        raw_labels, raw_env = config.get("Labels"), config.get("Env")
+        labels = {} if raw_labels is None else require_dict(raw_labels, field="Config.Labels")
+        labels = {
+            require_str_value(key, field="label name"): require_str_value(
+                value, field=f"label {key!r}", allow_empty=True
+            )
+            for key, value in labels.items()
+        }
+        items = [] if raw_env is None else require_list(raw_env, field="Config.Env")
+        items = [
+            require_str_value(item, field="Config.Env item", allow_empty=True) for item in items
+        ]
+        environment = {
+            key: value for item in items if "=" in item for key, value in (item.split("=", 1),)
+        }
     except BoundaryError:
         return None
     return ImageMetadata(reference, image_id, labels, environment)
@@ -226,19 +194,6 @@ def compare_build_identity(
     return Comparison(Status.MATCH) if revisions_match else _mismatch(expected, observed)
 
 
-def logical_selection_fingerprint(
-    selected_reference: str,
-    nodes: Iterable[LogicalSelectionNode],
-) -> str:
-    """Hash the ordered, bounded identity of one selected logical image graph."""
-    document = {
-        "selected_reference": selected_reference,
-        "nodes": [asdict(node) for node in nodes],
-    }
-    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def logical_selection_fingerprint_for_chain(
     selected_reference: str,
     nodes: Iterable[tuple[str, str, str, str, str]],
@@ -249,111 +204,22 @@ def logical_selection_fingerprint_for_chain(
     projection = []
     parent_key = initial_parent_key
     for role, effective_inputs, recipe, runtime_contract, standard_contract in nodes:
-        node = LogicalSelectionNode(
-            role,
-            effective_inputs,
-            recipe,
-            parent_key,
-            runtime_contract,
-            standard_contract,
-        )
+        node = {
+            "role": role,
+            "effective_inputs": effective_inputs,
+            "recipe_fingerprint": recipe,
+            "parent_compatibility_key": parent_key,
+            "runtime_base_contract": runtime_contract,
+            "standard_substrate_contract": standard_contract,
+        }
         projection.append(node)
         parent_key = hashlib.sha256(
-            json.dumps(asdict(node), sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(node, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-    return logical_selection_fingerprint(selected_reference, projection)
-
-
-def _selection_projection(  # noqa: PLR0911 -- each malformed boundary shape fails closed
-    reference: str,
-    inspect: Callable[[str], ImageMetadata | None],
-) -> dict[str, object] | None:
-    nodes: list[dict[str, str]] = []
-    seen: set[str] = set()
-    current = reference
-    for _ in range(_MAX_ANCESTRY):
-        metadata = inspect(current)
-        if metadata is None or metadata.image_id in seen:
-            return None
-        seen.add(metadata.image_id)
-        labels = metadata.labels
-        if labels.get(LABEL_SCHEMA) != PROVENANCE_SCHEMA:
-            legacy = {
-                "role": _available(labels.get(LABEL_ARTIFACT_ROLE)),
-                "effective_inputs": _available(labels.get(LABEL_EFFECTIVE_INPUTS)),
-                "recipe_fingerprint": _available(labels.get(LABEL_RECIPE_FINGERPRINT)),
-            }
-            if nodes:
-                return None
-            return {"nodes": [legacy]} if any(legacy.values()) else None
-        role = _available(labels.get(LABEL_ARTIFACT_ROLE))
-        recipe = _available(labels.get(LABEL_RECIPE_FINGERPRINT))
-        if role is None or recipe is None:
-            return None
-        nodes.append(
-            {
-                "role": role,
-                "effective_inputs": ""
-                if role == "wheel-overlay"
-                else (_available(labels.get(LABEL_EFFECTIVE_INPUTS)) or ""),
-                "recipe_fingerprint": recipe,
-                "runtime_base_contract": _available(labels.get(LABEL_RUNTIME_BASE_CONTRACT)) or "",
-                "standard_substrate_contract": _available(
-                    labels.get(LABEL_STANDARD_SUBSTRATE_CONTRACT)
-                )
-                or "",
-            }
-        )
-        parent = _available(labels.get(LABEL_PARENT_ARTIFACT))
-        if parent is None:
-            return {"nodes": list(reversed(nodes))}
-        kind = labels.get(LABEL_PARENT_ARTIFACT_KIND)
-        if kind == PARENT_ARTIFACT_REGISTRY_DIGEST:
-            nodes[-1]["registry_parent"] = parent
-            return {"nodes": list(reversed(nodes))}
-        if kind != PARENT_ARTIFACT_LOCAL_IMAGE_ID:
-            return None
-        current = parent
-    return None
-
-
-def _sandbox_flavor(metadata: ImageMetadata) -> str | None:
-    """Return the inherited flavor of a schema-3 final image when conclusive."""
-    labels = metadata.labels
-    if labels.get(LABEL_SCHEMA) != PROVENANCE_SCHEMA or labels.get(LABEL_ARTIFACT_ROLE) not in {
-        "wheel-overlay",
-        "project-overlay",
-    }:
-        return None
-    flavor = _available(metadata.environment.get(ENV_SANDBOX_FLAVOR))
-    if flavor is None:
-        return "standard"
-    return flavor if flavor == "riscv" else None
-
-
-def _projection_difference(left: Mapping[str, object], right: Mapping[str, object]) -> str:
-    left_nodes = left.get("nodes")
-    right_nodes = right.get("nodes")
-    if not isinstance(left_nodes, list) or not isinstance(right_nodes, list):
-        return "logical selection differs"
-    left_roles = [node.get("role") for node in left_nodes if isinstance(node, dict)]
-    right_roles = [node.get("role") for node in right_nodes if isinstance(node, dict)]
-    if left_roles != right_roles:
-        return format_differences({"roles": left_roles}, {"roles": right_roles})
-    for index, (old, new) in enumerate(zip(left_nodes, right_nodes, strict=True)):
-        if old != new and isinstance(old, dict) and isinstance(new, dict):
-            return f"node {index} ({left_roles[index]}): {format_differences(old, new)}"
-    return "logical selection differs"
-
-
-def _selection_fingerprint(metadata: ImageMetadata) -> tuple[str | None, bool]:
-    raw = metadata.labels.get(LABEL_LOGICAL_SELECTION_FINGERPRINT)
-    if raw is None:
-        return None, True
-    value = _available(raw)
-    if value is None or _SHA256_HEX.fullmatch(value) is None:
-        return None, False
-    return value.lower(), True
+    document = {"selected_reference": selected_reference, "nodes": projection}
+    return hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _final_selection_node(metadata: ImageMetadata) -> dict[str, str] | None:
@@ -362,10 +228,15 @@ def _final_selection_node(metadata: ImageMetadata) -> dict[str, str] | None:
         return None
     role = _available(labels.get(LABEL_ARTIFACT_ROLE))
     recipe = _available(labels.get(LABEL_RECIPE_FINGERPRINT))
-    if role is None or recipe is None:
+    if role not in {"wheel-overlay", "project-overlay"} or recipe is None:
+        return None
+    fingerprint = labels.get(LABEL_LOGICAL_SELECTION_FINGERPRINT)
+    if fingerprint is not None and _SHA256_HEX.fullmatch(fingerprint.strip()) is None:
         return None
     return {
+        "selection_fingerprint": fingerprint.strip().lower() if fingerprint else "",
         "role": role,
+        "sandbox_flavor": metadata.environment.get(ENV_SANDBOX_FLAVOR, "standard"),
         "effective_inputs": ""
         if role == "wheel-overlay"
         else (_available(labels.get(LABEL_EFFECTIVE_INPUTS)) or ""),
@@ -387,46 +258,35 @@ def compare_logical_selection(  # noqa: PLR0911 -- tri-state evidence exits stay
     executable: str = "docker",
 ) -> Comparison:
     """Compare selection identity while ignoring local IDs and wheel contents."""
-    configured_inspector = inspect_configured or inspect_issued
     issued = _logical_metadata(issued_reference, inspect_issued, project_root, executable)
     configured = _logical_metadata(
-        configured_reference, configured_inspector, project_root, executable
+        configured_reference, inspect_configured or inspect_issued, project_root, executable
     )
     if issued is None or configured is None:
         return Comparison(Status.UNKNOWN)
-    flavor_difference = _flavor_difference(issued, configured)
-    if flavor_difference is not None:
-        return flavor_difference
-    issued_fingerprint, issued_valid = _selection_fingerprint(issued)
-    configured_fingerprint, configured_valid = _selection_fingerprint(configured)
-    if not issued_valid or not configured_valid:
-        return Comparison(Status.UNKNOWN)
-    if issued_fingerprint is not None and configured_fingerprint is not None:
-        issued_final = _final_selection_node(issued)
-        configured_final = _final_selection_node(configured)
-        if issued_final is None or configured_final is None:
-            return Comparison(Status.UNKNOWN)
-        if issued_final != configured_final:
-            return Comparison(
-                Status.MISMATCH,
-                "final image: " + format_differences(issued_final, configured_final),
-            )
-        if issued_fingerprint == configured_fingerprint:
-            return Comparison(Status.MATCH)
-        return Comparison(
-            Status.MISMATCH,
-            format_differences(
-                {"selection_fingerprint": issued_fingerprint},
-                {"selection_fingerprint": configured_fingerprint},
-            ),
-        )
-    left = _selection_projection(issued.reference, inspect_issued)
-    right = _selection_projection(configured.reference, configured_inspector)
+    left = _final_selection_node(issued)
+    right = _final_selection_node(configured)
     if left is None or right is None:
+        return Comparison(Status.UNKNOWN)
+    issued_fingerprint = left.pop("selection_fingerprint")
+    configured_fingerprint = right.pop("selection_fingerprint")
+    if left != right:
+        return Comparison(Status.MISMATCH, "final image: " + format_differences(left, right))
+    field = "selection_fingerprint"
+    left, right = issued_fingerprint, configured_fingerprint
+    if not left and not right:
+        if issued.labels.get(LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_REGISTRY_DIGEST:
+            return Comparison(Status.UNKNOWN)
+        field = "registry_parent"
+        left, right = (
+            issued.labels.get(LABEL_PARENT_ARTIFACT),
+            configured.labels.get(LABEL_PARENT_ARTIFACT),
+        )
+    if not left or not right:
         return Comparison(Status.UNKNOWN)
     if left == right:
         return Comparison(Status.MATCH)
-    return Comparison(Status.MISMATCH, _projection_difference(left, right))
+    return Comparison(Status.MISMATCH, format_differences({field: left}, {field: right}))
 
 
 def _logical_metadata(
@@ -492,21 +352,3 @@ def _layout_parent_id(metadata: ImageMetadata, project_root: Path) -> str | None
     if scope != expected_reference or inputs != expected_inputs:
         return None
     return parent_id
-
-
-def _flavor_difference(issued, configured) -> Comparison | None:
-    issued_flavor = _sandbox_flavor(issued)
-    configured_flavor = _sandbox_flavor(configured)
-    if (
-        issued_flavor is not None
-        and configured_flavor is not None
-        and issued_flavor != configured_flavor
-    ):
-        return Comparison(
-            Status.MISMATCH,
-            format_differences(
-                {"sandbox_flavor": issued_flavor},
-                {"sandbox_flavor": configured_flavor},
-            ),
-        )
-    return None
