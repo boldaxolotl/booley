@@ -36,8 +36,6 @@ from booley.harness.setup.skills import (
 )
 from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
 from booley.runtime.host_install import (
-    HostInstallationError,
-    current_host_installation,
     host_install_error,
     inspect_host_installation,
 )
@@ -124,10 +122,8 @@ def inspect_bootstrap(*, verbose: bool = False, include_images: bool = True) -> 
         if installation.state is BootstrapState.ERROR
         else _inspect_skills()
     )
-    try:
-        _append_qa_finding(findings, Intent.CHECK, False, False)
-    except HostInstallationError as exc:
-        findings.append(_qa_warning(str(exc)))
+    if qa := _reconcile_qa_skills(Intent.CHECK, opt_out=False):
+        findings.append(qa)
     findings.append(_inspect_nangate())
     if not include_images:
         return BootstrapResult(Intent.CHECK, tuple(findings), policy)
@@ -245,7 +241,6 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
     verbose: bool = False,
     include_images: bool = True,
     qa_opt_out: bool = False,
-    allow_qa_adoption: bool = False,
 ) -> BootstrapResult:
     """Inspect or converge Host Bootstrap resources in their fixed order."""
     findings: list[BootstrapFinding] = []
@@ -266,7 +261,7 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         return BootstrapResult(intent, tuple(findings), policy)
 
     if qa_opt_out:
-        _append_qa_finding(findings, intent, True, False)
+        findings.append(_reconcile_qa_skills(intent, opt_out=True))
 
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
@@ -278,8 +273,8 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         if findings[-1].state is BootstrapState.ERROR:
             return BootstrapResult(intent, tuple(findings), policy)
 
-    if not qa_opt_out:
-        _append_qa_finding(findings, intent, False, allow_qa_adoption)
+    if not qa_opt_out and (qa := _reconcile_qa_skills(intent, opt_out=False)):
+        findings.append(qa)
 
     findings.append(_reconcile_nangate(intent))
     if findings[-1].state is BootstrapState.ERROR:
@@ -636,75 +631,30 @@ def _skill_report_error(report: SkillLinkReport) -> str:
     return "; ".join(details)
 
 
-def _skill_names(source: Path) -> frozenset[str]:
-    return frozenset(
-        child.name
-        for child in source.iterdir()
-        if child.is_dir() and (child / "SKILL.md").is_file()
-    )
-
-
 def _qa_warning(detail: str) -> BootstrapFinding:
     recovery = (
-        "Restore the recorded clean primary main checkout, re-enable with "
+        "Restore the recorded source checkout, re-enable with "
         "`booley bootstrap --with-qa-skills`, or recover with "
         "`booley bootstrap --without-qa-skills`."
     )
     return BootstrapFinding("qa-skills", BootstrapState.WARNING, f"{detail} {recovery}")
 
 
-def _reconcile_qa_skills(
-    intent: Intent,
-    *,
-    opt_out: bool,
-    allow_adoption: bool,
-) -> BootstrapFinding | None:
-    """Reconcile optional QA skills without blocking product Host Bootstrap."""
+def _reconcile_qa_skills(intent: Intent, *, opt_out: bool) -> BootstrapFinding | None:
+    """Keep QA warnings nonblocking and opt-out independent of selection parsing."""
     try:
-        resolved = _qa_source(opt_out)
+        source = skills_dir() if opt_out else active_qa_source_root()
     except (QaSkillSelectionError, OSError, ValueError) as exc:
         return _qa_warning(str(exc))
-    if resolved is None:
-        return None
-    source, names = resolved
-    reconciliations = reconcile_host_qa_skills(
-        source,
-        names=names,
-        dry_run=intent is Intent.CHECK,
-        allow_retarget=allow_adoption,
-        allow_exact_adoption=allow_adoption,
-    )
-    return _skill_reconciliation_finding(intent, reconciliations, qa=True)
-
-
-def _qa_source(opt_out: bool) -> tuple[Path, frozenset[str]] | None:
-    if opt_out:
-        return skills_dir(), frozenset()
-    revision = current_host_installation(skills_dir()).revision
-    source = active_qa_source_root(revision)
     if source is None:
         return None
-    collisions = _skill_names(skills_dir()) & QA_SKILL_NAMES
-    if collisions:
-        raise QaSkillSelectionError(
-            "QA skill names collide with packaged product skills: " + ", ".join(sorted(collisions))
-        )
-    return source, QA_SKILL_NAMES
-
-
-def _append_qa_finding(
-    findings: list[BootstrapFinding],
-    intent: Intent,
-    opt_out: bool,
-    allow_adoption: bool,
-) -> None:
-    finding = _reconcile_qa_skills(
-        intent,
-        opt_out=opt_out,
-        allow_adoption=allow_adoption,
+    reconciliations = reconcile_host_qa_skills(
+        source,
+        names=frozenset() if opt_out else QA_SKILL_NAMES,
+        dry_run=intent is Intent.CHECK,
+        allow_retarget=intent is Intent.REFRESH,
     )
-    if finding is not None:
-        findings.append(finding)
+    return _skill_reconciliation_finding(intent, reconciliations, qa=True)
 
 
 def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
