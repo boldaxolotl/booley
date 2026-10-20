@@ -54,6 +54,7 @@ class GoalFlowExecution:
     ) -> None:
         self._binding = binding
         self._resolvers = resolvers
+        self._campaign_reader = campaign_reader
         self._recorder = GoalEvidenceRecorder(
             binding,
             resolvers=resolvers,
@@ -211,7 +212,11 @@ class GoalFlowExecution:
             # Goal writers hold this same record lock: the entry and evidence
             # identity checked by status belong to one stable disk snapshot.
             view = build_status(
-                store, record, work_dir=self._binding.worktree_root, resolvers=self._resolvers
+                store,
+                record,
+                work_dir=self._binding.worktree_root,
+                resolvers=self._resolvers,
+                campaign_reader=self._campaign_reader,
             )
             return any(item.key == key and item.status == "met" for item in view.goals)
 

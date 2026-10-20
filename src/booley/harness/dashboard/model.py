@@ -183,7 +183,11 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
         current = store.load(record.id)
         if current.state not in OCCUPYING_STATES:
             return _terminal(store, current)
-        status = build_status(store, current, observational=True)
+        from booley.flows.sim.unpublished_results import read_unpublished_results
+
+        status = build_status(
+            store, current, observational=True, campaign_reader=read_unpublished_results
+        )
         if not Path(current.worktree_path).is_dir():
             return GoalView(current.id, current, status, diagnostic=status.warning)
         if status.interrupted_applies:
