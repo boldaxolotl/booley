@@ -570,3 +570,54 @@ def test_keeper_cleanup_disappearing_container_fails_closed(
     monkeypatch.setattr(idk, "_run_docker", fake)
     with pytest.raises(RuntimeError, match="No such container"):
         idk.container_image_ids_strict()
+
+
+def test_compare_issued_image_dispatch(monkeypatch, tmp_path):
+    from booley.runtime import project_image
+
+    compare = getattr(idk, "compare_issued_image", None)
+    assert callable(compare), "shared image dispatch is missing"
+    calls = []
+    result = image_identity.Comparison(image_identity.Status.UNKNOWN)
+
+    def selection(*args, **kwargs):
+        calls.append(("selection", args, kwargs))
+        return result
+
+    def reference(*args, **kwargs):
+        calls.append(("reference", args, kwargs))
+        return result
+
+    monkeypatch.setattr(idk, "compare_issued_selection", selection)
+    monkeypatch.setattr(idk, "compare_issued_reference", reference)
+    monkeypatch.setattr(
+        project_image, "is_managed_sandbox_image", lambda root, name: name == "managed"
+    )
+    assert (
+        compare("old-tag", "managed", project_root=tmp_path).status
+        is image_identity.Status.MISMATCH
+    )
+    assert calls == []
+    issued = "sha256:" + "a" * 64
+    for configured in ("managed", "external"):
+        assert (
+            compare(issued, configured, project_root=tmp_path, executable="custom-docker")
+            is result
+        )
+    assert calls == [
+        (
+            "selection",
+            (issued, "managed"),
+            {"project_root": tmp_path, "executable": "custom-docker"},
+        ),
+        ("reference", (issued, "external"), {"executable": "custom-docker"}),
+    ]
+
+
+def test_inspect_large_valid_metadata(monkeypatch):
+    value = "x" * 1_048_577
+    stdout = json.dumps([{"Id": "issued", "Config": {"Labels": {"large": value}}}])
+    monkeypatch.setattr(idk, "_run_docker", lambda *_args, **_kwargs: _cp(stdout=stdout))
+    result = idk.inspect_image_metadata("issued")
+    assert result is not None
+    assert result.labels == {"large": value}
