@@ -479,7 +479,7 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
 
 @pytest.mark.parametrize(
     "path",
-    ["website/docs/index.md", "website/docs/stylesheets/terminal.css", "website/mkdocs.yml"],
+    ["website/docs/index.md", "website/docs/stylesheets/datasheet.css", "website/mkdocs.yml"],
 )
 def test_project_site_changes_run_the_site_contract_tests(tmp_path: Path, path: str) -> None:
     repo, base = _repository(tmp_path)
