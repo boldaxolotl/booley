@@ -315,7 +315,7 @@ class VerilatorCoverageExecution:
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
                 "inconclusive",
-                f"coverage image verification failed: {exc}",
+                f"coverage build slot unavailable: {exc}",
                 infrastructure_error=True,
             )
 

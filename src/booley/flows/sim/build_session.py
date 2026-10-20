@@ -714,7 +714,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 self._promote_pointer(prepared)
             return artifacts
         except (OSError, RuntimeError) as exc:
-            raise SimulationBuildSlotError(f"cannot authorize Simulation image: {exc}") from exc
+            raise SimulationBuildSlotError(f"cannot record Simulation image: {exc}") from exc
 
     def _fresh_read_closure(
         self, prepared: PreparedSimulationBuild, key: str | None
