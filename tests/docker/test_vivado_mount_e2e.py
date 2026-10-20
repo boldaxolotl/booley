@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests import eda_grant_support
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
@@ -78,7 +79,7 @@ def _exec(
 
 def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
     authority.register_installation("vivado_2025_2", "vivado", vivado_root)
-    authority._add_grant(workspace, "vivado", installation="vivado_2025_2")
+    eda_grant_support.add_grant(workspace, "vivado", installation="vivado_2025_2")
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         image=_IMAGE,
@@ -464,7 +465,7 @@ def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
 
     _assert_headless_lifecycle(docker, workspace)
 
-    authority._revoke_grant(workspace, "vivado")
+    eda_grant_support.revoke_grant(workspace, "vivado")
     refusal = f"Project {workspace.resolve()} has no exact vivado grant"
     with pytest.raises(session_runtime.SessionError, match=re.escape(refusal)):
         session_runtime.up(workspace)

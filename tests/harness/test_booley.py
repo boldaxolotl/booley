@@ -254,11 +254,13 @@ def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None
         monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
         monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
     else:
-        from booley.runtime import issuance_invalidation
+        # Importing the coordinator first keeps modules that bind the lock by
+        # name (session_refresh) from capturing the patched callable.
+        from booley.harness import eda_grants
 
         monkeypatch.setattr(
-            issuance_invalidation,
-            "coordinate_mutation",
+            eda_grants.lifecycle_lock,
+            "host_lifecycle_lock",
             MagicMock(side_effect=failure),
         )
 
