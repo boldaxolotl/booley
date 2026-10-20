@@ -1209,10 +1209,11 @@ class SimulationExecution:
         )
         if attempt.reused:
             return self._execute_reused_adapter(handle, attempt)
-        if self._build_session is not None:
+        session = self._build_session
+        if session is not None:
             if self._fresh_generation != attempt.prepared.work_root:
                 raise SimulationBuildSlotError("prepared build escaped its leased generation")
-            return self._execute_fresh_adapter(handle, attempt)
+            return self._execute_fresh_adapter(handle, attempt, session)
         request = AdapterAttemptRequest(
             _adapter_command(
                 attempt.prepared,
@@ -1237,9 +1238,6 @@ class SimulationExecution:
     def _execute_reused_adapter(
         self, handle: TargetHandle, attempt: _Attempt
     ) -> AdapterAttemptOutcome:
-        session = self._build_session
-        if session is None or session.try_reuse(attempt.prepared, attempt.cache_key) is None:
-            raise SimulationBuildSlotError("cached Simulation image lost authorization")
         run_cwd = Path(attempt.work.run_cwd)
         if not run_cwd.is_absolute():
             run_cwd = handle.project_root / run_cwd
@@ -1252,17 +1250,12 @@ class SimulationExecution:
         with materialize_runtime_inputs(
             attempt.prepared.build_root, run_cwd, attempt.work.runtime_inputs
         ):
-            if session.try_reuse(attempt.prepared, attempt.cache_key) is None:
-                raise SimulationBuildSlotError("cached Simulation image changed before launch")
             return self._observed_adapter(handle, attempt, request)
 
     def _execute_fresh_adapter(
-        self, handle: TargetHandle, attempt: _Attempt
+        self, handle: TargetHandle, attempt: _Attempt, session: SimulationBuildSession
     ) -> AdapterAttemptOutcome:
-        """Authenticate compilation and its image before dispatching the adapter."""
-        session = self._build_session
-        if session is None:
-            raise SimulationBuildSlotError("fresh build lost its slot lease")
+        """Record compilation and its image before dispatching the adapter."""
         run_cwd = Path(attempt.work.run_cwd)
         if not run_cwd.is_absolute():
             run_cwd = handle.project_root / run_cwd

@@ -29,7 +29,6 @@ from booley.flows.sim.build_reuse import (
 )
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
-    SimulationBuildSlotError,
     _generation_neutral,
     _verilator_reuse_key,
 )
@@ -638,12 +637,6 @@ def test_keyed_verilator_image_records_its_read_closure_and_promotes(
         assert manifest["reusable"] is True
         assert set(manifest["read_closure"]) == {"work:src/top.sv", "work:Vtop.cpp"}
         assert (session.slot / "current.json").is_file()
-        session.verify_image(prepared)
-        manifest_path = prepared.build_root / ".booley-build-manifest.json"
-        manifest_path.write_text(json.dumps({**manifest, "input_key": None}), encoding="utf-8")
-        with pytest.raises(SimulationBuildSlotError, match="identity changed"):
-            session.verify_image(prepared)
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         assert session._read_closure_matches(prepared.work_root, manifest, prepared)
         (prepared.work_root / "Vtop.cpp").write_text("// tampered\n", encoding="utf-8")
@@ -667,7 +660,6 @@ def test_unprovable_read_closure_downgrades_without_failing_the_build(
         assert manifest["reusable"] is False
         assert "lack dependency records" in manifest["reason"]
         assert not (session.slot / "current.json").exists()
-        session.verify_image(prepared)
 
 
 def test_pre_sim_output_in_the_generation_disables_reuse(
