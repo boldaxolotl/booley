@@ -11,7 +11,7 @@ from booley.flows.cli_arguments import add_project_root_alias
 from booley.harness.setup import cleanup
 
 
-def add_subparser(sub: argparse._SubParsersAction, *, selection: bool = False) -> None:
+def add_subparser(sub: argparse._SubParsersAction) -> None:
     """Register ``booley cleanup``; the root command makes its alias a Project selector."""
     parser = sub.add_parser(
         "cleanup",
@@ -21,8 +21,7 @@ def add_subparser(sub: argparse._SubParsersAction, *, selection: bool = False) -
             "manifest are inventory-only."
         ),
     )
-    dest = "_cli_project_cleanup" if selection else "project_root"
-    add_project_root_alias(parser, dest, selection=selection)
+    add_project_root_alias(parser, "_cli_project_cleanup")
     commands = parser.add_subparsers(dest="cleanup_command", required=True)
     _add_prepare(commands)
     _add_record(commands)

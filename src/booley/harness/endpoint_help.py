@@ -42,6 +42,10 @@ class _HelpProbeParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise _ParserSyntaxError(self, message)
 
+    def _get_value(self, action: argparse.Action, arg_string: str) -> Any:
+        # argparse also converts unseen string defaults here; an inert probe must not.
+        return arg_string if self.inert else super()._get_value(action, arg_string)
+
     def _get_values(self, action: argparse.Action, arg_strings: list[str]) -> Any:
         if type(action) is argparse._HelpAction:
             raise _HelpRequestedError(self)

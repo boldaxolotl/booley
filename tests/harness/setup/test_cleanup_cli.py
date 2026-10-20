@@ -19,6 +19,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    """Parse like the root command, which normalizes an absent root alias to empty."""
+    args = parser.parse_args(argv)
+    args.project_root = ""
+    return args
+
+
 def test_cleanup_cli_runs_prepare_record_preview_and_apply(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -26,19 +33,16 @@ def test_cleanup_cli_runs_prepare_record_preview_and_apply(
     project.mkdir()
     parser = _parser()
 
-    args = parser.parse_args(
-        ["cleanup", "--project-root", str(tmp_path), "prepare", "--run-id", "cli", "--json"]
-    )
+    args = _parse(parser, ["cleanup", "prepare", "--run-id", "cli", "--json"])
     assert cleanup_cli.run(args, tmp_path) == 0
     assert "scratch_root" in json.loads(capsys.readouterr().out)
 
     capture = project / "tmp" / "setup" / "cli" / "capture.log"
     capture.write_text("capture\n", encoding="utf-8")
-    args = parser.parse_args(
+    args = _parse(
+        parser,
         [
             "cleanup",
-            "--project-root",
-            str(tmp_path),
             "record",
             str(capture),
             "--run-id",
@@ -49,30 +53,27 @@ def test_cleanup_cli_runs_prepare_record_preview_and_apply(
             "capture",
             "--job-record",
             "job.json",
-        ]
+        ],
     )
     assert cleanup_cli.run(args, tmp_path) == 0
     assert "capture.log" in capsys.readouterr().out
 
     plan = preview_cleanup(tmp_path, run_id="cli")
-    args = parser.parse_args(
-        ["cleanup", "--project-root", str(tmp_path), "preview", "--run-id", "cli", "--json"]
-    )
+    args = _parse(parser, ["cleanup", "preview", "--run-id", "cli", "--json"])
     assert cleanup_cli.run(args, tmp_path) == 0
     assert json.loads(capsys.readouterr().out)["digest"] == plan.digest
 
-    args = parser.parse_args(
+    args = _parse(
+        parser,
         [
             "cleanup",
-            "--project-root",
-            str(tmp_path),
             "apply",
             "--run-id",
             "cli",
             "--digest",
             plan.digest,
             "--json",
-        ]
+        ],
     )
     assert cleanup_cli.run(args, tmp_path) == 0
     assert json.loads(capsys.readouterr().out)["unresolved"] == []
@@ -83,17 +84,16 @@ def test_cleanup_cli_reports_stale_digest(
 ) -> None:
     (tmp_path / ".booley").mkdir()
     prepare_run(tmp_path, "cli-stale")
-    args = _parser().parse_args(
+    args = _parse(
+        _parser(),
         [
             "cleanup",
-            "--project-root",
-            str(tmp_path),
             "apply",
             "--run-id",
             "cli-stale",
             "--digest",
             "stale",
-        ]
+        ],
     )
 
     assert cleanup_cli.run(args, tmp_path) == 2

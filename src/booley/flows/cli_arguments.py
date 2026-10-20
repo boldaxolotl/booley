@@ -23,7 +23,7 @@ class HumanParser(argparse.ArgumentParser):
 
 
 def add_project_root_alias(
-    parser: argparse.ArgumentParser, dest: str, *, short: bool = False, selection: bool = True
+    parser: argparse.ArgumentParser, dest: str, *, short: bool = False
 ) -> None:
     """Declare the hidden ``--project-root`` alias with its route-owned destination."""
     parser.add_argument(
@@ -31,8 +31,8 @@ def add_project_root_alias(
         *(("-p",) if short else ()),
         dest=dest,
         type=str if short else None,
-        action=SelectionAction if selection else "store",
-        default=argparse.SUPPRESS if selection else "",
+        action=SelectionAction,
+        default=argparse.SUPPRESS,
         help=argparse.SUPPRESS,
     )
 

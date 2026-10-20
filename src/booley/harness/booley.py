@@ -781,7 +781,7 @@ def _add_utility_subparsers(sub) -> None:
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
-    cleanup_cli.add_subparser(sub, selection=True)
+    cleanup_cli.add_subparser(sub)
     project_inventory_cli.add_subparser(sub)
     upgrade_cli.add_subparser(sub)
     _add_session_subparser(sub)

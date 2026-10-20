@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 import pytest
 
 from booley.harness import booley as cli
+from booley.harness.endpoint_help import _parse_help, _parser_copy, _ParserSyntaxError
 from booley.mcp.base import McpTool
 from booley.mcp.registry import McpToolInfo
 
@@ -261,6 +262,16 @@ def test_help_looking_data_is_parsed_once_in_sandbox(
     monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--hint"])
     assert cli.main() == 0
     assert calls == ["hint"]
+
+
+def test_inert_probe_skips_conversion_of_unseen_string_defaults() -> None:
+    def reject(value: str) -> str:
+        raise argparse.ArgumentTypeError(value)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--value", type=reject, default="sandbox-only")
+    assert _parse_help(_parser_copy(parser, inert=True), [])[0] is None
+    assert isinstance(_parse_help(_parser_copy(parser, inert=False), [])[0], _ParserSyntaxError)
 
 
 def test_missing_project_error_precedes_host_venue_error(

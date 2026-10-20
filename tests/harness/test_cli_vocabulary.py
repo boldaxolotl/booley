@@ -472,9 +472,12 @@ def test_shared_plugin_outer_selection_and_override_refusal(projects, capsys):
         assert endpoint.args.work_dir == expected
         assert endpoint.args.project == "short"
     reviewer = ReviewerSpecialist()
-    for argv, expected in ((["-C", str(projects[1])], projects[1]), ([], projects[0])):
-        assert reviewer.parse_args([*argv, "--timeout", "5s"]).work_dir == expected
-        assert reviewer.args.timeout_ms == 5000
+    for argv, expected, timeout_ms in (
+        (["-C", str(projects[1]), "--timeout", "5s"], projects[1], 5000),
+        ([], projects[0], reviewer.default_timeout * 1000),
+    ):
+        assert reviewer.parse_args(argv).work_dir == expected
+        assert reviewer.args.timeout_ms == timeout_ms
 
     class Override(Plugin):
         def main(self, argv=None):
