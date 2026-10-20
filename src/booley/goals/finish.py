@@ -259,6 +259,7 @@ def _freeze(
         record,
         work_dir=operation.root,
         resolvers=alias_resolvers(record, selection, operation.store.booley_dir, env.resolvers),
+        campaign_reader=env.campaign_reader,
     )
     unmet = [
         row.presentation.text if row.presentation else "Goal unavailable"

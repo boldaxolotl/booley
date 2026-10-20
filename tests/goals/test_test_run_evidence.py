@@ -97,7 +97,9 @@ def _transaction(
 
 
 def _status(layout: SimpleNamespace, key: str = SIM_KEY) -> GoalStatus:
-    view = build_status(GoalStore(layout.control), layout.record, work_dir=layout.worktree)
+    reader = getattr(layout, "campaign_reader", None)
+    store = GoalStore(layout.control)
+    view = build_status(store, layout.record, work_dir=layout.worktree, campaign_reader=reader)
     return next(goal for goal in view.goals if goal.key == key)
 
 
