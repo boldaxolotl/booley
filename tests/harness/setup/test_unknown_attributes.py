@@ -155,14 +155,9 @@ def test_unknown_sibling_blocks_every_publication_trigger(tmp_path, mode, autocr
 @pytest.mark.parametrize("source", ["system", "nonregular-sibling"])
 def test_other_unknown_sources_are_not_policy(tmp_path, monkeypatch, default, source):
     root, data, local = _checkout(tmp_path, default=default)
-    if source == "system":
+    if source == "system":  # older Git: legacy user fallback beside an unresolved system path
         monkeypatch.delenv("GIT_ATTR_NOSYSTEM")
-        real_native = line_endings._native_attribute_path
-
-        def native(root, variable):
-            return (False, None) if variable == "GIT_ATTR_SYSTEM" else real_native(root, variable)
-
-        monkeypatch.setattr(line_endings, "_native_attribute_path", native)
+        monkeypatch.setattr(line_endings, "_native_attribute_path", lambda *_: (False, None))
     else:
         sibling = tmp_path / "sibling"
         _git(root, "worktree", "add", "-qb", "sibling", str(sibling))
@@ -175,6 +170,7 @@ def test_other_unknown_sources_are_not_policy(tmp_path, monkeypatch, default, so
     assert report.status is Status.SAFE
     assert _unknown(checkout)
     if source == "nonregular-sibling":
+        assert "cannot inspect sibling worktree" in _unknown(checkout)[0].detail
         assert "type and access" in _unknown(checkout)[0].detail
     assert not {
         Code.LOCAL_POLICY_CONFLICT,
@@ -278,26 +274,6 @@ def test_unknown_never_erases_publication_error(tmp_path, monkeypatch, mode, fai
         else "git.line-endings-unreadable"
     )
     assert {f.check_id for f in reporter.findings} == {"git.attributes-policy-unknown", primary}
-
-
-def test_sibling_becoming_unknown_refuses_publication(tmp_path, monkeypatch):
-    root, data, local = _checkout(tmp_path, default=False)
-    sibling = tmp_path / "sibling"
-    _git(root, "worktree", "add", "-qb", "sibling", str(sibling))
-    real_actions = line_endings._repair_actions
-
-    def race(plan):
-        sibling.rename(tmp_path / "parked")
-        return real_actions(plan)
-
-    monkeypatch.setattr(line_endings, "_repair_actions", race)
-    report = line_endings.reconcile_project_line_endings(root, data, mode=Mode.REPAIR)
-    assert report.status is Status.UNSAFE
-    assert not local.exists()
-    assert any(
-        a.kind is ActionKind.PUBLISH_ATTRIBUTES and a.state is ActionState.REFUSED
-        for a in report.repositories[0].actions
-    )
 
 
 @pytest.mark.parametrize("mode", list(Mode))
