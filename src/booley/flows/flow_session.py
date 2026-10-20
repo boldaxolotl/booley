@@ -61,9 +61,9 @@ class FlowSession(EndpointState):
     def args(self) -> FlowRequest:
         return super().args
 
-    def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
-        outcome.cycle_report_json = self.cycle_report_json or "{}"
-        return outcome
+    def _finalize_result(self, result: EndpointOutcome) -> None:
+        result.cycle_report_json = self.cycle_report_json or "{}"
+        super()._finalize_result(result)
 
     def _run(self) -> EndpointOutcome:
         return self.flow._run()
