@@ -17,14 +17,7 @@ from booley.config.host_config import (
 )
 from booley.harness import host_sidecars, nangate_pdk
 from booley.harness.image_lifecycle import (
-    HostImageScope,
-    ImageLifecycleError,
-    Intent,
-    LifecycleResult,
     host_capacity_requests,
-)
-from booley.harness.image_lifecycle import (
-    Status as ImageStatus,
 )
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
@@ -40,6 +33,15 @@ from booley.runtime.host_install import (
     current_host_installation,
     host_install_error,
     inspect_host_installation,
+)
+from booley.runtime.image_lifecycle import (
+    HostImageScope,
+    ImageLifecycleError,
+    Intent,
+    LifecycleResult,
+)
+from booley.runtime.image_lifecycle import (
+    Status as ImageStatus,
 )
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import (

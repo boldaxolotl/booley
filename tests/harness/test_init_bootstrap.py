@@ -496,16 +496,13 @@ def test_auth_reseed_checks_sidecars_without_full_bootstrap(tmp_path, monkeypatc
 @pytest.mark.parametrize("host", [False, True])
 def test_auth_reseed_classifies_image_repair(tmp_path, monkeypatch, capsys, host):
     from booley.harness import host_sidecars, image_lifecycle
+    from booley.runtime.image_lifecycle import ImageRole, PlanAction
 
     monkeypatch.setattr(
         host_sidecars, "reconcile_sidecars", lambda *a, **k: host_sidecars.SidecarResult(())
     )
-    role = (
-        image_lifecycle.ImageRole.RUNTIME_BASE
-        if host
-        else image_lifecycle.ImageRole.PROJECT_OVERLAY
-    )
-    step = SimpleNamespace(role=role, action=image_lifecycle.PlanAction.BUILD)
+    role = ImageRole.RUNTIME_BASE if host else ImageRole.PROJECT_OVERLAY
+    step = SimpleNamespace(role=role, action=PlanAction.BUILD)
     monkeypatch.setattr(image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=(step,)))
     assert not init_cmd._auth_reseed_dependencies(tmp_path)
     output = capsys.readouterr().out
