@@ -16,6 +16,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.sim import waiver_candidates as candidates
@@ -33,7 +34,6 @@ from booley.flows.sim.coverage_reference import (
     resolve_persisted_coverage_campaign_reference,
 )
 from booley.flows.sim.coverage_waiver_application import (
-    WaiverPromotionPlan,
     evaluation_json,
     load_promoted_waiver_set,
     strict_reevaluation,
@@ -256,13 +256,18 @@ class GoalWaiverService:
             decision.at,
             f"goal:{proposal.record_id}/proposal:{proposal.id}",
         )
-        plan = WaiverPromotionPlan(
-            proposal.waiver.anchor, proposal.waiver.directory, stamps, (evidence,)
-        )
-        effects = self._promotion_effects(plan, proposal)
+        config = CoverageWaiverConfig(proposal.waiver.anchor, proposal.waiver.directory)
+        effects = self._promotion_effects(evidence, stamps, proposal)
+        after_bytes = {
+            Path(config.directory)
+            / effect.path.relative_to(Path(proposal.waiver.approval_root)): cast(
+                bytes, effect.after
+            )
+            for effect in effects
+        }
         with tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary:
             waivers = load_promoted_waiver_set(
-                plan, self._roots(), Path(temporary), self._targets()
+                config, self._roots(), Path(temporary), self._targets(), after_bytes
             )
         policy = waiver_policy_fingerprint(
             self.root, overrides={effect.path: effect.after for effect in effects}
@@ -296,12 +301,11 @@ class GoalWaiverService:
         )
 
     def _promotion_effects(
-        self, plan: WaiverPromotionPlan, proposal: Proposal
+        self, item: WaiverCandidateEvidence, stamps: ApprovalStamps, proposal: Proposal
     ) -> tuple[FileEffect, ...]:
         assert proposal.waiver is not None
         root = Path(proposal.waiver.approval_root)
-        item = plan.candidates[0]
-        promotion = build_promotion(item, plan.stamps)
+        promotion = build_promotion(item, stamps)
         path = root / waiver_file_path(item.source)
         before = read_bytes(path)
         after = render_approval_document(
