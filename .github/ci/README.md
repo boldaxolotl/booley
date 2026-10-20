@@ -30,13 +30,23 @@ collected differently by two shards.
 The checked-in Windows timing model contains the slow observations from a
 recent set of `main` runs. Each stored weight is the median of available
 observations for a currently eligible test whose median exceeds the
-conservative one-second default. Every shard emits fresh exact-node timing
-evidence for future model refreshes. Stale entries are harmless and missing or
-unobserved tests use the default weight.
+conservative one-second default. Every shard, and each Ubuntu complete-suite
+leg, emits fresh exact-node timing evidence for future model refreshes. Stale
+entries are harmless and missing or unobserved tests use the default weight.
 
 The timing evidence also separates the slowest worker's collection time from
 controller and execution wall time. GitHub job-step timestamps supply runner
 setup and package-install time around those pytest phases.
+
+Each timing file also carries `test_phases`: node ID to the `setup`, `call`,
+and `teardown` seconds pytest reported for that test. Nothing is zero-filled, so
+a skipped test or one that errors in setup lists only the phases it reached and
+is absent from `tests`. `tests` stays call-only, and shard balance and the model
+refresh read only `tests`: setup is dominated by module and session fixtures
+charged to whichever test first triggers them on each xdist worker, so it is not
+a stable per-test weight and would move with scheduling. The Ubuntu
+complete-suite legs publish the file as `pytest-timing-<leg label>` on every
+outcome, including failed test runs.
 
 ## Windows shard-count experiment
 
@@ -103,7 +113,8 @@ or a hard job timeout can still prevent the upload steps from running.
 
 The upload contract tests cover explicit JUnit and diagnostic
 outputs in `test.yml`, including timeout diagnostics, shard manifests and timings,
-composite-action input gates, container mounts, and publication after producers.
+complete-suite phase timings, composite-action input gates, container mounts,
+and publication after producers.
 CI-metrics publication also runs after collection failures, retaining any
 completed telemetry file.
 Caches, temporary test projects, and build products are not diagnostic outputs.

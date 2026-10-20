@@ -12,6 +12,7 @@ import pytest
 from ci_test_shards import assign_shards, load_timings, write_manifest
 
 _DURATIONS: dict[str, float] = {}
+_PHASE_DURATIONS: dict[str, dict[str, float]] = {}
 _COLLECTION_SECONDS: list[float] = []
 _SESSION_STARTED_AT: float | None = None
 _EXECUTION_STARTED_AT: float | None = None
@@ -31,6 +32,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     if not hasattr(config, "workerinput"):
         _DURATIONS.clear()
+        _PHASE_DURATIONS.clear()
         _COLLECTION_SECONDS.clear()
         global _EXECUTION_FINISHED_AT, _EXECUTION_STARTED_AT
         _EXECUTION_STARTED_AT = None
@@ -108,6 +110,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     global _EXECUTION_FINISHED_AT
+    if report.when in {"setup", "call", "teardown"}:
+        # Record only the phases pytest reported; a skipped or setup-error test has no call.
+        _PHASE_DURATIONS.setdefault(report.nodeid, {})[report.when] = report.duration
     if report.when == "call":
         _DURATIONS[report.nodeid] = report.duration
     if report.when == "teardown":
@@ -136,7 +141,9 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
             "controller_seconds": controller_seconds,
             "execution_seconds": execution_seconds,
         },
+        # Shard balance stays call-only; `test_phases` is diagnostic evidence.
         "tests": dict(sorted(_DURATIONS.items())),
+        "test_phases": dict(sorted(_PHASE_DURATIONS.items())),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

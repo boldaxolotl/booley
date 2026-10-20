@@ -551,9 +551,31 @@ def test_primary_pytest_jobs_share_evidence_publishing() -> None:
 
     action_path = REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml"
     rendered_action = action_path.read_text(encoding="utf-8")
-    assert rendered_action.count("actions/upload-artifact@") == 3
+    assert rendered_action.count("actions/upload-artifact@") == 4
     assert ".github/scripts/assert_junit.py" in rendered_action
     assert "always() && inputs.publish-shard == 'true'" in rendered_action
+    assert "always() && inputs.publish-timing == 'true'" in rendered_action
+    assert evidence_steps["test"]["with"]["publish-timing"] == "${{ matrix.mode == 'full' }}"
+    assert "publish-timing" not in evidence_steps["coverage-shards"]["with"]
+
+
+def test_complete_suites_emit_phase_timing_without_sharding() -> None:
+    steps = _test_workflow()["jobs"]["test"]["steps"]
+    full = next(step for step in steps if step.get("name") == "Run full compatibility suite")
+    command = " ".join(full["run"].split())
+
+    assert full["if"] == "matrix.mode == 'full'"
+    assert full["env"]["PYTHONPATH"] == ".github/scripts"
+    assert "-p ci_pytest_shard" in command
+    assert '--ci-timing-output "${{ runner.temp }}/timing/test-timings.json"' in command
+    for sharding_option in (
+        "--ci-shard-count",
+        "--ci-shard-index",
+        "--ci-shard-group",
+        "--ci-shard-manifest",
+        "--ci-timing-model",
+    ):
+        assert sharding_option not in command
 
 
 def test_ci_records_queue_and_runner_minutes() -> None:
