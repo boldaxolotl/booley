@@ -590,6 +590,22 @@ def test_readers_reject_pre_v3_campaigns(tmp_path: Path, reader, version: str) -
     assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
 
 
+@pytest.mark.parametrize("reader", [load_coverage_campaign, _load_bytes])
+@pytest.mark.parametrize("schema", [[], {}, 5, None])
+def test_readers_reject_a_non_string_schema_as_unsupported(
+    tmp_path: Path, reader, schema: object
+) -> None:
+    path = tmp_path / "coverage.json"
+    document = _valid_document()
+    document["$schema"] = schema
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        reader(path, TARGET)
+
+    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
+
+
 def test_unsupported_schema_is_rejected_before_campaign_decode(
     tmp_path: Path, monkeypatch
 ) -> None:

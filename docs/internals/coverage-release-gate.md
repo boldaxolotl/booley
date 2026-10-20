@@ -30,11 +30,9 @@ manifest, a 970,291-byte compressed point store, and 26,180,081 decompressed poi
 equivalent full Analyst request was 27,543,123 bytes and its empty-advisory output was 26,183,483
 bytes, confirming that bounded Analyst evidence remains separate follow-up work.
 
-With `tracemalloc`, summary reads took 0.0024 seconds and 16,910,994 peak traced bytes for the
-one-point fixture versus 0.0029 seconds and the same peak for 40,000 points. The 40,000-point deep
-load took 26.27 seconds and 205,726,188 peak bytes; full Analyst composition took 29.68 seconds and
-175,639,433 peak bytes. These figures characterize one host rather than define portable budgets;
-the structural test requires near-constant manifest size,
+With `tracemalloc`, the 40,000-point deep load took 26.27 seconds and 205,726,188 peak bytes; full
+Analyst composition took 29.68 seconds and 175,639,433 peak bytes. These figures characterize one
+host rather than define portable budgets; the structural test requires near-constant manifest size,
 lossless deep loading, and compression below the serialized Analyst payload.
 
 V3 intentionally adds source-file rollups to the manifest, so manifest size now scales

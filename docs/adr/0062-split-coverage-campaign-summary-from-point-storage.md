@@ -25,8 +25,8 @@ status: accepted
 
 ## Consequences
 
-Readers accept only the V4 and V5 storage schemas; any other schema fails with a recollect
-hint. V2 format-wide resource limits apply equally to publication and reading. Persistence schema belongs to the codecs and loaded
-envelope rather than the in-memory Coverage Campaign domain value. The split does not itself reduce
+Readers accept only the V4 and V5 storage schemas; any other schema fails with a recollect hint.
+V2 format-wide resource limits apply equally to publication and reading. Persistence schema belongs
+to the codecs and loaded envelope rather than the in-memory Coverage Campaign domain value. The split does not itself reduce
 the Coverage Analyst model payload. ADR 0063 separately binds analysis to budgeted evidence views
 and records the retrieval scope so omitted points remain explicit.

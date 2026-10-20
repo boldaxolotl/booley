@@ -288,10 +288,10 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
         )
+    atomic_write_once(points_path, points_bytes)
     # The manifest is the commit marker: link it last, and drop the point store
-    # when it never appears.
+    # this call wrote when the manifest never appears.
     try:
-        atomic_write_once(points_path, points_bytes)
         atomic_write_once(campaign_path, manifest_bytes)
     finally:
         if not campaign_path.exists():
@@ -743,7 +743,9 @@ def _load_manifest(
                 "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
             )
         document = dict(require_dict(json.loads(raw)))
-        if document.get("$schema") not in POINT_STORE_CAMPAIGN_SCHEMAS:
+        schema = document.get("$schema")
+        # A tampered non-string schema (a list or object) is unhashable: reject it as unsupported.
+        if not isinstance(schema, str) or schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
             raise CoverageCampaignStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
