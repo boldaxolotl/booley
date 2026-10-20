@@ -287,6 +287,7 @@ jobs:
       - name: Run full compatibility suite
         if: matrix.mode == 'full'
         env:
+          PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
@@ -294,6 +295,8 @@ jobs:
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          -p ci_pytest_shard
+          --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"
 
       - name: Run focused Windows compatibility suite
         if: matrix.mode == 'compatibility'
@@ -332,6 +335,7 @@ jobs:
         with:
           label: ${{ matrix.name }}
           publish-shard: ${{ matrix.mode == 'shard' }}
+          publish-timing: ${{ matrix.mode == 'full' }}
           shard-group: ${{ matrix.group }}
           shard-index: ${{ matrix.shard_index }}
 

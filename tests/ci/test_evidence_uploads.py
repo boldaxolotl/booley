@@ -8,13 +8,19 @@ excluded. Unsupported path syntax fails instead of silently skipping evidence.
 from __future__ import annotations
 
 import copy
+import fnmatch
 import re
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
 _ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(_ROOT / ".github/scripts"))
+
+from ci_changes import build_test_matrix
+
 _FLAGS = r"junitxml|record|evidence|json|markdown|ci-shard-manifest|ci-timing-output"
 _DIAGNOSTIC_ENV = ("BOOLEY_PYTEST_TIMING_FILE", "BOOLEY_PYTEST_EVIDENCE_DIR")
 _OUTPUT_HELPERS = (
@@ -229,7 +235,11 @@ def test_smoke_evidence_is_uploaded_after_container_cleanup() -> None:
 
 @pytest.mark.parametrize(
     "upload_name",
-    ["Upload worker timeout diagnostics", "Upload shard selection and timing evidence"],
+    [
+        "Upload worker timeout diagnostics",
+        "Upload shard selection and timing evidence",
+        "Upload pytest phase timing evidence",
+    ],
 )
 @pytest.mark.parametrize("change", ["remove", "narrow"])
 def test_plugin_evidence_audit_rejects_upload_gaps(
@@ -257,3 +267,32 @@ def test_evidence_audit_rejects_publication_before_producer(tmp_path: Path) -> N
     steps.insert(0, upload)
     with pytest.raises(AssertionError, match="no unconditional or producer-gated upload"):
         _assert_uploads(workflow, tmp_path)
+
+
+def test_phase_timing_artifacts_avoid_shard_verification_patterns() -> None:
+    action = yaml.safe_load(
+        (_ROOT / ".github/actions/publish-pytest-evidence/action.yml").read_text()
+    )
+    upload = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Upload pytest phase timing evidence"
+    )
+    template = upload["with"]["name"]
+    labels = [
+        entry["name"] for entry in build_test_matrix(10)["include"] if entry["mode"] == "full"
+    ]
+    patterns = [
+        step["with"]["pattern"]
+        for job in _workflow()["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("uses", "").startswith("actions/download-artifact@")
+        and "pattern" in step.get("with", {})
+    ]
+
+    assert labels == ["ubuntu-3.11-full", "ubuntu-3.14-full"]
+    assert patterns
+    for label in labels:
+        artifact = template.replace("${{ inputs.label }}", label)
+        assert "${{" not in artifact
+        assert not [p for p in patterns if fnmatch.fnmatchcase(artifact, p)]
