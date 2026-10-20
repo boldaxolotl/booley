@@ -78,9 +78,6 @@ def set_criterion(
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
     """Append normalized strict-Ticket outcomes before mutable state is saved."""
-    from booley.runtime.execution_lease import validate_recording
-
-    validate_recording(getattr(endpoint.args, "work_dir", None))
     if not changes or not endpoint.state.strict_criteria:
         return
     endpoint._acceptance_recorder.record_changes(

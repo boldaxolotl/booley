@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -263,39 +262,24 @@ def _prepared_leaf_indices(projection, disclosure_position, entry_position) -> s
     return set().union(*(projection.pointer_indices.get(pointer, ()) for pointer in pointers))
 
 
-def _collect_prepared_entries(projection, position, old, new, sources, groups) -> None:
-    for entry_position, (before, after) in enumerate(zip(old, new, strict=True)):
-        if before["kind"] != "generated_input" or after["kind"] != "generated_input":
+def _prepared_observations(projection, left, right):
+    for position, (old, new) in enumerate(
+        zip(left["planning_disclosures"], right["planning_disclosures"], strict=False)
+    ):
+        if not _known_preparation_pair(old, new):
             continue
-        if {key: value for key, value in before.items() if key not in {"bytes", "sha256"}} != {
-            key: value for key, value in after.items() if key not in {"bytes", "sha256"}
-        }:
-            continue
-        indices = _prepared_leaf_indices(projection, position, entry_position)
-        if not indices:
-            continue
-        if _prepared_existing_cause(projection, before, after, sources):
-            projection.explain(indices, ())
-            continue
-        key = (before["path"], before["bytes"], before["sha256"], after["bytes"], after["sha256"])
-        grouped_indices, positions = groups.setdefault(key, (set(), set()))
-        grouped_indices.update(indices)
-        positions.add(position)
-
-
-def _render_prepared_groups(projection, groups) -> None:
-    path_counts = Counter(key[0] for key in groups)
-    rendered = {}
-    for key, (_indices, positions) in groups.items():
-        line = f"prepared source changed: {_label(key[0])}"
-        if path_counts[key[0]] > 1:
-            noun = "planning disclosure" if len(positions) == 1 else "planning disclosures"
-            line += f" ({noun} {', '.join(str(position) for position in sorted(positions))})"
-        rendered[key] = line
-    line_counts = Counter(rendered.values())
-    for key, line in rendered.items():
-        if line_counts[line] == 1 and line not in projection.root_lines:
-            projection.explain(groups[key][0], (line,))
+        for entry_position, (before, after) in enumerate(
+            zip(old["generated_files"], new["generated_files"], strict=True)
+        ):
+            if before["kind"] != "generated_input" or after["kind"] != "generated_input":
+                continue
+            if {k: v for k, v in before.items() if k not in {"bytes", "sha256"}} != {
+                k: v for k, v in after.items() if k not in {"bytes", "sha256"}
+            }:
+                continue
+            indices = _prepared_leaf_indices(projection, position, entry_position)
+            if indices:
+                yield before, after, indices, position
 
 
 def _project_prepared_sources(projection, left, right) -> None:
@@ -303,20 +287,26 @@ def _project_prepared_sources(projection, left, right) -> None:
         _entry_map(left["workload"]["source_recipe"]["sources"], "path"),
         _entry_map(right["workload"]["source_recipe"]["sources"], "path"),
     )
-    groups = {}
-    for position, (old, new) in enumerate(
-        zip(left["planning_disclosures"], right["planning_disclosures"], strict=False)
-    ):
-        if _known_preparation_pair(old, new):
-            _collect_prepared_entries(
-                projection,
-                position,
-                old["generated_files"],
-                new["generated_files"],
-                sources,
-                groups,
-            )
-    _render_prepared_groups(projection, groups)
+    observations, paths = {}, {}
+    for before, after, indices, position in _prepared_observations(projection, left, right):
+        if _prepared_existing_cause(projection, before, after, sources):
+            projection.explain(indices, ())
+            continue
+        key = (before["path"], before["bytes"], before["sha256"], after["bytes"], after["sha256"])
+        grouped_indices, positions = observations.setdefault(key, (set(), set()))
+        grouped_indices.update(indices)
+        positions.add(position)
+        paths.setdefault(before["path"], set()).add(key)
+    labels = {}
+    for key, (indices, positions) in observations.items():
+        line = f"prepared source changed: {_label(key[0])}"
+        if len(paths[key[0]]) > 1:
+            noun = "planning disclosure" if len(positions) == 1 else "planning disclosures"
+            line += f" ({noun} {', '.join(str(position) for position in sorted(positions))})"
+        labels.setdefault(line, []).append(indices)
+    for line, candidates in labels.items():
+        if len(candidates) == 1:
+            projection.explain(candidates[0], (line,))
 
 
 def _project_runtime(projection, old, new) -> None:

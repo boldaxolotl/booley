@@ -614,17 +614,14 @@ coverage floors alone, so it never shows `goal-test-run-incomplete`,
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet. | Run them. For a Goal that covers every Test of its Target, run the whole Target. For a Goal with a `test@xN` selector, run `--test` with that selector. For any other Goal, run `--test` with each frozen Test Run name that `goal_status` lists. |
-| `goal-test-run-failed` | A frozen Test Run failed at the current file contents. A later pass at the same contents does not clear it. | Fix the cause and run again. `goal_status` prints a rerun command for each failed Test Run. |
+| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet, or the evidence has no Test Run rows. | Run them. For a Goal that covers every Test of its Target, run the whole Target. For a Goal with a `test@xN` selector, run `--test` with that selector. For any other Goal, run `--test` with each frozen Test Run name that `goal_status` lists. |
+| `goal-test-run-failed` | A frozen Test Run failed at the current file contents. A later pass at the same contents does not clear it, including when an interrupted run is recovered. | Fix the cause and run again. `goal_status` prints a rerun command for each failed Test Run. |
 | `goal-test-run-pending` | The Goal names a Target, Test or Test Variant that does not exist yet. | Add it. Booley freezes the Test Run at the next Flow run or status read. |
 | `goal-test-run-unresolvable` | The pending part cannot be frozen: `tests.toml` cannot be loaded or applied to the Target, or the Goal names a seed and the Target is unseeded. | Fix `tests.toml` as the message says, or ask for a Goal change. |
 | `goal-simulation-suite-empty` | The Goal covers every Test of its Target, and the Target runs none: every registered Test is skipped. | Register a Test, or remove it from `skip`. |
 | `goal-test-run-missing` | A frozen Test Run's Target, Test or Test Variant is gone, its Test is skipped, or the Target cannot apply its seed. | Restore the declaration, or ask the Developer Agent to propose a `retarget`. |
 | `goal-test-run-changed` | The declared arguments or environment of a frozen Test Run changed in `tests.toml`. | Restore them, or ask the Developer Agent to propose a `retarget`. |
 | `goal-test-run-metric-missing` | The latest run recorded Test Run outcomes but did not measure the Goal's Cycle Count or coverage. | Cycle Count: run the Goal's frozen Test Run. Coverage: run exactly the Goal's frozen Test Runs in one `--coverage` run. |
-| `goal-test-run-ledger-missing` | The Goal's evidence carries no Test Run outcomes. | Run the Simulation Flow again. |
-| `goal-test-run-ledger-outdated` | The recorded Test Run outcomes differ from the recorded evidence, for example after an interrupted run was recovered. | Run the Simulation Flow again. |
-| `goal-test-run-ledger-malformed` | The recorded Test Run outcomes cannot be read. | Run the Simulation Flow again. |
 | `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A Simulation Campaign registration that cannot be read is moved aside only when you approve a Goal change. |
 
 A `retarget` that leaves the Goal as written freezes its Test Runs again from

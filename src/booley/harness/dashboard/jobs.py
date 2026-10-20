@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
+from booley.core.boundary import as_dict, as_float
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
@@ -32,6 +33,34 @@ class JobView(JobObservation):
     eda_tool: str = ""
     handle: str = ""
     owner_handle: str = ""
+
+    @property
+    def recorded_resources(self) -> tuple[float, float] | None:
+        """Validated recorded CPU seconds and largest-process RSS in MiB."""
+        values = as_dict((self.report or {}).get("resources")) or {}
+        try:
+            numbers = [
+                as_float(values.get(key)) for key in ("cpu_user_s", "cpu_sys_s", "peak_rss_mb")
+            ]
+        except OverflowError:
+            return None
+        user, system, peak = numbers
+        if user is None or system is None or peak is None:
+            return None
+        return user + system, peak
+
+    @property
+    def recorded_tools(self) -> str:
+        """Retain Target association and reject malformed optional tool records."""
+        report = self.report or {}
+        tools = report.get("eda_tools")
+        if isinstance(tools, dict) and tools:
+            return ", ".join(
+                f"{key}: {value or 'not recorded by this Flow'}"
+                for key, value in sorted(tools.items())
+            )
+        tool = report.get("eda_tool") or report.get("tool")
+        return tool if isinstance(tool, str) else ""
 
 
 @dataclass(frozen=True)

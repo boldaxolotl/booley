@@ -32,14 +32,14 @@ from booley.targets.catalog import TargetCatalog
 def generated_inputs(
     project: Path, record: GoalRecord, state: DevelopmentState, root: Path
 ) -> tuple[GeneratedBuildInput, ...]:
-    """Only selected observations or their hash-verified originals can authorize data."""
+    """Only selected observations or their validated contributors can authorize data."""
     paths = record_paths(project, record.id)
     records = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, state, {})
     indexed = {row["sequence"]: row for row in records}
     selected = selected_observations(record, state, project)
     origins: dict[int, dict[str, Any]] = {}
     for row in selected.values():
-        for original in [row, *original_observations(row, indexed)]:
+        for original in [row, *original_observations(row, indexed, record)]:
             origins[original["sequence"]] = original
     result: list[GeneratedBuildInput] = []
     for row in origins.values():

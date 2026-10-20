@@ -1383,47 +1383,28 @@ def _publish_planned_attributes(
     expected: _FileIdentity | None,
     normalization: _NormalizationResult | None,
 ) -> LineEndingActionResult:
-    if not plan.target.local:
-        result = _publish_attributes(plan.repository.root, expected)
-        return LineEndingActionResult(
-            result.kind, result.state, detail=result.detail, target=plan.target
-        )
-    error = _revalidate_local_policy(plan, normalization)
-    if error:
-        return _action(
-            LineEndingActionKind.PUBLISH_ATTRIBUTES,
-            LineEndingActionState.REFUSED,
-            detail=error,
-            target=plan.target,
-        )
-    path = plan.target.path
-    try:
-        path.parent.mkdir(exist_ok=True)
-        if path.parent.is_symlink() or not path.parent.is_dir():
-            raise ValueError(f"unsafe attributes directory: {path.parent}")
-        current, error = _optional_file_identity(path)
-        if error or current != expected:
+    if plan.target.local:
+        error = _revalidate_local_policy(plan, normalization)
+        if error:
             return _action(
                 LineEndingActionKind.PUBLISH_ATTRIBUTES,
                 LineEndingActionState.REFUSED,
-                detail=f"{path}: attributes changed during line-ending repair",
+                detail=error,
                 target=plan.target,
             )
-        content = _attributes_replacement(path)
-        error = (
-            _update_attributes(path, expected, content)
-            if expected
-            else _create_attributes(path, content)
-        )
-    except (OSError, ValueError) as exc:
-        error = str(exc)
-    state = LineEndingActionState.FAILED if error else LineEndingActionState.COMPLETED
-    return _action(
-        LineEndingActionKind.PUBLISH_ATTRIBUTES,
-        state,
-        detail=f"{path}: {error}" if error else None,
-        target=plan.target,
-    )
+        path = plan.target.path
+        try:
+            path.parent.mkdir(exist_ok=True)
+            if path.parent.is_symlink() or not path.parent.is_dir():
+                raise ValueError(f"unsafe attributes directory: {path.parent}")
+        except (OSError, ValueError) as exc:
+            return _action(
+                LineEndingActionKind.PUBLISH_ATTRIBUTES,
+                LineEndingActionState.FAILED,
+                detail=f"{path}: {exc}",
+                target=plan.target,
+            )
+    return _publish_attributes(plan.target, expected)
 
 
 def _revalidate_local_policy(
@@ -1699,37 +1680,13 @@ def _attributes_replacement(path: Path) -> bytes:
     return GITATTRIBUTES_RULE.encode() + b"\n" + existing
 
 
-def _create_attributes(
-    path: Path, content: bytes, validate: Callable[[], str | None] | None = None
-) -> str | None:
-    staged, error = _stage_atomic_content(path, content, mode=0o644)
-    if error is not None:
-        return error
-    assert staged is not None
-    try:
-        current, error = _optional_file_identity(path)
-        if error is not None or current is not None:
-            return error or f"{path}: attributes changed during line-ending repair"
-        if validate and (error := validate()):
-            return error
-        os.link(staged, path)
-    except FileExistsError:
-        return f"{path}: attributes changed during line-ending repair"
-    except OSError as exc:
-        return f"could not atomically publish {path}: {exc}"
-    finally:
-        with suppress(FileNotFoundError, PermissionError):
-            staged.unlink()
-    return None
-
-
-def _update_attributes(
+def _write_attributes(
     path: Path,
-    expected: _FileIdentity,
+    expected: _FileIdentity | None,
     content: bytes,
     validate: Callable[[], str | None] | None = None,
 ) -> str | None:
-    staged, error = _stage_atomic_content(path, content, mode=expected.mode)
+    staged, error = _stage_atomic_content(path, content, mode=expected.mode if expected else 0o644)
     if error is not None:
         return error
     assert staged is not None
@@ -1739,7 +1696,13 @@ def _update_attributes(
             return error or f"{path}: attributes changed during line-ending repair"
         if validate and (error := validate()):
             return error
-        staged.replace(path)
+        if expected is None:
+            try:
+                os.link(staged, path)
+            except FileExistsError:
+                return f"{path}: attributes changed during line-ending repair"
+        else:
+            staged.replace(path)
     except OSError as exc:
         return f"could not atomically publish {path}: {exc}"
     finally:
@@ -1748,41 +1711,49 @@ def _update_attributes(
     return None
 
 
-def _write_attributes(path, expected, content, validate):
-    return (
-        _update_attributes(path, expected, content, validate)
-        if expected is not None
-        else _create_attributes(path, content, validate)
-    )
-
-
 def _publish_attributes(
-    project_root: Path,
+    target: AttributesTarget,
     expected: _FileIdentity | None,
     validate: Callable[[], str | None] | None = None,
 ) -> LineEndingActionResult:
-    path = project_root / ".gitattributes"
+    path = target.path
     current, error = _optional_file_identity(path)
     if error is not None or current != expected:
         return _action(
             LineEndingActionKind.PUBLISH_ATTRIBUTES,
             LineEndingActionState.REFUSED,
-            detail=error or ".gitattributes changed during line-ending repair",
+            detail=(
+                f"{path}: attributes changed during line-ending repair"
+                if target.local
+                else error or ".gitattributes changed during line-ending repair"
+            ),
+            target=target,
         )
-    if _eol_policy_is_user_owned(project_root):
+    if not target.local and _eol_policy_is_user_owned(path.parent):
         return _action(
             LineEndingActionKind.PUBLISH_ATTRIBUTES,
             LineEndingActionState.REFUSED,
             detail=".gitattributes policy changed during line-ending repair",
+            target=target,
         )
     try:
         content = _attributes_replacement(path)
     except OSError as exc:
-        error = f"could not read .gitattributes: {exc}"
+        error = str(exc) if target.local else f"could not read .gitattributes: {exc}"
     else:
-        error = _write_attributes(path, expected, content, validate)
+        try:
+            error = _write_attributes(path, expected, content, validate)
+        except OSError as exc:
+            if not target.local:
+                raise
+            error = str(exc)
     state = LineEndingActionState.COMPLETED if error is None else LineEndingActionState.FAILED
-    return _action(LineEndingActionKind.PUBLISH_ATTRIBUTES, state, detail=error)
+    return _action(
+        LineEndingActionKind.PUBLISH_ATTRIBUTES,
+        state,
+        detail=f"{path}: {error}" if target.local and error else error,
+        target=target,
+    )
 
 
 def _migration_action(
@@ -1838,7 +1809,7 @@ def _remove_migrated_default(plan: _RepositoryPlan, root_snapshot) -> str | None
     if error:
         return error
     if remaining:
-        return _update_attributes(
+        return _write_attributes(
             migration.source,
             identity,
             remaining,
@@ -1867,7 +1838,7 @@ def _migrate_attributes(
         return _migration_action(plan, LineEndingActionState.REFUSED, error)
     if not migration.root_owned:
         publication = _publish_attributes(
-            plan.repository.root,
+            plan.target,
             root_snapshot[0],
             lambda: _migration_revalidation(plan, root_snapshot),
         )

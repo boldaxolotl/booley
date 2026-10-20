@@ -140,10 +140,34 @@ class EndpointState(ABC):
         # time; write_report() emits it as ``eda_tool`` so reports say which
         # binary produced the result — distinct from the Booley Flow name.
         self._eda_tool: str | None = None
+        self._eda_tools: dict[str, str | None] = {}
         # Why this invocation's evidence was discarded (B1); reset per invocation.
         self._evidence_discarded: str | None = None
         self.configure_flow_execution(StandaloneFlowExecution())
         self.flow_acceptance: ResolvedFlowAcceptance = ResolvedFlowAcceptance()
+
+    def reset_report_metadata(self) -> None:
+        """Start resolved EDA identity afresh for every invocation."""
+        self._eda_tool = None
+        self._eda_tools = {}
+        if self._args is None:
+            return
+        target = self._selected_target
+        targets = target.split(",") if isinstance(target, str) else target
+        self.set_report_targets([item.strip() for item in targets if item.strip()])
+
+    def set_report_targets(self, targets: list[str]) -> None:
+        """Preserve selection cardinality even when some Targets never resolve."""
+        self._eda_tools = {target: self._eda_tools.get(target) for target in targets}
+        self._eda_tool = (
+            next(iter(self._eda_tools.values())) if len(self._eda_tools) == 1 else None
+        )
+
+    def record_eda_tool(self, target: str, eda_tool: str | None) -> None:
+        """Record the raw simulator or EDA identity resolved for a selected Target."""
+        self._eda_tools[target] = eda_tool or None
+        if len(self._eda_tools) == 1:
+            self._eda_tool = eda_tool or None
 
     def configure_flow_execution(self, adapter: FlowExecutionAdapter) -> None:
         """Use one adapter as the authority for Flow admission and recording."""

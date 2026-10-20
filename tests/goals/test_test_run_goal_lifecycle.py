@@ -32,7 +32,7 @@ from tests.goals.conftest import (
 )
 from tests.goals.test_finish import environment, request
 from tests.goals.test_proposals import approve
-from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _evidence_file, _record
+from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _record, _substitute_contributor
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -104,20 +104,13 @@ def test_an_unresolved_goal_and_an_all_skipped_suite_are_unmet_for_their_own_rea
 def test_finish_refuses_an_accumulated_goal_whose_contributor_was_substituted(
     layout: SimpleNamespace,
 ) -> None:
+    from booley.criteria.evidence_ledger import AcceptanceLedgerError
+
     mode = _mode(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
-    _record(mode, "run-1", [run_row(A, "fail")], met=False)
-    (mode.worktree / "rtl.v").write_bytes(b"module top; wire fixed; endmodule\n")
-    git(mode.worktree, "commit", "-qam", "fix")
-    _record(mode, "run-2", [run_row(A)])
-    _record(mode, "run-3", [run_row(B)])
-    assert _status(mode, SIM_KEY).status == "met"
-    # The contributing campaign that passed ``a@1`` is swapped for one that says it failed.
-    path = _evidence_file(mode, 2)
-    row = json.loads(path.read_text(encoding="utf-8"))
-    row["detail"]["test_runs"][0]["grade"] = "fail"
-    path.write_text(json.dumps(row), encoding="utf-8")
-    assert _status(mode, SIM_KEY).reason.startswith("goal-test-run-ledger-outdated")
-    with pytest.raises(LifecycleError, match="must be met and fresh before finish"):
+    _substitute_contributor(mode)
+    with pytest.raises(
+        AcceptanceLedgerError, match="transaction manifest does not bind its record"
+    ):
         finish_goal(request(mode), environment(mode))
 
 

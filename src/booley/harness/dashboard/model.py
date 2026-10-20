@@ -216,7 +216,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
                     selected.get(goal.key),
                     tuple(
                         original_observations(
-                            selected[goal.key], {row["sequence"]: row for row in evidence}
+                            selected[goal.key], {row["sequence"]: row for row in evidence}, current
                         )
                     )
                     if goal.key in selected

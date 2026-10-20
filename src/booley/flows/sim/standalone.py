@@ -380,6 +380,8 @@ class StandaloneMixin:
         if isinstance(prepared, _StandaloneOutcome):
             return prepared
         frontend, modules, shared = prepared
+        if self._eda_tool is None:
+            self._eda_tool = frontend
         failures, unparsed, log_chunks, eda_tool_error = self._run_standalone_probes(
             modules,
             shared,

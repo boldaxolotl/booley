@@ -15,7 +15,7 @@ from booley.goals.finish import finish_goal
 from booley.goals.lifecycle import LifecycleError
 from tests.goals.conftest import SIM_KEY, SIM_NAME, enter_goals, git, run_row, write_tests_toml
 from tests.goals.test_finish import environment, request
-from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _record
+from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _outcomes, _record
 
 # Finish stages and verifies real Git objects, as tests/goals/test_finish.py does.
 pytestmark = pytest.mark.timeout(120)
@@ -48,11 +48,7 @@ def test_finish_requires_every_frozen_test_run_passed(layout: SimpleNamespace) -
     assert result["status"] == "finished"
     package = json.loads(Path(result["package"]).read_bytes())
     (row,) = package["goals"]
-    runs = row["selected_observation"]["detail"]["test_run_ledger"]["runs"]
-    assert [(run["name"], run["outcome"]) for run in runs] == [
-        ("a@1", "passed"),
-        ("b@1", "passed"),
-    ]
+    assert _outcomes(mode) == {"a@1": "passed", "b@1": "passed"}
     # The campaign that passed a@1 contributed and is disclosed with the package.
     assert [item["sequence"] for item in row["original_observations"]] == [1]
     assert "Test Runs: a@1 passed, b@1 passed" in Path(result["summary"]).read_text()

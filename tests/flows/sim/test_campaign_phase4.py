@@ -1427,7 +1427,9 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
         _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[0]) == 2)
         for token in slots.snapshot(CLASS_HEAVY)[0]:
             if str(token.execution_id) == child_id:
-                token.path.unlink()
+                with slots._lease_gate(token) as acquired:
+                    assert acquired
+                    token.path.unlink()
         _wait_until(scope.cancelled)
         child_finished.set()
         if scope_stop == "coverage":

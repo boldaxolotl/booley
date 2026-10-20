@@ -587,6 +587,7 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
                 report_text=f"{self.name} Target selection failed: {exc}",
             )
         self._prepared_target_selection = selection
+        self.context.set_report_targets([handle.selector for handle in selection.handles])
         if selection.automatic:
             from booley.flows.endpoint_reporting import automatic_target_notice
 
@@ -610,6 +611,10 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     def _selected_target_handles(self) -> tuple[TargetHandle, ...]:
         """Return the immutable selection prepared for this invocation."""
         return self._selected_target_selection().handles
+
+    def record_eda_tool(self, target: str, eda_tool: str | None) -> None:
+        """Forward resolved tool identity to the invocation's metadata owner."""
+        self.context.record_eda_tool(target, eda_tool)
 
     @property
     def _eda_tool(self) -> str | None:
@@ -650,7 +655,7 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         from booley.flows.builtin_cli import parse_request
 
         self.context._args = parse_request(self, argv)
-        self.begin_invocation()
+        self.context.reset_report_metadata()
         return self.args
 
     def begin_invocation(self) -> None:

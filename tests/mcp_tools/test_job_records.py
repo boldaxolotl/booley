@@ -38,6 +38,8 @@ class TestRunId:
 
 class TestRecordRoundTrip:
     def test_write_then_read(self, _jobs_env):
+        import json
+
         rec = jobrec.JobRecord(
             run_id="simulate-x-1",
             endpoint="sim",
@@ -45,7 +47,6 @@ class TestRecordRoundTrip:
             timeout_s=1290,
             argv=["python", "-m", "booley.flows.sim"],
             pid=4242,
-            lease_id="review-operation-1",
         )
         jobrec.write_record(rec, root=_jobs_env)
         got = jobrec.read_record("simulate-x-1", root=_jobs_env)
@@ -54,7 +55,18 @@ class TestRecordRoundTrip:
         assert got.pid == 4242
         assert got.status == jobrec.STATUS_RUNNING  # default
         assert got.argv == ["python", "-m", "booley.flows.sim"]
-        assert got.lease_id == "review-operation-1"
+        path = _jobs_env / f"{rec.run_id}.json"
+        new_payload = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(
+            json.dumps({**new_payload, "lease_id": "historical-operation"}), encoding="utf-8"
+        )
+        historical = jobrec.read_record(rec.run_id, root=_jobs_env)
+        assert historical is not None
+        assert historical.run_id == rec.run_id
+        assert historical.argv == rec.argv
+        assert jobrec.list_records(_jobs_env) == [historical]
+        assert jobrec.strict_records(_jobs_env) == [historical]
+        assert "lease_id" not in new_payload
 
     def test_read_missing_returns_none(self, _jobs_env):
         assert jobrec.read_record("nope-1", root=_jobs_env) is None
