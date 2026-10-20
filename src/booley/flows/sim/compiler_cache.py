@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.core.boundary import as_str_list, require_dict
+from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.compiler_cache import (
@@ -26,7 +26,6 @@ from booley.runtime.compiler_cache import (
     ISSUED_COMPILER_CACHE_ROOT,
     IssuedCacheIdentity,
 )
-from booley.targets.domain import TargetInspection
 
 logger = logging.getLogger(__name__)
 RESERVED = frozenset(
@@ -40,18 +39,10 @@ RESERVED = frozenset(
         COMPILER_CACHE_ROOT_ENV,
     }
 )
-_ASSIGNMENT = re.compile(
-    r"^[ \t]*(?:(?:override|export|private)\s+)*("
-    + "|".join(sorted(RESERVED))
-    + r")\s*(?:[:]{1,3}=|\?=|\+=|!=|=)",
-    re.MULTILINE,
-)
-_EVAL_VARIABLE = re.compile(r"(?<![\w])(" + "|".join(sorted(RESERVED)) + r")(?![\w])")
-_SHORT_EVAL = re.compile(r"^-[bBdeiknpqrRsStvw]*E(.*)$")
 
 
 class CompilerCacheConfigurationError(ValueError):
-    """Invalid explicit compiler-cache configuration or Make override."""
+    """Invalid explicit compiler-cache configuration."""
 
 
 _MISSING_SANDBOX_IDENTITY = (
@@ -125,49 +116,6 @@ def _read_compiler_cache_section(project_root: Path) -> dict:
     except ValueError as exc:
         raise CompilerCacheConfigurationError(str(exc)) from exc
     return config
-
-
-def validate_make_assignments(
-    inspection: TargetInspection, environment: Mapping[str, str]
-) -> None:
-    """Reject Make precedence escapes without altering unrelated Make options."""
-    values = [
-        environment.get(name, "")
-        for name in ("MAKEFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MFLAGS")
-    ]
-    for options in (inspection.flow_options, inspection.tool_options):
-        authored = options.get("make_options", ())
-        values.extend(as_str_list(list(authored) if isinstance(authored, tuple) else authored))
-    for raw in values:
-        try:
-            tokens = shlex.split(raw)
-        except ValueError:
-            tokens = [raw]
-        for index, token in enumerate(tokens):
-            is_eval = True
-            option, separator, argument = token.partition("=")
-            short_eval = _SHORT_EVAL.match(token)
-            if option in {"--ev", "--eva", "--eval"} and separator:
-                expression = argument
-            elif token in {"--ev", "--eva", "--eval", "-E"}:
-                expression = tokens[index + 1] if index + 1 < len(tokens) else ""
-            elif short_eval:
-                expression = short_eval[1] or (
-                    tokens[index + 1] if index + 1 < len(tokens) else ""
-                )
-            elif token in RESERVED:
-                expression = " ".join(tokens[index:])
-                is_eval = False
-            else:
-                expression = token
-                is_eval = False
-            # Eval accepts arbitrary Make programs, including computed names and
-            # nested eval/define. Do not attempt to interpret that language.
-            match = (_EVAL_VARIABLE if is_eval else _ASSIGNMENT).search(expression)
-            if match:
-                raise CompilerCacheConfigurationError(
-                    f"{match[1]} is managed by Booley; remove its Make assignment and configure flows.sim.compiler_cache instead"
-                )
 
 
 def resolve_policy(

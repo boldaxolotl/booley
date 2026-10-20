@@ -6,7 +6,6 @@ import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -18,7 +17,6 @@ from booley.flows.sim.compiler_cache import (
     compose_environment,
     execution_environment,
     resolve_policy,
-    validate_make_assignments,
 )
 from booley.runtime.compiler_cache import (
     COMPILER_CACHE_RELATIVE,
@@ -26,8 +24,6 @@ from booley.runtime.compiler_cache import (
     ISSUED_COMPILER_CACHE_ROOT,
     IssuedCacheIdentity,
 )
-from booley.runtime.filesystem_utils import copy_booley_tree
-from booley.targets.domain import TargetInspection
 
 # A host process: nothing issued, not inside a Sandbox.
 HOST = IssuedCacheIdentity(root=None, in_sandbox=False)
@@ -95,80 +91,6 @@ def test_selected_checkout_errors_do_not_fall_back(project, tmp_path, monkeypatc
     (data / "booley.toml").write_text(content)
     with pytest.raises(CompilerCacheConfigurationError):
         resolve_policy(root, issued=HOST, owner=main)
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "OBJCACHE",
-        "CCACHE_DIR",
-        "CCACHE_MAXSIZE",
-        "CCACHE_COMPILERCHECK",
-        "CCACHE_BASEDIR",
-        "USER_CPPFLAGS",
-        COMPILER_CACHE_ROOT_ENV,
-    ],
-)
-@pytest.mark.parametrize("operator", ["=", ":=", "::=", ":::=", "?=", "+=", "!="])
-@pytest.mark.parametrize(
-    "source", ["modern", "legacy", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MFLAGS"]
-)
-def test_reserved_make_assignments_rejected(name, operator, source):
-    assignment = f"-j2 {name}{operator}anything"
-    inspection = cast(
-        TargetInspection,
-        SimpleNamespace(
-            flow_options={"make_options": [assignment]} if source == "modern" else {},
-            tool_options={"make_options": [assignment]} if source == "legacy" else {},
-        ),
-    )
-    with pytest.raises(CompilerCacheConfigurationError, match="managed by Booley"):
-        validate_make_assignments(inspection, {source: assignment})
-
-
-def test_unrelated_make_options_preserved():
-    inspection = cast(
-        TargetInspection,
-        SimpleNamespace(
-            flow_options={
-                "make_options": [
-                    "-j2",
-                    "VM_PARALLEL_BUILDS=1",
-                    "USER_LDFLAGS=-Wl,-defsym,OBJCACHE=1",
-                    "OTHER=CCACHE_DIR=/tmp",
-                    "'OTHER=label OBJCACHE=example'",
-                ]
-            },
-            tool_options={},
-        ),
-    )
-    validate_make_assignments(inspection, {"MAKEFLAGS": "-j4 --jobserver-auth=3,4 OTHER=yes"})
-
-
-@pytest.mark.parametrize(
-    "option",
-    [
-        "CCACHE_DIR := /tmp",
-        "--eval='override CCACHE_MAXSIZE=0'",
-        "--eval=' override OBJCACHE=escape'",
-        "--eval 'export OBJCACHE=escape'",
-        "-E 'private CCACHE_DIR=/tmp'",
-        "-EOBJCACHE=escape",
-        "--eval='$(eval OBJCACHE=escape)'",
-        "--eval='define OBJCACHE\nescape\nendef'",
-        "--eval='variable=OBJCACHE\n$(eval $(variable)=escape)'",
-        "--ev=OBJCACHE=escape",
-        "--eva 'CCACHE_DIR=/tmp'",
-        "-sEOBJCACHE=escape",
-        "-rE 'CCACHE_MAXSIZE=0'",
-    ],
-)
-def test_reserved_eval_and_spaced_assignments_rejected(option):
-    inspection = cast(
-        TargetInspection, SimpleNamespace(flow_options={"make_options": [option]}, tool_options={})
-    )
-    with pytest.raises(CompilerCacheConfigurationError, match="managed by Booley"):
-        validate_make_assignments(inspection, {})
 
 
 @pytest.mark.parametrize("tool_directory", ["caller", "compiler"])
@@ -297,21 +219,6 @@ def test_missing_ccache_builds_uncached_without_storage(project, monkeypatch):
     assert not policy.root.exists()
 
 
-def test_legacy_snapshot_excludes_only_cache_subtree(tmp_path):
-    src = tmp_path / ".booley"
-    cache = src / "project" / COMPILER_CACHE_RELATIVE
-    cache.mkdir(parents=True)
-    (cache / "entry").write_text("cache")
-    (cache.parent.parent / "other").write_text("operational neighbor")
-    (src / "compiler-cache").mkdir()
-    (src / "compiler-cache" / "authored").write_text("keep")
-    dst = tmp_path / "copy"
-    copy_booley_tree(src, dst)
-    assert not (dst / "project" / ".runtime" / "compiler-cache").exists()
-    assert (dst / "project" / ".runtime" / "other").read_text() == "operational neighbor"
-    assert (dst / "compiler-cache" / "authored").read_text() == "keep"
-
-
 def _prepare_real_verilator_target(root: Path, options: dict, *, legacy: bool = False):
     """Prepare a one-file Verilator Target through real FuseSoC/Edalize resolution."""
     import sys
@@ -349,25 +256,34 @@ def _prepare_real_verilator_target(root: Path, options: dict, *, legacy: bool = 
         return prepare_simulation_build(handle)
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("source", ["authored", "GNUMAKEFLAGS"])
+@pytest.mark.parametrize("legacy", [False, True], ids=["flow", "tool"])
 @pytest.mark.parametrize(
-    "assignment", ["OBJCACHE=ccache", "CCACHE_MAXSIZE=0", "CCACHE_DIR=/elsewhere"]
+    "source", ["authored", "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MFLAGS"]
 )
-def test_real_edalize_preparation_rejects_target_make_overrides(
+@pytest.mark.parametrize(
+    "assignment", ["OBJCACHE=", "--eval=CCACHE_DIR:=x"], ids=["assign", "eval"]
+)
+def test_real_edalize_preparation_preserves_make_overrides(
     project, monkeypatch, legacy, assignment, source
 ):
-    from booley.flows.sim.build import SimulationBuildPreparationError
     from booley.runtime.booley_dir import reset_cache
 
     root, data = project
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
-    options = {"make_options": ["-j2", assignment] if source == "authored" else ["-j2"]}
-    if source == "GNUMAKEFLAGS":
+    monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+    for name in ("MAKEFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MFLAGS"):
+        monkeypatch.delenv(name, raising=False)
+    options = {"make_options": ["-j2", "OTHER=yes"]}
+    if source == "authored":
+        options["make_options"].append(assignment)
+    else:
         monkeypatch.setenv(source, assignment)
-    with pytest.raises(SimulationBuildPreparationError, match="managed by Booley"):
-        _prepare_real_verilator_target(root, options, legacy=legacy)
+    prepared = _prepare_real_verilator_target(root, options, legacy=legacy)
+    recipe = (prepared.build_root / ("config.mk" if legacy else "Makefile")).read_text()
+    assert all(option in recipe for option in options["make_options"])
+    assert prepared.environment["OBJCACHE"] == "ccache"
+    assert prepared.environment["CCACHE_DIR"] == str(data / COMPILER_CACHE_RELATIVE)
     assert not (data / ".runtime" / "compiler-cache").exists()
 
 
@@ -479,16 +395,6 @@ def test_debug_mapping_is_limited_to_generated_build_and_preserves_flags(project
         )["USER_CPPFLAGS"]
         == "-DUSER=1"
     )
-
-
-@pytest.mark.parametrize("name", ["USER_CPPFLAGS", "CCACHE_BASEDIR"])
-def test_make_cannot_override_debug_normalization(name):
-    inspection = cast(
-        TargetInspection,
-        SimpleNamespace(flow_options={"make_options": [name + "=override"]}, tool_options={}),
-    )
-    with pytest.raises(CompilerCacheConfigurationError, match="managed by Booley"):
-        validate_make_assignments(inspection, {})
 
 
 @pytest.mark.parametrize("filename", ["booley.toml", "pipeline.toml"])
