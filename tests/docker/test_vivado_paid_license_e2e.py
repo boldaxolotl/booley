@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from tests import eda_grant_support
 from tests.license_evidence import (
     LicenseEvidenceError,
     parse_flexnet_lmstat,
@@ -103,7 +104,7 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
         lmgrd_port=p.lmgrd_port,
         vendor_port=p.vendor_port,
     )
-    authority._add_grant(
+    eda_grant_support.add_grant(
         workspace,
         "vivado",
         installation="vivado_2025_2",

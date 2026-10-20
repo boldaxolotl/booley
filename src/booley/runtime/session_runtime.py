@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1118,27 +1118,20 @@ def _ensure_unlocked(
 
 
 def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
-    from booley.eda.provisioning.licensing.flexnet_docker import (
-        cleanup_project_resources_for_identity,
-    )
     from booley.runtime.session_refresh import RecoveryOutcome, recover_project_locked
 
-    invalidated = _recover_invalidations_locked(
-        cleanup_resources=cleanup_project_resources_for_identity,
-    )
+    invalidated = _recover_invalidations_locked()
     recovered = recover_project_locked(workspace)
     if invalidated or recovered.outcome is not RecoveryOutcome.NONE:
         retry = f"run `{retry_command}` again" if retry_command else "retry the command"
         raise SessionError(f"recovered interrupted Sandbox host state; {retry}")
 
 
-def _recover_invalidations_locked(
-    *, cleanup_resources: Callable[[str], tuple[str, ...]]
-) -> tuple[str, ...]:
+def _recover_invalidations_locked() -> tuple[str, ...]:
     from booley.runtime import issuance_invalidation
 
     try:
-        return issuance_invalidation.recover_all_locked(cleanup_resources=cleanup_resources)
+        return issuance_invalidation.recover_all_locked()
     except issuance_invalidation.InvalidationError as exc:
         raise SessionError(str(exc)) from exc
 

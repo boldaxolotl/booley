@@ -15,9 +15,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests import eda_grant_support
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
+from booley.eda.provisioning.licensing import flexnet_docker
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import booley, eda_grants
 from booley.runtime import devcontainer as dc
@@ -407,14 +409,8 @@ def _concurrent_licensed_project(
         encoding="utf-8",
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    profile = authority.register_license(
-        "site",
-        server_ipv4="10.20.30.40",
-        server_hostid="licenses.example.internal",
-        lmgrd_port=2100,
-        vendor_port=2101,
-    )
-    authority._add_grant(project, "vivado", license_profile=profile.name)
+    profile = eda_grant_support.register_license("site")
+    eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
     monkeypatch.setattr(
         eda_requirements,
@@ -431,7 +427,7 @@ def _concurrent_licensed_project(
         "_prospective_issuance",
         lambda *_args: SimpleNamespace(project_data_layout="legacy"),
     )
-    monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", lambda _root: ())
+    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _root: ())
     return project
 
 
@@ -604,8 +600,7 @@ def test_valid_legacy_issuance_still_authenticates(issued) -> None:
     assert runtime_spec.validate(project, spec, path) == stamp
 
 
-@pytest.mark.parametrize("operation", ["add", "recover"])
-def test_real_invalidation_removes_both_issuance_stamps(issued, monkeypatch, operation) -> None:
+def test_real_invalidation_removes_both_issuance_stamps(issued, monkeypatch) -> None:
     project, spec, path, _stamp = issued
     current = runtime_spec.stamp_path(project)
     legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
@@ -613,27 +608,9 @@ def test_real_invalidation_removes_both_issuance_stamps(issued, monkeypatch, ope
     legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     legacy.write_bytes(current.read_bytes())
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
-    if operation == "add":
-        profile = authority.register_license(
-            "site",
-            server_ipv4="10.20.30.40",
-            server_hostid="licenses.example.internal",
-            lmgrd_port=2100,
-            vendor_port=2101,
-        )
-        grant = eda_grants.GrantCoordinator().add(
-            project,
-            "vivado",
-            installation=None,
-            license_profile=profile.name,
-        )
-        assert authority.load_state().grants == (grant,)
-    else:
-        issuance_invalidation.prepare(str(project.resolve()), cleanup_resources=True)
-        assert issuance_invalidation.recover_project_locked(
-            str(project.resolve()),
-            cleanup_resources=lambda _identity: (),
-        )
+    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _id: ())
+    issuance_invalidation.prepare(str(project.resolve()))
+    assert issuance_invalidation.recover_project_locked(str(project.resolve()))
     assert not current.exists()
     assert not legacy.exists()
     assert issuance_invalidation.pending_invalidations() == ()
@@ -642,7 +619,19 @@ def test_real_invalidation_removes_both_issuance_stamps(issued, monkeypatch, ope
     assert str(raised.value) == _WITHDRAWN_ISSUANCE
 
 
-def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
+def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch) -> None:
+    project, _spec, _path, _stamp = issued
+    current = runtime_spec.stamp_path(project)
+    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
+    authority._store().ensure_directory()
+    legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    legacy.write_bytes(current.read_bytes())
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(
+        issuance_invalidation,
+        "prepare",
+        lambda *_args, **_kw: pytest.fail("grant add must not write an invalidation journal"),
+    )
     profile = authority.register_license(
         "site",
         server_ipv4="10.20.30.40",
@@ -650,7 +639,23 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
         lmgrd_port=2100,
         vendor_port=2101,
     )
-    grant = authority._add_grant(project, "vivado", license_profile=profile.name)
+
+    grant = eda_grants.GrantCoordinator().add(
+        project,
+        "vivado",
+        installation=None,
+        license_profile=profile.name,
+    )
+
+    assert authority.load_state().grants == (grant,)
+    assert not current.exists()
+    assert not legacy.exists()
+    assert issuance_invalidation.pending_invalidations() == ()
+
+
+def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
+    profile = eda_grant_support.register_license("site")
+    grant = eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(
         session_refresh,
@@ -658,7 +663,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
         lambda _root: SimpleNamespace(outcome=session_refresh.RecoveryOutcome.NONE),
     )
     cleanup = Mock(return_value=())
-    monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", cleanup)
+    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
     monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
@@ -3043,20 +3048,16 @@ def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
     project, _spec, _path, stamp = issued
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
-    monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", lambda _identity: ())
-    profile = authority.register_license(
-        "site",
-        server_ipv4="10.20.30.40",
-        server_hostid="licenses.example.internal",
-        lmgrd_port=2100,
-        vendor_port=2101,
+    monkeypatch.setattr(
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
     )
+    profile = eda_grant_support.register_license("site")
     if operation == "add":
         eda_grants.GrantCoordinator().add(
             project, "vivado", installation=None, license_profile=profile.name
         )
     else:
-        authority._add_grant(project, "vivado", license_profile=profile.name)
+        eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
         eda_grants.GrantCoordinator().revoke(project, "vivado")
     assert not runtime_spec.stamp_path(project).exists()
     images = Mock(spec=session_refresh.RuntimeImageOperations)
@@ -3085,15 +3086,9 @@ def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, 
         '[flows.fpga]\nenabled=true\n[eda.vivado]\nprovisioning="image"\n'
     )
     reset_cache()
-    profile = authority.register_license(
-        "site",
-        server_ipv4="10.20.30.40",
-        server_hostid="licenses.example.internal",
-        lmgrd_port=2100,
-        vendor_port=2101,
-    )
+    profile = eda_grant_support.register_license("site")
     # Initial authenticated fixture, not a real-user add transition.
-    authority._add_grant(project, "vivado", license_profile=profile.name)
+    eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     relay = {"identity": "sha256:" + "d" * 64}
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
     monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: relay["identity"])
