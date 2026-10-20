@@ -328,10 +328,28 @@ def test_scan_input_changes_require_lint(paths: list[str]) -> None:
     assert "lint" in required_jobs(classify(paths))
 
 
+def _test_workflow() -> dict:
+    """Parse the CI workflow that hosts the ``lint`` and ``ci-required`` jobs."""
+    return yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+
+
 def test_ci_required_waits_for_lint() -> None:
     """A failed or skipped ``lint`` must block the protected ``ci-required`` check."""
-    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
-    assert "lint" in workflow["jobs"]["ci-required"]["needs"]
+    assert "lint" in _test_workflow()["jobs"]["ci-required"]["needs"]
+
+
+def test_lint_checker_step_can_fail_the_job() -> None:
+    """The checker step must not be skippable or advisory, or ``lint`` stays green."""
+    lint = _test_workflow()["jobs"]["lint"]
+    assert "continue-on-error" not in lint
+    checker_steps = [
+        step
+        for step in lint["steps"]
+        if step.get("run") == "python .github/scripts/check_suppressed_assertions.py"
+    ]
+    assert len(checker_steps) == 1
+    assert "continue-on-error" not in checker_steps[0]
+    assert "if" not in checker_steps[0]
 
 
 def test_every_category_set_that_runs_pytest_also_runs_lint() -> None:
@@ -339,7 +357,7 @@ def test_every_category_set_that_runs_pytest_also_runs_lint() -> None:
     for size in range(len(CATEGORIES) + 1):
         for categories in itertools.combinations(CATEGORIES, size):
             jobs = required_jobs(set(categories))
-            if jobs & {"test", "coverage-shards"}:
+            if jobs & {"test", "test-verify", "coverage-shards", "coverage"}:
                 assert "lint" in jobs, categories
 
 
