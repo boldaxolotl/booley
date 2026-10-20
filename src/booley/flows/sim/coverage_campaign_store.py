@@ -9,7 +9,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,12 +21,12 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .campaign_reports import is_report_link
 from .coverage_campaign import (
-    RUN_IDENTITY_FIELDS,
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageRollup,
@@ -45,17 +44,13 @@ from .coverage_campaign import (
 )
 
 CAMPAIGN_SCHEMA_V1 = "booley.coverage-campaign/v1"
-CAMPAIGN_SCHEMA_V2 = "booley.coverage-campaign/v2"
-CAMPAIGN_SCHEMA_V3 = "booley.coverage-campaign/v3"
 CAMPAIGN_SCHEMA_V4 = "booley.coverage-campaign/v4"
 #: v5: every run names its Test Run and declared-inputs fingerprint (ADR 0072),
 #: and one selected Test may have several runs. Booley writes only v5.
 CAMPAIGN_SCHEMA_V5 = "booley.coverage-campaign/v5"
-#: Every manifest version that keeps its points in a point store. v3 and v4
-#: stay readable; their runs name a bare Test.
-POINT_STORE_CAMPAIGN_SCHEMAS = frozenset(
-    {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4, CAMPAIGN_SCHEMA_V5}
-)
+#: Every manifest version Booley reads. v4 (written by v0.3.0) stays readable;
+#: its runs name a bare Test.
+POINT_STORE_CAMPAIGN_SCHEMAS = frozenset({CAMPAIGN_SCHEMA_V4, CAMPAIGN_SCHEMA_V5})
 POINT_STORE_SCHEMA_V1 = "booley.coverage-points/v1"
 POINT_STORE_NAME = "coverage-points.jsonl.gz"
 MAX_COMPRESSED_BYTES = 256 * 1024 * 1024
@@ -103,7 +98,7 @@ class CoveragePointStoreReference:
 
 @dataclass(frozen=True)
 class CoverageCampaignSummary:
-    """Validated manifest-local Campaign facts; point bytes are not opened."""
+    """Validated manifest-local Campaign facts."""
 
     source_schema: str
     campaign_id: str
@@ -191,74 +186,39 @@ def _write_line(stream: gzip.GzipFile, value: object, total: int) -> int:
     return total
 
 
-def _directory_fsync(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _windows_commit_new(temporary: Path, final: Path) -> None:
-    import ctypes
-
-    move_file_ex = ctypes.windll.kernel32.MoveFileExW
-    move_file_ex.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong)
-    move_file_ex.restype = ctypes.c_int
-    movefile_write_through = 0x8
-    if not move_file_ex(str(temporary), str(final), movefile_write_through):
-        raise ctypes.WinError()
-
-
-def _commit_new(temporary: Path, final: Path) -> None:
-    if os.name == "nt":
-        _windows_commit_new(temporary, final)
-        return
-    os.link(temporary, final)
-    temporary.unlink()
-    _directory_fsync(final.parent)
-
-
-def _write_point_store(path: Path, campaign: CoverageCampaign) -> CoveragePointStoreReference:
+def _point_store_bytes(
+    campaign: CoverageCampaign,
+) -> tuple[bytes, CoveragePointStoreReference]:
+    """Compress the point store in memory and describe it for the manifest."""
     if len(campaign.points) > MAX_POINTS:
         raise CoverageCampaignStoreError(
             "COV_POINT_LIMIT", "Coverage Point count exceeds V2 limit"
         )
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".coverage-points-", dir=path.parent)
-    temporary = Path(temporary_name)
+    buffer = io.BytesIO()
     uncompressed_bytes = 0
-    try:
-        with os.fdopen(descriptor, "wb") as raw:
-            with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
-                header = {
-                    "$schema": POINT_STORE_SCHEMA_V1,
-                    "campaign_id": campaign.campaign_id,
-                    "target_identity": campaign.target.identity,
-                }
-                uncompressed_bytes = _write_line(compressed, header, uncompressed_bytes)
-                for point in campaign.points:
-                    uncompressed_bytes = _write_line(
-                        compressed, encode_coverage_point(point), uncompressed_bytes
-                    )
-            raw.flush()
-            os.fsync(raw.fileno())
-        size = temporary.stat().st_size
-        if size > MAX_COMPRESSED_BYTES:
-            raise CoverageCampaignStoreError(
-                "COV_POINT_LIMIT", "Compressed Coverage Point storage exceeds V2 limit"
+    with gzip.GzipFile(fileobj=buffer, mode="wb", filename="", mtime=0) as compressed:
+        header = {
+            "$schema": POINT_STORE_SCHEMA_V1,
+            "campaign_id": campaign.campaign_id,
+            "target_identity": campaign.target.identity,
+        }
+        uncompressed_bytes = _write_line(compressed, header, uncompressed_bytes)
+        for point in campaign.points:
+            uncompressed_bytes = _write_line(
+                compressed, encode_coverage_point(point), uncompressed_bytes
             )
-        with temporary.open("rb") as stream:
-            digest = f"{_SHA256_PREFIX}{hashlib.file_digest(stream, 'sha256').hexdigest()}"
-        _commit_new(temporary, path)
-        return CoveragePointStoreReference(
-            path=POINT_STORE_NAME,
-            sha256=digest,
-            bytes=size,
-            uncompressed_bytes=uncompressed_bytes,
-            point_count=len(campaign.points),
+    data = buffer.getvalue()
+    if len(data) > MAX_COMPRESSED_BYTES:
+        raise CoverageCampaignStoreError(
+            "COV_POINT_LIMIT", "Compressed Coverage Point storage exceeds V2 limit"
         )
-    finally:
-        temporary.unlink(missing_ok=True)
+    return data, CoveragePointStoreReference(
+        path=POINT_STORE_NAME,
+        sha256=f"{_SHA256_PREFIX}{hashlib.sha256(data).hexdigest()}",
+        bytes=len(data),
+        uncompressed_bytes=uncompressed_bytes,
+        point_count=len(campaign.points),
+    )
 
 
 def _point_store_document(reference: CoveragePointStoreReference) -> dict[str, object]:
@@ -310,19 +270,6 @@ def _manifest_bytes(document: Mapping[str, object]) -> bytes:
     return json.dumps(document, sort_keys=True, indent=2, allow_nan=False).encode("utf-8") + b"\n"
 
 
-def _write_manifest(path: Path, data: bytes) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".coverage-manifest-", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _commit_new(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> CampaignPaths:
     """Publish a complete V5 Campaign without replacing existing final files."""
     if _contains_link(target_dir):
@@ -335,17 +282,17 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
     from .coverage_declaration_artifact import validate_declaration_publication
 
     validate_declaration_publication(target_dir, campaign)
-    reference = _write_point_store(points_path, campaign)
+    points_bytes, reference = _point_store_bytes(campaign)
+    manifest_bytes = _manifest_bytes(_manifest(campaign, reference))
+    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+        raise CoverageCampaignStoreError(
+            "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
+        )
+    atomic_write_once(points_path, points_bytes)
+    # The manifest is the commit marker: link it last, and drop the point store
+    # this call wrote when the manifest never appears.
     try:
-        document = _manifest(campaign, reference)
-        manifest_bytes = _manifest_bytes(document)
-        if len(manifest_bytes) > MAX_MANIFEST_BYTES:
-            raise CoverageCampaignStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
-            )
-        digest = f"{_SHA256_PREFIX}{hashlib.sha256(manifest_bytes).hexdigest()}"
-        _summary(document, DurableTargetIdentity(campaign.target.identity), digest)
-        _write_manifest(campaign_path, manifest_bytes)
+        atomic_write_once(campaign_path, manifest_bytes)
     finally:
         if not campaign_path.exists():
             points_path.unlink(missing_ok=True)
@@ -571,55 +518,22 @@ def _validate_scoring_rollups(
     _validate_source_reconciliation(source_rollups, rollups)
 
 
-def _validate_run_identity(document: Mapping[str, object], schema: str) -> None:
-    """Require what a v5 run records, and refuse it in the versions before.
-
-    A v3 or v4 manifest was written before runs named their Test Run; one
-    that carries the fields was not written by the Booley version it claims.
-    Malformed sections are left to the Campaign validator.
-    """
-    tests = document.get("tests")
-    runs = tests.get("runs") if isinstance(tests, Mapping) else None
-    if not isinstance(runs, list):
-        return
-    expected = schema == CAMPAIGN_SCHEMA_V5
-    for run in runs:
-        if isinstance(run, Mapping) and any(
-            (field in run) != expected for field in RUN_IDENTITY_FIELDS
-        ):
-            raise CoverageCampaignStoreError(
-                "COV_MANIFEST_FORMAT",
-                f"{schema} Coverage Campaign runs "
-                + ("must" if expected else "cannot")
-                + " record test_run, variant, seed and fingerprint",
-            )
-
-
 def _summary(
     document: Mapping[str, object],
     expected_target: DurableTargetIdentity,
     manifest_sha256: str,
 ) -> CoverageCampaignSummary:
-    expected = set(_SUMMARY_FIELDS)
     schema = document.get("$schema")
-    if schema == CAMPAIGN_SCHEMA_V3:
-        expected.remove("scoring")
-    if set(document) != expected:
+    if set(document) != _SUMMARY_FIELDS:
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Campaign manifest"
         )
-    _validate_run_identity(document, str(schema))
     probe = dict(document)
     source_rollup_values = probe.pop("source_rollups")
-    scoring_value = probe.pop("scoring", None)
+    scoring_value = probe.pop("scoring")
     fields = validate_coverage_campaign_summary(probe, expected_target)
     source_rollups = _decode_source_rollups(source_rollup_values)
-    expected_scoring = _expected_scoring(fields.collection)
-    scoring = (
-        _decode_scoring(scoring_value, fields.collection)
-        if schema != CAMPAIGN_SCHEMA_V3
-        else freeze_coverage_mapping(expected_scoring)
-    )
+    scoring = _decode_scoring(scoring_value, fields.collection)
     _validate_scoring_rollups(scoring, fields.rollups, source_rollups)
     return CoverageCampaignSummary(
         source_schema=str(schema),
@@ -649,13 +563,14 @@ def _open_regular(path: Path) -> int:
         ) from exc
 
 
-def _read_document(path: Path) -> tuple[dict[str, object], str]:
+def _read_manifest_bytes(path: Path) -> bytes:
+    """Read the manifest through a no-follow regular open, bounded and stable."""
     descriptor = _open_regular(path)
     try:
         before = os.fstat(descriptor)
         if before.st_size > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V3 limit"
+                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
             )
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             data = stream.read(MAX_MANIFEST_BYTES + 1)
@@ -663,9 +578,7 @@ def _read_document(path: Path) -> tuple[dict[str, object], str]:
             raise CoverageCampaignStoreError(
                 "COV_MANIFEST_INTEGRITY", "Coverage Campaign changed while reading"
             )
-        value = json.loads(data)
-        digest = f"{_SHA256_PREFIX}{hashlib.sha256(data).hexdigest()}"
-        return dict(require_dict(value)), digest
+        return data
     finally:
         os.close(descriptor)
 
@@ -675,28 +588,6 @@ def _canonical_campaign_path(path: Path) -> Path:
         return canonical_project_alias_path(path.absolute())
     except ValueError as exc:
         raise CoverageCampaignStoreError("COV_PATH_UNSAFE", str(exc)) from exc
-
-
-def read_coverage_summary(
-    path: Path, expected_target: DurableTargetIdentity
-) -> CoverageCampaignSummary:
-    """Read V3-V5 manifest facts without opening Coverage Point storage."""
-    path = _canonical_campaign_path(path)
-    try:
-        document, digest = _read_document(path)
-        schema = document.get("$schema")
-        if schema in POINT_STORE_CAMPAIGN_SCHEMAS:
-            return _summary(document, expected_target, digest)
-        raise CoverageCampaignStoreError(
-            "COV_SCHEMA_VERSION_UNSUPPORTED",
-            "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
-        )
-    except CoverageCampaignStoreError:
-        raise
-    except (OSError, json.JSONDecodeError, UnicodeError, BoundaryError) as exc:
-        raise CoverageCampaignStoreError(
-            "COV_MANIFEST_FORMAT", f"Cannot read Coverage Campaign summary: {exc}"
-        ) from exc
 
 
 def _json_line(stream: gzip.GzipFile, total: int) -> tuple[dict[str, object] | None, int]:
@@ -820,7 +711,7 @@ def _load_current(
     v1_document["$schema"] = CAMPAIGN_SCHEMA_V1
     del v1_document["point_store"]
     del v1_document["source_rollups"]
-    v1_document.pop("scoring", None)
+    del v1_document["scoring"]
     v1_document["points"] = points
     campaign = _decode_owned_coverage_campaign(v1_document, expected_target)
     if (
@@ -842,47 +733,19 @@ def _load_current(
     return LoadedCoverageCampaign(summary, campaign)
 
 
-def load_coverage_campaign(
-    path: Path, expected_target: DurableTargetIdentity | None = None
+def _load_manifest(
+    path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V3-V5 Campaign and accept no point evidence before validation."""
-    path = _canonical_campaign_path(path)
+    """Deep-load one V4/V5 Campaign from exact manifest bytes; accept no point evidence first."""
     try:
-        document, digest = _read_document(path)
-        schema = document.get("$schema")
-        if schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
-            raise CoverageCampaignStoreError(
-                "COV_SCHEMA_VERSION_UNSUPPORTED",
-                "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
-            )
-        if expected_target is None:
-            target = require_dict(document.get("target"), field="target")
-            expected_target = DurableTargetIdentity(require_str(target, "identity"))
-        return _load_current(path, document, expected_target, digest)
-    except CoverageCampaignValidationError:
-        raise
-    except CoverageCampaignStoreError:
-        raise
-    except (OSError, json.JSONDecodeError, UnicodeError, BoundaryError) as exc:
-        raise CoverageCampaignStoreError(
-            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
-        ) from exc
-
-
-def load_coverage_campaign_bytes(
-    path: Path,
-    raw: bytes,
-    expected_target: DurableTargetIdentity | None = None,
-) -> LoadedCoverageCampaign:
-    """Deep-load a V3-V5 Campaign from exact manifest bytes already authenticated."""
-    path = _canonical_campaign_path(path)
-    try:
-        if not raw or len(raw) > MAX_MANIFEST_BYTES:
+        if len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
                 "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
             )
         document = dict(require_dict(json.loads(raw)))
-        if document.get("$schema") not in POINT_STORE_CAMPAIGN_SCHEMAS:
+        schema = document.get("$schema")
+        # A tampered non-string schema (a list or object) is unhashable: reject it as unsupported.
+        if not isinstance(schema, str) or schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
             raise CoverageCampaignStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
@@ -898,3 +761,25 @@ def load_coverage_campaign_bytes(
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
         ) from exc
+
+
+def load_coverage_campaign(
+    path: Path, expected_target: DurableTargetIdentity | None = None
+) -> LoadedCoverageCampaign:
+    """Deep-load one V4/V5 Campaign and accept no point evidence before validation."""
+    path = _canonical_campaign_path(path)
+    try:
+        return _load_manifest(path, _read_manifest_bytes(path), expected_target)
+    except OSError as exc:
+        raise CoverageCampaignStoreError(
+            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
+        ) from exc
+
+
+def load_coverage_campaign_bytes(
+    path: Path,
+    raw: bytes,
+    expected_target: DurableTargetIdentity | None = None,
+) -> LoadedCoverageCampaign:
+    """Deep-load a V4/V5 Campaign from exact manifest bytes already authenticated."""
+    return _load_manifest(_canonical_campaign_path(path), raw, expected_target)

@@ -711,7 +711,7 @@ native artifact paths are relative to the **Coverage Campaign directory**.
 
 Pass the numbered Target-level `coverage.json` reference to the Coverage Analyst.
 It authenticates the nested Campaign and matching completed Simulation evidence;
-it does not accept the nested manifest directly. Manifest summary/deep readers
+it does not accept the nested manifest directly. Manifest readers
 in `booley.flows.sim.coverage_campaign_store` take the resolved Campaign manifest,
 not the reference. Never edit or pass the point store directly, and keep the
 reference and enclosing Simulation Campaign together.

@@ -71,7 +71,7 @@ def regular_owned(path: Path, owned: Path) -> None:
 
 
 def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
-    """Follow a Target reference to its nested V4 manifest inside the owned copy."""
+    """Follow a Target reference to its nested Campaign manifest inside the owned copy."""
     document = json.loads(reference.read_text())
     if document.get("$schema") != REFERENCE_SCHEMA:
         raise ValueError(f"expected the Target coverage.json ({REFERENCE_SCHEMA})")
@@ -113,15 +113,9 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
         "invalid-final-record",
     }:
         corrupt_points(mode, points, document)
-    elif mode in {"v1", "v2"}:
+    elif mode in {"v1", "v2", "v3"}:
+        # The schema gate rejects an unsupported version before any decode.
         document["$schema"] = "booley.coverage-campaign/" + mode
-        document.pop("source_rollups")
-        document.pop("scoring")
-        if mode == "v1":
-            document["points"] = [
-                json.loads(line) for line in gzip.decompress(points.read_bytes()).splitlines()
-            ][1:]
-            document.pop("point_store")
     else:
         corrupt_manifest(mode, path, document, owned)
     path.write_bytes(canonical(document))

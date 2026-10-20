@@ -946,7 +946,7 @@ Campaign, so select another retained invocation or collect new evidence.
 
 The Analyst requires that canonical Target-level reference with matching completed
 `simulation.json`; it does not accept the resolved nested manifest. The manifest
-summary/deep readers in `booley.flows.sim.coverage_campaign_store` instead take
+readers in `booley.flows.sim.coverage_campaign_store` instead take
 the resolved nested Campaign manifest, which is distinct from the Target
 reference schema.
 

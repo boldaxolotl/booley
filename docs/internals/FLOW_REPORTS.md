@@ -239,7 +239,7 @@ from the Target directory.
 Pass the canonical numbered Target-level `coverage.json` to the Coverage Analyst.
 It resolves the reference and authenticates the enclosing Simulation Campaign
 and completed Target projection; the nested path alone is not an Analyst input.
-Manifest summary/deep readers in
+Manifest readers in
 `booley.flows.sim.coverage_campaign_store` accept the resolved Campaign manifest,
 not the V1 reference. Always read points through the manifest rather than opening
 the point store directly.

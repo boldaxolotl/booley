@@ -194,6 +194,7 @@ def _product_reference(owned: Path, mode: str) -> Path:
         ("resource-ceiling", {"COV_POINT_LIMIT"}),
         ("v1", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
         ("v2", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
+        ("v3", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
         ("invalid-overall-score", {"COV_INVALID_SCORING_SUMMARY"}),
         ("invalid-source-score", {"COV_INVALID_SCORING_SUMMARY"}),
     ],

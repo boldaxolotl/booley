@@ -450,7 +450,7 @@ codec, an intent whose envelope names a different identity than its lookup
 key is rejected.
 
 Coverage Campaign persistence and queries remain Simulation Flow responsibilities.
-`flows.sim.coverage_campaign_store` owns V1/V2 loading, summary access, and complete
+`flows.sim.coverage_campaign_store` owns V4/V5 loading and complete
 point-store validation. `flows.sim.coverage_evidence` owns bounded evidence queries
 and retrieval accounting; MCP exposes the interface and the Coverage Analyst
 composes its session. See [ADR 0062](../adr/0062-split-coverage-campaign-summary-from-point-storage.md)

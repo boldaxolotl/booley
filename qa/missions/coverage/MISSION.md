@@ -177,7 +177,7 @@ Try:
   bytes/time/RSS.
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
   (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
-  the model: v1, v2, missing/changed points, truncated gzip, trailing data, point count, sizes, digest,
+  the model: v1, v2, v3, missing/changed points, truncated gzip, trailing data, point count, sizes, digest,
   unsafe/absolute path, symlink, invalid final record, duplicate point, wrong rollup/source
   rollup/evaluation, invalid-overall-score, invalid-source-score, resource ceiling.
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename

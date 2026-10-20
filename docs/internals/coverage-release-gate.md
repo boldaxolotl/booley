@@ -15,7 +15,7 @@ The release does not introduce a waveform scorer or approve Waiver Candidates.
 |---|---|
 | Interactive Mode | `tests/flows/sim/test_coverage_flow.py`: collect through `SimulateFlow`, then invoke the Analyst with the produced exact path; model transport is substituted and project bytes remain unchanged. |
 | Goal Mode | `tests/goals/test_translate.py` checks concrete simulation and coverage Goal translation; `tests/goals/test_recorder.py` checks bound evidence publication, transaction recovery, and acceptance of complete coverage Campaign simulation detail. `tests/flows/sim/test_coverage_flow.py` checks independent Simulation/Coverage verdicts and collector/publication failures; `tests/goals/test_simulation_coverage_verdicts.py` drives the Goal adapter through every pass/fail simulation × coverage combination. |
-| Campaign V3 storage | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, deterministic source rollups, exact deep-load equivalence, the V1/V2 hard cutoff, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
+| Campaign storage | `tests/flows/sim/test_coverage_campaign_store.py` checks deterministic source rollups, exact deep-load equivalence, the V4/V5-only schema gate, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
 | Public contracts | CLI aliases and help, MCP boolean schema, exposed Criterion catalog, generated references, docs-schema tests, and transport schema fixture. |
 | Python | Full `tests/` suite with the hosted platform/marker matrix; inspect all skips. |
 | Quality | `ruff check src/ tests/`, `ruff format --check .`, and `pyright`, using the exact pinned quality tools. |
@@ -30,11 +30,9 @@ manifest, a 970,291-byte compressed point store, and 26,180,081 decompressed poi
 equivalent full Analyst request was 27,543,123 bytes and its empty-advisory output was 26,183,483
 bytes, confirming that bounded Analyst evidence remains separate follow-up work.
 
-With `tracemalloc`, summary reads took 0.0024 seconds and 16,910,994 peak traced bytes for the
-one-point fixture versus 0.0029 seconds and the same peak for 40,000 points. The 40,000-point deep
-load took 26.27 seconds and 205,726,188 peak bytes; full Analyst composition took 29.68 seconds and
-175,639,433 peak bytes. These figures characterize one host rather than define portable budgets;
-the structural test requires near-constant manifest size, summary reads with no point-store access,
+With `tracemalloc`, the 40,000-point deep load took 26.27 seconds and 205,726,188 peak bytes; full
+Analyst composition took 29.68 seconds and 175,639,433 peak bytes. These figures characterize one
+host rather than define portable budgets; the structural test requires near-constant manifest size,
 lossless deep loading, and compression below the serialized Analyst payload.
 
 V3 intentionally adds source-file rollups to the manifest, so manifest size now scales
