@@ -11,10 +11,9 @@ import pytest
 from booley.runtime import qa_skill_selection as selection
 
 
-def _checkout(tmp_path: Path) -> tuple[Path, str]:
+def _checkout(tmp_path: Path) -> Path:
     root = tmp_path / "Booley"
-    (root / "src" / "booley").mkdir(parents=True)
-    (root / "src" / "booley" / "__init__.py").write_text("", encoding="utf-8")
+    root.mkdir()
     (root / "pyproject.toml").write_text(
         "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
     )
@@ -22,7 +21,7 @@ def _checkout(tmp_path: Path) -> tuple[Path, str]:
         skill = root / "qa" / name
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("# QA\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "feature", str(root)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True)
     subprocess.run(
         [
@@ -40,13 +39,7 @@ def _checkout(tmp_path: Path) -> tuple[Path, str]:
         check=True,
         capture_output=True,
     )
-    revision = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    return root, revision
+    return root
 
 
 def test_absent_selection_is_disabled_and_ignores_xdg(
@@ -59,61 +52,58 @@ def test_absent_selection_is_disabled_and_ignores_xdg(
     assert selection.selection_path() == tmp_path / "home" / ".agents" / "booley-qa-skills.json"
 
 
-def test_enable_revalidates_and_disable_recovers_without_parsing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_enable_records_dirty_feature_checkout_and_disable_recovers_without_parsing(
+    tmp_path: Path,
 ) -> None:
-    root, revision = _checkout(tmp_path)
+    root = _checkout(tmp_path)
     state = tmp_path / "state.json"
-    monkeypatch.setattr(selection.tempfile, "gettempdir", lambda: "/not-this-test-root")
+    (root / "untracked").write_text("dirty\n", encoding="utf-8")
 
-    enabled = selection.enable(root, revision[:12], state)
+    enabled = selection.enable(root / "qa", state)
 
-    assert enabled.source_revision == revision
-    assert selection.validate_selection(revision[:12], state) == enabled
+    assert json.loads(state.read_text(encoding="utf-8")) == {"checkout_root": str(root.resolve())}
+    assert selection.inspect_selection(state) == enabled
     state.write_text("not json", encoding="utf-8")
+    with pytest.raises(selection.QaSkillSelectionError, match="cannot read"):
+        selection.inspect_selection(state)
     selection.disable(state)
     assert selection.inspect_selection(state) is None
 
 
-def test_strict_selection_rejects_unknown_fields(tmp_path: Path) -> None:
+def test_current_release_selection_is_read_and_extra_fields_ignored(tmp_path: Path) -> None:
     state = tmp_path / "state.json"
+    sample = Path(__file__).parent / "fixtures" / "qa-selection-v1.json"
+    document = json.loads(sample.read_text(encoding="utf-8"))
     state.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "checkout_root": str(tmp_path.resolve()),
-                "source_revision": "a" * 40,
-                "surprise": True,
-            }
-        ),
+        json.dumps({**document, "checkout_root": str(tmp_path), "surprise": True}),
         encoding="utf-8",
     )
 
-    with pytest.raises(selection.QaSkillSelectionError, match="unknown"):
-        selection.inspect_selection(state)
+    assert selection.inspect_selection(state) == selection.QaSkillSelection(str(tmp_path))
 
 
-def test_validation_rejects_linked_worktree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, revision = _checkout(tmp_path)
+def test_enable_rejects_linked_worktree(tmp_path: Path) -> None:
+    root = _checkout(tmp_path)
     linked = tmp_path / "linked"
     subprocess.run(
         ["git", "-C", str(root), "worktree", "add", "-b", "other", str(linked)],
         check=True,
         capture_output=True,
     )
-    monkeypatch.setattr(selection.tempfile, "gettempdir", lambda: "/not-this-test-root")
 
-    with pytest.raises(selection.QaSkillSelectionError, match="linked worktree"):
-        selection.validate_checkout(linked, revision[:12])
+    with pytest.raises(selection.QaSkillSelectionError, match="primary"):
+        selection.enable(linked, tmp_path / "state.json")
+    assert not (tmp_path / "state.json").exists()
 
 
-def test_validation_rejects_unresolvable_installed_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root, _revision = _checkout(tmp_path)
-    monkeypatch.setattr(selection.tempfile, "gettempdir", lambda: "/not-this-test-root")
+@pytest.mark.parametrize(
+    "missing",
+    ["pyproject.toml", *(f"qa/{name}/SKILL.md" for name in sorted(selection.QA_SKILL_NAMES))],
+)
+def test_enable_rejects_incomplete_checkout(tmp_path: Path, missing: str) -> None:
+    root = _checkout(tmp_path)
+    (root / missing).unlink()
 
-    with pytest.raises(selection.QaSkillSelectionError, match="revision is not available"):
-        selection.validate_checkout(root, "deadbeef")
+    with pytest.raises(selection.QaSkillSelectionError):
+        selection.enable(root, tmp_path / "state.json")
+    assert not (tmp_path / "state.json").exists()

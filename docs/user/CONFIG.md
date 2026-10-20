@@ -309,12 +309,14 @@ Booley does not rewrite a shared `ccache.conf` or force cleanup after each build
 Managed `OBJCACHE`, `CCACHE_DIR`, `CCACHE_MAXSIZE`,
 `CCACHE_COMPILERCHECK=content`, and `CCACHE_BASEDIR` for the generated build
 take precedence over ambient and `tests.toml` environment values; conflicting
-explicit Target settings produce a warning. Assignments to those names,
-`USER_CPPFLAGS`, or `BOOLEY_COMPILER_CACHE_ROOT` in Flow-API/EDA-tool-API
-`make_options`, `MAKEFLAGS`, `GNUMAKEFLAGS`, `MFLAGS`, or `MAKEOVERRIDES` are rejected.
-Make `--eval`/`-E` programs mentioning these managed variables are also rejected,
-including nested `eval` and `define` forms. Unrelated Make options and job
-settings retain their behavior. Native ccache diagnostic
+explicit Target settings produce a warning. User Make options and environment
+variables pass through without compiler-cache inspection, including
+Flow-API/EDA-tool-API `make_options`, `MAKEFLAGS`, `GNUMAKEFLAGS`, `MFLAGS`, and
+`MAKEOVERRIDES`. Make overrides of managed names take precedence under normal
+Make rules and may reduce cache hits or relocate the cache. Unrelated Make
+options and job settings retain their behavior. Overriding `USER_CPPFLAGS` in Make
+can replace the appended debug-prefix-map and reduce debug-build cache hits.
+Native ccache diagnostic
 and disable settings remain available; user-supplied correctness-affecting
 ccache settings are outside the guarantees of the tested default policy.
 

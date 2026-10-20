@@ -76,14 +76,6 @@ from booley.harness.bootstrap import (
     reconcile_bootstrap,
 )
 from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
-from booley.harness.image_lifecycle import (
-    ImageLifecycleError,
-    InstalledImageContractError,
-    LifecycleResult,
-    ProjectImageScope,
-)
-from booley.harness.image_lifecycle import Intent as ImageLifecycleIntent
-from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
 from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
@@ -121,11 +113,8 @@ from booley.harness.setup.docker_image import (
     source_fingerprint_mismatch,
 )
 from booley.harness.setup.git_hooks import (
-    _PROJECT_HOOK_SCRIPTS,
-    _build_commit_msg_hook_body,
     _step_git_hooks,
     _step_line_endings,
-    _step_project_git_hooks,
     _step_worktree_link_policy,
     _step_worktree_prune_guard,
 )
@@ -139,6 +128,9 @@ from booley.harness.setup.line_endings import (
     sample_worktree_cleanliness,
 )
 from booley.harness.setup.plan import InitPlan, InitPlanBlockedError, InitPreconditionError
+from booley.harness.setup.project_git_hook_reconcile import (
+    step_project_git_hooks as _step_project_git_hooks,
+)
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
@@ -157,6 +149,17 @@ from booley.runtime.booley_dir import (
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.git import add_git_excludes
+from booley.runtime.image_lifecycle import (
+    ImageLifecycleError,
+    ImageRole,
+    InstalledImageContractError,
+    LifecycleResult,
+    PlanAction,
+    PreparedConvergence,
+    ProjectImageScope,
+)
+from booley.runtime.image_lifecycle import Intent as ImageLifecycleIntent
+from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
 from booley.runtime.project_gitignore import (
@@ -916,17 +919,13 @@ def inspect_refreshable_runtime_image(
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     del verbose
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
-    if lifecycle_plan.nodes[0].role is image_lifecycle.ImageRole.EXTERNAL:
+    if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
         raise RuntimeError(
             "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
             "Rebuild/pull it explicitly, then on the host run `booley session down`, "
             "`booley init --seed`, and `booley session up`."
         )
-    stale = tuple(
-        step
-        for step in lifecycle_plan.steps
-        if step.action is not image_lifecycle.PlanAction.REUSE
-    )
+    stale = tuple(step for step in lifecycle_plan.steps if step.action is not PlanAction.REUSE)
     docker = image_lifecycle._docker_adapter()
     return LifecycleResult(
         lifecycle_plan.selected_reference,
@@ -958,7 +957,7 @@ def prepare_runtime_image(
     project_root: Path,
     *,
     verbose: bool = False,
-) -> image_lifecycle.PreparedConvergence:
+) -> PreparedConvergence:
     """Build and verify refresh candidates without changing managed tags."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     info("Refresh plan:")
@@ -973,20 +972,20 @@ def prepare_runtime_image(
 
 
 def commit_runtime_image(
-    prepared: image_lifecycle.PreparedConvergence,
+    prepared: PreparedConvergence,
 ) -> LifecycleResult:
     """Adopt prepared image candidates after refresh state is journaled."""
     return image_lifecycle.commit(prepared)
 
 
 def validate_runtime_image(
-    prepared: image_lifecycle.PreparedConvergence,
+    prepared: PreparedConvergence,
 ) -> None:
     """Revalidate prepared image inputs before parking the live Sandbox."""
     image_lifecycle.validate(prepared)
 
 
-def abort_runtime_image(prepared: image_lifecycle.PreparedConvergence) -> None:
+def abort_runtime_image(prepared: PreparedConvergence) -> None:
     """Discard prepared refresh candidates."""
     image_lifecycle.abort(prepared)
 
@@ -2565,18 +2564,17 @@ def _auth_reseed_dependencies(project_root: Path) -> bool:
             return False
     plan = image_lifecycle.plan(ProjectImageScope(project_root), intent=ImageLifecycleIntent.CHECK)
     host_roles = {
-        image_lifecycle.ImageRole.RUNTIME_BASE,
-        image_lifecycle.ImageRole.STANDARD_SUBSTRATE,
-        image_lifecycle.ImageRole.RISCV_SUBSTRATE,
+        ImageRole.RUNTIME_BASE,
+        ImageRole.STANDARD_SUBSTRATE,
+        ImageRole.RISCV_SUBSTRATE,
     }
     host_stale = any(
-        step.role in host_roles and step.action is not image_lifecycle.PlanAction.REUSE
-        for step in plan.steps
+        step.role in host_roles and step.action is not PlanAction.REUSE for step in plan.steps
     )
     if host_stale or any(f.state is host_sidecars.SidecarState.PENDING for f in sidecars.findings):
         err("Host capabilities need `booley bootstrap`; then retry `booley init --seed`.")
         return False
-    if any(step.action is not image_lifecycle.PlanAction.REUSE for step in plan.steps):
+    if any(step.action is not PlanAction.REUSE for step in plan.steps):
         err("Project Sandbox Image is not current; run `booley init`, then retry auth.")
         return False
     return True

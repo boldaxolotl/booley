@@ -811,7 +811,7 @@ def test_fresh_adapter_uses_build_budget_before_run_budget(tmp_path: Path) -> No
     ):
         attempt = execution._prepare_attempt(handle, ("reset", "count"))
         attempt_box["attempt"] = attempt
-        result = execution._execute_fresh_adapter(handle, attempt)
+        result = execution._execute_fresh_adapter(handle, attempt, session)
 
     assert result.result is not None
     assert timeouts == [7, 5]
@@ -1969,6 +1969,49 @@ def test_corrupt_cache_forces_fresh_build(
         pointer["build_root"] = "../outside"
         (slot / "current.json").write_text(json.dumps(pointer), encoding="utf-8")
     assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
+@pytest.mark.parametrize("record", ["pointer", "manifest"])
+def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    assert execution.run(handle, NamedTests(("smoke",))).passed
+    slot = simulation_build_slot(handle)
+    pointer_path = slot / "current.json"
+    if record == "pointer":
+        corrupt = pointer_path
+    else:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        corrupt = (
+            slot
+            / "g"
+            / pointer["generation"]
+            / pointer["build_root"]
+            / (".booley-build-manifest.json")
+        )
+    corrupt.write_text("{not json", encoding="utf-8")
+    second = execution.run(handle, NamedTests(("smoke",)))
+    assert second.passed
+    assert second.builds[0].ran is True
+    assert second.builds[0].cache_decision.startswith("missing provenance;")
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
 
 

@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import require_finite_number, require_int, require_str_value
@@ -23,6 +22,7 @@ from .codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
 )
+from .model import SimulationCampaignDocument
 from .planning import manifest_digest
 
 if TYPE_CHECKING:
@@ -67,13 +67,21 @@ class PreSimFiring:
 
     @property
     def key(self) -> tuple[str, str, str, int]:
-        value = self.document
-        return (
-            cast(str, value["campaign_id"]),
-            cast(str, value["work_item_id"]),
-            cast(str, value["attempt_id"]),
-            cast(int, value["ordinal"]),
-        )
+        return _firing_key(self.document)
+
+
+@dataclass(frozen=True)
+class PreSimFiringRecord(SimulationCampaignDocument):
+    """Validated firing facts, without storage provenance."""
+
+
+def _firing_key(value: Mapping[str, object]) -> tuple[str, str, str, int]:
+    return (
+        cast(str, value["campaign_id"]),
+        cast(str, value["work_item_id"]),
+        cast(str, value["attempt_id"]),
+        cast(int, value["ordinal"]),
+    )
 
 
 def _reference(path: Path, raw: bytes, owner: str) -> dict[str, object]:
@@ -97,29 +105,17 @@ def publish_pre_sim_firing(
     decoder = request.pre_sim_decoder
     document = {
         "$schema": _SCHEMA,
-        "campaign_id": request.manifest.document["campaign_id"],
-        "manifest_sha256": decoder.manifest_sha256,
-        "work_item_id": request.work_item["work_item_id"],
-        "attempt_id": request.attempt_id,
-        "producer_invocation_id": request.producer_invocation_id,
+        **decoder.owner(request.work_item, request.attempt_id, request.producer_invocation_id),
         "ordinal": ordinal,
-        "target": request.manifest.document["target"],
-        "role": request.work_item["role"],
-        "revision": request.work_item["revision"],
         "recorded_at": utc_now_rfc3339(),
         **pre_sim_document(evidence),
     }
-    raw = canonical_json_bytes(document)
+    attempt = request.store.read_attempt(request.attempt_directory)
+    firing = decoder.validate(document, request.work_item, attempt)
+    raw = canonical_json_bytes(firing.document)
     if len(raw) > MANIFEST_MAX_BYTES:
         raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
-    attempt = request.store.read_attempt(request.attempt_directory)
-    firing = decoder.decode(raw, request.work_item, attempt)
-    key = (
-        cast(str, firing["campaign_id"]),
-        cast(str, firing["work_item_id"]),
-        cast(str, firing["attempt_id"]),
-        cast(int, firing["ordinal"]),
-    )
+    key = _firing_key(firing.document)
     if checkpoint is not None:
         checkpoint("before:pre_sim_evidence")
     observer = request.pre_sim_firing_published
@@ -147,73 +143,72 @@ class PreSimFiringDecoder:
     def __post_init__(self) -> None:
         object.__setattr__(self, "manifest_sha256", manifest_digest(self.manifest))
 
-    def decode(
-        self, raw: bytes, item: Mapping[str, object], attempt: SimulationAttempt
-    ) -> Mapping[str, object]:
-        return _decode_pre_sim_firing(raw, self.manifest, item, attempt, self.manifest_sha256)
-
-
-def _decode_pre_sim_firing(
-    raw: bytes,
-    manifest: SimulationCampaignManifest,
-    item: Mapping[str, object],
-    attempt: SimulationAttempt,
-    authenticated_manifest_sha256: str,
-) -> Mapping[str, object]:
-    """Reject unbound, malformed, or over-budget records at the storage boundary."""
-    try:
-        value = json.loads(raw)
-        _validate_fields(value, raw)
-        _validate_attempt_binding(manifest, item, attempt, authenticated_manifest_sha256)
-        expected = {
-            "campaign_id": manifest.document["campaign_id"],
-            "manifest_sha256": authenticated_manifest_sha256,
+    def owner(
+        self, item: Mapping[str, object], attempt_id: str, invocation: int
+    ) -> dict[str, object]:
+        return {
+            "campaign_id": self.manifest.document["campaign_id"],
+            "manifest_sha256": self.manifest_sha256,
             "work_item_id": item["work_item_id"],
-            "attempt_id": attempt.document["attempt_id"],
-            "producer_invocation_id": attempt.document["producer_invocation_id"],
-            "target": manifest.document["target"],
+            "attempt_id": attempt_id,
+            "producer_invocation_id": invocation,
+            "target": self.manifest.document["target"],
             "role": item["role"],
             "revision": item["revision"],
         }
-        if any(value[key] != expected_value for key, expected_value in expected.items()):
-            raise ValueError("Pre-Sim Commands evidence owner disagrees")
-        commands = manifest.document["workload"]["source_recipe"]["pre_sim_commands"]
-        if value["command_count"] != len(commands) or not commands:
-            raise ValueError("Pre-Sim Commands evidence command count disagrees")
-        selected = item["selection"]["names"]
-        names = value["test_names"]
-        if item["kind"] != "coverage_aggregate" and tuple(names) != tuple(selected):
-            raise ValueError("Pre-Sim Commands evidence selection disagrees")
-        if item["kind"] != "coverage_aggregate" and value["ordinal"] != 1:
-            raise ValueError("ordinary attempt cannot have multiple hook firings")
-        if selected and any(name not in selected for name in names):
-            raise ValueError("Pre-Sim Commands evidence selection is outside workload")
-    except (ValueError, TypeError, KeyError) as exc:
-        raise SimulationCampaignIntegrityError(
-            f"invalid Pre-Sim Commands evidence: {exc}"
-        ) from exc
-    value["test_names"] = tuple(value["test_names"])
-    value["target"] = MappingProxyType(value["target"])
-    return MappingProxyType(value)
+
+    def decode(
+        self, raw: bytes, item: Mapping[str, object], attempt: SimulationAttempt
+    ) -> Mapping[str, object]:
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise SimulationCampaignIntegrityError(
+                f"invalid Pre-Sim Commands evidence: {exc}"
+            ) from exc
+        return self.validate(value, item, attempt).document
+
+    def validate(
+        self, value: object, item: Mapping[str, object], attempt: SimulationAttempt
+    ) -> PreSimFiringRecord:
+        """Shared validation for constructed facts and persisted JSON."""
+        try:
+            _validate_fields(value)
+            binding = {
+                "campaign_id": self.manifest.document["campaign_id"],
+                "manifest_sha256": self.manifest_sha256,
+                "workload_sha256": self.manifest.document["fingerprints"]["workload_sha256"],
+                "work_item_id": item["work_item_id"],
+                "build_variant_id": item["build_variant_id"],
+            }
+            if any(attempt.document[field] != value for field, value in binding.items()):
+                raise ValueError("hook attempt does not bind its frozen workload")
+            expected = self.owner(
+                item, attempt.document["attempt_id"], attempt.document["producer_invocation_id"]
+            )
+            if any(value[key] != expected_value for key, expected_value in expected.items()):
+                raise ValueError("Pre-Sim Commands evidence owner disagrees")
+            commands = self.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]
+            if value["command_count"] != len(commands) or not commands:
+                raise ValueError("Pre-Sim Commands evidence command count disagrees")
+            selected = item["selection"]["names"]
+            names = value["test_names"]
+            if item["kind"] != "coverage_aggregate" and tuple(names) != tuple(selected):
+                raise ValueError("Pre-Sim Commands evidence selection disagrees")
+            if item["kind"] != "coverage_aggregate" and value["ordinal"] != 1:
+                raise ValueError("ordinary attempt cannot have multiple hook firings")
+            if selected and any(name not in selected for name in names):
+                raise ValueError("Pre-Sim Commands evidence selection is outside workload")
+        except (ValueError, TypeError, KeyError) as exc:
+            raise SimulationCampaignIntegrityError(
+                f"invalid Pre-Sim Commands evidence: {exc}"
+            ) from exc
+        return PreSimFiringRecord(value)
 
 
-def _validate_attempt_binding(manifest, item, attempt, authenticated_manifest_sha256) -> None:
-    expected = {
-        "campaign_id": manifest.document["campaign_id"],
-        "manifest_sha256": authenticated_manifest_sha256,
-        "workload_sha256": manifest.document["fingerprints"]["workload_sha256"],
-        "work_item_id": item["work_item_id"],
-        "build_variant_id": item["build_variant_id"],
-    }
-    if any(attempt.document[field] != value for field, value in expected.items()):
-        raise ValueError("hook attempt does not bind its frozen workload")
-
-
-def _validate_fields(value: object, raw: bytes) -> None:
+def _validate_fields(value: object) -> None:
     if not isinstance(value, dict) or set(value) != _FIELDS or value["$schema"] != _SCHEMA:
         raise ValueError("Pre-Sim Commands evidence fields/schema disagree")
-    if len(raw) > MANIFEST_MAX_BYTES:
-        raise ValueError("Pre-Sim Commands evidence exceeds byte limit")
     for field, maximum in (("ordinal", 4096), ("command_count", 10000)):
         number = require_int(value[field], field=field)
         if not 1 <= number <= maximum:

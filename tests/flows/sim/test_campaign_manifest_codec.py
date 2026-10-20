@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
+    MANIFEST_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_simulation_campaign_manifest,
@@ -44,7 +45,7 @@ from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
 from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
-from booley.flows.test_runs import build_test_run
+from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -170,11 +171,15 @@ def _names_only_work_items(items: list[dict[str, object]]) -> list[dict[str, obj
     return legacy
 
 
+def _selection_test_runs(names):
+    return [test_run_document(build_test_run(name)) for name in names or (None,)]
+
+
 def _manifest() -> dict[str, object]:
     target, source_recipe, build_recipe, workload, suite = _manifest_components()
     variants, items = _manifest_work(target, source_recipe, build_recipe, workload)
     manifest = {
-        "$schema": "booley.simulation-campaign-manifest/v1",
+        "$schema": MANIFEST_SCHEMA,
         "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "created_at": "2026-09-21T10:00:00Z",
         "origin": {"execution_id": "", "invocation_id": 1},
@@ -265,6 +270,7 @@ def _manifest_work(target, source_recipe, build_recipe, workload):
         "revision": "abc123",
         "target": target,
         "selection": {"kind": "default", "names": []},
+        "test_runs": _selection_test_runs(()),
         "arguments": [],
         "build_variant_id": variants[0]["build_variant_id"],
         "run_directory": {"configured": "run", "kind": "literal", "collision_template": "run"},
@@ -335,74 +341,6 @@ def _baseline_manifest():
     item["fingerprint_sha256"] = fingerprint  # type: ignore[index]
     item["work_item_id"] = "item:0000:" + fingerprint[7:23]  # type: ignore[index]
     return finalize_manifest(document)
-
-
-_V1 = "booley.simulation-campaign-manifest/v1"
-_V2 = "booley.simulation-campaign-manifest/v2"
-
-
-def _refinalized(schema: str, **workload_members: object):
-    """Re-finalize the fixture so fingerprints stay valid and only the workload rule varies."""
-    document = _manifest()
-    document.pop("fingerprints")
-    document["$schema"] = schema
-    workload = document["workload"]
-    workload.update(workload_members)  # type: ignore[union-attr]
-    # The build variant recipe binds ``workload.coverage``; keep it consistent.
-    variant = document["build_variants"][0]  # type: ignore[index]
-    variant["source_closure"] = []
-    recipe_sha = _sha(
-        {
-            "kind": variant["kind"],
-            "source_closure": variant["source_closure"],
-            "source_recipe": workload["source_recipe"],  # type: ignore[index]
-            "build_recipe": workload["build_recipe"],  # type: ignore[index]
-            "eda": workload["eda"],  # type: ignore[index]
-            "trace": workload["trace"],  # type: ignore[index]
-            "coverage": workload["coverage"],  # type: ignore[index]
-        }
-    )
-    variant["recipe_sha256"] = recipe_sha
-    variant["build_variant_id"] = "variant:" + recipe_sha.removeprefix("sha256:")
-    item = document["work_items"][0]  # type: ignore[index]
-    item["build_variant_id"] = variant["build_variant_id"]
-    identity = {
-        key: value
-        for key, value in item.items()
-        if key not in {"fingerprint_sha256", "work_item_id"}
-    }
-    item["fingerprint_sha256"] = _sha(identity)
-    item["work_item_id"] = "item:0000:" + item["fingerprint_sha256"][7:23]
-    return finalize_manifest(document)
-
-
-def test_no_waivers_v2_manifest_decodes_and_keeps_its_schema() -> None:
-    manifest = _refinalized(_V2, coverage=True, no_waivers=True)
-    assert manifest.document["$schema"] == _V2
-    assert manifest.document["workload"]["no_waivers"] is True  # type: ignore[index]
-    decoded = decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-    assert decoded.document == manifest.document
-
-
-@pytest.mark.parametrize(
-    ("schema", "members"),
-    [
-        (_V2, {"coverage": True}),
-        (_V2, {"coverage": True, "no_waivers": False}),
-        (_V2, {"coverage": True, "no_waivers": "yes"}),
-        (_V2, {"coverage": False, "no_waivers": True}),
-        (_V1, {"coverage": True, "no_waivers": True}),
-    ],
-)
-def test_no_waivers_manifest_grammar_is_exact(schema: str, members: dict[str, object]) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        _refinalized(schema, **members)
-
-
-def test_v1_manifest_grammar_is_unchanged_by_no_waivers_support() -> None:
-    manifest = _refinalized(_V1, coverage=True)
-    assert manifest.document["$schema"] == _V1
-    assert "no_waivers" not in manifest.document["workload"]  # type: ignore[operator]
 
 
 def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
@@ -1499,8 +1437,9 @@ def _prepared_diagnostic_pair():
     "case",
     [
         json.loads(line)
-        for line in (Path(__file__).parent / "fixtures/prepared_manifest_pairs.jsonl")
-        .read_text()
+        for name in ("prepared_manifest_pairs", "v4_manifest_pairs")
+        for line in (Path(__file__).parent / f"fixtures/{name}.jsonl")
+        .read_text(encoding="utf-8")
         .splitlines()
     ],
     ids=lambda case: case["id"],
@@ -1535,91 +1474,11 @@ def test_prepared_manifest_pair_corpus(case):
         assert exc.value.diagnostic == diagnostic
 
 
-def test_prepared_path_and_content_equality_collapses_across_multiple_disclosures():
-    old, new = _prepared_diagnostic_pair()
-    for document in (old, new):
-        document["planning_disclosures"] *= 2
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ("source changed: a.sv",)
-    assert diagnostic.derived_fingerprint_count == 5
-    assert (
-        len(
-            [
-                item
-                for item in diagnostic.mismatches
-                if item.pointer.startswith("/planning_disclosures/")
-            ]
-        )
-        == 4
-    )
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [
-        "disclosure_duplicate",
-        "planner",
-        "kind",
-        "contract",
-        "version",
-        "unmatched",
-    ],
-)
-def test_ambiguous_or_unmatched_prepared_disclosure_changes_preserve_fallback(changed):
-    old, new = _prepared_diagnostic_pair()
-    disclosure = new["planning_disclosures"][0]
-    if changed == "disclosure_duplicate":
-        for document in (old, new):
-            document["planning_disclosures"][0]["generated_files"] *= 2
-    elif changed == "unmatched":
-        disclosure["generated_files"][0]["path"] = "other.sv"
-    elif changed == "planner":
-        disclosure["planner"] = "other"
-    else:
-        field = {"kind": "kind", "contract": "contract_version", "version": "version"}[changed]
-        disclosure["tool_provenance"][field] = "other"
-    diagnostic = _project_diagnostics(old, new)
-    assert any("/planning_disclosures/" in line for line in diagnostic.mismatch_summary)
-    assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
-
-
 def test_unremoved_planning_scratch_is_rejected_before_diagnostic_projection():
     _old, new = _prepared_diagnostic_pair()
     new["planning_disclosures"][0]["cleanup"]["removed"] = False
     with pytest.raises(SimulationCampaignIntegrityError, match="planning scratch must be removed"):
         _finalize_diagnostic_document(new)
-
-
-@pytest.mark.parametrize("change", ["add", "remove", "reorder"])
-def test_disclosure_source_list_shifts_preserve_whole_entry_and_positional_fallback(change):
-    paths = {
-        "add": (("a.sv",), ("head.sv", "a.sv")),
-        "remove": (("a.sv", "b.sv"), ("b.sv",)),
-        "reorder": (("a.sv", "b.sv"), ("b.sv", "a.sv")),
-    }[change]
-    old, new = [
-        _diagnostic_document(sources=[_diagnostic_source(path) for path in side]) for side in paths
-    ]
-    for document in (old, new):
-        document["planning_disclosures"] = [
-            _prepared_disclosure(document["workload"]["source_recipe"]["sources"])
-        ]
-    diagnostic = _project_diagnostics(old, new)
-    assert any(
-        "/planning_disclosures/0/generated_files/" in line for line in diagnostic.mismatch_summary
-    )
-    assert diagnostic.derived_fingerprint_count == 5
-
-
-def test_standalone_prepared_source_edit_is_not_misattributed_to_unchanged_recipe():
-    old, _new = _prepared_diagnostic_pair()
-    new = json.loads(json.dumps(old))
-    new["planning_disclosures"][0]["generated_files"][0]["bytes"] = 2
-    diagnostic = _project_diagnostics(old, new)
-    assert len(diagnostic.mismatch_summary) == 1
-    assert diagnostic.mismatch_summary == ("prepared source changed: a.sv",)
-    assert "/planning_disclosures/0/generated_files/0/bytes" in diagnostic.mismatches[0].message
-    assert diagnostic.derived_fingerprint_count == 0
 
 
 def test_explicit_zero_findings_produces_no_typed_parameter_roots():
@@ -1636,153 +1495,18 @@ def test_explicit_zero_findings_produces_no_typed_parameter_roots():
     assert diagnostic.derived_fingerprint_count == 0
 
 
-def _own_prepared_pair(changes):
-    old, new = _diagnostic_document(), _diagnostic_document()
-    for document, endpoint in ((old, 1), (new, 2)):
-        document["planning_disclosures"] = [
-            _prepared_disclosure([_diagnostic_source(path, size=values[endpoint - 1])])
-            for path, *values in changes
-        ]
-    return old, new
+def test_unrecognized_pointers_keep_every_raw_fallback_in_order():
+    from booley.flows.sim.campaign.planning import WorkloadMismatch, project_workload_mismatches
 
-
-@pytest.mark.parametrize(
-    "changes,lines",
-    [
-        (
-            [("staged/a.sv", 1, 2), ("staged/a.sv", 1, 2)],
-            ("prepared source changed: staged/a.sv",),
-        ),
-        (
-            [("a.sv", 1, 2), ("a.sv", 1, 3)],
-            (
-                "prepared source changed: a.sv (planning disclosure 0)",
-                "prepared source changed: a.sv (planning disclosure 1)",
-            ),
-        ),
-        (
-            [("a.sv", 1, 2), ("a.sv", 3, 2)],
-            (
-                "prepared source changed: a.sv (planning disclosure 0)",
-                "prepared source changed: a.sv (planning disclosure 1)",
-            ),
-        ),
-        (
-            [("a.sv", 1, 2), ("a.sv", 1, 3), ("a.sv", 1, 2)],
-            (
-                "prepared source changed: a.sv (planning disclosures 0, 2)",
-                "prepared source changed: a.sv (planning disclosure 1)",
-            ),
-        ),
-    ],
-)
-def test_own_prepared_changes_group_only_identical_observed_facts(changes, lines):
-    diagnostic = _project_diagnostics(*_own_prepared_pair(changes))
-    assert diagnostic.mismatch_summary == lines
-    assert len(diagnostic.mismatches) == len(changes)
-    assert diagnostic.derived_fingerprint_count == 0
-
-
-def test_prepared_render_collision_retains_all_colliding_original_leaves():
-    changes = [("x.sv", 1, 2), ("x.sv", 1, 3), ("x.sv (planning disclosure 1)", 1, 2)]
-    diagnostic = _project_diagnostics(*_own_prepared_pair(changes))
-    assert (
-        diagnostic.mismatch_summary[0] == "prepared source changed: x.sv (planning disclosure 0)"
+    manifest = _finalize_diagnostic_document(_diagnostic_document())
+    derived = ("/build_variants/0/recipe_sha256",) * 2
+    unknown = ("/", "//child", "/required_suites", "/build_variants/01/recipe_sha256", "/x", "/x")
+    findings = tuple(WorkloadMismatch(pointer, "old", "new") for pointer in derived + unknown)
+    diagnostic = project_workload_mismatches(manifest, manifest, findings)
+    assert diagnostic.mismatch_summary == tuple(
+        f"workload changed: {item.message}" for item in findings[2:]
     )
-    assert set(diagnostic.mismatch_summary[1:]) == {
-        "workload changed: " + item.message for item in diagnostic.mismatches[1:]
-    }
-    assert diagnostic.derived_fingerprint_count == 0
-
-
-@pytest.mark.parametrize("own_count", [1, 2])
-def test_equality_collapsed_occurrences_do_not_affect_own_key_suffixes(own_count):
-    old, new = _prepared_diagnostic_pair()
-    for document, endpoint in ((old, 0), (new, 1)):
-        document["planning_disclosures"] += [
-            _prepared_disclosure(
-                [_diagnostic_source("a.sv", size=(3 + index, 5 + index)[endpoint])]
-            )
-            for index in range(own_count)
-        ]
-    diagnostic = _project_diagnostics(old, new)
-    prepared = [line for line in diagnostic.mismatch_summary if line.startswith("prepared source")]
-    assert prepared == (
-        ["prepared source changed: a.sv"]
-        if own_count == 1
-        else [
-            "prepared source changed: a.sv (planning disclosure 1)",
-            "prepared source changed: a.sv (planning disclosure 2)",
-        ]
-    )
-    assert diagnostic.mismatch_summary[0] == "source changed: a.sv"
-
-
-@pytest.mark.parametrize("side", [0, 1])
-@pytest.mark.parametrize("field,value", [("bytes", 7), ("sha256", "sha256:" + "c" * 64)])
-def test_either_side_unequal_prepared_content_has_its_own_named_cause(side, field, value):
-    old, new = _prepared_diagnostic_pair()
-    (old, new)[side]["planning_disclosures"][0]["generated_files"][0][field] = value
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ("source changed: a.sv", "prepared source changed: a.sv")
-    assert diagnostic.derived_fingerprint_count == 5
-
-
-def test_distinct_prepared_hash_only_changes_preserve_each_observed_cause():
-    old, new = _own_prepared_pair([("staged.sv", 1, 1), ("staged.sv", 1, 1)])
-    for position, digest in enumerate(("b", "c")):
-        new["planning_disclosures"][position]["generated_files"][0]["sha256"] = (
-            "sha256:" + digest * 64
-        )
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == (
-        "prepared source changed: staged.sv (planning disclosure 0)",
-        "prepared source changed: staged.sv (planning disclosure 1)",
-    )
-    assert [item.pointer for item in diagnostic.mismatches] == [
-        "/planning_disclosures/0/generated_files/0/sha256",
-        "/planning_disclosures/1/generated_files/0/sha256",
-    ]
-    assert diagnostic.derived_fingerprint_count == 0
-
-
-def test_repeated_diagnostic_region_lookups_do_not_rescan_original_findings():
-    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
-
-    class CountingFindings(tuple):
-        walks = 0
-        indexed_reads = 0
-
-        def __getitem__(self, index):
-            self.indexed_reads += 1
-            return super().__getitem__(index)
-
-        def __iter__(self):
-            self.walks += 1
-            return super().__iter__()
-
-    findings = CountingFindings(
-        [WorkloadMismatch(f"/build_variants/{index}/sha256", "old", "new") for index in range(200)]
-        + [WorkloadMismatch("/build_variants/0/sha256", "other", "new")]
-    )
-    projection = _DiagnosticProjection(findings)
-    original_walks = findings.walks
-    original_indexed_reads = findings.indexed_reads
-    for _ in range(20):
-        assert projection.indices("/build_variants/0/sha256") == {0, 200}
-        assert projection.indices("/build_variants/0") == {0, 200}
-        assert projection.indices("/build_variants") == set(range(201))
-        assert projection.indices("/build_variants/20") == {20}
-        assert projection.indices("/build_variants/2") == {2}
-        assert projection.indices("/absent") == set()
-    assert findings.walks == original_walks
-    assert findings.indexed_reads == original_indexed_reads
-    projection.explain({0, 200}, ("same region changed",))
-    projection.derived.add(1)
-    diagnostic = projection.finish()
-    assert diagnostic.mismatches is findings
-    assert diagnostic.derived_fingerprint_count == 1
-    assert len(diagnostic.mismatch_summary) == 199
+    assert diagnostic.derived_fingerprint_count == 2
 
 
 def test_parameter_display_escapes_nested_controls_without_changing_raw_values():
@@ -1798,97 +1522,10 @@ def test_parameter_display_escapes_nested_controls_without_changing_raw_values()
     assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
 
 
-def test_diagnostic_prefix_lookup_preserves_root_and_escaped_component_boundaries():
-    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
-
-    pointers = ("", "/", "//child", "/scope/~1x", "/scope/~1x/child", "/scope/~1xy")
-    projection = _DiagnosticProjection(tuple(WorkloadMismatch(p, "old", "new") for p in pointers))
-    assert projection.indices("") == set(range(6))
-    assert projection.indices("/") == {1, 2}
-    assert projection.indices("/scope/~1x") == {3, 4}
-    assert projection.indices("/scope/~1") == set()
-    selected = projection.indices("/scope/~1x")
-    selected.clear()
-    assert projection.indices("/scope/~1x") == {3, 4}
-
-
-def test_projected_root_membership_does_not_scan_ordered_output():
-    from booley.flows.sim.campaign.planning import WorkloadMismatch, _DiagnosticProjection
-
-    class CountingRoots(list):
-        membership_checks = 0
-
-        def __contains__(self, line):
-            self.membership_checks += 1
-            return super().__contains__(line)
-
-    finding = WorkloadMismatch("/unknown", "old", "new")
-    projection = _DiagnosticProjection((finding, finding))
-    projection.roots = CountingRoots()
-    expected = [f"source changed: source_{index}.sv" for index in range(200)]
-    projection.explain(set(), expected)
-    projection.explain(set(), list(reversed(expected)))
-    assert projection.roots == expected
-    assert projection.roots.membership_checks == 0
-    diagnostic = projection.finish()
-    fallback = f"workload changed: {finding.message}"
-    assert diagnostic.mismatch_summary == (*expected, fallback, fallback)
-    assert projection.root_lines == set(diagnostic.mismatch_summary)
-    assert diagnostic.mismatches == (finding, finding)
-
-
-@pytest.mark.parametrize("schema", ["v1", "v2", "v3"])
-@pytest.mark.parametrize("mapping", [False, True])
-def test_source_mapping_schema_grammar(schema, mapping):
-    document = _manifest()
-    document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/" + schema
-    if schema == "v2":
-        document["workload"]["coverage"] = True
-        document["workload"]["no_waivers"] = True
-        workload = document["workload"]
-        from booley.flows.sim.campaign.flow_planning import _variant_document, _work_items
-
-        variant = _variant_document(workload, [], False)
-        variants, items = (
-            [variant],
-            _names_only_work_items(
-                _work_items(
-                    [(build_test_run(None),)],
-                    document["target"],
-                    variant,
-                    "run",
-                    "literal",
-                    kind="ordinary_hdl",
-                )
-            ),
-        )
-        document["build_variants"], document["work_items"] = variants, items
-    entry = {
-        "path": "staged.hex",
-        "bytes": 1,
-        "sha256": "sha256:" + "a" * 64,
-        "kind": "generated_input",
-    }
-    if mapping:
-        entry["source_path"] = "data/source.hex"
-    document["planning_disclosures"] = [_prepared_disclosure([entry])]
-    if mapping and schema != "v3":
-        with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-            finalize_manifest(document)
-    else:
-        manifest = finalize_manifest(document)
-        assert (
-            decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-            == manifest
-        )
-
-
 @pytest.mark.parametrize("field,value", [("source_path", "../outside.hex"), ("unknown", "x")])
 def test_source_mapping_rejects_unsafe_or_unknown_disclosure_fields(field, value):
     document = _manifest()
     document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["planning_disclosures"] = [
         _prepared_disclosure(
             [
@@ -1910,7 +1547,6 @@ def test_source_mapping_does_not_relax_source_recipe():
     document = _diagnostic_document(
         sources=[{**_diagnostic_source("data.hex"), "source_path": "other.hex"}]
     )
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         finalize_manifest(document)
 
@@ -1918,7 +1554,6 @@ def test_source_mapping_does_not_relax_source_recipe():
 def test_copyto_prepared_digest_diagnostic_uses_declared_source():
     old, new = _prepared_diagnostic_pair()
     for document in (old, new):
-        document["$schema"] = "booley.simulation-campaign-manifest/v3"
         entry = document["planning_disclosures"][0]["generated_files"][0]
         entry["source_path"] = entry["path"]
         entry["path"] = "renamed.sv"
@@ -1929,10 +1564,9 @@ def test_copyto_prepared_digest_diagnostic_uses_declared_source():
 
 
 @pytest.mark.parametrize("flag", [False, 1, "true"])
-def test_v3_no_waivers_requires_literal_true(flag):
+def test_current_no_waivers_requires_literal_true(flag):
     document = _manifest()
     document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["workload"]["no_waivers"] = flag
     with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers is invalid"):
         finalize_manifest(document)

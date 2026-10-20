@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from booley.harness.bootstrap import (
     BootstrapFinding,
     BootstrapResult,
@@ -14,10 +16,7 @@ from booley.runtime.host_install import HostInstallationError, register_host_ins
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.paths import skills_dir
-from booley.runtime.qa_skill_selection import (
-    QaSkillSelectionError,
-    checkout_enclosing_cwd,
-)
+from booley.runtime.qa_skill_selection import QaSkillSelectionError
 from booley.runtime.qa_skill_selection import (
     disable as disable_qa_skills,
 )
@@ -115,14 +114,12 @@ def _mutate_bootstrap(
                     f"{identity.version} ({identity.payload_fingerprint[:12]})."
                 )
             )
-        revision = identity.revision if with_qa else ""
-        if not _apply_qa_enable(with_qa, revision):
+        if not _apply_qa_enable(with_qa):
             return None
         result = reconcile_bootstrap(
             intent,
             verbose=getattr(args, "verbose", False),
             qa_opt_out=without_qa,
-            allow_qa_adoption=getattr(args, "force", False),
         )
         if without_qa and _qa_prune_succeeded(result):
             try:
@@ -140,21 +137,12 @@ def _recovery_error(intent: Intent, error: RuntimeError) -> BootstrapResult:
     )
 
 
-def _apply_qa_enable(with_qa: bool, revision: str) -> bool:
+def _apply_qa_enable(with_qa: bool) -> bool:
     if not with_qa:
         return True
-    source = checkout_enclosing_cwd()
-    if source is None:
-        print(
-            red(
-                "--with-qa-skills must be run inside the complete primary "
-                "Booley source checkout on main"
-            )
-        )
-        return False
     try:
-        enable_qa_skills(source, revision)
-    except QaSkillSelectionError as exc:
+        enable_qa_skills(Path.cwd())
+    except (QaSkillSelectionError, OSError) as exc:
         print(red(f"Cannot enable QA skills: {exc}"))
         return False
     return True

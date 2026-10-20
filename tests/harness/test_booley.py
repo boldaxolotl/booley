@@ -160,9 +160,12 @@ def test_bootstrap_parser_exposes_only_host_reconciliation_flags(update_flag):
     assert not hasattr(args, "project_root")
 
 
-def test_bootstrap_parser_rejects_check_only_with_force(capsys):
+@pytest.mark.parametrize(
+    "flags", [("--check-only", "--force"), ("--with-qa-skills", "--without-qa-skills")]
+)
+def test_bootstrap_parser_rejects_exclusive_flags(flags, capsys):
     with pytest.raises(SystemExit) as raised:
-        tlr._build_parser().parse_args(["bootstrap", "--check-only", "--force"])
+        tlr._build_parser().parse_args(["bootstrap", *flags])
     assert raised.value.code == 2
     assert "not allowed with argument" in capsys.readouterr().err
 

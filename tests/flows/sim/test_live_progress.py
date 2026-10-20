@@ -86,7 +86,7 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
         )
         attempt = execution._prepare_attempt(handle, ())
         box["attempt"] = attempt
-        result = execution._execute_fresh_adapter(handle, attempt)
+        result = execution._execute_fresh_adapter(handle, attempt, session)
     assert result.result is not None
     assert len(observations) == 2
 

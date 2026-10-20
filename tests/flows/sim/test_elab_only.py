@@ -579,19 +579,30 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = _flow_with_state(tmp_path, ["sim_dut"])
-    prepared = PreparedSimulationBuild(
-        target="sim_dut",
-        target_identity="::dut:0#sim_dut",
-        resolved=MagicMock(),
-        work_root=tmp_path / ".booley/.runtime/edalize/sim/sim_dut",
-        build_root=tmp_path / ".booley/.runtime/edalize/sim/sim_dut/inner",
-        eda_tool="verilator",
-        toplevel="tb_dut",
-        make_argv=("make", "-C", "cache"),
-        environment={"SIM_MODE": "build"},
-        fileset={"rtl": ("rtl/dut.sv",), "tb": ("tb/tb_dut.sv",)},
-    )
-    monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", lambda *a, **k: prepared)
+
+    def fake_prepare(
+        *_args: object, build_root: Path, **_kwargs: object
+    ) -> PreparedSimulationBuild:
+        """Prepare in the leased generation the flow allocates, with a built image."""
+        prepared = PreparedSimulationBuild(
+            target="sim_dut",
+            target_identity="::dut:0#sim_dut",
+            resolved=MagicMock(cocotb_module=""),
+            work_root=build_root,
+            build_root=build_root / "inner",
+            eda_tool="verilator",
+            toplevel="tb_dut",
+            make_argv=("make", "-C", "cache"),
+            environment={"SIM_MODE": "build"},
+            fileset={"rtl": ("rtl/dut.sv",), "tb": ("tb/tb_dut.sv",)},
+        )
+        prepared.build_root.mkdir(parents=True)
+        image = prepared.build_root / "Vtb_dut"
+        image.write_bytes(b"image")
+        image.chmod(0o755)
+        return prepared
+
+    monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fake_prepare)
     monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
     monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
     monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)

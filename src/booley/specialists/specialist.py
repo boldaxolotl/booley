@@ -456,7 +456,7 @@ class Specialist(McpTool):
 
     def _make_streaming_callback(self) -> Any:
         """Create an on_event callback that streams agent text to display.jsonl."""
-        from booley.mcp.base import _specialist_thinking_event, _write_display_event
+        from booley.flows.endpoint_events import _specialist_thinking_event, _write_display_event
 
         def _on_event(event: dict) -> None:
             if event.get("type") == "agent_thinking":

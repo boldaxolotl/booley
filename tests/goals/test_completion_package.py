@@ -456,12 +456,13 @@ def _publish_current_base_simulation(layout):
     from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
     from booley.goals.paths import record_paths
     from booley.goals.recorder import GoalEvidenceRecorder
-    from tests.flows.sim.test_campaign_manifest_codec import _manifest_components, _manifest_work
+    from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest_components
     from tests.goals.conftest import bind, campaign_facts
 
-    target, recipe, build, workload, suite = _manifest_components()
+    target, _recipe, _build, workload, suite = _manifest_components()
     target.update(vlnv="::base:0", name="base", selector="base", revision="abc123")
-    variants, items = _manifest_work(target, recipe, build, workload)
+    legacy = _legacy_manifest(target=target)
     manifest = finalize_manifest(
         {
             "$schema": "booley.simulation-campaign-manifest/v1",
@@ -471,10 +472,10 @@ def _publish_current_base_simulation(layout):
             "target": target,
             "workload": workload,
             "required_suite": suite,
-            "build_variants": variants,
+            "build_variants": legacy["build_variants"],
             "planning_disclosures": [],
             "prerequisites": [],
-            "work_items": items,
+            "work_items": legacy["work_items"],
         }
     )
     paths = record_paths(layout.control, layout.record.id)

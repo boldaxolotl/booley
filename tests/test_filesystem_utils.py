@@ -1,4 +1,4 @@
-"""Tests for filesystem_utils: safe_rmtree, copy_booley_tree, and replace_file."""
+"""Tests for filesystem_utils: safe_rmtree and replace_file."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.runtime.filesystem_utils import copy_booley_tree, replace_file, safe_rmtree
+from booley.runtime.filesystem_utils import replace_file, safe_rmtree
 
 # ---------------------------------------------------------------------------
 # safe_rmtree
@@ -71,70 +71,6 @@ class TestSafeRmtree:
         (d / "x.txt").write_text("data")
         safe_rmtree(str(d))
         assert not d.exists()
-
-
-# ---------------------------------------------------------------------------
-# copy_booley_tree
-# ---------------------------------------------------------------------------
-
-
-class TestCopyBooleyTree:
-    def test_copies_files(self, tmp_path: Path):
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "main.py").write_text("print('hello')")
-        (src / "tools").mkdir()
-        (src / "tools" / "tool.py").write_text("# tool")
-
-        dst = tmp_path / "dst_tree"
-        copy_booley_tree(src, dst)
-
-        assert (dst / "main.py").exists()
-        assert (dst / "tools" / "tool.py").exists()
-
-    def test_excludes_standard_dirs(self, tmp_path: Path):
-        """Directories in BOOLEY_COPY_EXCLUDES should be skipped."""
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "keep.py").write_text("ok")
-        for excl in [".git", ".venv", "__pycache__", "tmp", "target"]:
-            d = src / excl
-            d.mkdir()
-            (d / "inside.txt").write_text("nope")
-
-        dst = tmp_path / "dst_tree"
-        copy_booley_tree(src, dst)
-
-        assert (dst / "keep.py").exists()
-        for excl in [".git", ".venv", "__pycache__", "tmp", "target"]:
-            assert not (dst / excl).exists(), f"{excl} should be excluded"
-
-    def test_replaces_existing_dst(self, tmp_path: Path):
-        """If dst already exists, it should be removed first."""
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "new.py").write_text("new content")
-
-        dst = tmp_path / "dst_tree"
-        dst.mkdir()
-        (dst / "old.py").write_text("old content")
-
-        copy_booley_tree(src, dst)
-
-        assert (dst / "new.py").exists()
-        assert not (dst / "old.py").exists()
-
-    def test_excludes_pyc_files(self, tmp_path: Path):
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "code.py").write_text("ok")
-        (src / "code.pyc").write_text("bytecode")
-
-        dst = tmp_path / "dst_tree"
-        copy_booley_tree(src, dst)
-
-        assert (dst / "code.py").exists()
-        assert not (dst / "code.pyc").exists()
 
 
 # ---------------------------------------------------------------------------

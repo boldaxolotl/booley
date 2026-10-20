@@ -62,11 +62,10 @@ def _refresh_hook_workload_identity(document):
     item["work_item_id"] = "item:0000:" + digest.removeprefix("sha256:")[:16]
 
 
-def _pre_sim_plan(access, commands, transform):
+def _pre_sim_manifest(access, commands, transform):
     import json
 
     from booley.flows.sim.campaign.codec import canonical_json_bytes
-    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
     from booley.flows.sim.campaign.planning import finalize_manifest
     from tests.flows.sim.test_campaign_phase3_integrity import _legacy_disclosures, _manifest_for
 
@@ -79,8 +78,14 @@ def _pre_sim_plan(access, commands, transform):
     disclosures = _legacy_disclosures() if access == "legacy-per-test" else {}
     if disclosures:
         document["planning_disclosures"] = [disclosures["alpha"]]
-    plan = create_simulation_campaign_plan(finalize_manifest(document))
-    return plan, disclosures
+    return finalize_manifest(document), disclosures
+
+
+def _pre_sim_plan(access, commands, transform):
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+
+    manifest, disclosures = _pre_sim_manifest(access, commands, transform)
+    return create_simulation_campaign_plan(manifest), disclosures
 
 
 def _hook_project(tmp_path, commands, live_commands):
@@ -329,9 +334,6 @@ class _Endpoint:
             admission=admission,
             started=started,  # type: ignore[arg-type]
         )
-
-    def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
-        return outcome
 
     def _finalize_result(self, outcome: EndpointOutcome) -> None:
         self.events.append("finalize")
@@ -1027,16 +1029,12 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
 
 
 def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
-    import json
-
     from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
+    from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
-    from tests.mcp_tools.test_base import ConcreteMcpTool
+    from tests.mcp_tools.test_base import unbound_specialist
 
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
     tool.state._file_path = tmp_path / "state.json"
     tool.state.init_criteria({"sim_pass_sim": True}, strict=True)
 
@@ -1059,37 +1057,26 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
     )
     with pytest.raises(OSError):
         SimulationAcceptanceCoordinator().reconcile(outcome, context)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    report = final_report_omits_headline(tool, EndpointOutcome(exit_code=2))
     assert report["passed"] is False
     assert tool.state.criteria["sim_pass_sim"].met is False
 
 
 @pytest.mark.parametrize("conclusive", [True, False])
 def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_path, conclusive):
-    import json
     from dataclasses import replace
 
     from booley.flows.sim.acceptance import _record_standalone_campaign
+    from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
-    from tests.mcp_tools.test_base import ConcreteMcpTool
+    from tests.mcp_tools.test_base import unbound_specialist
 
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
+    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
     outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
     if not conclusive:
         outcome = replace(outcome, complete=False)
     _record_standalone_campaign(tool, outcome)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(tool)
-    report = json.loads(tool.write_report(EndpointOutcome()).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    final_report_omits_headline(tool, EndpointOutcome())
     if conclusive:
         assert tool.state.criteria["sim_pass_sim"].met is True
         assert tool.state.criteria["sim_pass_sim"].detail["selected_tests"] == ["smoke"]
@@ -1366,7 +1353,8 @@ def _assert_partial_acceptance_policy(flow, result, tmp_path, campaign):
     assert not list((tmp_path / "logs").rglob("*.json"))
     assert {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")} == projections
     with context.publication_resources:
-        report_path = write_report(context, context._adapt_outcome(result))
+        context._finalize_result(result)
+        report_path = write_report(context, result)
     report = json.loads(report_path.read_text())
     assert report["cycle_counts"] == {
         str(campaign.target["selector"]): [
@@ -1438,7 +1426,7 @@ def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
     from booley.flows.endpoint_reporting import write_report
 
     with flow.context.publication_resources:
-        path = write_report(flow.context, flow.context._adapt_outcome(result))
+        path = write_report(flow.context, result)
     report = json.loads(path.read_text())
     expected = [{"test": None if unnamed else "smoke", "cycle_count": None}]
     assert report["cycle_counts"]["sim"] == expected
@@ -1638,9 +1626,14 @@ def test_legacy_abort_progress_failure_preserves_collected_firings(tmp_path, mon
 def _cocotb_hook_plan(document):
     import hashlib
 
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
     names = ["alpha", "beta"]
     document["work_items"][0].update(
-        kind="cocotb_batch", selection={"kind": "named", "names": names}, arguments=names
+        kind="cocotb_batch",
+        selection={"kind": "named", "names": names},
+        arguments=names,
+        test_runs=_selection_test_runs(names),
     )
     source = b"alpha\nbeta\n"
     document["required_suite"].update(

@@ -269,7 +269,7 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     ]
     flow = SimulateFlow()
     flow._args = SimRequest(target="one,two", report_dir=tmp_path / "large", work_dir=tmp_path)
-    result = flow.context._adapt_outcome(flow._campaign_endpoint_outcome(outcomes))
+    result = flow._campaign_endpoint_outcome(outcomes)
     with flow.context.publication_resources:
         path = write_report(flow.context, result)
     report = _read_report_json(path)
@@ -982,6 +982,28 @@ def test_alias_normalization_precedes_simulation_preparation(
     assert flow.context.args.report_dir == data / (
         "flow-reports" if selection == "default" else "reports"
     )
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_projection_rejects_corrupt_record(tmp_path, error):
+    from booley.flows.sim.acceptance import _campaign_projection
+    from booley.flows.sim.campaign import decode_simulation_projection
+    from booley.flows.sim.campaign_retention import _read_object
+    from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
+
+    document = json.loads(
+        json.dumps({**_campaign_projection(_outcome(tmp_path, _RESET)), "complete": True})
+    )
+    path = tmp_path / "simulation.json"
+    path.write_text(json.dumps(document))
+    decode_simulation_projection(_read_object(path), coverage_expected=False)
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["complete"]
+    path.write_text("{" if error == "truncated" else json.dumps(document))
+    with pytest.raises(ValueError):
+        decode_simulation_projection(_read_object(path), coverage_expected=False)
 
 
 def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
