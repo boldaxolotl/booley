@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.build_paths import work_root_for
+from booley.core.hdl import declared_module_names, strip_comments
 from booley.flows.eda_parsers import extract_error_gist
 from booley.flows.sim.live_progress import attempt_scope, observe_stage
 from booley.fusesoc import fusesoc_registry
@@ -71,16 +72,6 @@ _MAX_ECHOED_STANDALONE_FAILURES = 5
 # skipped.
 _HDL_SUFFIXES = frozenset({".v", ".sv"})
 
-# Comment stripper for declaration scanning: a `module old_impl` inside a
-# block comment must not become a phantom standalone-compile (iverilog would
-# report the module missing — a fabricated finding).
-_COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
-# Module declarations — same shape lint._toplevel_declared scans for, plus
-# name capture. `macromodule` and lifetime qualifiers included.
-_MODULE_DECL_RE = re.compile(
-    r"^\s*(?:macro)?module\s+(?:automatic\s+|static\s+)?([A-Za-z_]\w*)",
-    re.MULTILINE,
-)
 # Shared-prerequisite markers: a file declaring a `package` or `interface` is
 # included on EVERY per-module compile line, so a legitimate `import pkg::*`
 # or interface port never scores as a cross-file dependency (false positive).
@@ -125,14 +116,14 @@ _PARSE_GAP_RE = re.compile(r"syntax error|Unsupported:|sorry: ", re.IGNORECASE)
 def _scan_hdl_declarations(text: str) -> tuple[list[str], bool]:
     """(declared module names, declares-a-package-or-interface) for one file.
 
-    Purely lexical (comment-stripped regex scan) — the same fidelity level as
-    lint's ``_toplevel_declared``. Preprocessor-conditional declarations are
+    Module names skip comments and strings; shared markers use comment-stripped
+    text. Preprocessor-conditional declarations are
     taken at face value: a module only declared under an ``ifdef`` still gets
     probed with defaults, which is the check's intent (default parameterization
     / default defines must elaborate).
     """
-    stripped = _COMMENT_RE.sub("", text)
-    modules = _MODULE_DECL_RE.findall(stripped)
+    stripped = strip_comments(text)
+    modules = declared_module_names(text)
     has_shared = bool(_SHARED_DECL_RE.search(stripped))
     return modules, has_shared
 
