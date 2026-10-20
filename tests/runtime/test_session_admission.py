@@ -12,6 +12,7 @@ import pytest
 
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_admission, session_issuance
+from booley.runtime.session_runtime import session_container_name
 
 
 def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -763,11 +764,10 @@ def test_project_inventory_skips_host_sidecars(tmp_path: Path) -> None:
         "odd-id\t{local}\t\t\treaper",
         # Sandbox roles and unlabeled roles stay fail-closed too.
         "odd-id\todd\t\t\tinteractive",
+        "odd-id\todd\t\t\tlicense-relay",
     ],
 )
 def test_project_inventory_still_inspects_possible_sandboxes(tmp_path: Path, row: str) -> None:
-    from booley.runtime.session_runtime import session_container_name
-
     project = tmp_path / "project"
     project.mkdir()
     row = row.format(folder=project, local=session_container_name(project))
