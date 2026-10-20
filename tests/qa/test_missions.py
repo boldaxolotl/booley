@@ -180,3 +180,11 @@ def test_capability_map_links_resolve_to_mission_areas() -> None:
         assert area in headings, label
         # The map marks exactly the areas the mission schedules outside its primary timebox.
         assert bool(marker) == ("optional follow-up" in headings[area]), label
+
+
+def test_qa_skill_names_do_not_overlap_packaged_product_skills() -> None:
+    from booley.runtime.paths import skills_dir
+    from booley.runtime.qa_skill_selection import QA_SKILL_NAMES
+
+    assert all((QA_ROOT / name / "SKILL.md").is_file() for name in QA_SKILL_NAMES)
+    assert QA_SKILL_NAMES.isdisjoint(path.name for path in skills_dir().iterdir())
