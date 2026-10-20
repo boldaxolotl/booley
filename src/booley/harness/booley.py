@@ -641,7 +641,7 @@ def _add_bootstrap_subparser(sub) -> None:
     qa_skills.add_argument(
         "--with-qa-skills",
         action="store_true",
-        help="Persist and reconcile maintainer QA skills from this primary main checkout",
+        help="Persist and reconcile maintainer QA skills from this primary source checkout",
     )
     qa_skills.add_argument(
         "--without-qa-skills",

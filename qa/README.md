@@ -26,21 +26,25 @@ host or client.
 
 Invoke these explicitly; agents do not start them on their own.
 
-From a complete, clean primary Booley checkout on `main` whose HEAD matches the
-canonical host-installed Booley revision, a maintainer can persistently install
-all three into Codex and an existing distinct Claude skill target:
+From any primary Booley source checkout containing all three skills (including
+from a nested directory), a maintainer can install them into Codex and an
+existing distinct Claude skill target. Dirty trees, non-main branches and
+installed-version differences are accepted:
 
 ```bash
 booley bootstrap --with-qa-skills
 ```
 
-Plain Bootstrap and Project Initialization then keep them reconciled from this
-live checkout. Remove only Booley-owned QA links with
-`booley bootstrap --without-qa-skills`. A moved, deleted, dirty, off-main, or
-revision-skewed checkout produces a non-blocking warning with recovery guidance.
-They are host-only maintainer tools and are excluded from Sandbox host-skill
-mounts. Codex metadata disables implicit invocation; other clients receive the
-same explicit-only instruction as behavioral guidance, not a security boundary.
+Plain Bootstrap reconciles live links from the recorded path. Check-only
+Bootstrap, Doctor and Project Initialization inspect without mutation. Missing
+checkouts or skills produce a non-blocking warning with recovery guidance.
+`booley bootstrap --without-qa-skills` removes only manifest-owned QA links,
+even if the selection document is corrupt. Product, hand-made and replaced
+entries remain. Unrecorded exact or equivalent QA links conflict even with
+`--force`; already recorded links retain force relinking. QA skills stay out of
+release wheels and Sandbox host-skill mounts. Codex metadata disables implicit
+invocation; other clients receive the same explicit-only instruction as
+behavioral guidance, not a security boundary.
 
 | Skill | Use |
 |---|---|
