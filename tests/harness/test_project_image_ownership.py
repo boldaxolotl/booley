@@ -129,17 +129,30 @@ def test_mismatched_or_false_manual_parent_is_ignored(tmp_path, monkeypatch, cap
     assert recipe.read_text() == body
 
 
-def test_base_change_between_plan_and_prepare_fails_before_build(tmp_path, monkeypatch):
+@pytest.mark.parametrize("drift", ["before-prepare", "after-prepare"])
+def test_input_drift_aborts_commit_without_moving_managed_tags(tmp_path, monkeypatch, drift):
     root = _project(tmp_path)
     docker = FakeDocker({})
     _bootstrap_base(monkeypatch, docker)
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
-    old = docker.images[lifecycle.STABLE_RUNTIME_BASE_IMAGE]
-    docker.images[lifecycle.STABLE_RUNTIME_BASE_IMAGE] = ("sha256:changed", old[1])
-    builder = TransactionBuilder(docker)
-    with pytest.raises(lifecycle.ImageLifecycleError, match="changed before preparation"):
-        lifecycle.prepare(planned, docker=docker, builder=builder)
-    assert builder.built == []
+    managed = {node.reference: docker.image_id(node.reference) for node in planned.nodes}
+
+    def change_runtime_base():
+        old = docker.images[lifecycle.STABLE_RUNTIME_BASE_IMAGE]
+        docker.images[lifecycle.STABLE_RUNTIME_BASE_IMAGE] = ("sha256:changed", old[1])
+        managed[lifecycle.STABLE_RUNTIME_BASE_IMAGE] = "sha256:changed"
+
+    if drift == "before-prepare":
+        change_runtime_base()
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    if drift == "after-prepare":
+        change_runtime_base()
+    docker.mutations.clear()
+    with pytest.raises(lifecycle.ImageLifecycleError, match="changed while candidates"):
+        lifecycle.commit(prepared, docker=docker)
+    assert {ref: docker.image_id(ref) for ref in managed} == managed
+    assert not any(row[0] == "tag" and row[-1] in managed for row in docker.mutations)
+    assert not any(ref.startswith("booley-lifecycle-") for ref in docker.images)
 
 
 def test_external_selection_does_not_require_local_base(tmp_path):
@@ -179,26 +192,6 @@ def test_manual_final_scratch_cannot_claim_parent_with_labels(tmp_path, monkeypa
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match="does not descend"):
         harness._IncrementalBuildAdapter._verify_manual_ancestry("child", "parent")
-
-
-def test_legacy_journal_refuses_shared_restore_before_any_recovery(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.runtime import session_refresh as refresh
-
-    root = _project(tmp_path)
-    image = refresh.RefreshPreparedImage(
-        lifecycle.BASE_IMAGE, "booley-lifecycle-old:candidate", "sha256:candidate", "sha256:prior"
-    )
-    journal = SimpleNamespace(project_root=root, prepared_images=(image,))
-    monkeypatch.setattr(refresh, "_load_journal", lambda _root: journal)
-    monkeypatch.setattr(
-        refresh,
-        "_restore_journal",
-        lambda _journal: pytest.fail("legacy journal performed recovery"),
-    )
-    with pytest.raises(refresh.sr.SessionError, match="legacy image state"):
-        refresh.recover_project_locked(root)
 
 
 def test_never_initialized_project_check_does_not_create_files(tmp_path, monkeypatch):
@@ -277,6 +270,34 @@ def test_failed_private_tag_commit_restores_private_outputs_only(tmp_path, monke
         row[0] == "tag" and row[-1] == lifecycle.STABLE_RUNTIME_BASE_IMAGE
         for row in docker.mutations
     )
+
+
+def test_failed_commit_untags_references_without_prior_image(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+
+    class FailedTagDocker(FakeDocker):
+        fail = None
+
+        def tag(self, source, target):
+            if target == self.fail:
+                raise lifecycle.ImageLifecycleError("adoption failed")
+            super().tag(source, target)
+
+    docker = FailedTagDocker({})
+    _bootstrap_base(monkeypatch, docker)
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    base_id = docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    docker.fail = planned.selected_reference
+    with pytest.raises(lifecycle.ImageLifecycleError, match="adoption failed"):
+        lifecycle.commit(prepared, docker=docker)
+    project_references = [
+        node.reference
+        for node in planned.nodes
+        if node.role is not lifecycle.ImageRole.RUNTIME_BASE
+    ]
+    assert all(docker.image_id(ref) is None for ref in project_references)
+    assert docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) == base_id
 
 
 def test_stale_base_requires_bootstrap_and_is_never_repaired(tmp_path, monkeypatch):

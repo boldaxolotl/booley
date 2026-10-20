@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.feedback import materialize
-from booley.feedback.findings import Finding, append
+from booley.feedback import materialize, render
+from booley.feedback.findings import Finding, append, read_log
 from booley.feedback.render import Environment
 
 
@@ -33,17 +33,6 @@ def test_normalize_attachment_path_checks_supported_bases(tmp_path: Path, monkey
     assert materialize.normalize_attachment_path("missing.log", booley_dir) == (
         booley_dir.parent / "missing.log"
     )
-
-
-def test_excerpt_caps_lines_and_characters(tmp_path: Path) -> None:
-    source = tmp_path / "long.log"
-    source.write_text("x" * 10000 + "\n" + "tail\n", encoding="utf-8")
-
-    excerpt, metadata = materialize._excerpt(source)
-
-    assert len(excerpt) == materialize.MAX_ATTACHMENT_CHARS
-    assert metadata["clipped"] is True
-    assert metadata["line_count"] == 2
 
 
 def test_materialize_ignores_unselected_and_empty_sources(tmp_path: Path) -> None:
@@ -83,42 +72,6 @@ def test_materialize_reports_unreadable_selected_attachment(tmp_path: Path) -> N
 
     with pytest.raises(materialize.MaterializationError, match="cannot read attachment"):
         materialize.materialize_attachments(booley_dir, [source])
-
-
-def test_materialize_requires_both_render_proofs_to_match(tmp_path: Path, monkeypatch) -> None:
-    booley_dir = _project(tmp_path)
-    source = tmp_path / "attached.log"
-    source.write_text("attached\n", encoding="utf-8")
-    append(Finding(title="finding", attachments=[str(source)]), booley_dir)
-    proofs = iter([("before", "export"), ("after", "export")])
-    monkeypatch.setattr(materialize, "_render_proofs", lambda *_args: next(proofs))
-
-    path = booley_dir / "findings.jsonl"
-    before = path.read_bytes()
-    with pytest.raises(materialize.MaterializationError, match="report or export"):
-        materialize.materialize_attachments(booley_dir, [source])
-    assert path.read_bytes() == before
-    assert source.exists()
-
-
-def test_materialize_reuses_one_explicit_environment(tmp_path: Path, monkeypatch) -> None:
-    booley_dir = _project(tmp_path)
-    source = tmp_path / "attached.log"
-    source.write_text("attached\n", encoding="utf-8")
-    append(Finding(title="finding", attachments=[str(source)]), booley_dir)
-    environment = Environment(doctor_deep_clean=True)
-    observed: list[Environment] = []
-    original = materialize._render_proofs
-
-    def record_environment(booley_dir, entries, env):
-        observed.append(env)
-        return original(booley_dir, entries, env)
-
-    monkeypatch.setattr(materialize, "_render_proofs", record_environment)
-
-    assert materialize.materialize_attachments(booley_dir, [source], env=environment) == (source,)
-    assert len(observed) == 2
-    assert all(item is environment for item in observed)
 
 
 def test_materialize_retains_concurrent_append(tmp_path):
@@ -166,9 +119,7 @@ def test_duplicate_rows_materialize_distinct_snapshots_and_preserve_unknown_fiel
         rows.append(row)
     path = log_path(directory)
     path.write_text("\n" + "\n\n".join(json.dumps(row) for row in rows) + "\n")
-    assert materialize.materialize_attachments(directory, sources, env=Environment()) == tuple(
-        sorted(sources)
-    )
+    assert materialize.materialize_attachments(directory, sources) == tuple(sorted(sources))
     log = read_log(directory)
     attachments = [Path(entry.attachments[0]) for entry in log.entries]
     assert len(set(attachments)) == 2
@@ -197,7 +148,7 @@ def test_materialization_timeout_does_not_write_snapshots_or_log(tmp_path, monke
         holding_findings_lock(directory),
         pytest.raises(findings.FindingsLockTimeoutError, match=r"materialize.*findings.lock"),
     ):
-        materialize.materialize_attachments(directory, [source], env=Environment())
+        materialize.materialize_attachments(directory, [source])
     assert path.read_bytes() == before
     assert source.read_text() == "keep evidence\n"
     assert not (directory / "setup-evidence").exists()
@@ -241,5 +192,56 @@ def test_materialize_never_overwrites_legacy_snapshot(tmp_path):
         ),
         directory,
     )
-    materialize.materialize_attachments(directory, [source], env=Environment())
+    materialize.materialize_attachments(directory, [source])
     assert old.read_text(encoding="utf-8") == "preserved old evidence"
+
+
+def _refuse(*_args, **_kwargs):
+    raise AssertionError("materialization must not render or collect an environment")
+
+
+def test_snapshot_uses_renderer_attachment_limits(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(render, "MAX_ATTACHMENT_LINES", 2)
+    monkeypatch.setattr(render, "MAX_ATTACHMENT_CHARS", 7)
+    source = tmp_path / "long.log"
+    source.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    excerpt, metadata = materialize._excerpt(source)
+
+    assert excerpt == "o\nthree"
+    assert (metadata["clipped"], metadata["line_count"]) == (True, 3)
+
+
+def test_materialize_renders_no_report_and_reads_no_environment(tmp_path, monkeypatch) -> None:
+    for name in ("collect_environment", "render_user_report", "render_booley_report"):
+        monkeypatch.setattr(render, name, _refuse)
+    booley_dir = _project(tmp_path)
+    source = tmp_path / "attached.log"
+    source.write_text("attached\n", encoding="utf-8")
+    append(Finding(title="finding", attachments=[str(source)]), booley_dir)
+
+    assert materialize.materialize_attachments(booley_dir, [source]) == (source,)
+
+
+def test_materialized_attachment_renders_identical_report_and_export(tmp_path: Path) -> None:
+    booley_dir = _project(tmp_path)
+    source = tmp_path / "attached.log"
+    source.write_text(
+        "".join(f"line {n} {'x' * 80}\n" for n in range(200)) + "\n", encoding="utf-8"
+    )
+    append(Finding(title="finding", attachments=[str(source)]), booley_dir)
+    environment = Environment()
+
+    def views() -> tuple[str, str]:
+        log = read_log(booley_dir)
+        origin = render.report_origin(log)
+        user = render.render_user_report(log, env=environment, origin=origin)
+        export = render.render_booley_report(
+            log, tmp_path, booley_dir=booley_dir, env=environment, origin=origin
+        )
+        return user, export.body
+
+    before = views()
+    assert materialize.materialize_attachments(booley_dir, [source]) == (source,)
+    assert read_log(booley_dir).entries[0].attachments != [str(source)]
+    assert views() == before

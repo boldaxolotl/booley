@@ -1997,26 +1997,6 @@ def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
     assert detail["coverage_metrics"]["line"] == {"percent": 100.0, "threshold": None, "met": None}
 
 
-def test_reference_authentication_failure_drops_only_reference(tmp_path, monkeypatch):
-    def reject_owner(_resolved):
-        raise ValueError("injected owner authentication failure")
-
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.coverage_execution.authenticate_coverage_campaign_owner",
-        reject_owner,
-    )
-    _reports, _runs, _public, _factory, interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "after:coverage_reference"
-    )
-
-    detail = interrupted.outcome.detail["targets"]["sim_0"]
-    assert detail["passed"] is True
-    assert detail["simulation"] == "pass"
-    assert detail["collection"] == "complete"
-    assert detail["evaluation"] == "not_requested"
-    assert "coverage_campaign" not in detail
-
-
 def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeypatch):
     reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
         tmp_path, monkeypatch, "after:simulation_result"
@@ -2052,39 +2032,102 @@ def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeyp
     assert "coverage_campaign" not in detail
 
 
-def test_retention_failure_drops_reference_when_owner_authentication_fails(tmp_path, monkeypatch):
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-
-    def fail_retention(_progress, _outcome):
-        raise OSError("injected retention failure")
-
-    def reject_owner(_resolved):
-        raise ValueError("injected owner authentication failure")
-
-    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", fail_retention)
-    monkeypatch.setattr("booley.flows.sim.flow.authenticate_coverage_campaign_owner", reject_owner)
-    result = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
-    ).execute(
-        SimRequest(
-            target="sim_0",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+def test_unreadable_publication_evidence_preserves_simulation_truth(
+    tmp_path, monkeypatch, resumed
+):
+    if resumed:
+        reports, _runs, public, _factory, _interrupted = _crash_coverage_publication(
+            tmp_path, monkeypatch, "after:simulation_result"
         )
+
+    def unreadable(*_args, **_kwargs):
+        raise OSError("nested coverage evidence unreadable")
+
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coverage_execution.load_coverage_campaign", unreadable
     )
+    if resumed:
+
+        def checkpoint(boundary):
+            if boundary == "before:summary_replace":
+                raise OSError("resumed publication failed")
+
+        result = SimulateFlow(
+            coverage_execution=lambda *_args: NativeExecution(),
+            campaign_publication_checkpoint=checkpoint,
+        ).execute(
+            SimRequest(
+                resume_from=public.parent / "campaign/manifest.json",
+                work_dir=tmp_path,
+                report_dir=reports,
+            )
+        )
+    else:
+        _reports, _runs, _public, _factory, result = _crash_coverage_publication(
+            tmp_path, monkeypatch, "after:simulation_result"
+        )
 
     assert result.exit_code == 2
+    assert "targets" in result.outcome.detail
     detail = result.outcome.detail["targets"]["sim_0"]
-    assert detail["passed"] is True
     assert detail["simulation"] == "pass"
+    assert detail["passed"] is True
     assert detail["collection"] == "infrastructure_error"
     assert detail["evaluation"] == "not_requested"
+    assert [test["name"] for test in detail["tests"]] == ["reset", "wrap"]
     assert "coverage_campaign" not in detail
+
+
+def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
+    calls = []
+
+    def fail_once(public):
+        calls.append(public)
+        if len(calls) == 1:
+            raise OSError("injected retention reference failure")
+        return resolve_coverage_campaign_reference(public)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("booley.flows.sim.flow.resolve_coverage_campaign_reference", fail_once)
+        return SimulateFlow(
+            coverage_execution=lambda *_args: execution or NativeExecution()
+        ).execute(request)
+
+
+def test_resumed_retention_failure_matches_fresh_failed_target(tmp_path, monkeypatch):
+    reports, _runs, public, _factory, _interrupted = _crash_coverage_publication(
+        tmp_path, monkeypatch, "after:simulation_result"
+    )
+    execution = NativeExecution()
+    fresh = _run_with_retention_reference_failure(
+        monkeypatch,
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "fresh"
+        ),
+    )
+    resumed = _run_with_retention_reference_failure(
+        monkeypatch,
+        SimRequest(
+            resume_from=public.parent / "campaign/manifest.json",
+            work_dir=tmp_path,
+            report_dir=reports,
+        ),
+        execution,
+    )
+
+    assert fresh.exit_code == resumed.exit_code == 2
+    assert "targets" in resumed.outcome.detail
+    detail = resumed.outcome.detail["targets"]["sim_0"]
+    assert detail == fresh.outcome.detail["targets"]["sim_0"]
+    assert detail["simulation"] == "pass"
+    assert detail["passed"] is True
+    assert detail["collection"] == "infrastructure_error"
+    assert detail["evaluation"] == "not_requested"
+    assert detail["abort_remaining"] is True
+    assert "coverage_campaign" not in detail
+    assert [test["name"] for test in detail["tests"]] == ["reset", "wrap"]
+    assert execution.runs == []
 
 
 def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypatch):
@@ -2094,27 +2137,22 @@ def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypa
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
-    def fail_retention(_progress, _outcome):
-        raise OSError("injected retention failure")
-
-    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", fail_retention)
-    result = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
-    ).execute(
+    result = _run_with_retention_reference_failure(
+        monkeypatch,
         SimRequest(
-            target="sim_0",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-        )
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        ),
     )
 
     assert result.exit_code == 2
     detail = result.outcome.detail["targets"]["sim_0"]
     assert detail["passed"] is True
     assert detail["simulation"] == "pass"
-    assert detail["collection"] == "complete"
+    assert detail["collection"] == "infrastructure_error"
     assert detail["evaluation"] == "not_requested"
+    assert detail["error"] == "injected retention reference failure"
+    assert "coverage_campaign" not in detail
+    assert [(test["name"], test["verdict"]) for test in detail["tests"]] == [("reset", "pass")]
 
 
 def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -1406,13 +1407,6 @@ def prepare(
 ) -> PreparedConvergence:
     """Acquire and verify candidates without changing any managed image tag."""
     resolved_docker = docker or _docker_adapter()
-    current = plan(
-        ProjectImageScope(lifecycle_plan.project_root),
-        docker=resolved_docker,
-        artifact_policy=lifecycle_plan.acquisition_policy,
-    )
-    if current.input_snapshot != lifecycle_plan.input_snapshot:
-        raise ImageLifecycleError("image inputs or Bootstrap base changed before preparation")
     _discard_orphaned_candidates(resolved_docker, lifecycle_plan.project_root)
     resolved_builder = builder or _transaction_build_adapter(
         lifecycle_plan.project_root,
@@ -1597,22 +1591,6 @@ def validate(
             )
 
 
-def _restore_tag_snapshots(
-    snapshots: tuple[TagSnapshot, ...], docker: DockerPort
-) -> tuple[str, ...]:
-    failures = []
-    for snapshot in reversed(snapshots):
-        try:
-            if snapshot.image_id is None:
-                if docker.image_id(snapshot.reference) is not None:
-                    docker.remove_tag(snapshot.reference)
-            else:
-                docker.tag(snapshot.image_id, snapshot.reference)
-        except ImageLifecycleError as exc:
-            failures.append(f"{snapshot.reference}: {exc}")
-    return tuple(failures)
-
-
 def abort(
     prepared: PreparedConvergence,
     *,
@@ -1652,7 +1630,10 @@ def commit(
                 raise ImageLifecycleError(f"managed tag {image.reference!r} changed during commit")
             changed.append(image.reference)
     except BaseException as exc:
-        failures = _restore_tag_snapshots(prepared.prior_tags, resolved_docker)
+        failures = _restore_prior_tags(
+            [(snapshot.reference, snapshot.image_id) for snapshot in prepared.prior_tags],
+            resolved_docker,
+        )
         if failures:
             raise ImageLifecycleError(
                 "candidate adoption failed and prior tags could not be restored: "
@@ -1675,35 +1656,6 @@ def commit(
     return _cleanup_layout_result(
         prepared.plan.project_root, result, Intent.ENSURE, resolved_docker
     )
-
-
-def recover(
-    prepared: PreparedConvergence,
-    *,
-    docker: DockerPort | None = None,
-) -> LifecycleResult:
-    """Idempotently finish adoption of a durably recorded prepared convergence."""
-    return commit(prepared, docker=docker)
-
-
-def converge(
-    scope: ProjectImageScope,
-    *,
-    docker: DockerPort | None = None,
-    builder: TransactionBuildPort | None = None,
-    artifact_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY,
-    verbose: bool = False,
-) -> LifecycleResult:
-    """Convenience convergence for callers which do not need a commit point."""
-    resolved_docker = docker or _docker_adapter()
-    lifecycle_plan = plan(scope, docker=resolved_docker, artifact_policy=artifact_policy)
-    acquired = prepare(
-        lifecycle_plan,
-        docker=resolved_docker,
-        builder=builder,
-        verbose=verbose,
-    )
-    return commit(acquired, docker=resolved_docker)
 
 
 def _node_current(
@@ -1886,15 +1838,21 @@ def _retain_prior_tags(
     return backups
 
 
-def _restore_prior_tags(backups: list[tuple[str, str | None]], docker: DockerPort) -> list[str]:
+def _restore_prior_tags(priors: Sequence[tuple[str, str | None]], docker: DockerPort) -> list[str]:
+    """Restore tags in reverse order and return one message per failed reference.
+
+    Each pair is ``(reference, prior)`` where ``prior`` is the image ID or backup
+    tag the reference pointed at before the transaction, or ``None`` when it did
+    not exist and must be untagged again.
+    """
     failures = []
-    for reference, backup in reversed(backups):
+    for reference, prior in reversed(priors):
         try:
-            if backup is None:
+            if prior is None:
                 if docker.image_id(reference) is not None:
                     docker.remove_tag(reference)
             else:
-                docker.tag(backup, reference)
+                docker.tag(prior, reference)
         except ImageLifecycleError as exc:
             failures.append(f"{reference}: {exc}")
     return failures
