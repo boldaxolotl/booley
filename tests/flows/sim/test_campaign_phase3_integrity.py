@@ -593,10 +593,7 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.flow import _campaign_pre_sim_details
 
-    # The selection count is the maximum (4000). Name length only has to push the
-    # sidecar past 1 MiB: the manifest is decoded and every name validated
-    # character by character on each store call, so longer names only add runtime.
-    names = tuple(f"test{index:04d}" + "x" * 292 for index in range(4000))
+    names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
     manifest, _disclosures = _maximum_hook_selection_manifest(names)
     invocation = tmp_path / "reports/1"
