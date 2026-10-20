@@ -330,9 +330,6 @@ class _Endpoint:
             started=started,  # type: ignore[arg-type]
         )
 
-    def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
-        return outcome
-
     def _finalize_result(self, outcome: EndpointOutcome) -> None:
         self.events.append("finalize")
 
@@ -1366,7 +1363,8 @@ def _assert_partial_acceptance_policy(flow, result, tmp_path, campaign):
     assert not list((tmp_path / "logs").rglob("*.json"))
     assert {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")} == projections
     with context.publication_resources:
-        report_path = write_report(context, context._adapt_outcome(result))
+        context._finalize_result(result)
+        report_path = write_report(context, result)
     report = json.loads(report_path.read_text())
     assert report["cycle_counts"] == {
         str(campaign.target["selector"]): [
@@ -1438,7 +1436,7 @@ def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
     from booley.flows.endpoint_reporting import write_report
 
     with flow.context.publication_resources:
-        path = write_report(flow.context, flow.context._adapt_outcome(result))
+        path = write_report(flow.context, result)
     report = json.loads(path.read_text())
     expected = [{"test": None if unnamed else "smoke", "cycle_count": None}]
     assert report["cycle_counts"]["sim"] == expected

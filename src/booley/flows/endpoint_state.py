@@ -423,9 +423,6 @@ class EndpointState(ABC):
         ``state.save()`` runs.  Default no-op."""
         return
 
-    def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
-        return outcome
-
     def execute_prepared(self) -> ExecutionResult:
         """Run configured input through the same gates and coordinator as CLI."""
         prepared = endpoint_session.prepare_execution(self)

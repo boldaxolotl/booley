@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.mcp.base import read_source_dirs_from_toml
+from booley.flows.endpoint_diff import read_source_dirs_from_toml
 
 logger = logging.getLogger(__name__)
 

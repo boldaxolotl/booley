@@ -269,7 +269,7 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     ]
     flow = SimulateFlow()
     flow._args = SimRequest(target="one,two", report_dir=tmp_path / "large", work_dir=tmp_path)
-    result = flow.context._adapt_outcome(flow._campaign_endpoint_outcome(outcomes))
+    result = flow._campaign_endpoint_outcome(outcomes)
     with flow.context.publication_resources:
         path = write_report(flow.context, result)
     report = _read_report_json(path)

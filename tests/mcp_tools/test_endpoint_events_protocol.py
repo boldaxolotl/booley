@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from booley.flows import endpoint_events
-from booley.mcp.base import McpToolResult, _endpoint_end_event, _endpoint_start_event
+from booley.flows.endpoint_events import _endpoint_end_event, _endpoint_start_event
+from booley.mcp.base import McpToolResult
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 
 # ===========================================================================
@@ -133,7 +134,7 @@ class TestCriteriaUpdateEvent:
         state.criteria["lint_clean"] = CriterionEntry(mandatory=True)
         state.save()
 
-        from booley.mcp.base import _emit_criteria_update
+        from booley.flows.endpoint_events import _emit_criteria_update
 
         # _write_display_event lives in endpoint events; patch it at its home,
         # where _emit_criteria_update now resolves the name.
@@ -155,7 +156,7 @@ class TestCriteriaUpdateEvent:
         state.criteria["_blocked_reason"] = CriterionEntry(met=False)
         state.save()
 
-        from booley.mcp.base import _emit_criteria_update
+        from booley.flows.endpoint_events import _emit_criteria_update
 
         # _write_display_event lives in endpoint events; patch it at its home.
         with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
@@ -178,7 +179,7 @@ class TestCriteriaUpdateEvent:
         )
         state.save()
 
-        from booley.mcp.base import _emit_criteria_update
+        from booley.flows.endpoint_events import _emit_criteria_update
 
         with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
@@ -199,7 +200,7 @@ class TestCriteriaUpdateEvent:
             params={"target": "asic"},
         )
 
-        from booley.mcp.base import _emit_criteria_update
+        from booley.flows.endpoint_events import _emit_criteria_update
 
         with patch("booley.flows.endpoint_events._write_display_event") as mock_write:
             _emit_criteria_update(state)
@@ -216,7 +217,7 @@ class TestCriteriaUpdateEvent:
     def test_every_display_record_has_a_hard_byte_limit(self, tmp_path: Path, monkeypatch):
         runtime = tmp_path / ".runtime"
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
-        from booley.mcp.base import _write_display_event
+        from booley.flows.endpoint_events import _write_display_event
 
         events = (
             {
@@ -252,7 +253,7 @@ class TestCriteriaUpdateEvent:
             CriterionEntry,
             DevelopmentState,
         )
-        from booley.mcp.base import _emit_criteria_update
+        from booley.flows.endpoint_events import _emit_criteria_update
 
         state_path = tmp_path / "state.json"
         state = DevelopmentState()
