@@ -286,3 +286,18 @@ def test_simulation_status_uses_codec_execution_strength(executions, expected) -
     )
 
     assert simulation_status_from_observations(observations) == expected
+
+
+def test_store_rejects_manifest_and_result_republication(tmp_path):
+    from booley.flows.sim.campaign.codec import decode_simulation_result
+    from tests.flows.sim.test_campaign_phase3_adversarial import _completed
+
+    completed = _completed(tmp_path)
+    store = completed.store
+    result_path = store.work_item_directory(completed.item_id) / "result.json"
+    before = (store.manifest_path.read_bytes(), result_path.read_bytes())
+    with pytest.raises(FileExistsError):
+        store.publish_manifest(store.load_manifest())
+    with pytest.raises(FileExistsError):
+        store.publish_result(completed.item_id, decode_simulation_result(before[1]))
+    assert (store.manifest_path.read_bytes(), result_path.read_bytes()) == before

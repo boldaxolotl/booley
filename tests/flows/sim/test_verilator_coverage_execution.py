@@ -1044,6 +1044,9 @@ def _coverage_build_failure_request(tmp_path: Path):
     item = document["work_items"][0]
     item["kind"] = "coverage_aggregate"
     item["selection"] = {"kind": "named", "names": ["wrap"]}
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
+    item["test_runs"] = _selection_test_runs(("wrap",))
     document["required_suite"]["names"] = ["wrap"]
     document["required_suite"]["default_invocation"] = False
     document["required_suite"]["source_path"] = "tests.toml"
