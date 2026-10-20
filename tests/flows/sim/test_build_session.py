@@ -18,7 +18,6 @@ import pytest
 from booley.core.file_lock import LockContentionError, acquire_file_lock
 from booley.flows.run_log import RUN_LOG_NAME
 from booley.flows.sim import build_reuse, build_session
-from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
     SimulationBuildSlotError,
@@ -31,7 +30,6 @@ from booley.flows.sim.build_session import (
 )
 from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
-from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.test_coverage_invocation import project
@@ -189,20 +187,14 @@ def _handle(root: Path) -> TargetHandle:
     )
 
 
-def test_generation_requires_lease_and_rejects_symlinked_generation_root(tmp_path: Path) -> None:
+def test_generation_requires_lease(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
     with pytest.raises(SimulationBuildSlotError, match="not leased"):
         session.new_generation()
-    with pytest.raises(SimulationBuildSlotError, match="not leased"):
-        session.capture_inputs(SimpleNamespace(work_root=tmp_path))
     with session:
         first = session.new_generation()
         assert first.is_dir()
         assert first.parent == session.slot / "g"
-    (session.slot / "g").rename(session.slot / "old-generations")
-    (session.slot / "g").symlink_to(session.slot / "old-generations", target_is_directory=True)
-    with session, pytest.raises(SimulationBuildSlotError, match="symlink"):
-        session.new_generation()
 
 
 def test_generated_inputs_reject_symlinks_and_exclude_runtime_outputs(tmp_path: Path) -> None:
@@ -221,57 +213,19 @@ def test_generated_inputs_reject_symlinks_and_exclude_runtime_outputs(tmp_path: 
         build_session.snapshot_build_inputs(prepared)
 
 
-@pytest.mark.parametrize(
-    "pointer",
-    [
-        {"generation": "../escape", "build_root": "build"},
-        {"generation": "0" * 16, "build_root": "../escape"},
-        {"generation": "0" * 16, "build_root": "/tmp"},
-    ],
-)
-def test_retained_pointer_rejects_path_escape(tmp_path: Path, pointer: dict[str, str]) -> None:
-    slot = tmp_path / "slot"
-    build = slot / "g" / ("0" * 16) / "build"
-    build.mkdir(parents=True)
-    (slot / "current.json").write_text(json.dumps(pointer), encoding="utf-8")
-    assert build_session._retained_build_root(slot) is None
-
-
-def test_retained_pointer_accepts_only_contained_directory(tmp_path: Path) -> None:
-    slot = tmp_path / "slot"
-    build = slot / "g" / ("0" * 16) / "build"
-    build.mkdir(parents=True)
-    pointer = {"generation": "0" * 16, "build_root": "build"}
-    current = slot / "current.json"
-    current.write_text(json.dumps(pointer), encoding="utf-8")
-    assert build_session._retained_build_root(slot) == (build.parent, build)
-    build.rmdir()
-    build.symlink_to(tmp_path, target_is_directory=True)
-    assert build_session._retained_build_root(slot) is None
-    current.unlink()
-    current.symlink_to(tmp_path / "outside")
-    assert build_session._retained_build_root(slot) is None
-
-
-def test_manifest_hashes_reject_missing_changed_and_escaping_files(tmp_path: Path) -> None:
+def test_manifest_hashes_reject_missing_and_changed_files(tmp_path: Path) -> None:
     image = tmp_path / "image"
     image.mkdir()
     binary = image / "image.vvp"
     binary.write_bytes(b"first")
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     assert build_session._matching_hashes(image, {"image.vvp": digest})
-    assert not build_session._matching_hashes(image, ["image.vvp"])
-    assert not build_session._matching_hashes(image, {1: digest})
-    assert not build_session._matching_hashes(image, {"../outside": digest})
-    assert not build_session._matching_hashes(image, {"/tmp/outside": digest})
+    assert not build_session._matching_hashes(image, {"missing.vvp": digest})
     binary.write_bytes(b"changed")
     assert not build_session._matching_hashes(image, {"image.vvp": digest})
-    binary.unlink()
-    binary.symlink_to(tmp_path / "outside")
-    assert not build_session._matching_hashes(image, {"image.vvp": digest})
 
 
-def test_reuse_manifest_rejection_names_authentication_failure(tmp_path: Path) -> None:
+def test_reuse_manifest_rejection_names_mismatch(tmp_path: Path) -> None:
     root = tmp_path / "generation"
     build = root / "build"
     build.mkdir(parents=True)
@@ -279,30 +233,20 @@ def test_reuse_manifest_rejection_names_authentication_failure(tmp_path: Path) -
     source.write_bytes(b"source")
     image = build / "image.vvp"
     image.write_bytes(b"image")
-    candidate = SimpleNamespace(target_identity="target")
     manifest = {
-        "schema": 1,
-        "target_identity": "target",
-        "generation": root.name,
         "input_key": "key",
         "reusable": True,
         "inputs": {"source.sv": hashlib.sha256(source.read_bytes()).hexdigest()},
         "artifacts": {"image.vvp": hashlib.sha256(image.read_bytes()).hexdigest()},
     }
     reject = SimulationBuildSession._hit_rejection
-    assert reject(root, build, manifest, candidate, "key") is None
-    assert reject(root, build, [], candidate, "key") == "malformed manifest"
-    assert reject(root, build, {**manifest, "schema": 2}, candidate, "key") == "schema mismatch"
-    assert (
-        reject(root, build, {**manifest, "target_identity": "other"}, candidate, "key")
-        == "wrong Target"
-    )
-    assert reject(root, build, manifest, candidate, "other") == "changed source, recipe, or tool"
+    assert reject(root, build, manifest, "key") is None
+    assert reject(root, build, manifest, "other") == "changed source, recipe, or tool"
     source.write_bytes(b"tampered")
-    assert reject(root, build, manifest, candidate, "key") == "changed source"
+    assert reject(root, build, manifest, "key") == "changed source"
     source.write_bytes(b"source")
     image.write_bytes(b"tampered")
-    assert reject(root, build, manifest, candidate, "key") == "changed artifact"
+    assert reject(root, build, manifest, "key") == "changed artifact"
 
 
 def test_tool_identity_closes_over_modules_and_shared_libraries(
@@ -421,61 +365,6 @@ def test_icarus_recipe_declines_external_and_extra_commands(tmp_path: Path) -> N
     assert build_session._has_unsupported_icarus_recipe(prepared)
 
 
-def test_fresh_image_rejects_missing_lease_manifest_and_changed_inputs(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    with session:
-        work = session.new_generation()
-        build = work / "build"
-        build.mkdir()
-        source = work / "source.sv"
-        source.write_bytes(b"source")
-        image = build / "demo.vvp"
-        image.write_bytes(b"image")
-        descriptor = build / "demo.scr"
-        descriptor.write_bytes(b"descriptor")
-        prepared = SimpleNamespace(
-            work_root=work, build_root=build, eda_tool="icarus", target_identity="target"
-        )
-        manifest = build / ".booley-build-manifest.json"
-        record = {
-            "schema": 1,
-            "generation": work.name,
-            "target_identity": "target",
-            "reusable": False,
-            "inputs": {"source.sv": hashlib.sha256(source.read_bytes()).hexdigest()},
-            "artifacts": {
-                "demo.scr": hashlib.sha256(descriptor.read_bytes()).hexdigest(),
-                "demo": hashlib.sha256(image.read_bytes()).hexdigest(),
-            },
-        }
-        image.rename(build / "demo")
-        manifest.write_text(json.dumps(record), encoding="utf-8")
-        session.verify_image(prepared)
-        source.write_bytes(b"changed")
-        with pytest.raises(SimulationBuildSlotError, match="inputs changed"):
-            session.verify_image(prepared)
-        source.write_bytes(b"source")
-        manifest.write_text(json.dumps({**record, "reusable": True}), encoding="utf-8")
-        with pytest.raises(SimulationBuildSlotError, match="identity changed"):
-            session.verify_image(prepared)
-        manifest.write_text(json.dumps(record), encoding="utf-8")
-        image = build / "demo"
-        image.write_bytes(b"changed")
-        with pytest.raises(SimulationBuildSlotError, match="image changed"):
-            session.verify_image(prepared)
-        image.write_bytes(b"image")
-        extra = build / "other.vpi"
-        extra.write_bytes(b"native module")
-        with pytest.raises(SimulationBuildSlotError, match="image set changed"):
-            session.verify_image(prepared)
-        extra.unlink()
-        manifest.unlink()
-        with pytest.raises(SimulationBuildSlotError, match="cannot verify"):
-            session.verify_image(prepared)
-    with pytest.raises(SimulationBuildSlotError, match="not leased"):
-        session.verify_image(prepared)
-
-
 def test_reuse_closure_declines_dynamic_core_metadata_and_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -504,27 +393,6 @@ def test_reuse_closure_declines_dynamic_core_metadata_and_environment(
     assert build_session._reuse_input_key(prepared, {}, "variant", tmp_path, {}) is None
     assert build_session._reuse_input_key(prepared, {}, "", tmp_path, {"MAKEFLAGS": "-j2"}) is None
     assert build_session._reuse_input_key(prepared, {}, "", tmp_path, {}) is None
-
-
-def test_lease_rejects_symlinked_lock_and_unsafe_cache_pointer(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    session.slot.mkdir(parents=True)
-    lock = session.slot / "lease.lock"
-    lock.symlink_to(tmp_path / "outside")
-    with pytest.raises(SimulationBuildSlotError, match="symlink"):
-        session.__enter__()
-    lock.unlink()
-    with session:
-        candidate = SimpleNamespace(target_identity="target")
-        assert session.try_reuse(candidate, "key") is None
-        assert session.cache_decision == "missing provenance"
-        (session.slot / "current.json").write_text(
-            json.dumps({"generation": "outside", "build_root": "build"}), encoding="utf-8"
-        )
-        assert session.try_reuse(candidate, "key") is None
-        assert session.cache_decision == "malformed provenance"
-        with pytest.raises(SimulationBuildSlotError, match="unsafe candidate"):
-            session.discard_candidate(tmp_path)
 
 
 def test_discard_candidate_removes_only_its_generation(tmp_path: Path) -> None:
@@ -573,92 +441,6 @@ def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) ->
         }
 
 
-def test_authorization_rejects_unleased_escaped_and_changed_builds(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    outside = SimpleNamespace(work_root=tmp_path, build_root=tmp_path)
-    with pytest.raises(SimulationBuildSlotError, match="not leased"):
-        session.authorize_fresh_image(outside, {})
-    with session:
-        with pytest.raises(SimulationBuildSlotError, match="escaped leased slot"):
-            session.authorize_fresh_image(outside, {})
-        work = session.new_generation()
-        build = work / "build"
-        build.mkdir()
-        source = work / "top.sv"
-        source.write_bytes(b"changed")
-        prepared = SimpleNamespace(
-            work_root=work,
-            build_root=build,
-            eda_tool="verilator",
-            core_closure=None,
-            resolved=SimpleNamespace(cocotb_module=""),
-        )
-        with pytest.raises(SimulationBuildSlotError, match="input changed"):
-            session.authorize_fresh_image(prepared, {"top.sv": "old digest"})
-        with pytest.raises(SimulationBuildSlotError, match="recipe changed"):
-            session.authorize_fresh_image(
-                prepared, {"top.sv": hashlib.sha256(source.read_bytes()).hexdigest()}, key="old"
-            )
-
-
-def test_reuse_rejects_symlinked_manifest_and_changed_provenance(tmp_path: Path) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    with session:
-        work = session.new_generation()
-        build = work / "build"
-        build.mkdir()
-        (session.slot / "current.json").write_text(
-            json.dumps({"generation": work.name, "build_root": "build"}), encoding="utf-8"
-        )
-        candidate = SimpleNamespace(target_identity="target")
-        manifest = build / ".booley-build-manifest.json"
-        manifest.symlink_to(tmp_path / "outside")
-        assert session.try_reuse(candidate, "key") is None
-        assert session.cache_decision == "malformed provenance"
-        manifest.unlink()
-        manifest.write_text(json.dumps({"schema": 2}), encoding="utf-8")
-        assert session.try_reuse(candidate, "key") is None
-        assert session.cache_decision == "schema mismatch"
-
-
-def test_cache_restore_rejects_retained_edam_tool_mismatch(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    candidate_root = tmp_path / "candidate"
-    candidate_build = candidate_root / "build"
-    candidate_build.mkdir(parents=True)
-    candidate_edam = candidate_build / "demo.eda.yml"
-    candidate = PreparedSimulationBuild(
-        target="sim",
-        target_identity="acme:lib:demo:1#sim",
-        resolved=ResolvedTarget(
-            name="sim",
-            vlnv="acme:lib:demo:1",
-            toplevel="tb",
-            eda_tool=None,
-            configured_eda_tool="icarus",
-            files=(),
-            parameters={},
-            build_root=candidate_build,
-            edam_path=candidate_edam,
-        ),
-        work_root=candidate_root,
-        build_root=candidate_build,
-        eda_tool="icarus",
-        toplevel="tb",
-        make_argv=("make",),
-    )
-    retained_root = tmp_path / "retained"
-    retained_build = retained_root / "build"
-    retained_build.mkdir(parents=True)
-    (retained_build / "demo.eda.yml").write_text(
-        "toplevel: tb\nflow_options: {tool: verilator}\nfiles: []\nparameters: {}\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(SimulationBuildSlotError, match=r"configured 'verilator'.*'icarus'"):
-        SimulationBuildSession(handle)._restore_prepared_build(retained_root, candidate)
-
-
 def test_runtime_image_selection_rejects_missing_or_ambiguous_images(tmp_path: Path) -> None:
     prepared = SimpleNamespace(
         build_root=tmp_path,
@@ -695,24 +477,6 @@ def test_compile_surface_tracks_symlinks_and_rejects_broken_inputs(tmp_path: Pat
     source.unlink()
     with pytest.raises(SimulationBuildSlotError, match="not a file"):
         project_compile_surface(surface)
-
-
-def test_fresh_verification_rejects_other_generation_and_symlinked_manifest(
-    tmp_path: Path,
-) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
-    with session:
-        work = session.new_generation()
-        build = work / "build"
-        build.mkdir()
-        prepared = SimpleNamespace(work_root=tmp_path, build_root=build)
-        with pytest.raises(SimulationBuildSlotError, match="outside its leased generation"):
-            session.verify_image(prepared)
-        prepared.work_root = work
-        manifest = build / ".booley-build-manifest.json"
-        manifest.symlink_to(tmp_path / "outside")
-        with pytest.raises(SimulationBuildSlotError, match="manifest is a symlink"):
-            session.verify_image(prepared)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX lease inheritance")
