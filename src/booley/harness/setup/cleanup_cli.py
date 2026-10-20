@@ -7,11 +7,12 @@ import json
 import sys
 from pathlib import Path
 
+from booley.flows.cli_arguments import add_project_root_alias
 from booley.harness.setup import cleanup
 
 
-def add_subparser(sub: argparse._SubParsersAction) -> None:
-    """Register ``booley cleanup`` and its preview/apply operations."""
+def add_subparser(sub: argparse._SubParsersAction, *, selection: bool = False) -> None:
+    """Register ``booley cleanup``; the root command makes its alias a Project selector."""
     parser = sub.add_parser(
         "cleanup",
         help="Preview or apply manifest-owned Project Setup cleanup",
@@ -20,7 +21,8 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
             "manifest are inventory-only."
         ),
     )
-    parser.add_argument("--project-root", default="", help=argparse.SUPPRESS)
+    dest = "_cli_project_cleanup" if selection else "project_root"
+    add_project_root_alias(parser, dest, selection=selection)
     commands = parser.add_subparsers(dest="cleanup_command", required=True)
     _add_prepare(commands)
     _add_record(commands)

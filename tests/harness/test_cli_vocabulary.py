@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -14,14 +13,15 @@ from booley.flows.cli_selection import (
     INVOCATION_ORIGIN_ENV,
     Duration,
     extract_project_tail,
-    human_parser,
     invocation_context,
     normalize_endpoint_args,
     parse_duration,
     resolve_selection,
 )
+from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.flows.lint.flow import LintFlow
 from booley.harness import booley as cli
+from booley.mcp.base import McpTool
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
 from booley.specialists.reviewer import ReviewerSpecialist
@@ -171,7 +171,7 @@ def test_detached_endpoint_inventory():
         if info.kind == "flow":
             parser = build_parser(endpoint, human=True)
         else:
-            parser = human_parser(endpoint._parser, durations=True)
+            parser = human_endpoint_parser(endpoint, durations=True)
         assert_controls(parser, timeout=True)
 
 
@@ -279,7 +279,7 @@ def test_builtin_tail_selection_before_discovery(projects, tail):
 
 
 def test_extractor_preserves_values_and_boundaries():
-    parser = human_parser(ReviewerSpecialist()._parser, durations=True)
+    parser = human_endpoint_parser(ReviewerSpecialist(), durations=True)
     tails = [
         ["--instruction", "--project", "--scope", "rtl"],
         ["--instruction", "text --project b", "--", "--project", "../b"],
@@ -349,21 +349,32 @@ def test_scoped_selection_restores_and_has_no_synthetic_alias(projects, capsys):
     assert "deprecated" not in capsys.readouterr().err
 
 
+class Plugin(McpTool):
+    name = "example"
+    description = "Plugin-owned controls"
+
+    def _add_args(self, parser):
+        parser.add_argument("--project", choices=["short", "long"])
+        parser.add_argument("--timeout", choices=["short", "long"])
+
+    def _run(self):
+        raise AssertionError("not executing")
+
+
 def test_plugin_controls(projects):
-    parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("--work-dir", type=Path, default=Path.cwd())
-    parser.add_argument("--project", choices=["short", "long"])
-    parser.add_argument("--timeout", choices=["short", "long"])
-    projection = human_parser(parser, durations=False)
+    endpoint = Plugin()
+    projection = human_endpoint_parser(endpoint)
     args = projection.parse_args(["--project", "short", "--timeout", "long"])
     assert args.project == "short" and args.timeout == "long"
-    assert "-C" not in parser._option_string_actions
+    assert "-C" not in projection._option_string_actions
+    assert "-C" not in endpoint._parser._option_string_actions
     normalize_endpoint_args(args)
     with invocation_context(projects[1]):
-        projected = human_parser(parser, durations=False)
+        projected = human_endpoint_parser(endpoint)
         with pytest.raises(SystemExit):
             projected.parse_args(["--work-dir", str(projects[0])])
         assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
+    assert human_endpoint_parser(endpoint).parse_args([]).work_dir == projects[0]
 
 
 def dispatch(argv, monkeypatch):
@@ -453,32 +464,26 @@ def test_external_data_selection_and_cache_switch(projects, monkeypatch):
 
 def test_shared_plugin_outer_selection_and_override_refusal(projects, capsys):
     from booley.flows.endpoint_context import EndpointContext
-    from booley.mcp.base import McpTool
 
-    class Common(McpTool):
-        name = "example"
-        description = "Example"
+    endpoint = Plugin()
+    for selected, expected in ((projects[1], projects[1]), (None, projects[0])):
+        with invocation_context(selected):
+            endpoint.parse_args(["--project", "short"])
+        assert endpoint.args.work_dir == expected
+        assert endpoint.args.project == "short"
+    reviewer = ReviewerSpecialist()
+    for argv, expected in ((["-C", str(projects[1])], projects[1]), ([], projects[0])):
+        assert reviewer.parse_args([*argv, "--timeout", "5s"]).work_dir == expected
+        assert reviewer.args.timeout_ms == 5000
 
-        def _add_args(self, parser):
-            parser.add_argument("--project", choices=["short", "long"])
-
-        def _run(self):
-            raise AssertionError("not executing")
-
-    endpoint = Common()
-    with invocation_context(projects[1]):
-        endpoint.parse_args(["--project", "short"])
-    assert endpoint.args.work_dir == projects[1]
-    assert endpoint.args.project == "short"
-
-    class Override(Common):
+    class Override(Plugin):
         def main(self, argv=None):
             pytest.fail("override executed")
 
     args = argparse.Namespace(_cli_endpoint_project=projects[1])
     assert cli._invoke_endpoint(Override(), [], args) == 2
     assert "overrides the shared CLI" in capsys.readouterr().err
-    assert Common.main is EndpointContext.main
+    assert Plugin.main is EndpointContext.main
 
 
 def test_complete_specialist_schemas_are_compatible():
@@ -492,7 +497,7 @@ def test_complete_specialist_schemas_are_compatible():
             continue
         endpoint = cli._load_mcp_tool_class(info)()
         assert flow_schema(endpoint) == expected[info.name]
-        human_parser(endpoint._parser, durations=True)
+        human_endpoint_parser(endpoint, durations=True)
         assert flow_schema(endpoint) == expected[info.name]
 
 
@@ -563,14 +568,3 @@ def test_canonical_synth_help_uses_initialized_project(
     positions = [output.index(title) for title in titles]
     assert positions == sorted(positions)
     assert list(projects[0].joinpath(".booley").iterdir()) == []
-
-
-def test_builtin_parser_constructs_without_transport_projection():
-    flows = [
-        cli._load_mcp_tool_class(info)() for info in discover_mcp_tools() if info.kind == "flow"
-    ]
-    assert {flow.name for flow in flows} == {"sim", "lint", "synth", "fpga"}
-    with patch("booley.flows.cli_selection.human_parser", wraps=human_parser) as spy:
-        for flow in flows:
-            build_parser(flow, human=True)
-    assert spy.call_count == 0, "built-in construction used transport projection"

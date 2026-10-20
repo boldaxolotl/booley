@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import os
 import re
 import sys
@@ -219,67 +218,10 @@ def normalize_endpoint_args(args: argparse.Namespace) -> None:
         vars(args).pop(key, None)
 
 
-def human_parser(
-    transport_parser: argparse.ArgumentParser, *, durations: bool
-) -> argparse.ArgumentParser:
-    """Project a parser without changing schema hooks or eager extension hooks."""
-    parser = copy.deepcopy(transport_parser)
-    occupied = parser._option_string_actions
-    old = occupied.get("--work-dir")
-    if old is None or old.dest != "work_dir":
-        return parser
-    _replace_action(parser, old, EndpointProjectAction)
-    if "--project" not in occupied and "-C" not in occupied:
-        from booley.flows.cli_arguments import add_canonical_project_args
-
-        add_canonical_project_args(parser)
-    if durations and "--timeout" not in occupied and "--timeout-ms" in occupied:
-        old = occupied["--timeout-ms"]
-        scope = old.help.replace(" in positive milliseconds", "").replace(" in milliseconds", "")
-        _replace_action(parser, old, TimeoutAction)
-        parser.add_argument(
-            "--timeout",
-            dest="timeout_ms",
-            type=parse_duration,
-            action=TimeoutAction,
-            default=argparse.SUPPRESS,
-            metavar="DURATION",
-            help=f"{scope.rstrip('.')}. Use seconds, 30m, or 1h30m.",
-        )
-    apply_project_selection(parser)
-    return parser
-
-
 def apply_project_selection(parser: argparse.ArgumentParser) -> None:
     """Apply the outer invocation's explicit selection to a human parser."""
     if _selection.get() is not None:
         parser.set_defaults(work_dir=_selection.get(), _cli_seen_project=True)
-
-
-def _replace_action(parser, old, action_type) -> None:
-    """Replace a copied transport control, keeping defaults and conversion."""
-    replacement = action_type(
-        option_strings=old.option_strings,
-        dest=old.dest,
-        nargs=old.nargs,
-        const=old.const,
-        default=old.default,
-        type=old.type,
-        choices=old.choices,
-        required=old.required,
-        help=argparse.SUPPRESS,
-        metavar=old.metavar,
-    )
-    index = parser._actions.index(old)
-    parser._actions[index] = replacement
-    for group in parser._action_groups:
-        if old in group._group_actions:
-            group._group_actions[group._group_actions.index(old)] = replacement
-    for group in parser._mutually_exclusive_groups:
-        if old in group._group_actions:
-            group._group_actions[group._group_actions.index(old)] = replacement
-    for option in old.option_strings:
-        parser._option_string_actions[option] = replacement
 
 
 def extract_project_tail(

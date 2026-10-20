@@ -284,20 +284,10 @@ def _version_string() -> str:
 
 def _install_project_options(parser: argparse.ArgumentParser) -> None:
     """Install shared controls using the command ownership catalog."""
-    from booley.flows.cli_selection import SelectionAction, add_project_option
+    from booley.flows.cli_selection import add_project_option
 
     def install(node, route):
         dest = "_cli_project_" + "_".join(route or ("root",))
-        if route:
-            for action in node._actions:
-                if "--project-root" in action.option_strings:
-                    # Recreate the alias, rather than sharing mutable parent actions.
-                    from booley.flows.cli_selection import _replace_action
-
-                    _replace_action(node, action, SelectionAction)
-                    replacement = node._option_string_actions["--project-root"]
-                    replacement.dest = dest
-                    replacement.default = argparse.SUPPRESS
         add_project_option(node, dest, cheat=route == ("cheat",))
         if route and route[0] == "feedback":
             for option in ("-C", "--project"):
@@ -352,7 +342,8 @@ def _extract_endpoint_selection(parser, args) -> None:
         return
     from booley.flows.base import BuiltinFlow
     from booley.flows.builtin_cli import build_parser
-    from booley.flows.cli_selection import extract_project_tail, human_parser
+    from booley.flows.cli_selection import extract_project_tail
+    from booley.flows.endpoint_cli import human_endpoint_parser
 
     endpoint_cls = _load_mcp_tool_class(info)
     if endpoint_cls is None:
@@ -361,7 +352,7 @@ def _extract_endpoint_selection(parser, args) -> None:
     endpoint_parser = (
         build_parser(endpoint, human=True)
         if isinstance(endpoint, BuiltinFlow)
-        else human_parser(endpoint._parser, durations=True)
+        else human_endpoint_parser(endpoint, durations=True)
     )
     args.endpoint_args, selections = extract_project_tail(
         endpoint_parser, list(args.endpoint_args)
@@ -449,20 +440,12 @@ def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
         action.help = f"{locations[action.dest].label} {action.help}"
 
 
-def _project_root_parent() -> argparse.ArgumentParser:
-    """A reusable ``--project-root`` option for subcommands that accept one.
+def _project_root_parent(dest: str) -> argparse.ArgumentParser:
+    """A reusable ``--project-root``/``-p`` alias owned by one subcommand route."""
+    from booley.flows.cli_arguments import add_project_root_alias
 
-    ``default=SUPPRESS`` lets parent parsers and subparsers share the option
-    without a subparser default overwriting a value already parsed.
-    """
     parent = argparse.ArgumentParser(add_help=False)
-    parent.add_argument(
-        "--project-root",
-        "-p",
-        type=str,
-        default=argparse.SUPPRESS,
-        help="Path to the RTL Project Root (default: discovered from cwd)",
-    )
+    add_project_root_alias(parent, dest, short=True)
     return parent
 
 
@@ -520,7 +503,7 @@ def _add_doctor_subparser(sub) -> None:
     doctor_p = sub.add_parser(
         "doctor",
         help="Run setup and environment health checks [may invoke provider probe]",
-        parents=[_project_root_parent()],
+        parents=[_project_root_parent("_cli_project_doctor")],
         description="Check setup and environment health. Deep checks may invoke a Specialist provider authorization and memory probe unless skipped.",
     )
     output = doctor_p.add_mutually_exclusive_group()
@@ -709,7 +692,9 @@ def _add_specialist_subparser(sub) -> None:
 
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
-    root_opt = _project_root_parent()
+    from booley.flows.cli_arguments import add_project_root_alias
+
+    root_opt = _project_root_parent("_cli_project_session_down")
     session_p = sub.add_parser(
         "session",
         help="Start/enter/stop the Sandbox container without VS Code",
@@ -743,7 +728,7 @@ def _add_session_subparser(sub) -> None:
         help="Validate the host-issued Sandbox specification",
     )
     prepare_p = session_sub.add_parser("prepare")
-    prepare_p.add_argument("--project-root", help=argparse.SUPPRESS)
+    add_project_root_alias(prepare_p, "_cli_project_session_prepare")
     session_sub.add_parser(
         "refresh",
         help="Rebuild the configured image from current Booley sources and recreate the session",
@@ -796,7 +781,7 @@ def _add_utility_subparsers(sub) -> None:
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
-    cleanup_cli.add_subparser(sub)
+    cleanup_cli.add_subparser(sub, selection=True)
     project_inventory_cli.add_subparser(sub)
     upgrade_cli.add_subparser(sub)
     _add_session_subparser(sub)
