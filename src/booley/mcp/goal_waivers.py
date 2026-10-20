@@ -256,7 +256,10 @@ class GoalWaiverService:
             decision.at,
             f"goal:{proposal.record_id}/proposal:{proposal.id}",
         )
-        config = CoverageWaiverConfig(proposal.waiver.anchor, proposal.waiver.directory)
+        config = CoverageWaiverConfig(
+            cast(Literal["rtl_repository", "project_data_repository"], proposal.waiver.anchor),
+            proposal.waiver.directory,
+        )
         effects = self._promotion_effects(evidence, stamps, proposal)
         after_bytes = {
             Path(config.directory)
