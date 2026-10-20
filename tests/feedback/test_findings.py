@@ -239,7 +239,6 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
     import argparse
 
     from booley.feedback import cli, findings, materialize
-    from booley.feedback.render import Environment
 
     findings._LOCK_TIMEOUT_S = 60
     original = findings.read_log
@@ -282,9 +281,7 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
         materialize._rewrite_attachments_only = _publication_barrier(
             connection, materialize._rewrite_attachments_only
         )
-        materialize.materialize_attachments(
-            directory, [directory / "capture.log"], env=Environment()
-        )
+        materialize.materialize_attachments(directory, [directory / "capture.log"])
     connection.send("done")
 
 

@@ -391,7 +391,7 @@ def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monk
     assert run("triage", "F-1", "--bucket", "booley") == 0
     assert _log(project).entries[0].bucket == "booley"
     assert_clean(state)
-    assert materialize_attachments(state, [source], env=environment) == (source,)
+    assert materialize_attachments(state, [source]) == (source,)
     assert list((state / "setup-evidence/attachments").rglob("*.txt"))
     assert list((state / "setup-evidence/attachments").rglob("*.txt.json"))
     assert_clean(state)
