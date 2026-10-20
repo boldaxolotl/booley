@@ -59,6 +59,8 @@ def literal_document(access: str, *, configured: str = "run") -> dict:
         "kind": "literal",
         "placeholders": [],
     }
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
     name = "alpha"
     suite_raw = f"[test.{name}]\n".encode()
     document["required_suite"] = {
@@ -76,6 +78,7 @@ def literal_document(access: str, *, configured: str = "run") -> dict:
         "revision": "abc123",
         "target": document["target"],
         "selection": {"kind": "named", "names": [name]},
+        "test_runs": _selection_test_runs((name,)),
         "arguments": [name],
         "build_variant_id": variant["build_variant_id"],
         "run_directory": {
