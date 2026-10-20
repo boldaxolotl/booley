@@ -30,7 +30,7 @@ def test_build_result_golden_discriminators(raw: bytes) -> None:
     assert encode_bundle_build_result(value) == raw
 
 
-def _simulation_result(state: str, *, schema: int = 2) -> bytes:
+def _legacy_simulation_result(state: str, *, schema: int = 2) -> bytes:
     blocked = state == "blocked_by_build"
     execution = (
         state
@@ -66,17 +66,17 @@ def _simulation_result(state: str, *, schema: int = 2) -> bytes:
     "state", ["completed", "timeout", "crash", "aborted", "setup_error", "blocked_by_build"]
 )
 def test_simulation_result_golden_discriminators(state: str) -> None:
-    raw = _simulation_result(state)
+    raw = _legacy_simulation_result(state)
     value = decode_simulation_result(raw)
     assert value.canonical_bytes() == raw
     assert encode_simulation_result(value) == raw
 
 
 def test_simulation_result_v1_is_migrated_to_v2() -> None:
-    legacy = _simulation_result("completed", schema=1)
+    legacy = _legacy_simulation_result("completed", schema=1)
     value = decode_simulation_result(legacy)
     assert value.document["$schema"] == "booley.simulation-result/v2"
-    assert value.canonical_bytes() == _simulation_result("completed")
+    assert value.canonical_bytes() == _legacy_simulation_result("completed")
 
 
 @given(
@@ -84,7 +84,7 @@ def test_simulation_result_v1_is_migrated_to_v2() -> None:
     st.sampled_from(["build", "simulation"]),
 )
 def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> None:
-    raw = _BUILD_READY if kind == "build" else _simulation_result("completed")
+    raw = _BUILD_READY if kind == "build" else _legacy_simulation_result("completed")
     document = json.loads(raw)
     decoder = decode_build_result if kind == "build" else decode_simulation_result
     reference = document["build_attempt" if kind == "build" else "build_result"]
@@ -121,14 +121,14 @@ def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> N
 
 @pytest.mark.parametrize("field", ["test", "detail"])
 def test_simulation_result_rejects_observation_resource_overflow(field: str) -> None:
-    document = json.loads(_simulation_result("completed"))
+    document = json.loads(_legacy_simulation_result("completed"))
     document["observations"][0][field] = "x" * (513 if field == "test" else 2049)
     with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
         decode_simulation_result(canonical_json_bytes(document))
 
 
 def test_nested_evidence_reference_rejects_unknown_fields() -> None:
-    document = json.loads(_simulation_result("completed"))
+    document = json.loads(_legacy_simulation_result("completed"))
     document["executable_snapshot"]["manifest"]["unexpected"] = True
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         decode_simulation_result(canonical_json_bytes(document))
