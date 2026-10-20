@@ -14,6 +14,7 @@ from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
+from tests.flows.report_headline import assert_paired_headline
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
 
@@ -539,6 +540,36 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     assert "Traceback" not in output.out + output.err
 
 
+def _headline_state(runtime, monkeypatch, criteria, **options):
+    """Persist ticket Criteria for the endpoint under test; return the state path."""
+    from booley.criteria.state import DevelopmentState
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria(criteria, **options)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    return path
+
+
+def _display_events(monkeypatch):
+    """Capture every event the endpoint emits; return the live list."""
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    return events
+
+
+def _assert_headline(result, report_dir, name, expected, events=None):
+    """Outcome, persisted report, MCP projection and completion share one headline."""
+    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = assert_paired_headline(report_dir, name, expected)
+    if events is not None:
+        end = next(event for event in events if event["type"] == "endpoint_end")
+        assert (end.get("criterion_key", ""), end.get("criterion_met")) == expected
+    return report
+
+
 @pytest.mark.parametrize(
     "flow_type,family",
     [
@@ -553,10 +584,7 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
 def test_partial_evaluation_final_report_and_completion(
     external_acceptance_owner, flow_type, family, target, met, runtime, monkeypatch
 ):
-    from booley.flows import endpoint_reporting
-
-    events = []
-    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
+    events = _display_events(monkeypatch)
     flow = flow_type()
 
     def run():
@@ -565,14 +593,10 @@ def test_partial_evaluation_final_report_and_completion(
 
     monkeypatch.setattr(flow, "_run", run)
     result = flow.execute(flow.request_type(target=target, work_dir=runtime))
-    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
     expected = (f"{family}_first", met) if target == "first" else ("", None)
-    assert (report["criterion_key"], report["criterion_met"]) == expected
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    report = _assert_headline(result, runtime / "flow-reports", flow.name, expected, events)
     assert report["passed"] is False
     assert report["exit_code"] == 2
-    end = events[-1]
-    assert (end.get("criterion_key", ""), end.get("criterion_met")) == expected
     assert flow.state.criteria[f"{family}_first"].met is met
 
 
@@ -589,11 +613,15 @@ def test_reused_endpoint_resets_evaluation_before_early_gate(
 
     monkeypatch.setattr(flow, "_run", run)
     request = flow.request_type(target="first", work_dir=runtime)
-    assert flow.execute(request).outcome.criterion_met is True
+    first = flow.execute(request)
+    _assert_headline(first, runtime / "flow-reports", "lint", ("lint_clean_first", True))
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: EndpointOutcome(exit_code=2))
     result = flow.execute(request)
     assert result.outcome.criterion_key == ""
     assert result.outcome.criterion_met is None
+    # The early gate publishes nothing: run 1 stays the only persisted and MCP report.
+    assert not (runtime / "flow-reports/lint/2").exists()
+    assert_paired_headline(runtime / "flow-reports", "lint", ("lint_clean_first", True))
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -603,7 +631,6 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
     from contextlib import nullcontext
     from types import SimpleNamespace
 
-    from booley.criteria.state import DevelopmentState
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.runtime.endpoint_execution import EndpointOutcome
     from booley.targets.catalog import TargetCatalog
@@ -614,11 +641,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
     candidate, baseline = TargetCatalog.build(runtime).select_many(
         "candidate,baseline", for_flow="sim"
     )
-    state_path = runtime / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.init_criteria({"sim_pass_candidate": True}, strict=True)
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    _headline_state(runtime, monkeypatch, {"sim_pass_candidate": True}, strict=True)
     manifest = SimpleNamespace(
         document={
             "target": {"vlnv": "acme:lib:dut:1", "name": "candidate", "selector": "candidate"},
@@ -649,9 +672,8 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
 
     monkeypatch.setattr(flow, "run_prepared_simulation", run)
     result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
-    report = json.loads((runtime / "flow-reports/sim.json").read_text())
     assert result.exit_code == 0
-    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_candidate", True)
+    _assert_headline(result, runtime / "flow-reports", "sim", ("sim_pass_candidate", True))
 
 
 @pytest.mark.parametrize(
@@ -660,18 +682,15 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
 def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
     external_acceptance_owner, flow_type, family, runtime, monkeypatch
 ):
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    state_path = runtime / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.init_criteria(
+    _headline_state(
+        runtime,
+        monkeypatch,
         {f"{family}_first": True, f"{family}_second": True},
         flow_key_aliases={f"{family}_demo": [f"{family}_first", f"{family}_second"]},
         strict=True,
     )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     flow = flow_type()
 
     def run():
@@ -680,20 +699,18 @@ def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
 
     monkeypatch.setattr(flow, "_run", run)
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
-    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
     assert result.exit_code == 2
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
 
 
 def test_override_freezes_parameter_bound_candidate_criteria(
     external_acceptance_owner, runtime, monkeypatch
 ):
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    state_path = runtime / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.init_criteria(
+    _headline_state(
+        runtime,
+        monkeypatch,
         {"sim_pass_candidate": True, "cycle_count_policy": True},
         criterion_params={
             "cycle_count_policy": {
@@ -705,8 +722,6 @@ def test_override_freezes_parameter_bound_candidate_criteria(
         },
         strict=True,
     )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     flow = SimulateFlow()
 
     def run():
@@ -715,9 +730,8 @@ def test_override_freezes_parameter_bound_candidate_criteria(
 
     monkeypatch.setattr(flow, "_run", run)
     result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
-    report = json.loads((runtime / "flow-reports/sim.json").read_text())
     assert result.exit_code == 2
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    _assert_headline(result, runtime / "flow-reports", "sim", ("", None))
     assert flow.state.criteria["sim_pass_candidate"].met is True
 
 
@@ -728,7 +742,6 @@ def test_override_freezes_parameter_bound_candidate_criteria(
 def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_binding(
     external_acceptance_owner, flow_type, family, eda, runtime, monkeypatch
 ):
-    from booley.criteria.state import DevelopmentState
     from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -737,9 +750,9 @@ def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_bindi
     )
     key = f"{family}_demo"
     other = f"{family}_other"
-    state_path = runtime / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.init_criteria(
+    _headline_state(
+        runtime,
+        monkeypatch,
         {key: True, other: True},
         criterion_params={
             key: {"target": "acme:lib:dut:1#demo", "_target_selector": "demo"},
@@ -747,8 +760,6 @@ def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_bindi
         },
         strict=True,
     )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     flow = flow_type()
     bindings = (
         AcceptanceTargetBinding(
@@ -781,9 +792,36 @@ def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_bindi
     result = flow.execute(
         flow.request_type(target="demo", work_dir=runtime), adapter=BoundExecution()
     )
-    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
     assert result.exit_code == 0
-    assert (report["criterion_key"], report["criterion_met"]) == (key, True)
+    _assert_headline(result, runtime / "flow-reports", flow.name, (key, True))
+
+
+@pytest.mark.parametrize("met", [True, False])
+def test_alias_first_headline_ignores_family_key_acceptance_also_binds(
+    external_acceptance_owner, runtime, monkeypatch, met
+):
+    from booley.flows import endpoint_acceptance
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    _headline_state(
+        runtime,
+        monkeypatch,
+        {"lint_clean_atomic": True, "lint_clean": True},
+        flow_key_aliases={"lint_clean_first": ["lint_clean_atomic"]},
+    )
+    flow = LintFlow()
+
+    def run():
+        # Acceptance may update the alias and the bare family; the report takes the alias.
+        bound = endpoint_acceptance._bound_criterion_keys(flow.context, "first")
+        assert bound == ["lint_clean_atomic", "lint_clean"]
+        flow.set_criterion("lint_clean_first", met)
+        return EndpointOutcome()
+
+    monkeypatch.setattr(flow, "_run", run)
+    result = flow.execute(flow.request_type(target="first", work_dir=runtime))
+    _assert_headline(result, runtime / "flow-reports", "lint", ("lint_clean_atomic", met))
+    assert flow.state.criteria["lint_clean"].met is False
 
 
 def _report_targets(root, names=("first", "second"), flow="sim"):
@@ -823,9 +861,8 @@ def test_prepared_identity_partial_report_is_null(
 
     monkeypatch.setattr(flow_type, "_run", run)
     result = flow.execute(flow.request_type(target="first,second", work_dir=runtime))
-    report = json.loads((runtime / "flow-reports" / f"{flow.name}.json").read_text())
     assert result.exit_code == 2
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
     identities = frozenset({"acme:lib:dut:1#first", "acme:lib:dut:1#second"})
     assert self_scope(flow) == identities
     assert flow.context._report_criteria.targets == identities
@@ -904,53 +941,24 @@ def _prepared_report_campaign(runtime, mode, resume):
     return prepared, handle, cycle_test
 
 
-def _report_campaign_state(runtime, handle, cycle_test, mode, missing_cycle):
-    from booley.criteria.state import DevelopmentState
-
-    state_path = runtime / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.init_criteria(
-        {"sim_pass_sim": True, "cycle_count_policy": True},
-        criterion_params={
-            "cycle_count_policy": {
-                "target": handle.identity,
-                "_target_selector": "sim",
-                "test": cycle_test,
-                "cycle_count_max": 100,
-            }
-        },
-        strict=True,
-    )
-    if mode == "coverage":
-        state.init_criteria(
-            {"sim_pass_sim": True, "cycle_count_policy": True, "coverage_sim": True},
-            strict=True,
-            criterion_params={
-                "cycle_count_policy": {
-                    "target": handle.identity,
-                    "_target_selector": "sim",
-                    "test": cycle_test,
-                    "cycle_count_max": 100,
-                }
-            },
-        )
-    if missing_cycle:
-        del state.criteria["cycle_count_policy"]
-    state.save()
-    return state_path
-
-
 @pytest.mark.parametrize("mode", ["named", "default", "unfiltered", "coverage"])
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("missing_cycle", [False, True])
 def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
     external_acceptance_owner, runtime, monkeypatch, mode, resume, missing_cycle
 ):
+    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     prepared, handle, cycle_test = _prepared_report_campaign(runtime, mode, resume)
-    state_path = _report_campaign_state(runtime, handle, cycle_test, mode, missing_cycle)
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    criteria = {"sim_pass_sim": True, "cycle_count_policy": True}
+    if mode == "coverage":
+        criteria["coverage_sim"] = True
+    if missing_cycle:
+        del criteria["cycle_count_policy"]
+    cycle = {"target": handle.identity, "_target_selector": "sim", "test": cycle_test}
+    params = {"cycle_count_policy": {**cycle, "cycle_count_max": 100}}
+    _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
     monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: prepared)
 
     def run(self, *_args):
@@ -959,7 +967,6 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
 
     monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
     flow = SimulateFlow()
-    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
 
     class BoundExecution(StandaloneFlowExecution):
         def validate_and_resolve(self, _request):
@@ -983,9 +990,7 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
         adapter=BoundExecution(),
     )
     assert result.exit_code == 2, result.outcome.report_text
-    report = json.loads((flow.context.args.report_dir / "sim.json").read_text())
-    assert result.exit_code == 2
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    _assert_headline(result, flow.context.args.report_dir, "sim", ("", None))
 
 
 def _report_extension_type(endpoint_kind, key):
@@ -1018,6 +1023,15 @@ def _report_extension_type(endpoint_kind, key):
     return DrcFlow
 
 
+def _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected):
+    """Run a declared custom endpoint and check every public headline surface."""
+    events = _display_events(monkeypatch)
+    endpoint = endpoint_type()
+    result = endpoint.execute_cli([*argv, "--work-dir", str(runtime)])
+    assert result.exit_code == 0
+    _assert_headline(result, endpoint.args.report_dir, "drc_check", expected, events)
+
+
 @pytest.mark.parametrize("binding", ["name", "identity", "named_identity"])
 @pytest.mark.parametrize("ticket", ["none", "single", "plural"])
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
@@ -1033,41 +1047,23 @@ def test_declared_custom_flow_prepared_headline(
     catalog,
     target,
 ):
-    from booley.criteria.state import DevelopmentState
-
     key = "drc_clean_policy42" if binding == "identity" else "drc_clean_first"
     other = "drc_rules_policy73" if binding == "identity" else "drc_rules_first"
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
     if ticket != "none":
-        path = runtime / "state.json"
-        state = DevelopmentState.load(path)
-        criteria = {key: True}
-        if ticket == "plural":
-            criteria[other] = True
-        state.init_criteria(
+        criteria = {key: True, **({other: True} if ticket == "plural" else {})}
+        params = {name: {"target": "acme:lib:dut:1#first"} for name in criteria}
+        _headline_state(
+            runtime,
+            monkeypatch,
             criteria,
             strict=False,
-            criterion_params={name: {"target": "acme:lib:dut:1#first"} for name in criteria}
-            if binding != "name"
-            else None,
+            criterion_params=params if binding != "name" else None,
         )
-        state.save()
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
-
     if catalog:
         _report_targets(runtime)
-
-    flow = _report_extension_type(endpoint_kind, key)()
-    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
     expected = (key, True) if target == "first" and ticket != "plural" else ("", None)
-    assert result.exit_code == 0
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == expected
-    completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == expected
+    endpoint_type = _report_extension_type(endpoint_kind, key)
+    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
@@ -1076,29 +1072,16 @@ def test_declared_custom_flow_prepared_headline(
 def test_custom_fallback_excludes_only_proven_other_target(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind, target, other_target
 ):
-    from booley.criteria.state import DevelopmentState
-
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria(
+    _headline_state(
+        runtime,
+        monkeypatch,
         {"drc_clean_first": True, "drc_rules_policy73": True},
         strict=False,
         criterion_params={"drc_rules_policy73": {"target": f"acme:lib:dut:1#{other_target}"}},
     )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
-    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
-    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
     expected = ("drc_clean_first", True) if other_target == "second" else ("", None)
-    assert result.exit_code == 0
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == expected
-    completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == expected
+    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
+    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
@@ -1107,37 +1090,21 @@ def test_custom_fallback_excludes_only_proven_other_target(
 def test_custom_identity_uncertainty_respects_selected_workload(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind, family, test
 ):
-    from booley.criteria.state import DevelopmentState
-
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
     key = f"{family}_policy73"
-    state.init_criteria(
+    params = {"target": "acme:lib:dut:1#first", "test": "selected"}
+    if family != "cycle_count":
+        params["test_selector"] = "selected"
+    _headline_state(
+        runtime,
+        monkeypatch,
         {"drc_clean_first": True, key: True},
         strict=False,
-        criterion_params={
-            key: {
-                "target": "acme:lib:dut:1#first",
-                "test": "selected",
-                **({"test_selector": "selected"} if family != "cycle_count" else {}),
-            }
-        },
+        criterion_params={key: params},
     )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
-    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
-    result = flow.execute_cli(["--target", "first", "--test", test, "--work-dir", str(runtime)])
     expected = ("drc_clean_first", True) if test == "other" else ("", None)
-    assert result.exit_code == 0
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == expected
-
-    completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == expected
+    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
+    argv = ["--target", "first", "--test", test]
+    _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected)
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
@@ -1147,48 +1114,32 @@ def test_custom_identity_uncertainty_respects_selected_workload(
 def test_custom_alternate_selector_keeps_unevaluated_potential(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind, binding, direction, name
 ):
-    from booley.criteria.state import DevelopmentState
-
     target = "dut#first" if direction == "bare_to_qualified" else "first"
     selector = name if direction == "bare_to_qualified" else f"dut#{name}"
     params = {"target": selector}
     if binding == "stored_selector":
         params = {"target": f"acme:lib:dut:1#{name}", "_target_selector": selector}
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria(
+    _headline_state(
+        runtime,
+        monkeypatch,
         {"drc_clean_first": True, "drc_rules_policy73": True},
         strict=False,
         criterion_params={"drc_rules_policy73": params},
     )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
-    flow = _report_extension_type(endpoint_kind, "drc_clean_first")()
-    result = flow.execute_cli(["--target", target, "--work-dir", str(runtime)])
     expected = ("", None) if name == "first" else ("drc_clean_first", True)
-    assert result.exit_code == 0
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == expected
+    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
+    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 def test_custom_evaluated_uncertain_false_is_a_verdict(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind
 ):
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     key = "drc_clean_policy42"
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria(
-        {key: True},
-        strict=False,
-        criterion_params={key: {"target": "acme:lib:dut:1#first"}},
-    )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    params = {key: {"target": "acme:lib:dut:1#first"}}
+    _headline_state(runtime, monkeypatch, {key: True}, strict=False, criterion_params=params)
     endpoint_type = _report_extension_type(endpoint_kind, key)
 
     def run(self):
@@ -1196,12 +1147,9 @@ def test_custom_evaluated_uncertain_false_is_a_verdict(
         return EndpointOutcome()
 
     monkeypatch.setattr(endpoint_type, "_run", run)
-    flow = endpoint_type()
-    result = flow.execute_cli(["--target", "first", "--work-dir", str(runtime)])
-    assert result.exit_code == 0
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, False)
-    report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == (key, False)
+    _assert_custom_headline(
+        runtime, monkeypatch, endpoint_type, ["--target", "first"], (key, False)
+    )
 
 
 @pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])
@@ -1209,15 +1157,10 @@ def test_custom_evaluated_uncertain_false_is_a_verdict(
 def test_combined_prepared_mode_freezes_both_eligible_families(
     external_acceptance_owner, runtime, monkeypatch, ticket, calls
 ):
-    from booley.criteria.state import DevelopmentState
-
     _report_targets(runtime, ("first",))
     if ticket != "none":
-        path = runtime / "state.json"
-        state = DevelopmentState.load(path)
-        state.init_criteria({"elaborate_standalone": True}, strict=ticket == "strict")
-        state.save()
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+        criteria = {"elaborate_standalone": True}
+        _headline_state(runtime, monkeypatch, criteria, strict=ticket == "strict")
 
     from booley.flows.sim.build import BuildOutcome
     from booley.flows.sim.flow import ElabOnlyTargetResult
@@ -1246,7 +1189,7 @@ def test_combined_prepared_mode_freezes_both_eligible_families(
     expected = (
         ("elaborate_standalone", True) if ticket == "strict" and calls != "elab" else ("", None)
     )
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
+    _assert_headline(result, runtime / "flow-reports", "sim", expected)
 
 
 @pytest.mark.parametrize("name", ["mutation_tester", "coverage_analyst"])
@@ -1278,9 +1221,7 @@ def test_specialist_public_completion_projects_actual_evaluations(
         ["--work-dir", str(runtime), "--report-dir", str(runtime / "reports"), *extras]
     )
     expected = ("mutation_score_first", False) if name == "mutation_tester" else ("", None)
-    report = json.loads((runtime / "reports" / f"{name}.json").read_text())
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-    assert (report["criterion_key"], report["criterion_met"]) == expected
+    _assert_headline(result, runtime / "reports", name, expected)
 
 
 @pytest.mark.parametrize("mode", ["dry_run", "diagnostic"])
@@ -1330,22 +1271,16 @@ def test_public_hooks_see_raw_then_projected_headline(
     monkeypatch.setattr(EndpointState, "_post_run", post)
     result = LintFlow().execute(LintFlow.request_type(target="first", work_dir=runtime))
     assert observed == [("acceptance", "producer_raw", False), ("post", "lint_clean_first", True)]
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (
-        "lint_clean_first",
-        True,
-    )
+    _assert_headline(result, runtime / "flow-reports", "lint", ("lint_clean_first", True))
 
 
 def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch):
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
     from booley.specialists.reviewer import ReviewerSpecialist
 
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria({"review_rtl_bugs_done": True, "review_rtl_bugs_clean": True})
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    _headline_state(
+        runtime, monkeypatch, {"review_rtl_bugs_done": True, "review_rtl_bugs_clean": True}
+    )
 
     def run(self):
         self.set_criterion("review_rtl_bugs_done", True)
@@ -1355,9 +1290,7 @@ def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch
         display_tag = "review"
 
     monkeypatch.setattr(StableDisplayReviewer, "_run", run)
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    events = _display_events(monkeypatch)
     reviewer = StableDisplayReviewer()
     result = reviewer.execute_cli(
         ["--scope", ".", "--category", "rtl", "--focus", "bugs", "--work-dir", str(runtime)]
@@ -1365,10 +1298,9 @@ def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch
     assert result.exit_code == 0, result.outcome
     assert reviewer._report_criteria.known is False
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
-    report = json.loads((reviewer.args.report_dir / "reviewer.json").read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
-    completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == ("", None)
+    assert_paired_headline(reviewer.args.report_dir, "reviewer", None)
+    end = next(event for event in events if event["type"] == "endpoint_end")
+    assert (end.get("criterion_key", ""), end.get("criterion_met")) == ("", None)
 
 
 def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():

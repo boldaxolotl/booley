@@ -521,9 +521,8 @@ class TestStandaloneFrontend:
 
 @pytest.mark.parametrize("met", [True, False])
 def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
-    import json
-
     from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.report_headline import final_report_omits_headline
 
     _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
     _stub_sources(monkeypatch, ["rtl/alu.sv"])
@@ -539,11 +538,7 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     with flow.context.publication_resources:
         outcome = flow._run_standalone_check(["sim_dut"])
     result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(flow.context)
-    report = json.loads(flow.context.write_report(result).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+    final_report_omits_headline(flow.context, result)
     assert flow.state.criteria["elaborate_standalone"].met is met
     assert flow.state._file_path is None
 
