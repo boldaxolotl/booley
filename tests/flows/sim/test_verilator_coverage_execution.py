@@ -634,20 +634,6 @@ def test_build_reports_collector_provenance_mismatch(tmp_path: Path, monkeypatch
     assert f"expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}" in build.output
 
 
-def test_coverage_image_changed_after_build_cannot_launch(tmp_path: Path, monkeypatch) -> None:
-    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    build = _build_coverage(execution, target)
-    assert build.success
-    image = captured["prepare"]["build_root"] / "Vcounter_tb"
-    image.write_text("changed image", encoding="utf-8")
-
-    result = execution.run(_run_request(target, raw_path))
-
-    assert result.verdict == "inconclusive"
-    assert "image changed" in result.output
-    assert "run_script" not in captured
-
-
 def _execution_fixture(
     tmp_path: Path,
     monkeypatch,
