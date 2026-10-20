@@ -256,7 +256,7 @@ class TestCodexPermissionMode:
 
         import tomllib
 
-        assert reg.codex_config_path(tmp_path).stat().st_mode & 0o777 == 0o600
+        assert reg.codex_config_path(tmp_path).stat()[0] & 0o777 == (0o600, 0o666)[os.name == "nt"]
         parsed = tomllib.loads(reg.codex_config_path(tmp_path).read_text())
         assert parsed["approval_policy"] == "never"
         assert parsed["sandbox_mode"] == "danger-full-access"
