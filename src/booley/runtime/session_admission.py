@@ -45,6 +45,9 @@ _PROJECT_LISTING_FORMAT = (
     '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}'
     '\t{{.Label "booley.project-id"}}\t{{.Label "booley.role"}}'
 )
+# Roles a Project Sandbox (or its licensed relay) can carry. Any other role
+# names a Booley host sidecar such as ``reaper`` or ``egress-proxy``.
+_SANDBOX_ROLES = frozenset({"interactive", "license-relay"})
 logger = logging.getLogger(__name__)
 
 
@@ -190,6 +193,8 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
             container_id, name, folder, project_id, role = fields
             if not (folder or project_id or role or name == local_name):
                 continue
+            if _host_sidecar_listing(folder, project_id, role, name, local_name):
+                continue
             if _foreign_listing(folder, project_id, name, root, local_name):
                 continue
             if (
@@ -238,6 +243,24 @@ def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
         )
     except (BoundaryError, ValueError) as exc:
         raise AdmissionError(f"cannot inspect possible Sandbox {name}") from exc
+
+
+def _host_sidecar_listing(
+    folder: str, project_id: str, role: str, name: str, local_name: str
+) -> bool:
+    """Skip a Booley host sidecar that carries no Sandbox identity at all.
+
+    The reaper and egress proxy have no workspace mount, so inspecting them as
+    Sandboxes would abort the whole inventory. Rows with an empty or Sandbox
+    role, any Project label, or the local Sandbox name stay fail-closed.
+    """
+    return (
+        bool(role)
+        and role not in _SANDBOX_ROLES
+        and not folder
+        and not project_id
+        and name != local_name
+    )
 
 
 def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_name: str) -> bool:
