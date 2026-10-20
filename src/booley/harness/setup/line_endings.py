@@ -197,10 +197,20 @@ class _IndexPathState:
 
 
 @dataclass(frozen=True)
+class _PolicyFacts:
+    """Fresh Stealth authorization: rule ownership, unknown sources and worktree topology."""
+
+    owned: bool
+    unknown: tuple[str, ...]
+    topology: bytes
+
+
+@dataclass(frozen=True)
 class _AttributesMigration:
     """Replayable shared default and selected root snapshots for recoverable opt-out."""
 
     source: Path
+    topology: bytes
     source_snapshot: tuple[_FileIdentity | None, bytes]
     root_snapshot: tuple[_FileIdentity | None, bytes]
     root_owned: bool
@@ -222,7 +232,7 @@ class _RepositoryPlan:
     attributes_error: str | None
     owns_attributes_policy: bool
     target: AttributesTarget
-    policy_inputs: dict[str, tuple[_FileIdentity | None, bytes]]
+    facts: _PolicyFacts | None
     local_missing: bool
     migration: _AttributesMigration | None
 
@@ -1090,8 +1100,10 @@ def _attribute_files(root: Path) -> list[Path]:
     return paths
 
 
-def _upstream_attributes(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
-    inputs = {str(path): _policy_content(path) for path in _attribute_files(root)}
+def _upstream_attributes(root: Path) -> tuple[bool, bool]:
+    """Whether worktree or index attributes set policy; whether an untracked root default leaked."""
+    contents = {path: _policy_content(path)[1] for path in _attribute_files(root)}
+    tracked_root = False
     records = _policy_git(root, "ls-files", "--stage", "-z").split(b"\0")
     if len(records) > 100_000:
         raise ValueError("attributes index inventory exceeds 100000 entries")
@@ -1110,42 +1122,16 @@ def _upstream_attributes(root: Path) -> dict[str, tuple[_FileIdentity | None, by
         mode, object_id, stage = entry.split()
         if stage != b"0" or mode not in (b"100644", b"100755"):
             raise ValueError(f"unsafe index attributes entry: {name}")
-        # Keep the index policy snapshot even when the worktree file is present.
+        # The index blob is policy even when the worktree file differs or is absent.
         content = _policy_git(root, "cat-file", "blob", object_id.decode("ascii"))
         if len(content) > 4_000_000:
             raise ValueError("attributes index blob exceeds 4 MB")
-        inputs["index:" + name] = (None, entry + b"\0" + content)
-        if str(path) not in inputs:
-            inputs[str(path)] = _policy_content(path)
-    return inputs
-
-
-def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
-    for name, (_, raw_content) in inputs.items():
-        if name.startswith(("selection:", "link:", "policy-unknown:")):
-            continue
-        content = raw_content.partition(b"\0")[2] if name.startswith("index:") else raw_content
-        if has_attribute_policy(content):
-            return True
-    return False
-
-
-def _policy_unknown(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
-    return any(name.startswith("policy-unknown:") for name in inputs)
-
-
-def _unknown_policy_observations(
-    inputs: dict[str, tuple[_FileIdentity | None, bytes]],
-) -> list[LineEndingObservation]:
-    messages = {
-        message.decode("utf-8", errors="backslashreplace")
-        for name, (_, message) in inputs.items()
-        if name.startswith("policy-unknown:")
-    }
-    return [
-        _observation(LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN, detail=message)
-        for message in sorted(messages)
-    ]
+        contents[Path(name)] = content
+        contents.setdefault(path, _policy_content(path)[1])
+        tracked_root = tracked_root or name == ".gitattributes"
+    root_content = contents.get(root / ".gitattributes", b"").strip()
+    owned = any(has_attribute_policy(content) for content in contents.values())
+    return owned, not tracked_root and root_content == GITATTRIBUTES_RULE.encode()
 
 
 def unknown_attributes_policy_details(report: RepositoryLineEndingReport) -> tuple[str, ...]:
@@ -1189,56 +1175,31 @@ def _fallback_user_attributes(root: Path) -> Path | None:
     return fallback_user_attributes(root, _attribute_path_result)
 
 
-def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
-    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
-    pending = path
-    for _ in range(40):
-        links = [part for part in (*reversed(pending.parents), pending) if part.is_symlink()]
-        if not links:
-            inputs["user-file:" + str(pending)] = _policy_content(pending)
-            return inputs
-        link = links[0]
-        metadata = link.lstat()
-        value = os.fsencode(link.readlink())
-        identity = _FileIdentity(
-            hashlib.sha256(value).digest(),
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_nlink,
-        )
-        inputs["link:" + str(link)] = (identity, value)
-        replacement = Path(os.fsdecode(value))
-        if not replacement.is_absolute():
-            replacement = link.parent / replacement
-        pending = replacement / pending.relative_to(link)
-    raise ValueError(f"attributes symlink chain exceeds 40 links: {path}")
+def _selected_policy(path: Path | None) -> bool:
+    # The OS bounds symlink chains; a loop leaves a link that _policy_content refuses.
+    return path is not None and has_attribute_policy(
+        _policy_content(Path(os.path.realpath(path)))[1]
+    )
 
 
-def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
-    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
+def _worktree_user_inputs(root: Path) -> tuple[bool, set[str]]:
+    """Whether one checkout's selected user or system file sets policy, and unknown sources."""
     supported, path = _native_attribute_path(root, "GIT_ATTR_GLOBAL")
     if not supported:
         path = _fallback_user_attributes(root)
-    inputs["selection:user:" + str(root)] = (None, os.fsencode(path) if path else b"")
-    if path:
-        inputs.update(_user_file_snapshots(path))
+    owned = _selected_policy(path)
     if system_attributes_disabled():
-        inputs["selection:system:" + str(root)] = (None, b"disabled")
-        return inputs
+        return owned, set()
     supported, system = _native_attribute_path(root, "GIT_ATTR_SYSTEM")
-    inputs["selection:system:" + str(root)] = (None, os.fsencode(system) if system else b"")
     if not supported:
-        inputs["policy-unknown:system:" + str(root)] = (
-            None,
-            b"system attributes path unresolved on this Git version; inspect system policy with a Git build that supports attributes path discovery; existing local attributes are preserved and new defaults are deferred",
-        )
-    elif system:
-        inputs.update(_user_file_snapshots(system))
-    return inputs
+        return owned, {
+            "system attributes path unresolved on this Git version; inspect system policy with a Git build that supports attributes path discovery; existing local attributes are preserved and new defaults are deferred"
+        }
+    return _selected_policy(system) or owned, set()
 
 
-def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
+def _effective_user_inputs(root: Path) -> tuple[bool, set[str], bytes]:
+    """User/system ownership and unknown sources across every registered worktree."""
     listing = _policy_git(root, "worktree", "list", "--porcelain", "-z")
     roots = [
         Path(os.fsdecode(field.removeprefix(b"worktree ")))
@@ -1247,9 +1208,7 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
     ]
     if root not in roots or len(roots) > 128:
         raise ValueError("Git user-attributes inventory requires 1 to 128 worktrees")
-    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {
-        "selection:worktrees": (None, listing)
-    }
+    owned, unknown = False, set()
     for sibling in roots:
         if not sibling.is_absolute():
             raise ValueError("Git worktree listing did not provide absolute paths")
@@ -1258,7 +1217,8 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
             available = sibling.is_dir()
             if not available:
                 raise ValueError("worktree directory is unavailable")
-            inputs.update(_worktree_user_inputs(sibling))
+            sibling_owned, sibling_unknown = _worktree_user_inputs(sibling)
+            owned, unknown = owned or sibling_owned, unknown | sibling_unknown
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             if sibling == root:
                 raise
@@ -1267,13 +1227,19 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
                 if available
                 else "inspect its registered location from an environment where it is accessible (host if needed)"
             )
-            inputs["policy-unknown:sibling:" + str(sibling)] = (
-                None,
+            unknown.add(
                 f"cannot inspect sibling worktree {sibling}: {exc}; {guidance}; existing local attributes and registrations are preserved and new defaults are deferred".encode(
                     errors="surrogateescape"
-                ),
+                ).decode(errors="backslashreplace")
             )
-    return inputs
+    return owned, unknown, listing
+
+
+def _policy_facts(root: Path) -> tuple[_PolicyFacts, bool]:
+    """Fresh ownership, unknown-policy and topology facts, plus the leaked-root-default flag."""
+    upstream, leaked = _upstream_attributes(root)
+    user, unknown, topology = _effective_user_inputs(root)
+    return _PolicyFacts(upstream or user, tuple(sorted(unknown)), topology), leaked
 
 
 def _nonlocal_attributes_plan(repository: LineEndingRepository, target: AttributesTarget):
@@ -1288,7 +1254,8 @@ def _nonlocal_attributes_plan(repository: LineEndingRepository, target: Attribut
             if has_managed_attributes(snapshot[1], replayable=True):
                 root_snapshot = _policy_content(target.path)
                 owned = _root_policy_owned(root_snapshot[1])
-                migration = _AttributesMigration(common, snapshot, root_snapshot, owned)
+                topology = _policy_git(repository.root, "worktree", "list", "--porcelain", "-z")
+                migration = _AttributesMigration(common, topology, snapshot, root_snapshot, owned)
             elif has_managed_attributes(snapshot[1]):
                 observations.append(
                     _observation(
@@ -1298,7 +1265,7 @@ def _nonlocal_attributes_plan(repository: LineEndingRepository, target: Attribut
                 )
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             error = f"attributes policy inspection failed: {exc}"
-    return target, {}, owned, False, observations, error, migration
+    return target, None, owned, False, observations, error, migration
 
 
 def _attributes_plan(repository: LineEndingRepository, stealth: bool):
@@ -1307,15 +1274,16 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
     if not local:
         return _nonlocal_attributes_plan(repository, target)
     observations: list[LineEndingObservation] = []
-    inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
     try:
         common = _common_attributes(repository.root)
         target = AttributesTarget(common, local=True)
-        common_identity, common_content = _policy_content(common)
-        inputs = _upstream_attributes(repository.root)
-        inputs.update(_effective_user_inputs(repository.root))
-        observations.extend(_unknown_policy_observations(inputs))
-        upstream = _upstream_owned(inputs)
+        common_content = _policy_content(common)[1]
+        facts, leaked = _policy_facts(repository.root)
+        observations.extend(
+            _observation(LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN, detail=message)
+            for message in facts.unknown
+        )
+        upstream = facts.owned
         default = has_managed_attributes(common_content)
         if default and upstream:
             observations.append(
@@ -1331,17 +1299,14 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
                     detail="tracked CRLF index blobs have meaningful changes; index content is preserved, inspect git diff before claiming a clean repair",
                 )
             )
-        _record_stealth_policy(
-            repository.root, common, common_content, upstream, inputs, observations
-        )
-        inputs[str(common)] = (common_identity, common_content)
+        _record_stealth_policy(common, common_content, facts, leaked, observations)
         owned = upstream or local_policy_owned(common_content)
-        missing = not owned and not _policy_unknown(inputs)
-        return target, inputs, owned, missing, observations, None, None
+        missing = not owned and not facts.unknown
+        return target, facts, owned, missing, observations, None, None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return (
             target,
-            inputs,
+            None,
             False,
             local,
             observations,
@@ -1351,25 +1316,23 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
 
 
 def _record_stealth_policy(
-    root: Path, common: Path, content: bytes, upstream: bool, inputs, observations
+    common: Path, content: bytes, facts: _PolicyFacts, leaked: bool, observations
 ) -> None:
-    root_content = inputs.get(str(root / ".gitattributes"), (None, b""))[1]
-    indexed = "index:.gitattributes" in inputs
-    if not indexed and root_content.strip() == GITATTRIBUTES_RULE.encode():
+    if leaked:
         observations.append(
             _observation(
                 LineEndingObservationCode.LEAKED_ROOT_POLICY,
                 detail="untracked .gitattributes contains an old default; inspect and remove or migrate it manually if appropriate (Booley cannot prove ownership)",
             )
         )
-    if upstream:
+    if facts.owned:
         observations.append(
             _observation(
                 LineEndingObservationCode.UPSTREAM_POLICY,
                 detail="existing upstream/user/system attributes policy is preserved; no local default installed",
             )
         )
-    elif not local_policy_owned(content) and not _policy_unknown(inputs):
+    elif not local_policy_owned(content) and not facts.unknown:
         observations.append(
             _observation(
                 LineEndingObservationCode.LOCAL_POLICY_MISSING,
@@ -1379,19 +1342,19 @@ def _record_stealth_policy(
 
 
 def _publish_planned_attributes(
-    plan: _RepositoryPlan,
-    expected: _FileIdentity | None,
-    normalization: _NormalizationResult | None,
+    plan: _RepositoryPlan, expected: _FileIdentity | None
 ) -> LineEndingActionResult:
+    error = plan.attributes_error
+    if error is None and plan.target.local:
+        error = _revalidate_local_policy(plan)
+    if error:
+        return _action(
+            LineEndingActionKind.PUBLISH_ATTRIBUTES,
+            LineEndingActionState.REFUSED,
+            detail=error,
+            target=plan.target,
+        )
     if plan.target.local:
-        error = _revalidate_local_policy(plan, normalization)
-        if error:
-            return _action(
-                LineEndingActionKind.PUBLISH_ATTRIBUTES,
-                LineEndingActionState.REFUSED,
-                detail=error,
-                target=plan.target,
-            )
         path = plan.target.path
         try:
             path.parent.mkdir(exist_ok=True)
@@ -1407,25 +1370,10 @@ def _publish_planned_attributes(
     return _publish_attributes(plan.target, expected)
 
 
-def _revalidate_local_policy(
-    plan: _RepositoryPlan, normalization: _NormalizationResult | None
-) -> str | None:
+def _revalidate_local_policy(plan: _RepositoryPlan) -> str | None:
+    # Ownership and unknown policy are re-decided; the target keeps its narrow identity check.
     try:
-        if _common_attributes(plan.repository.root) != plan.target.path:
-            return "Git common attributes destination changed during line-ending repair"
-        current = _upstream_attributes(plan.repository.root)
-        current.update(_effective_user_inputs(plan.repository.root))
-        current[str(plan.target.path)] = _policy_content(plan.target.path)
-        expected = dict(plan.policy_inputs)
-        if normalization:
-            for name, identity in normalization.file_snapshots.items():
-                path = str(plan.repository.root / name)
-                content = (plan.repository.root / name).read_bytes()
-                before = plan.candidates[name].file
-                for key, (snapshot, _) in tuple(expected.items()):
-                    if key == path or (key.startswith("user-file:") and snapshot == before):
-                        expected[key] = (identity, content)
-        if current != expected:
+        if _policy_facts(plan.repository.root)[0] != plan.facts:
             return (
                 f"{plan.target.path}: attributes policy inputs changed during line-ending repair"
             )
@@ -1468,7 +1416,7 @@ def _plan_repository(
         clean = baseline_clean
     else:
         clean = _worktree_is_clean(repository.root)
-    target, inputs, owned, missing, policy_obs, error, migration = _attributes_plan(
+    target, facts, owned, missing, policy_obs, error, migration = _attributes_plan(
         repository, stealth
     )
     observations.extend(policy_obs)
@@ -1487,7 +1435,7 @@ def _plan_repository(
             attributes_error=error,
             owns_attributes_policy=owned,
             target=target,
-            policy_inputs=inputs,
+            facts=facts,
             local_missing=missing,
             migration=migration,
         ),
@@ -1561,7 +1509,7 @@ def _attributes_publication_needed(plan: _RepositoryPlan) -> bool:
     return (
         needs_policy
         and not plan.owns_attributes_policy
-        and (plan.attributes_error is not None or not _policy_unknown(plan.policy_inputs))
+        and (plan.attributes_error is not None or not (plan.facts and plan.facts.unknown))
     )
 
 
@@ -1729,13 +1677,6 @@ def _publish_attributes(
             ),
             target=target,
         )
-    if not target.local and _eol_policy_is_user_owned(path.parent):
-        return _action(
-            LineEndingActionKind.PUBLISH_ATTRIBUTES,
-            LineEndingActionState.REFUSED,
-            detail=".gitattributes policy changed during line-ending repair",
-            target=target,
-        )
     try:
         content = _attributes_replacement(path)
     except OSError as exc:
@@ -1778,8 +1719,10 @@ def _migration_revalidation(
     migration = plan.migration
     assert migration is not None
     try:
-        if _common_attributes(plan.repository.root) != migration.source:
-            return "Git common attributes destination changed during line-ending repair"
+        if _policy_git(plan.repository.root, "worktree", "list", "--porcelain", "-z") != (
+            migration.topology
+        ):
+            return "Git worktree topology changed during line-ending repair"
         if _policy_content(migration.source) != migration.source_snapshot:
             return f"{migration.source}: attributes changed during line-ending repair"
         if _policy_content(plan.target.path) != root_snapshot:
@@ -1882,17 +1825,7 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
             and ".gitattributes" in normalization.file_snapshots
         ):
             expected = normalization.file_snapshots[".gitattributes"]
-        if plan.attributes_error is not None:
-            actions.append(
-                _action(
-                    LineEndingActionKind.PUBLISH_ATTRIBUTES,
-                    LineEndingActionState.REFUSED,
-                    detail=plan.attributes_error,
-                    target=plan.target,
-                )
-            )
-        else:
-            actions.append(_publish_planned_attributes(plan, expected, normalization))
+        actions.append(_publish_planned_attributes(plan, expected))
     return tuple(actions)
 
 
