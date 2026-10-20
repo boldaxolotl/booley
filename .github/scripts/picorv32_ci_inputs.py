@@ -32,7 +32,6 @@ RISCV_IMAGE_FILES = frozenset(
         ".github/contracts/session-runtime.toml",
         ".github/scripts/ci_changes.py",
         ".github/scripts/image_contract.py",
-        ".github/scripts/image_package_inventory.py",
         ".github/scripts/image_runtime_resources.py",
         ".github/scripts/image_size_report.py",
         ".github/scripts/riscv_tooling.py",

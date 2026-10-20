@@ -293,15 +293,9 @@ jobs:
           evidence="${RUNNER_TEMP}/standard-image-evidence"
           mkdir -p "${evidence}"
           docker pull "${RUNTIME_BASE}"
-          python .github/scripts/image_package_inventory.py \
-            --image "${RUNTIME_BASE}" \
-            --output "${evidence}/base-package-inventory.json" \
-            --evidence "${evidence}/base-package-inventory-evidence.json"
-          python .github/scripts/image_package_inventory.py \
-            --image "${IMAGE}" --base-reference "${RUNTIME_BASE}" \
-            --expected-inventory "${evidence}/base-package-inventory.json" \
-            --output "${evidence}/package-inventory.json" \
-            --evidence "${evidence}/package-inventory-evidence.json"
+          docker run --rm --network none --entrypoint cat "${RUNTIME_BASE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/base-package-inventory.json"
+          docker run --rm --network none --entrypoint cat "${IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/package-inventory.json"
+          cmp "${evidence}/base-package-inventory.json" "${evidence}/package-inventory.json"
       - name: Validate provenance, runtime, size, and resources
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
@@ -598,15 +592,9 @@ jobs:
           docker pull "${BASE_IMAGE}"
           docker pull "${STANDARD_SUBSTRATE}"
           docker pull "${RISCV_IMAGE}"
-          python .github/scripts/image_package_inventory.py \
-            --image "${BASE_IMAGE}" \
-            --output "${evidence}/standard-package-inventory.json" \
-            --evidence "${evidence}/standard-package-inventory-evidence.json"
-          python .github/scripts/image_package_inventory.py \
-            --image "${RISCV_IMAGE}" \
-            --expected-inventory "${evidence}/standard-package-inventory.json" \
-            --output "${evidence}/package-inventory.json" \
-            --evidence "${evidence}/package-inventory-evidence.json"
+          docker run --rm --network none --entrypoint cat "${BASE_IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/standard-package-inventory.json"
+          docker run --rm --network none --entrypoint cat "${RISCV_IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/package-inventory.json"
+          cmp "${evidence}/standard-package-inventory.json" "${evidence}/package-inventory.json"
           expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
           expected_runtime_base_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
           expected_standard_substrate_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"

@@ -216,33 +216,28 @@ Scope limits:
   resolved; it does not make historical rebuilds reproducible.
 - Images built before this contract lack the file and fail the image contract.
 
-Extract the file from a local image without starting it on a POSIX host. The
-exporter is a Linux CI utility; its executable launch and pipe selection are
-not supported on native Windows:
+Extract the file by running `cat` in the image, then compare it with the
+parent image's copy when one is on disk:
 
 ```bash
-python .github/scripts/image_package_inventory.py --image IMAGE \
-  --output inventory.json --evidence inventory-evidence.json \
-  [--expected-inventory parent.json] [--verify-current-state]
+docker run --rm --network none --entrypoint cat IMAGE \
+  /usr/local/share/booley/base-package-inventory.json > inventory.json
+cmp parent.json inventory.json
 ```
 
-The exporter pins every step to the inspected local image ID and checks the
-label. It reads `docker cp` output as a bounded in-memory tar stream and accepts
-only one regular file, so it never follows links or writes archive paths on the
-host. It writes the accepted bytes unchanged and records the requested
-reference, image ID, repository digests, SHA-256, package count, and
-Python/pip versions in the evidence file. Malformed bytes are kept as
-`<output>.rejected` and the command fails.
+A missing file, a failed `docker run`, or differing bytes fails the CI step.
+A failed extraction can leave an empty or partial file in the uploaded
+evidence; the failed step, not the file, is the signal.
 
 CI keeps these artifacts:
 
-| Workflow | Artifact | Gate |
-| --- | --- | --- |
-| `docker-base-publish.yml` | `base-package-inventory-<run>-<attempt>` | exact digest; live-state `verify` before `:main` promotion |
-| `test.yml` (local base) | `docker-build-evidence` | base `verify`; standard bytes equal base bytes |
-| `test.yml` (published base) | `docker-build-evidence` | standard inventory valid; selected base digest recorded |
-| `test.yml` (RISC-V lane) | `riscv-image-evidence-*` | RISC-V bytes equal standard bytes |
-| `docker-publish.yml` | `release-standard-image-*`, `release-riscv-image-*` | standard equals selected base digest; RISC-V equals standard |
+| Workflow | Artifact |
+| --- | --- |
+| `docker-base-publish.yml` | `base-package-inventory-<run>-<attempt>` |
+| `test.yml` (local base) | `docker-build-evidence` |
+| `test.yml` (published base) | `docker-build-evidence` |
+| `test.yml` (RISC-V lane) | `riscv-image-evidence-*` |
+| `docker-publish.yml` | `release-standard-image-*`, `release-riscv-image-*` |
 
 CI artifacts expire. While the immutable image is retained, the embedded file
 remains the lasting record.

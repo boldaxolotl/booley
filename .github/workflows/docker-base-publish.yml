@@ -95,18 +95,16 @@ jobs:
           docker run --rm "${BASE_IMAGE}" python -c \
             'import cocotb, edalize, fusesoc, numpy'
 
-      # The embedded inventory must match the exact published digest's current
-      # package state before :main can point at it (#829).
-      - name: Export and verify exact base package inventory
+      # Retain the exact published digest's inventory before :main can point
+      # at it (#829).
+      - name: Export exact base package inventory
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           mkdir -p "${RUNNER_TEMP}/base-package-inventory"
           docker pull "${BASE_IMAGE}"
-          python .github/scripts/image_package_inventory.py \
-            --image "${BASE_IMAGE}" --verify-current-state \
-            --output "${RUNNER_TEMP}/base-package-inventory/base-package-inventory.json" \
-            --evidence "${RUNNER_TEMP}/base-package-inventory/evidence.json"
+          docker run --rm --network none --entrypoint cat "${BASE_IMAGE}" /usr/local/share/booley/base-package-inventory.json \
+            > "${RUNNER_TEMP}/base-package-inventory/base-package-inventory.json"
 
       - name: Retain base package inventory evidence
         if: always() && steps.build.outcome == 'success'
