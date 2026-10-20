@@ -475,19 +475,6 @@ class OwnedImages:
         self.record(found, tuple(image for image in found.values() if image not in before))
 
 
-def _owned_image_blocker(image: str, docker: DockerPort) -> str:
-    if docker.repo_digests(image):
-        return "registry digest"
-    if image in docker.container_image_ids():
-        return "container"
-    layers = docker.image_layers(image)
-    for other in docker.image_ids() - {image}:
-        other_layers = docker.image_layers(other)
-        if layers and other_layers[: len(layers)] == layers:
-            return "child"
-    return ""
-
-
 def cleanup_owned_images(
     project: Path | str | None = None, *, docker: DockerPort | None = None
 ) -> tuple[str, ...]:
@@ -505,8 +492,6 @@ def cleanup_owned_images(
         for image in reversed(record.ids):
             if image in tags.values():
                 retained[image] = "retained (tag/keeper)"
-            elif image in present and (reason := _owned_image_blocker(image, adapter)):
-                retained[image] = f"retained ({reason})"
             elif image in present:
                 try:
                     adapter.remove_tag(image)  # exact ID, non-force, --no-prune
