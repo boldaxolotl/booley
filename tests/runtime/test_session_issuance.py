@@ -521,6 +521,14 @@ def issued(
     return project, spec, path, stamp
 
 
+def test_issued_spec_seals_pinned_image_identity(issued) -> None:
+    _project, spec, _path, stamp = issued
+    assert spec["containerEnv"].get("BOOLEY_SANDBOX_IMAGE_ID") == stamp.image_id
+    assert runtime_spec._spec_digest(spec) == stamp.spec_sha256
+    spec["containerEnv"]["BOOLEY_SANDBOX_IMAGE_ID"] = "sha256:" + "f" * 64
+    assert runtime_spec._spec_digest(spec) != stamp.spec_sha256
+
+
 def test_every_project_requires_exact_host_stamp(issued) -> None:
     project, spec, path, stamp = issued
     assert runtime_spec.validate(project, spec, path) == stamp
@@ -1300,6 +1308,10 @@ def test_fixed_environment_drift_names_field_and_values(issued) -> None:
             "unsupported container environment",
         ),
         (
+            lambda spec: spec["containerEnv"].pop("BOOLEY_SANDBOX_IMAGE_ID", None),
+            "Sandbox Image identity",
+        ),
+        (
             lambda spec: spec.__setitem__("postStartCommand", "sh /work/owned.sh"),
             "postStartCommand",
         ),
@@ -1527,6 +1539,7 @@ def test_issue_rejects_mutable_image_reference(
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
+    spec["containerEnv"]["BOOLEY_SANDBOX_IMAGE_ID"] = spec["image"]
     runtime_spec.seal(project, spec)
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="image is mutable"):

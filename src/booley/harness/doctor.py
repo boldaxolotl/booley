@@ -120,7 +120,6 @@ from booley.runtime import (
     inspection,
     project_repositories,
     runtime_context,
-    sandbox_artifact,
     session_runtime,
     vaporview,
 )
@@ -134,8 +133,10 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.git import _git_common_dir
+from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
+from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
@@ -255,7 +256,6 @@ class _DoctorFlowRuntime:
     docker_exe: str | None
     container_name: str | None = None
     startup_error: session_runtime.SessionError | None = None
-    deep_artifact: sandbox_artifact.SandboxArtifact | None = None
 
     @property
     def inside(self) -> bool:
@@ -278,16 +278,7 @@ class _DoctorFlowRuntime:
             except session_runtime.SessionError as exc:
                 self.startup_error = exc
                 raise
-        container = self.container_name
-        if self.deep_artifact is not None and self.deep_artifact.image_id is not None:
-            observed = sandbox_artifact.observe(self.project_root, container=container)
-            if (observed.image_id, observed.container_id) != (
-                self.deep_artifact.image_id,
-                self.deep_artifact.container_id,
-            ):
-                raise session_runtime.SessionError("Sandbox artifact changed during deep Doctor")
-            container = self.deep_artifact.container_id
-        argv = session_runtime.exec_argv(container, inner, tty=False, env=env)
+        argv = session_runtime.exec_argv(self.container_name, inner, tty=False, env=env)
         argv[0] = self.docker_exe
         return argv
 
@@ -799,13 +790,47 @@ def observe_deep_status(
     state = doctor_deep.DeepState()
     with contextlib.suppress(FileNotFoundError, OSError):
         state = doctor_deep.load_deep_state(resolve_checkout_booley_dir(project_root))
-    identity = sandbox_artifact.observe_execution(project_root, container=container)
-    return doctor_deep.evaluate_deep_status(
-        state,
-        version=booley.__version__
-        if runtime_context.inside_session_runtime()
-        else identity.booley_version,
-        image_id=identity.image_id,
+    image_id, version = _observe_sandbox_identity(project_root, container)
+    return doctor_deep.evaluate_deep_status(state, version=version, image_id=image_id)
+
+
+# Prints the issued image variable and the package version from inside a Sandbox.
+_IDENTITY_PROBE = (
+    f"import os, booley; print(os.environ.get({SANDBOX_IMAGE_ID_ENV!r}, '')); "
+    "print(booley.__version__)"
+)
+_VERSION_PATTERN = re.compile(r"[A-Za-z0-9_.+-]{1,128}")
+
+
+def _observe_sandbox_identity(
+    project_root: Path, container: str | None
+) -> tuple[str | None, str | None]:
+    """Return the active Sandbox Image ID and Booley version; ``None`` when unknown."""
+    if runtime_context.inside_session_runtime():
+        image_id = os.environ.get(SANDBOX_IMAGE_ID_ENV, "")
+        return (image_id if is_local_image_id(image_id) else None), booley.__version__
+    if container is None:
+        try:
+            selected = session_runtime.resolve_running_sandbox(project_root)
+        except session_runtime.SessionError:
+            return None, None
+        if selected is None:
+            return None, None
+        container = selected.container_id
+    argv = session_runtime.exec_argv(
+        container, ["python3", "-I", "-c", _IDENTITY_PROBE], tty=False
+    )
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    lines = result.stdout.splitlines() if result.returncode == 0 else []
+    if len(lines) != 2:
+        return None, None
+    image_id, version = lines
+    return (
+        image_id if is_local_image_id(image_id) else None,
+        version if _VERSION_PATTERN.fullmatch(version) else None,
     )
 
 
@@ -1115,11 +1140,9 @@ def _run_deep_phase(
         return doctor_deep.DeepAttemptSummary(("project-config",))
     assert flow_runtime is not None
     tracker = doctor_deep.DeepCheckTracker()
-    before = sandbox_artifact.observe_execution(
-        project.project_root, container=flow_runtime.container_name
+    image_id, sandbox_version = _observe_sandbox_identity(
+        project.project_root, flow_runtime.container_name
     )
-    flow_runtime.deep_artifact = before
-    version = booley.__version__
     _track_developer_probe(project, reporter, tracker)
     _run_deep_checks(
         project,
@@ -1140,13 +1163,10 @@ def _run_deep_phase(
         flow_runtime=flow_runtime,
         completeness=tracker,
     )
-    after = sandbox_artifact.observe_execution(
-        project.project_root, container=flow_runtime.container_name
-    )
-    issues = _deep_identity_reasons(before, after, version)
+    issues = _deep_identity_reasons(image_id, sandbox_version)
     if not reporter.profile.records_health_evidence:
         tracker.require("agent-checks")
-    return doctor_deep.DeepAttemptSummary(tracker.missing, issues, before.image_id)
+    return doctor_deep.DeepAttemptSummary(tracker.missing, issues, image_id)
 
 
 def _track_developer_probe(
@@ -1164,22 +1184,15 @@ def _track_developer_probe(
             reporter.record_agent_call(record)
 
 
-def _deep_identity_reasons(
-    before: sandbox_artifact.SandboxArtifact,
-    after: sandbox_artifact.SandboxArtifact,
-    version: str,
-) -> tuple[str, ...]:
+def _deep_identity_reasons(image_id: str | None, sandbox_version: str | None) -> tuple[str, ...]:
+    """Name what the start-of-phase identity observation cannot qualify."""
     reasons: list[str] = []
-    if before.image_id is None or after.image_id is None:
+    if image_id is None:
         reasons.append("image-identity-unavailable")
-    elif (before.image_id, before.container_id) != (after.image_id, after.container_id):
-        reasons.append("sandbox-artifact-drift")
-    if before.booley_version is None or after.booley_version is None:
+    if sandbox_version is None:
         reasons.append("sandbox-version-unavailable")
-    elif before.booley_version != version or after.booley_version != version:
+    elif sandbox_version != booley.__version__:
         reasons.append("booley-version-mismatch")
-    if booley.__version__ != version:
-        reasons.append("booley-version-drift")
     return tuple(reasons)
 
 

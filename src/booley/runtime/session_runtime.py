@@ -945,9 +945,6 @@ def _create_or_resume_session(
         )
     else:
         _start_session_container(request.name)
-    from booley.runtime.sandbox_artifact import publish_receipt
-
-    publish_receipt(workspace, request.name)
     if created and request.spec.get("postCreateCommand"):
         _run_hook(request.name, str(request.spec["postCreateCommand"]), "postCreateCommand")
     if request.spec.get("postStartCommand"):
@@ -1269,11 +1266,7 @@ def prepare(workspace: Path) -> str:
 
     with host_lifecycle_lock("session prepare"):
         _recover_before_lifecycle(workspace, "booley session prepare")
-        digest = _prepare_unlocked(workspace)
-    from booley.runtime.sandbox_artifact import launch_vscode_observer
-
-    launch_vscode_observer(workspace, digest)
-    return digest
+        return _prepare_unlocked(workspace)
 
 
 @dataclass(frozen=True)

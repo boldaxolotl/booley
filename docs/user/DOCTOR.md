@@ -79,8 +79,9 @@ nonempty per-clock results. Reports with absent or empty mode follow
 that physical timing policy; an unknown mode is invalid evidence. This proves
 the Flow wiring, not that the design meets its PPA goals.
 
-Checks must run under one verified, stable artifact identity and matching Booley
-version. Core resolution runs in the same Sandbox as the Flow checks. Local
+Deep Doctor observes the Sandbox Image identity and Booley version once, when the
+deep phase starts. A host Booley version that differs from the Sandbox's package
+version prevents qualification. Core resolution runs in the same Sandbox as the Flow checks. Local
 FuseSoC resolution inside that Sandbox does not require Docker on its PATH.
 A host-side deep invocation cannot qualify when it skips the in-Sandbox Specialist
 provider probe; run deep Doctor inside the Sandbox for full evidence.
@@ -94,14 +95,17 @@ unexpected abort before a completed result leaves the previous evidence intact;
 version or image drift still applies independently. Successful and failed plain
 runs leave deep evidence unchanged.
 
-The host observes the actual owned, running container. Sandbox startup transports
-that observation in a root-owned receipt bound to the live container incarnation.
-Headless startup writes it before startup checks. VS Code preparation starts a
-bounded host observer for its subsequent container start; identity is unavailable
-until that observation arrives. Bare terminals, automatic Doctor, and supervised
-commands read the same receipt without Docker access. Missing, untrusted, or
-stale receipts make identity unverifiable. Restart or reopen the Sandbox through
-Booley's normal startup path to restore the receipt.
+Every issued Sandbox spec, headless or VS Code, carries the pinned image ID in its
+`BOOLEY_SANDBOX_IMAGE_ID` container environment variable, covered by the spec
+digest. Inside the Sandbox, Doctor reads the image identity from that variable
+and the version from the installed Booley package. On the host, Doctor selects the
+running Sandbox and reads both from that container. A missing or malformed
+variable reports `cannot verify Sandbox Image identity`, and an absent, ambiguous,
+or unreadable Sandbox reports identity and version unavailable; deep Doctor stays
+due. The variable is issued environment metadata, not tamper-proof evidence: a
+process can override its own environment. A Sandbox whose environment lacks the
+variable does not match the current host issuance; one ordinary refresh, using
+the remedy Booley prints, fixes it.
 
 Missing, corrupt, unsupported, and plain-only stamps report no qualifying deep
 run recorded. Plain stamps with `deep: true` lack image and completeness

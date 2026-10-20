@@ -47,10 +47,8 @@ from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_
 
 @pytest.fixture(autouse=True)
 def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from booley.runtime import sandbox_artifact, session_admission
+    from booley.runtime import session_admission
 
-    monkeypatch.setattr(sandbox_artifact, "launch_vscode_observer", lambda *_args: None)
-    monkeypatch.setattr(sandbox_artifact, "publish_receipt", lambda *_args: True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(session_admission, "claim_vscode_start", lambda *_args, **_kwargs: False)
@@ -4083,9 +4081,11 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
 
 
 @pytest.mark.parametrize("vscode", [False, True])
-@pytest.mark.parametrize("drift", [None, "missing", "changed"])
+@pytest.mark.parametrize("drift", [None, "missing", "changed", "pre-image-identity"])
 def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch, vscode, drift):
     spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test")
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
     labels = {"devcontainer.local_folder": str(tmp_path)} if vscode else {}
     sections = (spec["containerEnv"],) if vscode else (spec["containerEnv"], spec["remoteEnv"])
     environment = {key: value for section in sections for key, value in section.items()}
@@ -4093,6 +4093,8 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
         environment.pop("GIT_CONFIG_VALUE_0")
     elif drift == "changed":
         environment["GIT_CONFIG_VALUE_0"] = "Human"
+    elif drift == "pre-image-identity":
+        environment.pop("BOOLEY_SANDBOX_IMAGE_ID", None)
     state = {
         "Image": "sha256:test",
         "Config": {
