@@ -1333,3 +1333,38 @@ def test_other_inspections_validate_each_pre_sim_snapshot_once(
         assert firing.path.absolute() in status.retention_files
     assert accesses == {firing.path: 1}, "each sidecar must have one byte access"
     assert decodes == {(firing.key[2], firing.key[3]): 1}, "each sidecar must be decoded once"
+
+
+@pytest.mark.parametrize("status,returncode", [("passed", 0), ("failed", 1)])
+@pytest.mark.parametrize("observation", ["decoder", "json"])
+def test_publication_does_not_decode_its_own_bytes(
+    tmp_path, monkeypatch, status, returncode, observation
+):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign import pre_sim_evidence
+
+    request = _hook_publication_request(tmp_path)
+    calls = {"decoder": [], "json": []}
+    decode = pre_sim_evidence.PreSimFiringDecoder.decode
+    loads = pre_sim_evidence.json.loads
+
+    def observe_decode(self, raw, item, attempt):
+        calls["decoder"].append(raw)
+        return decode(self, raw, item, attempt)
+
+    def observe_json(raw):
+        calls["json"].append(raw)
+        return loads(raw)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pre_sim_evidence.PreSimFiringDecoder, "decode", observe_decode)
+        patch.setattr(pre_sim_evidence, "json", SimpleNamespace(loads=observe_json))
+        reference = _publish_request_hook(request, status=status, returncode=returncode)
+        assert (request.attempt_directory / reference["path"]).is_file()
+        assert calls[observation] == [], f"publication decoded its own firing via {observation}"
+        assert calls == {"decoder": [], "json": []}
+    records = request.store.read_pre_sim_firings()
+    assert len(records) == 1
+    assert records[0].document["status"] == status
+    assert records[0].document["returncode"] == returncode
