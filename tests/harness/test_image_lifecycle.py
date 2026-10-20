@@ -882,11 +882,11 @@ def test_incremental_adapter_prepare_rejects_missing_parent_and_missing_candidat
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
     node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
 
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="prepared parent"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="prepared parent"):
         adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
 
     monkeypatch.setattr(adapter, "_build_role", lambda *_args: None)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="produced no image"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="produced no image"):
         adapter.prepare(node, candidate_reference="candidate", parent_reference=None)
 
 
@@ -910,7 +910,7 @@ def test_incremental_adapter_prepare_handles_release_and_build_failures(
         context.record("docker_image", "err", "build failed")
 
     monkeypatch.setattr(adapter, "_build_role", fail_build)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="build failed"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="build failed"):
         adapter.prepare(
             _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE),
             candidate_reference="candidate",
@@ -999,7 +999,7 @@ def test_incremental_adapter_rejects_ambiguous_wheel_output(
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
     node = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
     monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="exactly one wheel"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="exactly one wheel"):
         adapter._role_build_inputs(SimpleNamespace(), node, root, "parent")
 
 
@@ -1017,7 +1017,7 @@ def test_incremental_adapter_rejects_wheel_source_drift(
     monkeypatch.setattr(
         harness_lifecycle, "wheel_embedded_source_fingerprint", lambda _wheel: "actual"
     )
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="source fingerprint"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="source fingerprint"):
         adapter._role_build_inputs(SimpleNamespace(), node, root, "parent")
 
 
@@ -1128,9 +1128,9 @@ def test_incremental_adapter_release_pull_and_project_recipe_paths(
     )
     assert adapter._pull_complete_release(release).startswith("remote:booley-sandbox")
     monkeypatch.setattr(docker_image, "_try_pull_image", lambda *_args, **_kwargs: False)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="could not pull"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="could not pull"):
         adapter._pull_complete_release(release)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="no complete"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="no complete"):
         adapter._pull_complete_release(
             _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
         )
@@ -1156,7 +1156,7 @@ def test_incremental_adapter_handles_noop_build_and_unsupported_role(
     monkeypatch.setattr(docker_image, "_docker_build_image", lambda *_args: None)
     adapter._build_role(context, node, "candidate", None, None)
     unsupported = SimpleNamespace(role="unsupported")
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="unsupported image role"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="unsupported image role"):
         harness_lifecycle._IncrementalBuildAdapter._role_build_inputs(
             adapter, context, unsupported, tmp_path, None
         )
@@ -2967,6 +2967,18 @@ def test_mutation_reports_failed_rollback_with_recovery_tag(tmp_path: Path) -> N
             docker,
             FailingBuilder(docker),
         )
+
+
+def test_failed_mutation_untags_base_without_prior_image(tmp_path: Path) -> None:
+    node = lifecycle._base_node(lifecycle.PayloadProvenance("1", "0.2.6", "payload"))
+    docker = FakeDocker({})
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="build failed"):
+        lifecycle._mutate(
+            tmp_path, (node,), lifecycle.Intent.ENSURE, docker, FailingBuilder(docker)
+        )
+
+    assert docker.image_id(node.reference) is None
 
 
 def test_incremental_adapter_prepare_and_policy_helpers(

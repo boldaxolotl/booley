@@ -32,14 +32,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
-from booley.harness.image_lifecycle import LifecycleResult
-from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.image_lifecycle import LifecycleResult
+from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
