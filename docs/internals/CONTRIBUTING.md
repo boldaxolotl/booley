@@ -138,8 +138,8 @@ The canonical host-installed `booley` records the absolute checkout path in
 Plain Bootstrap reconciles live links. Check-only Bootstrap, Doctor and Project
 Initialization inspect them without mutation. Missing checkouts or skills warn
 without changing the ordinary exit status. Restore the recorded checkout or
-re-enable from its new location. Explicit QA selection commands exit 2 if the
-QA step warns. Recover from unreadable or corrupt state with explicit opt-out.
+re-enable from its new location with `--force` to relink. Explicit QA selection
+commands exit 2 if the QA step warns. Recover from unreadable or corrupt state with explicit opt-out.
 
 Disable with `booley bootstrap --without-qa-skills`. Only links owned by the
 independent `.booley-qa-skill-links.json` manifest are removed; product links,

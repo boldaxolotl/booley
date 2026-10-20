@@ -633,8 +633,8 @@ def _skill_report_error(report: SkillLinkReport) -> str:
 
 def _qa_warning(detail: str) -> BootstrapFinding:
     recovery = (
-        "Restore the recorded source checkout, re-enable with "
-        "`booley bootstrap --with-qa-skills`, or recover with "
+        "Restore the recorded source checkout, re-enable from its new location with "
+        "`booley bootstrap --with-qa-skills --force`, or recover with "
         "`booley bootstrap --without-qa-skills`."
     )
     return BootstrapFinding("qa-skills", BootstrapState.WARNING, f"{detail} {recovery}")

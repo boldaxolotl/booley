@@ -443,9 +443,14 @@ def test_missing_qa_source_warns_without_git(tmp_path, monkeypatch, consumer, mi
     skills = tmp_path / "home" / ".agents" / "skills"
 
     def entries() -> dict[Path, object]:
-        return {p: p.readlink() if p.is_symlink() else p.read_bytes() for p in skills.iterdir()}
+        # Windows junctions are not symlinks; realpath covers links, junctions and dangling links.
+        return {
+            p: p.read_bytes() if p.is_file() and not p.is_symlink() else os.path.realpath(p)
+            for p in skills.iterdir()
+        }
 
     owned = entries()
+    assert len(owned) > len(bootstrap.QA_SKILL_NAMES)  # QA links plus their manifest
     (root / missing).rename(tmp_path / "moved")
     monkeypatch.setattr(subprocess, "Popen", Mock(side_effect=AssertionError("QA ran Git")))
     result = {
