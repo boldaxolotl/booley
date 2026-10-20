@@ -39,6 +39,7 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_OUT_OF_SCOPE,
 )
 from booley.flows.cli_help import CliHelp
+from booley.flows.endpoint_diff import read_source_dirs_from_toml
 from booley.flows.execution_persistence import (
     EvidenceDiscarded,
     done_findings_require_approval_for,
@@ -49,7 +50,6 @@ from booley.mcp.base import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
     McpToolResult,
-    read_source_dirs_from_toml,
 )
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception

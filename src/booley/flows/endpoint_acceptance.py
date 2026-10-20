@@ -459,12 +459,11 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
             _retain_partial_campaign_acceptance(endpoint, outcome, campaign_outcomes)
             raise
         return
-    result = endpoint._adapt_outcome(outcome)
     if endpoint._state is not None and endpoint._state._file_path is not None:
         endpoint.state.work_dir = str(Path(endpoint.args.work_dir).resolve())
-        endpoint._pre_save_hook(result)
+        endpoint._pre_save_hook(outcome)
     reset_keys: list[str] = []
-    if result.exit_code == EXIT_SUCCESS and endpoint.code_modifying:
+    if outcome.exit_code == EXIT_SUCCESS and endpoint.code_modifying:
         reset_keys = endpoint.invalidate_dependent_criteria()
         endpoint._record_acceptance_changes(
             [
@@ -479,7 +478,7 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
                 for key in reset_keys
             ]
         )
-    criteria_set = [result.criterion_key] if result.criterion_key else []
+    criteria_set = [outcome.criterion_key] if outcome.criterion_key else []
     criteria_set.extend(f"~{key}" for key in reset_keys)
     endpoint._pending_criteria_set = tuple(criteria_set)
 
