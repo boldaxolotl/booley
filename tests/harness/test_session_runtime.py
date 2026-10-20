@@ -2740,6 +2740,32 @@ class TestImageDriftWarning:
         ):
             sr.up(workspace)
 
+    def test_image_comparison_uses_shared_dispatch(self, workspace, monkeypatch):
+        assert callable(getattr(sr.idk, "compare_issued_image", None)), (
+            "shared image dispatch is missing"
+        )
+        calls = []
+        monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda root: "configured")
+
+        def compare(*args, **kwargs):
+            calls.append((args, kwargs))
+            return sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
+
+        monkeypatch.setattr(sr.idk, "compare_issued_image", compare)
+        sr._warn_on_image_drift({"image": "issued-tag"}, workspace)
+        assert calls == [(("issued-tag", "configured"), {"project_root": workspace})]
+
+    def test_equivalent_image_emits_one_debug_note(self, workspace, caplog, monkeypatch):
+        self.test_same_source_tag_move_is_silent(workspace, caplog, monkeypatch)
+        notes = [
+            record
+            for record in caplog.records
+            if "moved to an equivalent Sandbox Image" in record.message
+        ]
+        assert len(notes) == 1
+        assert notes[0].levelname == "DEBUG"
+        assert not any(record.levelname == "WARNING" for record in caplog.records)
+
     def test_spec_vs_toml_drift_warns_and_names_the_fix(self, wired, caplog, monkeypatch):
         from booley.runtime.booley_dir import reset_cache
 
