@@ -413,6 +413,21 @@ def test_observers_read_campaign_blockers_without_writing(
     assert sorted(path.read_bytes() for path in logs.rglob("*") if path.is_file()) == before
 
 
+def test_replay_reads_a_pending_idle_campaign_only_through_its_reader(
+    two: SimpleNamespace, campaign: _Campaign
+) -> None:
+    """An idle, failure-free pending campaign blocks a reader-less replay and no other."""
+    from booley.goals.flow_execution import GoalFlowExecution
+
+    _record(two, "run-0", [run_row(A), run_row(B)])
+    campaign.start("run-1")
+    state = load_goal_state(GoalStore(two.control), two.record)
+    assert GoalFlowExecution(
+        bind(two, "run-2"), campaign_reader=campaign.read
+    ).criterion_is_current(state, SIM_KEY)
+    assert not GoalFlowExecution(bind(two, "run-2")).criterion_is_current(state, SIM_KEY)
+
+
 def test_registration_refuses_malformed_content() -> None:
     good = CampaignRegistration(
         "c", MANIFEST_SHA, "/x/campaign/manifest.json", {}, {}, "2026-10-13T10:00:00Z"
