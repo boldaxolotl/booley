@@ -179,7 +179,7 @@ def inspect_image_metadata(
     *,
     executable: str = "docker",
 ) -> ImageMetadata | None:
-    """Return bounded labels/environment for exactly *reference*, or ``None``."""
+    """Return labels/environment for exactly *reference*, or ``None``."""
     from booley.runtime.image_identity import decode_image_metadata
 
     try:
@@ -187,8 +187,6 @@ def inspect_image_metadata(
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
     if result.returncode != 0:
-        return None
-    if len(result.stdout) > 1_048_576:
         return None
     try:
         document = json.loads(result.stdout)
@@ -212,6 +210,23 @@ def compare_issued_build(image: str, *, executable: str = "docker") -> Compariso
     if expected is None or observed is None:
         return Comparison(Status.UNKNOWN)
     return compare_build_identity(expected, build_identity(observed))
+
+
+def compare_issued_image(
+    spec_image: str, configured: str, *, project_root: Path, executable: str = "docker"
+) -> Comparison:
+    """Compare issued selection using managed provenance or external exact IDs."""
+    from booley.runtime import project_image
+    from booley.runtime.image_identity import Comparison, Status
+    from booley.runtime.image_provenance import is_local_image_id
+
+    if not is_local_image_id(spec_image):
+        return Comparison(Status.MISMATCH)
+    if project_image.is_managed_sandbox_image(project_root, configured):
+        return compare_issued_selection(
+            spec_image, configured, project_root=project_root, executable=executable
+        )
+    return compare_issued_reference(spec_image, configured, executable=executable)
 
 
 def compare_issued_selection(
