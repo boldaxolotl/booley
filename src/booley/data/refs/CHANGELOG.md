@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Verilator `make_options` and ambient Make variables (`OBJCACHE`, `CCACHE_*`,
+  `MAKEFLAGS`, and the like) are no longer rejected. Booley passes them through
+  to Make and its managed compiler-cache environment is unchanged; a Make
+  override of a managed name replaces Booley's value and may reduce cache hits
+  or relocate the cache.
+
 - SIM Goal baseline observations now run with initialization's directory-only
   scratch ignore rule. An unignored baseline scratch directory identifies the
   expected `/.baseline-wt-*/` rule and the selected `.gitignore` policy file.

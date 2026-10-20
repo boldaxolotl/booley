@@ -114,20 +114,21 @@ above its target. This is measured soft eviction behavior, not a hard quota or
 an assertion that a sibling's smallest target governs the whole Project.
 
 Generation disposal between completed lab batches preserved the shared cache;
-subsequent builds reused its entries. Snapshot regression tests preserve adjacent
+subsequent builds reused its entries. At the time of measurement, snapshot regression tests preserved adjacent
 authored/runtime files while excluding only the legacy compiler-cache subtree.
 
-## Reproduce and verification
+## Ongoing verification
 
-Fetch the pinned public `picorv32.v`, then run
-`tests/docker/compiler_cache_acceptance.py --rtl <source> --project <case>` inside
-an issued candidate Sandbox. The `compiler_cache_make_probe.py` helper must sit
-beside it. Use `--revision`, `--trace`, `--coverage`, `--harness cocotb`, `--debug`,
-`--max-size`, and `--disabled` for the recorded cases. Give each repetition a new
-Project; recreate its Sandbox with the same issued Booley Directory owner. Build the
-baseline with the pre-change Booley Python sources in the same pinned image.
+The one-off measurement scripts have been retired; the results above and the
+linked machine-readable evidence remain the historical record from 30 SEP 2026.
+Current CI runs
+[`test_verilator_compiler_cache_smoke.py`](../../../tests/smoke/test_verilator_compiler_cache_smoke.py)
+in the coverage-release step inside the Booley Sandbox Image. It checks that an
+RTL edit is reflected while unchanged objects hit the cache, and that concurrent
+builds share the cache with independent correct results. The pytest-configuration
+suite pins this smoke test in that step.
 
-Complete Ruff check/format gates pass. The final full test suite
+At the time of the measurement, complete Ruff check/format gates passed. The final full test suite
 passed **15,260 tests, 73 skipped**, including review regressions for inherited
 Make precedence, eval forms, broken selected-config links, and compiler-directory
 PATH availability. The real Docker
