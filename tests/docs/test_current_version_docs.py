@@ -56,12 +56,6 @@ class ExceptionRule:
 
 ALLOWLIST = (
     ExceptionRule(
-        "docs/user/DOCTOR.md",
-        "qualify; legacy health verdict details unavailable.",
-        "Current deep-status diagnostic literal for unknown persisted health details.",
-        1,
-    ),
-    ExceptionRule(
         "docs/user/CONFIG.md",
         "Doctor and `booley init` report retired or deprecated settings with the exact fix.",
         "The single general pointer to user-visible migration diagnostics.",
