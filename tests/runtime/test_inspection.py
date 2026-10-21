@@ -679,8 +679,6 @@ class TestDevcontainerSpecStaleness:
         old_id = "sha256:" + "a" * 64
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id)
         dc.write_devcontainer(tmp_path, spec)
-        # Real temporary-directory Git inspection reports no tracked spec.
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         monkeypatch.setattr(
             inspection.idk,
             "compare_issued_selection",
@@ -688,25 +686,7 @@ class TestDevcontainerSpecStaleness:
                 inspection.image_identity.Status.MATCH
             ),
         )
-        rec = _Rec()
-
-        _record_report(
-            inspection.inspect_runtime(
-                inspection.RuntimeInspectionRequest(
-                    tmp_path,
-                    project_image.project_image_name(tmp_path),
-                    None,
-                    declared_provider=None,
-                    expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
-                    if doctor.nangate_pdk.is_ready()
-                    else None,
-                )
-            ).configuration,
-            passed=rec.p,
-            warned=rec.w,
-            failed=rec.f,
-            noted=rec.n,
-        )
+        rec = self._run(tmp_path, monkeypatch, image=project_image.project_image_name(tmp_path))
 
         assert rec.fails() == []
         assert not any(level == "warn" for level, _message in rec.events)
@@ -717,7 +697,6 @@ class TestDevcontainerSpecStaleness:
             tmp_path,
             dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
         )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         monkeypatch.setattr(
             inspection.idk,
             "compare_issued_selection",
@@ -726,19 +705,7 @@ class TestDevcontainerSpecStaleness:
                 "sandbox_flavor standard -> riscv",
             ),
         )
-        rec = _Rec()
-
-        _record_report(
-            inspection.inspect_runtime(
-                inspection.RuntimeInspectionRequest(
-                    tmp_path, project_image.project_image_name(tmp_path), None
-                )
-            ).configuration,
-            passed=rec.p,
-            warned=rec.w,
-            failed=rec.f,
-            noted=rec.n,
-        )
+        rec = self._run(tmp_path, monkeypatch, image=project_image.project_image_name(tmp_path))
 
         assert any(level == "warn" and "stale" in message for level, message in rec.events)
 
@@ -748,7 +715,6 @@ class TestDevcontainerSpecStaleness:
             tmp_path,
             dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
         )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         monkeypatch.setattr(
             inspection.idk,
             "compare_issued_reference",
@@ -756,17 +722,7 @@ class TestDevcontainerSpecStaleness:
                 inspection.image_identity.Status.MISMATCH
             ),
         )
-        rec = _Rec()
-
-        _record_report(
-            inspection.inspect_runtime(
-                inspection.RuntimeInspectionRequest(tmp_path, "custom-sandbox", None)
-            ).configuration,
-            passed=rec.p,
-            warned=rec.w,
-            failed=rec.f,
-            noted=rec.n,
-        )
+        rec = self._run(tmp_path, monkeypatch, image="custom-sandbox")
 
         assert any(level == "warn" and "stale" in message for level, message in rec.events)
 
@@ -833,28 +789,9 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         auth_token.store_token("sk-ant-oat01-stored")
-        rec = _Rec()
-        # Real temporary-directory Git inspection reports no tracked spec.
-        monkeypatch.setattr(idk, "image_id", lambda image: image)
-        _record_report(
-            inspection.inspect_runtime(
-                inspection.RuntimeInspectionRequest(
-                    tmp_path,
-                    dc.SANDBOX_IMAGE,
-                    None,
-                    declared_provider=None,
-                    expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
-                    if doctor.nangate_pdk.is_ready()
-                    else None,
-                )
-            ).configuration,
-            passed=rec.p,
-            warned=rec.w,
-            failed=rec.f,
-            noted=rec.p,
-        )
+        rec = self._run(tmp_path, monkeypatch)
         assert rec.fails() == []
         assert any(lvl == "warn" and "booley auth" in m and "--seed" in m for lvl, m in rec.events)
 
@@ -996,20 +933,24 @@ def test_host_inspection_project_sandbox_resolution(
     assert any("multiple running Sandboxes" in message for message in messages) is duplicate
 
 
-def test_spec_warning_appends_one_owner_selected_workflow(tmp_path, monkeypatch):
+def test_inspection_selects_drift_remedy_once(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
     from booley.audit.diagnostic_results import Findings
     from booley.runtime import inspection, session_runtime
 
-    monkeypatch.setattr(
-        session_runtime, "sandbox_remedy", lambda _root: "run `booley session refresh` on the host"
-    )
+    remedy = Mock(return_value="run `booley session refresh` on the host")
+    monkeypatch.setattr(session_runtime, "sandbox_remedy", remedy)
+    monkeypatch.setattr(inspection.runtime_context, "inside_session_runtime", lambda: False)
     request = inspection.RuntimeInspectionRequest(tmp_path, "booley-sandbox", None)
     report = Findings()
     inspection._spec_warning(request, report, "desired specification changed")
-    assert len(report.report().findings) == 1
-    message = report.report().findings[0].message
-    assert message.count("booley session refresh") == 1
-    assert "init --seed" not in message
+    inspection._check_issued_session_runtime(request, report)  # no devcontainer.json
+    findings = report.report().findings
+    assert len(findings) == 2
+    for item in findings:
+        assert f"{item.message} {item.fix}".count("booley session refresh") == 1
+    remedy.assert_called_once_with(tmp_path)
 
 
 def test_host_inspection_reports_current_issuance_drift(
