@@ -23,10 +23,7 @@ from ci_changes import build_test_matrix
 
 _FLAGS = r"junitxml|record|evidence|json|markdown|ci-shard-manifest|ci-timing-output"
 _DIAGNOSTIC_ENV = ("BOOLEY_PYTEST_TIMING_FILE", "BOOLEY_PYTEST_EVIDENCE_DIR")
-_OUTPUT_HELPERS = (
-    "ci_run_metrics.py",
-    "base_package_inventory.py",
-)
+_OUTPUT_HELPERS = ("ci_run_metrics.py",)
 _EXPORT_PROBES = {"verify_openroad_runtime.sh": "/evidence/openroad-gui.log"}
 _VALUE = r'("[^"]+"|\$\{\{.*?\}\}[^\s]*|[^\s]+)'
 
