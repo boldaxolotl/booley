@@ -9,6 +9,7 @@ must independently validate authority; a diagnostic report grants no authority.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -59,6 +60,14 @@ class RuntimeInspectionRequest:
     fpga_enabled: bool = False
     expected_cache_mount: str | None = None
     booley_dir: Path | None = None
+
+    @functools.cached_property
+    def remedy(self) -> str:
+        """Host workflow for this inspection, selected once on first use.
+
+        One request is one inspection: callers build a fresh request per run.
+        """
+        return session_runtime.sandbox_remedy(self.project_root)
 
 
 @dataclass(frozen=True)
@@ -169,7 +178,7 @@ def _provider_persistence_current(
             f"'{request.declared_provider}': the Booley MCP entry is registered for "
             f"'{spec_app}', so a '{request.declared_provider}' session sees no Booley "
             f"MCP tools, and '{request.declared_provider}' home-state is not persisted",
-            _spec_remedy(request),
+            request.remedy,
         )
         return False
     if spec_state_is_persisted(spec) is False:
@@ -285,7 +294,7 @@ def _viewer_extensions_current(
         report.note(
             "devcontainer.json predates the Verilog/SystemVerilog + Tcl "
             "highlighting extensions: RTL and SDC/XDC constraints render as "
-            "plain text in attached VS Code windows; " + _spec_remedy(request)
+            "plain text in attached VS Code windows; " + request.remedy
         )
         return False
     return True
@@ -306,21 +315,15 @@ def _preview_terminal_current(
         report.note(
             "devcontainer.json predates the Python terminal activation fix: a "
             "synced Python extension can inject a delayed `source .venv/bin/activate` "
-            "into new terminals; " + _spec_remedy(request)
+            "into new terminals; " + request.remedy
         )
         return False
     return True
 
 
-def _spec_remedy(request: RuntimeInspectionRequest) -> str:
-    from booley.runtime.session_runtime import sandbox_remedy
-
-    return sandbox_remedy(request.project_root)
-
-
 def _spec_warning(request: RuntimeInspectionRequest, report: Findings, message: str) -> None:
     report.warn(
-        message + "; " + _spec_remedy(request),
+        message + "; " + request.remedy,
         check_id="interactive.devcontainer-drift",
         subject=str(devcontainer_path(request.project_root)),
     )
@@ -342,7 +345,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
         report.fail(
             f"Sandbox host issuance is invalid: {exc}",
-            _spec_remedy(request),
+            request.remedy,
         )
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
@@ -350,12 +353,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
     if not request.docker_exe:
         report.skip("live issued Sandbox labels/topology - container runtime unavailable")
         return
-    _check_runtime_booley_version(
-        request.docker_exe,
-        issuance.image,
-        report,
-        project_root=request.project_root,
-    )
+    _check_runtime_booley_version(request, request.docker_exe, issuance.image, report)
     _inspect_live_runtime(request, spec, issuance, report)
 
 
@@ -442,12 +440,7 @@ def _inspect_live_runtime(
         report.pass_("live Sandbox state matches the current host issuance")
     else:
         report.pass_("no stale live Sandbox resources for this Project")
-    _check_issued_license_relay(
-        request.project_root,
-        containers,
-        issuance,
-        report,
-    )
+    _check_issued_license_relay(request, containers, issuance, report)
 
 
 def _list_issued_containers(
@@ -476,20 +469,14 @@ def _list_issued_containers(
 
 
 def _check_runtime_booley_version(
-    docker_exe: str,
-    image: str,
-    report: Findings,
-    *,
-    project_root: Path | None = None,
+    request: RuntimeInspectionRequest, docker_exe: str, image: str, report: Findings
 ) -> None:
     """Require comparable host and issued-image Booley identities to agree."""
     result = idk.compare_issued_build(image, executable=docker_exe)
     if result.status is image_identity.Status.MISMATCH:
         report.fail(
             f"host and issued Sandbox Image contain different Booley code ({result.detail})",
-            session_runtime.sandbox_remedy(project_root)
-            if project_root is not None
-            else "on the host run `booley session refresh`",
+            request.remedy,
         )
         return
     if result.status is image_identity.Status.MATCH:
@@ -532,9 +519,13 @@ def _runtime_path_exposed(path: Path) -> bool:
 
 
 def _check_issued_license_relay(
-    project_root: Path, containers: list[str], issuance: runtime_spec.Issuance, report: Findings
+    request: RuntimeInspectionRequest,
+    containers: list[str],
+    issuance: runtime_spec.Issuance,
+    report: Findings,
 ) -> None:
     """Validate exact live relay bytes, endpoints, aliases, and hardening."""
+    project_root = request.project_root
     try:
         profile = runtime_spec.requested_license(project_root)
     except runtime_spec.RuntimeSpecError as exc:
@@ -548,7 +539,7 @@ def _check_issued_license_relay(
     if not isinstance(image_id, str):
         report.fail(
             "issued License Profile lacks an immutable relay image",
-            session_runtime.sandbox_remedy(project_root),
+            request.remedy,
         )
         return
     relay = resources_for_session(str(project_root.resolve()))
