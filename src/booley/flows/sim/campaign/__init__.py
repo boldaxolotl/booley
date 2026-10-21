@@ -61,6 +61,7 @@ from .inspection import (
     read_invocation_pre_sim_firings,
     read_pre_sim_firings,
     recover_retained_campaign_resources,
+    reread_pre_sim_firings,
     retained_campaign_lock,
     started_campaign,
 )
@@ -148,6 +149,7 @@ __all__ = [
     "read_invocation_pre_sim_firings",
     "read_pre_sim_firings",
     "recover_retained_campaign_resources",
+    "reread_pre_sim_firings",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
     "retained_campaign_lock",
