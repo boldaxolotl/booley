@@ -14,12 +14,11 @@ import sys
 import sysconfig
 import tempfile
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from booley.config.eda import EdaConfig
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.core.boundary import (
     BoundaryError,
@@ -441,13 +440,14 @@ def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> 
     return image_id
 
 
+@contextlib.contextmanager
 def _issuance_requirements(
     project_root: Path,
     spec: dict[str, Any],
     prior: Issuance | None = None,
     *,
     include_relay_identity: bool,
-):
+) -> Iterator[eda_requirements.SessionEdaRequirements]:
     """Resolve EDA authority only when the runtime has an active consumer.
 
     A Project without an active Vivado Flow requests neither a host install nor
@@ -459,18 +459,15 @@ def _issuance_requirements(
     except BoundaryError as exc:
         raise RuntimeSpecError(f"devcontainer.json {exc}") from exc
     license_marker = "XILINXD_LICENSE_FILE" in container_env
-    expected = (
-        eda_requirements.ExpectedEdaIdentity(prior.installation, prior.license_profile)
-        if prior is not None
-        else None
+    prior_eda = license_marker or (
+        prior is not None and (prior.installation is not None or prior.license_profile is not None)
     )
-    return eda_requirements.resolve_for_session(
+    with eda_requirements.lease_requirements(
         project_root,
         vivado_enabled=flow_enabled("fpga", project_root),
-        license_marker=license_marker,
-        expected=expected,
-        include_relay_identity=include_relay_identity,
-    )
+        prior_eda=prior_eda,
+    ) as leased:
+        yield eda_requirements.with_relay_identity(leased) if include_relay_identity else leased
 
 
 def seal(project_root: Path, spec: dict[str, Any]) -> str:
@@ -528,19 +525,6 @@ def _seal_with_requirements(
         run_args += ["--label", label]
     _validate_generated_spec(project, spec, requirements, provisional)
     return digest
-
-
-def requested_host_installation(
-    project_root: Path,
-) -> tuple[EdaConfig | None, authority.Installation | None]:
-    """Resolve the grant-selected installation for a host-provisioned Project."""
-    try:
-        return eda_requirements.requested_host_installation(
-            project_root,
-            vivado_enabled=flow_enabled("fpga", project_root),
-        )
-    except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
-        raise RuntimeSpecError(str(exc)) from exc
 
 
 def requested_license(
@@ -607,11 +591,11 @@ def inspect_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issua
 def _prepare_spec(
     project: Path,
     build_spec: SpecBuilder,
-    requirements: eda_requirements.SessionRequirementsSnapshot,
+    requirements: eda_requirements.SessionEdaRequirements,
     *,
     expected_image_id: str | None,
 ) -> PreparedSessionSpec:
-    inputs = _session_spec_inputs(project, requirements.build)
+    inputs = _session_spec_inputs(project, requirements)
     project_data_path = inputs.project_data_source
     spec = build_spec(inputs)
     if not isinstance(spec, dict):
@@ -625,7 +609,7 @@ def _prepare_spec(
         project_data_path,
     )
     _pin_devcontainer_mount(spec, project)
-    digest = _seal_with_requirements(project, spec, project_data_path, requirements.runtime)
+    digest = _seal_with_requirements(project, spec, project_data_path, requirements)
     # The Booley Directory layout is derived from the sealed spec (and the pinned
     # image's alias capability), so it belongs to the prospective issuance, not
     # to the host inputs: issue_prepared re-derives the issuance and compares
@@ -634,7 +618,7 @@ def _prepare_spec(
         project,
         spec,
         digest,
-        requirements.runtime,
+        requirements,
         project_data_path,
     )
     return PreparedSessionSpec(spec, digest, inputs, prospective)
@@ -659,29 +643,39 @@ def _prospective_issuance(
 
 def _session_spec_inputs(
     project: Path,
-    requirements: eda_requirements.SessionBuildRequirements,
+    requirements: eda_requirements.SessionEdaRequirements,
 ) -> SessionSpecInputs:
+    installation = requirements.installation
+    license_environment = (
+        {"XILINXD_LICENSE_FILE": requirements.license_environment}
+        if requirements.license_environment is not None
+        else {}
+    )
     return SessionSpecInputs(
         project_data_source=authorized_project_data_source(project),
-        trusted_eda_mounts=requirements.trusted_mounts,
+        trusted_eda_mounts=(
+            ((installation.source, CONTAINER_TARGET),) if installation is not None else ()
+        ),
         fixed_container_environment=tuple(
             sorted(
                 {
-                    **dict(requirements.container_environment),
+                    **license_environment,
                     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
                     **_project_identity_environment(authorized_project_data_source(project)),
                 }.items()
             )
         ),
-        installation_name=requirements.installation_name,
-        license_profile_name=requirements.license_profile_name,
+        installation_name=installation.name if installation else None,
+        license_profile_name=(
+            requirements.license_profile.name if requirements.license_profile else None
+        ),
     )
 
 
 def _revalidate_prepared(
     project: Path,
     prepared: PreparedSessionSpec,
-    leased: eda_requirements.SessionRequirementsSnapshot,
+    leased: eda_requirements.SessionEdaRequirements,
     current_builder: Callable[[], SpecBuilder] | None,
 ) -> None:
     if current_builder is not None:
@@ -690,7 +684,7 @@ def _revalidate_prepared(
         )
         if current != prepared:
             raise RuntimeSpecError("Sandbox inputs changed after specification preparation")
-    current_inputs = _session_spec_inputs(project, leased.build)
+    current_inputs = _session_spec_inputs(project, leased)
     if prepared.inputs != current_inputs:
         raise RuntimeSpecError(
             "Sandbox authority changed after its specification was prepared: "
@@ -700,7 +694,7 @@ def _revalidate_prepared(
         project,
         prepared.spec,
         prepared.digest,
-        leased.runtime,
+        leased,
         prepared.inputs.project_data_source,
     )
     if prepared.prospective_issuance != prospective:
@@ -726,13 +720,12 @@ def issue_prepared(
     if prepared.digest != _spec_digest(prepared.spec):
         raise RuntimeSpecError("prepared Sandbox specification digest is inconsistent")
     try:
-        with eda_requirements.lease_build_requirements(
+        with eda_requirements.lease_requirements(
             project,
             vivado_enabled=flow_enabled("fpga", project),
         ) as leased:
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
-                project,
                 leased,
                 force_relay=force_dependencies,
             )
@@ -746,50 +739,32 @@ def issue_prepared(
         raise RuntimeSpecError(str(exc)) from exc
 
 
-def issue(
-    project_root: Path,
-    prepared_or_spec: PreparedSessionSpec | SpecBuilder | dict[str, Any],
-    spec_path: Path | None = None,
-    *,
-    expected_image_id: str | None = None,
-    force_dependencies: bool = False,
-) -> Issuance:
-    """Issue a prepared/built spec, retaining the legacy document call shape."""
-    if callable(prepared_or_spec):
-        project = project_root.resolve(strict=True)
-        try:
-            with eda_requirements.lease_build_requirements(
+def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
+    """Validate trusted inputs and atomically issue the exact generated spec."""
+    project = project_root.resolve(strict=True)
+    project_data_source = str(authorized_project_data_source(project))
+    try:
+        with _issuance_requirements(project, spec, include_relay_identity=True) as requirements:
+            return _issue_document_with_requirements(
                 project,
-                vivado_enabled=flow_enabled("fpga", project),
-            ) as leased:
-                prepared = _prepare_spec(
-                    project,
-                    prepared_or_spec,
-                    leased,
-                    expected_image_id=expected_image_id,
-                )
-                requirements = eda_requirements.prepare_runtime_dependencies(
-                    project,
-                    leased,
-                    force_relay=force_dependencies,
-                )
-                return _persist_prepared(project, prepared, requirements=requirements)
-        except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
-            raise RuntimeSpecError(str(exc)) from exc
-    if isinstance(prepared_or_spec, PreparedSessionSpec):
-        if spec_path is not None:
-            raise TypeError("spec_path is not accepted with a prepared Sandbox spec")
-        return _persist_prepared(project_root, prepared_or_spec)
-    if spec_path is None:
-        raise TypeError("spec_path is required when issuing a spec dictionary")
-    return _issue_document(project_root, prepared_or_spec, spec_path)
+                spec,
+                spec_path,
+                requirements,
+                project_data_source,
+            )
+    except (
+        FlowConfigError,
+        authority.AuthorityError,
+        eda_requirements.SessionRequirementsError,
+    ) as exc:
+        raise _runtime_authority_error(spec, exc) from exc
 
 
 def _persist_prepared(
     project_root: Path,
     prepared: PreparedSessionSpec,
     *,
-    requirements: eda_requirements.SessionEdaRequirements | None = None,
+    requirements: eda_requirements.SessionEdaRequirements,
     reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
@@ -818,8 +793,6 @@ def _persist_prepared(
             task_transaction = dashboard_tasks.reconcile(
                 project, prepared.inputs.project_data_source
             )
-        if requirements is None:
-            return _issue_document(project, prepared.spec, written)
         return _issue_document_with_requirements(
             project,
             prepared.spec,
@@ -892,27 +865,6 @@ def _restore_keeper(project: Path, image_id: str | None) -> None:
         )
 
 
-def _issue_document(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
-    """Validate trusted inputs and atomically issue the exact generated spec."""
-    project = project_root.resolve(strict=True)
-    project_data_source = str(authorized_project_data_source(project))
-    try:
-        with _issuance_requirements(project, spec, include_relay_identity=True) as requirements:
-            return _issue_document_with_requirements(
-                project,
-                spec,
-                spec_path,
-                requirements,
-                project_data_source,
-            )
-    except (
-        FlowConfigError,
-        authority.AuthorityError,
-        eda_requirements.SessionRequirementsError,
-    ) as exc:
-        raise _runtime_authority_error(spec, exc) from exc
-
-
 def _issue_document_with_requirements(
     project: Path,
     spec: dict[str, Any],
@@ -964,7 +916,9 @@ def _validate_image_identity(project: Path, spec: dict[str, Any], stamp: Issuanc
         raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
 
 
-def _validate_grant_identity(stamp: Issuance, requirements: Any) -> None:
+def _validate_grant_identity(
+    stamp: Issuance, requirements: eda_requirements.SessionEdaRequirements
+) -> None:
     expected = {
         "installation": requirements.installation.name if requirements.installation else None,
         "license_profile": (
