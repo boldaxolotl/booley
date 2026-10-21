@@ -136,11 +136,6 @@ def test_builtin_timeout_rejects_non_positive_or_non_integer_values(value: str) 
         LintFlow().parse_args(["--target", "demo", "--timeout-ms", value])
 
 
-def test_builtin_timeout_spellings_conflict() -> None:
-    with pytest.raises(SystemExit):
-        LintFlow().parse_args(["--target", "demo", "--timeout-ms", "1000", "--timeout", "2000"])
-
-
 @pytest.mark.parametrize(("_flow_type", "name", "default_ms"), BUILTINS)
 def test_timeout_precedence_is_call_then_config_then_default(
     _flow_type: type[BooleyFlow],

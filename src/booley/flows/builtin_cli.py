@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.flows.cli_help import SurfaceHelp
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
 from booley.flows.request import FlowRequest
 from booley.runtime.endpoint_execution import ExecutionResult
@@ -17,7 +19,9 @@ if TYPE_CHECKING:
     from booley.flows.execution_persistence import FlowExecutionAdapter
 
 
-def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.ArgumentParser:
+def build_parser(
+    flow: BuiltinFlow, *, human: bool = False, project: Path | None = None
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=flow.name,
         description=flow.description,
@@ -46,28 +50,30 @@ def build_parser(flow: BuiltinFlow, *, human: bool = False) -> argparse.Argument
         from booley.flows.cli_selection import apply_project_selection
 
         add_human_options(parser)
-        apply_project_selection(parser)
+        apply_project_selection(parser, project)
         groups = shared_help(flow.name, target_required=flow.target_required)
         presented = present_command(parser, flow)
         return project_help(presented, groups + flow.argument_adapter.help_groups)
     return parser
 
 
-def build_cli_parser(flow: BuiltinFlow) -> argparse.ArgumentParser:
+def build_cli_parser(
+    flow: BuiltinFlow, invocation: CliInvocation | None = None
+) -> argparse.ArgumentParser:
     """Layer human presentation onto a fresh parser, outside the MCP schema."""
     from booley.flows.cli_help import add_quiet
-    from booley.flows.cli_selection import transport_invocation
 
-    human = not transport_invocation()
-    parser = build_parser(flow, human=human)
+    invocation = invocation or CliInvocation.of(flow)
+    human = not invocation.transport
+    parser = build_parser(flow, human=human, project=invocation.project)
     add_quiet(parser, human=human)
     return parser
 
 
-def _parse_cli(flow: BuiltinFlow, argv: list[str] | None):
+def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
     from booley.flows.cli_selection import normalize_endpoint_args
 
-    parser = build_cli_parser(flow)
+    parser = build_cli_parser(flow, invocation)
     args = parser.parse_args(argv)
     quiet = vars(args).pop("_console_quiet")
     normalize_endpoint_args(args)
@@ -79,7 +85,7 @@ def _parse_cli(flow: BuiltinFlow, argv: list[str] | None):
 
 
 def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowRequest:
-    return _parse_cli(flow, argv)[0]
+    return _parse_cli(flow, argv, CliInvocation.of(flow))[0]
 
 
 def execute_cli(
@@ -88,13 +94,13 @@ def execute_cli(
     *,
     adapter: FlowExecutionAdapter | None = None,
 ) -> ExecutionResult:
-    from booley.flows.cli_selection import transport_invocation
     from booley.flows.execution_persistence import StandaloneFlowExecution
     from booley.flows.flow_session import FlowSession
 
-    request, quiet = _parse_cli(flow, argv)
+    invocation = CliInvocation.of(flow)
+    request, quiet = _parse_cli(flow, argv, invocation)
     flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
-    if not transport_invocation() and not flow.context._acceptance_recorder.acceptance_identity():
+    if not invocation.transport and not flow.context._acceptance_recorder.acceptance_identity():
         from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
         warn_cli_goal_recording(request.work_dir)
@@ -103,7 +109,7 @@ def execute_cli(
     flow.context._console_publication_requested = True
     if (
         quiet
-        or transport_invocation()
+        or invocation.transport
         or os.environ.get("BOOLEY_RUNTIME_DIR")
         or not isinstance(flow.context.execution_adapter, StandaloneFlowExecution)
         or getattr(request, "dry_run", False)

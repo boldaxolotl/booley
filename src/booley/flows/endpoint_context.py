@@ -10,12 +10,16 @@ import argparse
 from abc import abstractmethod
 
 from booley.flows import endpoint_cli, endpoint_session
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 
 
 class EndpointContext(EndpointState):
+    # The in-process caller's explicit CLI origin and outer Project; None reads the env marker.
+    _cli_invocation: CliInvocation | None = None
+
     def __init__(self) -> None:
         super().__init__()
         self._cli_parser: argparse.ArgumentParser | None = None
