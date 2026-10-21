@@ -24,6 +24,28 @@ on:
         required: true
         type: boolean
         default: false
+      linux_shard_count:
+        description: Ubuntu shard count per Python version for CI benchmarking (1 = complete suites)
+        required: true
+        type: choice
+        default: "1"
+        options:
+          - "1"
+          - "2"
+          - "3"
+      linux_scheduler:
+        description: pytest-xdist scheduler for the Ubuntu test legs
+        required: true
+        type: choice
+        default: loadscope
+        options:
+          - loadscope
+          - worksteal
+      linux_shard_benchmark:
+        description: Run the ordinary Python-code job set for Ubuntu shard benchmarking
+        required: true
+        type: boolean
+        default: false
       riscv_measurement:
         description: >-
           RISC-V timing arm (automatic = path-gated, reusing the published
@@ -71,6 +93,8 @@ jobs:
       required_jobs: ${{ steps.classify.outputs.required_jobs }}
       diff_base: ${{ steps.classify.outputs.diff_base }}
       test_matrix: ${{ steps.classify.outputs.test_matrix }}
+      linux_shard_count: ${{ steps.classify.outputs.linux_shard_count }}
+      linux_scheduler: ${{ steps.classify.outputs.linux_scheduler }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,7 +108,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
           FORCE_ALL: >-
-            ${{ github.event_name != 'pull_request' && !inputs.windows_shard_benchmark }}
+            ${{ github.event_name != 'pull_request' && !inputs.windows_shard_benchmark && !inputs.linux_shard_benchmark }}
           HEAD_SHA: ${{ github.sha }}
         run: >-
           python .github/scripts/ci_changes.py
@@ -92,6 +116,9 @@ jobs:
           --event-name "${EVENT_NAME}"
           --windows-shard-count "${{ inputs.windows_shard_count || '10' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
+          --linux-shard-count "${{ inputs.linux_shard_count || '1' }}"
+          --linux-scheduler "${{ inputs.linux_scheduler || 'loadscope' }}"
+          --linux-shard-benchmark "${{ inputs.linux_shard_benchmark || false }}"
           --riscv-measurement "${{ inputs.riscv_measurement || 'automatic' }}"
           --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
 
@@ -291,7 +318,7 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
-          pytest tests/ -q --tb=short -n 4 --dist=loadscope
+          pytest tests/ -q --tb=short -n 4 --dist=${{ needs.changes.outputs.linux_scheduler }}
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
@@ -319,13 +346,13 @@ jobs:
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
           BOOLEY_PYTEST_TIMING_FILE: ${{ runner.temp }}/pytest-timeouts/test-timings.jsonl
         run: >-
-          pytest tests/ -q --tb=short -n 4 --dist=worksteal
+          pytest tests/ -q --tb=short -n 4 --dist=${{ runner.os == 'Linux' && needs.changes.outputs.linux_scheduler || 'worksteal' }}
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
-          --ci-timing-model .github/ci/windows-test-timings.json
+          --ci-timing-model ${{ runner.os == 'Linux' && '.github/ci/linux-test-timings.json' || '.github/ci/windows-test-timings.json' }}
           --ci-shard-manifest "${{ runner.temp }}/shard/shard-manifest.json"
           --ci-timing-output "${{ runner.temp }}/shard/test-timings.json"
 
@@ -435,6 +462,29 @@ jobs:
           --root "${RUNNER_TEMP}/shards"
           --group windows
           --shard-count "${WINDOWS_SHARD_COUNT}"
+
+      # Manual Ubuntu shard runs only. !cancelled() keeps the Linux result
+      # visible when the Windows proof above failed.
+      - name: Download Linux shard manifests
+        if: ${{ !cancelled() && needs.changes.outputs.linux_shard_count != '1' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shard-linux-*
+          path: ${{ runner.temp }}/linux-shards
+
+      - name: Prove every Linux sharded test ran exactly once
+        if: ${{ !cancelled() && needs.changes.outputs.linux_shard_count != '1' }}
+        env:
+          LINUX_SHARD_COUNT: ${{ needs.changes.outputs.linux_shard_count }}
+        run: |
+          status=0
+          for group in linux-3.11 linux-3.14; do
+            python .github/scripts/ci_test_shards.py \
+              --root "${RUNNER_TEMP}/linux-shards" \
+              --group "${group}" \
+              --shard-count "${LINUX_SHARD_COUNT}" || status=1
+          done
+          exit "${status}"
 
   coverage:
     needs: [changes, coverage-shards]
