@@ -404,9 +404,6 @@ RUN install -d -m 0755 -o root -g root /usr/local/libexec/booley /usr/local/shar
     && chmod 0644 /usr/local/libexec/booley/base_package_inventory.py \
     && python -I /usr/local/libexec/booley/base_package_inventory.py generate \
         --output /usr/local/share/booley/base-package-inventory.json \
-    && python -I /usr/local/libexec/booley/base_package_inventory.py verify \
-        /usr/local/share/booley/base-package-inventory.json \
-    && chown root:root /usr/local/share/booley/base-package-inventory.json \
     && chmod 0644 /usr/local/share/booley/base-package-inventory.json
 USER agent
 RUN python -I /usr/local/libexec/booley/base_package_inventory.py validate \
