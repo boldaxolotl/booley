@@ -7,6 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from booley.flows.sim.campaign import codec
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
     SimulationCampaignIntegrityError,
@@ -14,21 +15,22 @@ from booley.flows.sim.campaign.codec import (
     decode_bundle_build_attempt,
     decode_executable_snapshot,
     decode_simulation_attempt,
+    decode_simulation_campaign_manifest,
     decode_simulator_bundle,
     encode_bundle_build_attempt,
     encode_executable_snapshot,
     encode_simulation_attempt,
+    encode_simulation_campaign_manifest,
     encode_simulator_bundle,
     validate_relative_path,
 )
 from booley.flows.sim.campaign.model import (
     AssertionObservation,
-    ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
     FunctionalObservation,
     SimulationAttempt,
-    SimulatorBundle,
+    create_simulation_campaign_plan,
     grade_observations,
     simulation_status_from_observations,
 )
@@ -68,7 +70,7 @@ def test_attempt_codec_is_canonical_and_immutable() -> None:
         value.document["attempt_ordinal"] = 2  # type: ignore[index]
 
 
-def test_directly_constructed_documents_deep_freeze_and_validate_on_write() -> None:
+def test_directly_constructed_documents_deep_freeze() -> None:
     source = _attempt()
     value = SimulationAttempt(source)
     source["run_directory"]["owned"] = False  # type: ignore[index]
@@ -76,9 +78,21 @@ def test_directly_constructed_documents_deep_freeze_and_validate_on_write() -> N
     with pytest.raises(TypeError):
         value.document["run_directory"]["owned"] = False  # type: ignore[index]
 
-    invalid = SimulationAttempt(_attempt() | {"attempt_ordinal": 0})
-    with pytest.raises(SimulationCampaignIntegrityError, match="positive integer"):
-        encode_simulation_attempt(invalid)
+
+def test_encoding_and_planning_never_decode_their_own_output(monkeypatch) -> None:
+    """Writers trust documents that were decoded once; they do not re-decode them."""
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    attempt = decode_simulation_attempt(canonical_json_bytes(_attempt()))
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("encoding decoded its own output")
+
+    monkeypatch.setattr(codec, "_decode", refuse)
+    assert encode_simulation_attempt(attempt) == canonical_json_bytes(attempt.document)
+    assert encode_simulation_campaign_manifest(manifest) == canonical_json_bytes(manifest.document)
+    assert create_simulation_campaign_plan(manifest).manifest is manifest
 
 
 def test_attempt_golden_fixture_is_independent_literal_bytes() -> None:
@@ -240,10 +254,6 @@ def test_bundle_and_snapshot_structural_mutations_are_rejected(mutation: str, na
         artifact["kind"] = "runtime_input"
     with pytest.raises(SimulationCampaignIntegrityError):
         decoder(canonical_json_bytes(document))
-    value_type = SimulatorBundle if name == "bundle.json" else ExecutableSnapshot
-    encoder = encode_simulator_bundle if name == "bundle.json" else encode_executable_snapshot
-    with pytest.raises(SimulationCampaignIntegrityError):
-        encoder(value_type(document))
 
 
 @pytest.mark.parametrize(

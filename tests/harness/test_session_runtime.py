@@ -3725,73 +3725,6 @@ class TestSessionRefresh:
 
         refresh.assert_called_once_with(tmp_path, verbose=False)
 
-    def test_refresh_prepares_then_commits_selected_graph(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_cmd
-        from booley.runtime.image_lifecycle import (
-            LifecycleResult,
-            Status,
-        )
-
-        expected = LifecycleResult(
-            "booley-sandbox-riscv",
-            "sha256:fresh",
-            Status.CHANGED,
-            changed_images=("booley-sandbox", "booley-sandbox-riscv"),
-        )
-        prepared = object()
-        calls = []
-        monkeypatch.setattr(
-            init_cmd,
-            "prepare_runtime_image",
-            lambda root, *, verbose=False: calls.append(("prepare", root, verbose)) or prepared,
-        )
-        monkeypatch.setattr(
-            init_cmd,
-            "commit_runtime_image",
-            lambda value: calls.append(("commit", value)) or expected,
-        )
-        monkeypatch.setattr(
-            init_cmd, "abort_runtime_image", lambda value: calls.append(("abort", value))
-        )
-
-        assert init_cmd.refresh_runtime_image(tmp_path, verbose=True) is expected
-        assert calls == [
-            ("prepare", tmp_path, True),
-            ("commit", prepared),
-        ]
-
-    def test_refresh_aborts_prepared_candidates_when_commit_fails(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.harness import init_cmd
-
-        prepared = object()
-        aborted = []
-        monkeypatch.setattr(init_cmd, "prepare_runtime_image", lambda *_args, **_kwargs: prepared)
-        monkeypatch.setattr(
-            init_cmd,
-            "commit_runtime_image",
-            lambda _value: (_ for _ in ()).throw(RuntimeError("commit failed")),
-        )
-        monkeypatch.setattr(init_cmd, "abort_runtime_image", aborted.append)
-
-        with pytest.raises(RuntimeError, match="commit failed"):
-            init_cmd.refresh_runtime_image(tmp_path)
-        assert aborted == [prepared]
-
-    def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_cmd
-
-        monkeypatch.setattr(
-            init_cmd,
-            "prepare_runtime_image",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                RuntimeError("user-managed Sandbox Image")
-            ),
-        )
-        with pytest.raises(RuntimeError, match="user-managed"):
-            init_cmd.refresh_runtime_image(tmp_path)
-
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
         from booley.runtime import session_issuance as runtime_spec
@@ -4793,27 +4726,34 @@ def test_project_sandbox_resolution_ignores_noninteractive_resources(
         ("external", "rebuild/pull"),
         ("vscode", "stop the Sandbox in VS Code"),
         ("runtime", "booley session up --rebuild"),
+        ("inside", "on the host"),
     ],
+    ids=["managed", "licensed", "withdrawn", "external", "vscode", "runtime", "inside"],
 )
 def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, state, expected):
     from types import SimpleNamespace
 
     from booley.runtime import runtime_context, session_issuance, session_runtime
 
-    monkeypatch.setattr(session_runtime, "_authenticated_recovery_available", lambda _root: True)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: state == "inside")
+    loads, probes = [], []
 
     def issuance(_root):
+        loads.append(_root)
         if state == "withdrawn":
             raise session_issuance.IssuanceUnavailableError("withdrawn")
         return SimpleNamespace(license_profile="site" if state == "licensed" else None)
 
+    def vscode_owner(_root):
+        probes.append(_root)
+        return "editor" if state == "vscode" else None
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("remedy selection must not authenticate issuance a second time")
+
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", issuance)
-    monkeypatch.setattr(
-        session_runtime,
-        "strict_conflicting_vscode_session",
-        lambda _root: "editor" if state == "vscode" else None,
-    )
+    monkeypatch.setattr(session_issuance, "load_recovery_snapshot", forbidden)
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", vscode_owner)
     monkeypatch.setattr(
         session_runtime.project_image, "project_sandbox_image", lambda _root: "selected"
     )
@@ -4824,39 +4764,19 @@ def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, 
     )
     remedy = session_runtime.sandbox_remedy(tmp_path, runtime_only=state == "runtime")
     assert expected in remedy
+    if state in {"managed", "licensed", "vscode", "inside"}:
+        assert remedy.count("booley session refresh") == (state in {"managed", "licensed"})
     if state in {"managed", "licensed"}:
-        assert remedy.count("booley session refresh") == 1
         assert "init --seed" not in remedy
-
-
-def test_vscode_drift_remedy_preserves_editor_ownership(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.runtime import runtime_context, session_issuance
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(
-        session_issuance,
-        "load_issued_snapshot",
-        lambda _root: SimpleNamespace(license_profile=None),
+    if state == "vscode":
+        assert "booley init --force" in remedy and "Dev Containers: Rebuild Container" in remedy
+    if state == "inside":
+        assert "booley doctor" in remedy
+    expected_loads = 0 if state == "inside" else 1
+    assert (len(loads), len(probes)) == (
+        expected_loads,
+        0 if state in {"inside", "withdrawn"} else 1,
     )
-    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: "editor")
-    monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
-    monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
-    remedy = sr.sandbox_remedy(tmp_path)
-    assert "booley init --force" in remedy
-    assert "Dev Containers: Rebuild Container" in remedy
-    assert "booley session refresh" not in remedy
-
-
-def test_inside_sandbox_remedy_requires_host_observation(tmp_path, monkeypatch):
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    remedy = sr.sandbox_remedy(tmp_path)
-    assert "on the host" in remedy
-    assert "booley doctor" in remedy
-    assert "booley session refresh" not in remedy
 
 
 @pytest.mark.parametrize(

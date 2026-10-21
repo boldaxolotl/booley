@@ -21,6 +21,7 @@ from .coverage_campaign import (
 )
 from .coverage_policy import CoverageCriterion
 from .coverage_provenance import coverage_digest, coverage_source_closure
+from .coverage_source_gaps import rtl_module_candidates
 from .coverage_waivers import CoverageRepositoryRoots, CoverageWaiverConfig
 from .verilator_coverage import CoverageCollectionRequest, coverage_request_finding
 from .verilator_coverage_execution import prepare_coverage_collection
@@ -92,6 +93,8 @@ class CoverageTargetPlan:
     waiver_config: CoverageWaiverConfig | None = None
     roots: CoverageRepositoryRoots | None = None
     known_targets: tuple[DurableTargetIdentity, ...] = ()
+    #: Sorted module-bearing RTL paths from the Preflight lexical scan.
+    rtl_candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,11 +166,7 @@ def _collection_recipe(
     handle: TargetHandle, inspection, closure, trace: bool
 ) -> dict[str, object]:
     """What decides a Target's coverage collection, for its recipe fingerprint."""
-    from .verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
-
     return {
-        "declaration_contract": DECLARATION_CONTRACT,
-        "declaration_options": DECLARATION_OPTIONS,
         "identity": handle.identity,
         "options": inspection.flow_options,
         "parameters": inspection.parameters,
@@ -223,6 +222,7 @@ def _prepare_target(
         known_targets=tuple(DurableTargetIdentity(item.identity) for item in catalog.list()),
         collection_request=collection,
         source_closure=freeze_coverage_mapping(closure),
+        rtl_candidates=rtl_module_candidates(inspection),
         recipe_fingerprint=coverage_digest(recipe),
         target_fingerprint=coverage_digest(
             {"core": handle.core_file.read_text(), "identity": handle.identity}
