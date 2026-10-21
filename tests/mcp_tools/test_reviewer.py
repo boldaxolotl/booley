@@ -3823,7 +3823,7 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     mock_agent, state_file, monkeypatch, transport
 ):
     from booley.core.models import AgentResult
-    from booley.flows.cli_selection import invocation_context
+    from booley.flows.cli_selection import CliInvocation
     from booley.runtime import runtime_context
     from booley.runtime.booley_dir import reset_cache
 
@@ -3851,9 +3851,9 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
         "bugs",
     ]
     for _ in range(2):
-        with invocation_context(transport=transport):
-            endpoint = ReviewerSpecialist()
-            result = endpoint.execute_cli(argv)
+        endpoint = ReviewerSpecialist()
+        endpoint._cli_invocation = CliInvocation(transport=transport)
+        result = endpoint.execute_cli(argv)
         assert result.exit_code == 0, result.outcome.report_text
         assert "explicit human approval" not in result.outcome.report_text
         assert "RESULT: REVIEWED WITH FINDINGS" in result.outcome.report_text

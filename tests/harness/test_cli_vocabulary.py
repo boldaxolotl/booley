@@ -12,8 +12,6 @@ from booley.flows.builtin_cli import build_parser, parse_request
 from booley.flows.cli_selection import (
     INVOCATION_ORIGIN_ENV,
     Duration,
-    extract_project_tail,
-    invocation_context,
     normalize_endpoint_args,
     parse_duration,
     resolve_selection,
@@ -187,6 +185,7 @@ def test_detached_endpoint_inventory():
         ["cleanup", "preview", "-C", "../b"],
         ["feedback", "list", "-C", "../b"],
         ["upgrade", "status", "-C", "../b"],
+        ["session", "down", "--project-root", "../b"],
     ],
 )
 def test_project_positions(projects, argv, monkeypatch):
@@ -242,10 +241,6 @@ def test_session_prepare_legacy_selector_notice(projects, capsys):
     args = command(["session", "prepare", "--project-root", str(projects[1])])
     assert cli._resolve_cli_selection(args) == projects[1]
     assert capsys.readouterr().err.count("--project-root is deprecated") == 1
-    with invocation_context(transport=True):
-        args = command(["session", "prepare", "--project-root", str(projects[1])])
-    assert cli._resolve_cli_selection(args) == projects[1]
-    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
@@ -261,34 +256,52 @@ def test_payload_is_opaque(argv, field):
     assert getattr(args, field) == argv[argv.index("--") :]
 
 
-@pytest.mark.parametrize(
-    "tail",
-    [
-        ["-C", "../b", "--target", "demo"],
-        ["--target", "demo", "--project=../b"],
-        ["--", "--target", "demo", "-C../b"],
-        ["--timeout", "5s", "--target", "demo", "-C", "../b"],
-    ],
-)
-def test_builtin_tail_selection_before_discovery(projects, tail):
-    args = command(["flow", "lint", *tail])
-    assert cli._resolve_cli_selection(args) == projects[1]
-    assert not any(
-        token.startswith("-C") or token.startswith("--project") for token in args.endpoint_args
-    )
+SELECTED_TAILS = [
+    ["-C", "../b", "--target", "demo"],
+    ["--target", "demo", "--project=../b"],
+    ["--", "--target", "demo", "-C../b"],
+    ["--timeout", "5s", "--target", "demo", "-C", "../b"],
+    ["-q", "-C", "../b", "--target", "demo"],
+    ["-qC../b", "--target", "demo"],
+]
 
 
-def test_extractor_preserves_values_and_boundaries():
+def test_builtin_tail_selection_before_discovery(projects):
+    for tail in SELECTED_TAILS:
+        args = command(["flow", "lint", *tail])
+        assert getattr(args, "_cli_tail_selection", False), tail
+        assert args.endpoint_args == (tail[1:] if tail[0] == "--" else tail)
+        assert cli._resolve_cli_selection(args) == projects[1], tail
+
+
+def test_tail_selection_matches_endpoint_parse(projects):
+    """The probe records what argparse hands to Project actions, never payload text."""
+    from booley.flows.builtin_cli import build_cli_parser
+    from booley.flows.cli_selection import CliInvocation
+    from booley.harness.endpoint_help import tail_project_selections
+
+    def parser():
+        return build_cli_parser(LintFlow(), CliInvocation())
+
+    for tail in [*SELECTED_TAILS, ["--work-dir", "../b", "--target", "demo"]]:
+        found = tail_project_selections(parser(), tail)
+        real = parser().parse_args(tail[1:] if tail[:1] == ["--"] else tail).work_dir
+        assert [resolve_selection(i.value, legacy=i.legacy) for i in found] == [real], tail
+    for tail in (["--target", "demo", "-C"], ["--target", "demo", "--", "-C", "../b"]):
+        assert tail_project_selections(parser(), tail) == []
+
+
+def test_tail_selection_ignores_payload_text():
+    from booley.harness.endpoint_help import tail_project_selections
+
     parser = human_endpoint_parser(ReviewerSpecialist(), durations=True)
-    tails = [
+    for tail in (
         ["--instruction", "--project", "--scope", "rtl"],
         ["--instruction", "text --project b", "--", "--project", "../b"],
-        ["--unknown", "--project", "../b"],
-    ]
-    for tail in tails:
-        forwarded, selections = extract_project_tail(parser, tail)
-        assert forwarded == tail
-        assert selections == []
+    ):
+        assert tail_project_selections(parser, tail) == []
+    attached = ["--instruction=--project", "--project", "../b"]
+    assert [item.value for item in tail_project_selections(parser, attached)] == ["../b"]
 
 
 @pytest.mark.parametrize(
@@ -339,14 +352,31 @@ def test_transport_schema_and_cli_remain_unchanged(projects, monkeypatch, capsys
         parse_request(flow, ["--target", "demo", "--timeout", "5s"])
 
 
-def test_scoped_selection_restores_and_has_no_synthetic_alias(projects, capsys):
-    with invocation_context(projects[1]):
-        request = parse_request(LintFlow(), ["--target", "demo"])
-        assert request.work_dir == projects[1]
-        with pytest.raises(SystemExit):
-            parse_request(LintFlow(), ["--target", "demo", "-C", "a"])
-    assert parse_request(LintFlow(), ["--target", "demo"]).work_dir == projects[0]
+def test_project_selection_does_not_leak_between_invocations(projects, monkeypatch, capsys):
+    from booley.flows.cli_selection import CliInvocation
+
+    seen = []
+
+    def main(flow, argv):
+        request = parse_request(flow, argv)
+        seen.append((request.work_dir, request.timeout_ms, flow._cli_invocation.project))
+        return 0
+
+    monkeypatch.setattr(LintFlow, "main", main)
+    a, b = projects
+    for tail, expected in (
+        (["-C", "../b", "lint", "--target", "demo"], (b, None, b)),
+        (["lint", "--target", "demo"], (a, None, None)),
+        (["lint", "--target", "demo", "--project", "../b"], (b, None, None)),
+        (["lint", "--target", "demo", "--timeout", "5s"], (a, 5000, None)),
+    ):
+        assert dispatch(["flow", *tail], monkeypatch) == 0
+        assert seen[-1] == expected
     assert "deprecated" not in capsys.readouterr().err
+    reused = LintFlow()
+    for invocation, expected in ((CliInvocation(project=b), b), (CliInvocation(), a)):
+        reused._cli_invocation = invocation
+        assert parse_request(reused, ["--target", "demo"]).work_dir == expected
 
 
 class Plugin(McpTool):
@@ -369,11 +399,10 @@ def test_plugin_controls(projects):
     assert "-C" not in projection._option_string_actions
     assert "-C" not in endpoint._parser._option_string_actions
     normalize_endpoint_args(args)
-    with invocation_context(projects[1]):
-        projected = human_endpoint_parser(endpoint)
-        with pytest.raises(SystemExit):
-            projected.parse_args(["--work-dir", str(projects[0])])
-        assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
+    projected = human_endpoint_parser(endpoint, project=projects[1])
+    with pytest.raises(SystemExit):
+        projected.parse_args(["--work-dir", str(projects[0])])
+    assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
     assert human_endpoint_parser(endpoint).parse_args([]).work_dir == projects[0]
 
 
@@ -463,12 +492,13 @@ def test_external_data_selection_and_cache_switch(projects, monkeypatch):
 
 
 def test_shared_plugin_outer_selection_and_override_refusal(projects, capsys):
+    from booley.flows.cli_selection import CliInvocation
     from booley.flows.endpoint_context import EndpointContext
 
     endpoint = Plugin()
     for selected, expected in ((projects[1], projects[1]), (None, projects[0])):
-        with invocation_context(selected):
-            endpoint.parse_args(["--project", "short"])
+        endpoint._cli_invocation = CliInvocation(project=selected)
+        endpoint.parse_args(["--project", "short"])
         assert endpoint.args.work_dir == expected
         assert endpoint.args.project == "short"
     reviewer = ReviewerSpecialist()
@@ -519,10 +549,19 @@ def test_bare_cheat_alias_warns_once_per_invocation(capsys):
     assert not any(key.startswith("_cli_") for key in vars(args))
 
 
-def test_human_dispatch_context_overrides_inherited_transport_marker(
-    projects, monkeypatch, capsys
-):
+def test_inherited_marker_and_explicit_transport_origin(projects, monkeypatch, capsys):
+    from booley.flows.cli_selection import CliInvocation
+
     monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
+    # Help through main() is human even though the marker is inherited.
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "lint", "--help"])
+    monkeypatch.setattr(cli.runtime_context, "container_only_error", lambda *_args: None)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
+    with pytest.raises(SystemExit):
+        cli.main()
+    help_text = capsys.readouterr().out
+    assert "--project" in help_text and "--timeout" in help_text
+    assert "--work-dir" not in help_text
     executed = []
 
     def main(flow, argv):
@@ -531,25 +570,20 @@ def test_human_dispatch_context_overrides_inherited_transport_marker(
         return 0
 
     monkeypatch.setattr(LintFlow, "main", main)
-    assert (
-        dispatch(
-            ["flow", "-C", "../b", "lint", "--target", "demo", "--timeout", "5s"], monkeypatch
-        )
-        == 0
-    )
+    tail = ["-C", "../b", "lint", "--target", "demo", "--timeout", "5s"]
+    assert dispatch(["flow", *tail], monkeypatch) == 0
     assert executed == [(projects[1], 5000)]
-    # Context exit restores the subprocess marker's transport interpretation.
-    request = parse_request(LintFlow(), ["--target", "demo", "--timeout-ms", "1"])
-    assert request.timeout_ms == 1
-
-
-def test_human_main_alias_notice_overrides_inherited_transport_marker(
-    projects, monkeypatch, capsys
-):
-    monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
     monkeypatch.setitem(cli._EARLY_COMMANDS, "doctor", lambda _args, _root: 0)
     assert dispatch(["doctor", "--project-root", str(projects[1])], monkeypatch) == 0
     assert "--project-root is deprecated" in capsys.readouterr().err
+    # Outside the human dispatch the marker, or an explicit origin without it, is transport.
+    for explicit in (False, True):
+        flow = LintFlow()
+        if explicit:
+            monkeypatch.delenv(INVOCATION_ORIGIN_ENV)
+            flow._cli_invocation = CliInvocation(transport=True)
+        assert parse_request(flow, ["--target", "demo", "--timeout-ms", "1"]).timeout_ms == 1
+        assert capsys.readouterr().err == ""
 
 
 def test_canonical_synth_help_uses_initialized_project(

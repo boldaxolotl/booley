@@ -12,7 +12,7 @@ from typing import Any, NoReturn
 
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_cli_parser
-from booley.flows.cli_selection import invocation_context
+from booley.flows.cli_selection import CliInvocation, EndpointProjectAction, ProjectSelection
 from booley.flows.endpoint_cli import human_endpoint_parser, parser_settings
 from booley.flows.endpoint_context import EndpointContext
 from booley.runtime import runtime_context
@@ -35,9 +35,13 @@ class _ParserSyntaxError(Exception):
 
 
 class _HelpProbeParser(argparse.ArgumentParser):
-    """Signal standard help; an inert probe keeps arity but skips conversion and callbacks."""
+    """Signal standard help; an inert probe keeps arity but skips conversion and callbacks.
+
+    A selection probe also records the values argparse assigns to Project selectors.
+    """
 
     inert = False
+    selections: list[ProjectSelection] | None = None
 
     def error(self, message: str) -> NoReturn:
         raise _ParserSyntaxError(self, message)
@@ -48,7 +52,13 @@ class _HelpProbeParser(argparse.ArgumentParser):
 
     def _get_values(self, action: argparse.Action, arg_strings: list[str]) -> Any:
         if type(action) is argparse._HelpAction:
+            if self.selections is not None:
+                return argparse.SUPPRESS
             raise _HelpRequestedError(self)
+        if self.selections is not None and isinstance(action, EndpointProjectAction):
+            self.selections.append(
+                ProjectSelection(arg_strings[0], legacy="--work-dir" in action.option_strings)
+            )
         if self.inert and not isinstance(action, argparse._SubParsersAction):
             return argparse.SUPPRESS
         return super()._get_values(action, arg_strings)
@@ -122,6 +132,21 @@ def _parse_help(
     return result, stdout.getvalue(), stderr.getvalue()
 
 
+def tail_project_selections(
+    parser: argparse.ArgumentParser, tail: list[str]
+) -> list[ProjectSelection]:
+    """The Project selectors argparse itself assigns in an endpoint tail, in order.
+
+    Runs the endpoint's own parse over the tail without conversions or actions, so
+    payload text, option values, and separator-led arguments never count. The tail
+    is not rewritten; a syntax error keeps the selectors recorded before it.
+    """
+    probe = _probe_parser(parser, {}, inert=True)
+    probe.selections = found = []
+    _parse_help(probe, tail[1:] if tail[:1] == ["--"] else tail)
+    return found
+
+
 def _emit(stdout: str, stderr: str) -> None:
     print(stdout, end="")
     print(stderr, end="", file=sys.stderr)
@@ -129,16 +154,15 @@ def _emit(stdout: str, stderr: str) -> None:
 
 def try_render_help(endpoint: Any, argv: list[str], selected: Path | None) -> None:
     """Exit only for real help or a terminal parser result; otherwise return."""
-    with invocation_context(selected):
-        parser = (
-            build_cli_parser(endpoint)
-            if isinstance(endpoint, BuiltinFlow)
-            else human_endpoint_parser(endpoint)
-        )
-        shape, _, _ = _parse_help(_parser_copy(parser, inert=True), argv)
-        if shape is None:
-            return
-        result, stdout, stderr = _parse_help(_parser_copy(parser, inert=False), argv)
+    parser = (
+        build_cli_parser(endpoint, CliInvocation(project=selected))
+        if isinstance(endpoint, BuiltinFlow)
+        else human_endpoint_parser(endpoint, project=selected)
+    )
+    shape, _, _ = _parse_help(_parser_copy(parser, inert=True), argv)
+    if shape is None:
+        return
+    result, stdout, stderr = _parse_help(_parser_copy(parser, inert=False), argv)
     if isinstance(result, _HelpRequestedError):
         _emit(stdout, stderr)
         result.parser.print_help()

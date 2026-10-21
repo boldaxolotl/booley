@@ -317,16 +317,20 @@ def _resolve_cli_selection(args: argparse.Namespace) -> Path:
 
 
 def _extract_endpoint_selection(parser, args) -> None:
-    """Extract shared selectors while walking known built-in option arities.
+    """Find a built-in endpoint's tail Project selector, leaving the tail untouched.
 
-    Stop at the first opaque argument: its value can legally be an option name.
-    A leading separator belongs to the main CLI; the next belongs to the payload.
+    The endpoint's own argparse parse says which tokens reach a selector, so option
+    values and payload text can never be mistaken for one. The endpoint's real parse
+    resolves the same token again, against the same checkout, when it runs.
     """
     if args.command not in {"flow", "specialist"} or not args.endpoint_name:
         return
     tail = args.endpoint_args
+    # A superset of the tokens that can reach a selector, including short clusters
+    # such as -qC../b; a false positive only costs one probe parse.
     if not any(
-        token.split("=", 1)[0] in {"--project", "--work-dir", "-C"} or token.startswith("-C")
+        token.split("=", 1)[0] in {"--project", "--work-dir"}
+        or (token.startswith("-") and not token.startswith("--") and "C" in token)
         for token in tail
     ):
         return
@@ -341,30 +345,36 @@ def _extract_endpoint_selection(parser, args) -> None:
     if info is None:
         return
     from booley.flows.base import BuiltinFlow
-    from booley.flows.builtin_cli import build_parser
-    from booley.flows.cli_selection import extract_project_tail
+    from booley.flows.builtin_cli import build_cli_parser
+    from booley.flows.cli_selection import CliInvocation
     from booley.flows.endpoint_cli import human_endpoint_parser
+    from booley.harness.endpoint_help import tail_project_selections
 
     endpoint_cls = _load_mcp_tool_class(info)
     if endpoint_cls is None:
         return
     endpoint = endpoint_cls()
+    # The parser execution will use, so discovery and execution agree on every spelling.
     endpoint_parser = (
-        build_parser(endpoint, human=True)
+        build_cli_parser(endpoint, CliInvocation())
         if isinstance(endpoint, BuiltinFlow)
-        else human_endpoint_parser(endpoint, durations=True)
+        else human_endpoint_parser(endpoint)
     )
-    args.endpoint_args, selections = extract_project_tail(
-        endpoint_parser, list(args.endpoint_args)
-    )
+    selections = tail_project_selections(endpoint_parser, list(tail))
     if len(selections) + int(hasattr(args, "_cli_selection")) > 1:
         parser.error("multiple Project selectors are not supported")
     if selections:
         args._cli_selection = selections[0]
+        args._cli_tail_selection = True
+
+
+def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
+    """A selector before the endpoint name; a tail selector stays in the endpoint's argv."""
+    return hasattr(args, "_cli_selection") and not getattr(args, "_cli_tail_selection", False)
 
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
-    from booley.flows.cli_selection import invocation_context
+    from booley.flows.cli_selection import CliInvocation
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
@@ -376,8 +386,8 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    with invocation_context(selected):
-        return endpoint.main(argv, **kwargs)
+    endpoint._cli_invocation = CliInvocation(project=selected)
+    return endpoint.main(argv, **kwargs)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -2014,7 +2024,7 @@ def _dispatch_selected(
     if runtime_context.ensure_proxy_env():
         logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
 
-    if hasattr(args, "_cli_selection") and command in {"flow", "specialist"}:
+    if _outer_endpoint_selection(args) and command in {"flow", "specialist"}:
         args._cli_endpoint_project = project_root
     from booley.runtime.layout_consumers import directory_consumer
 
@@ -2033,7 +2043,7 @@ def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> in
     """Keep metadata admission while avoiding execution-path runtime setup."""
     from booley.runtime.layout_consumers import directory_consumer
 
-    if hasattr(args, "_cli_selection"):
+    if _outer_endpoint_selection(args):
         args._cli_endpoint_project = project_root
     with directory_consumer(project_root):
         result = _handle_early_exits(args, project_root)
@@ -2044,14 +2054,12 @@ def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> in
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
     from booley.core.booley_layout import BooleyLayoutError
-    from booley.flows.cli_selection import invocation_context
     from booley.mcp.endpoint_config import EndpointConfigError
     from booley.runtime.checkout_role import SourceCheckoutProjectError
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
     try:
-        with invocation_context():
-            return _dispatch_main()
+        return _dispatch_main()
     except (
         LifecycleLockError,
         BooleyLayoutError,
