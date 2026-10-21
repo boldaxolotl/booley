@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from booley.core import file_lock
-from booley.core.host_probes import GithubProbe, HostProbe, ProbeState, probe_docker, probe_github
+from booley.core.host_probes import HostProbe, ProbeState, probe_docker
 from booley.dev_support import agent_readiness as readiness
 
 
@@ -166,32 +166,71 @@ def test_escalation_is_visible_even_when_exit_is_zero():
     assert result.as_dict()["status"] == "escalation-required"
 
 
-def test_real_launcher_emits_one_versioned_json_document(tmp_path):
-    launcher = Path(__file__).parents[2] / ".github/scripts/agent_readiness.py"
+# The serialized shape of one readiness check, with no per-check probe flag.
+CHECK_KEYS = {"id", "status", "required", "summary", "commands"}
+LAUNCHER = Path(__file__).parents[2] / ".github/scripts/agent_readiness.py"
+
+
+def _run_launcher(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the real launcher in this checkout with a neutral readiness environment."""
     environment = os.environ.copy()
     environment.pop("PYTHONDONTWRITEBYTECODE", None)
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(launcher),
-            "--phase",
-            "prepare",
-            "--branch",
-            "codex/contract-test",
-            "--json",
-        ],
-        cwd=launcher.parents[2],
+    environment.pop("BOOLEY_AGENT_GIT_WRITE_POLICY", None)
+    return subprocess.run(
+        [sys.executable, str(LAUNCHER), *args],
+        cwd=LAUNCHER.parents[2],
         env=environment,
         capture_output=True,
         text=True,
         check=False,
         timeout=30,
     )
+
+
+def test_real_launcher_emits_one_versioned_json_document():
+    result = _run_launcher("--phase", "prepare", "--branch", "codex/contract-test", "--json")
     assert result.returncode in {0, 1}
     document = json.loads(result.stdout)
     assert document["schema_version"] == 1
     assert document["phase"] == "prepare"
     assert not result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "check_ids"),
+    [
+        pytest.param(
+            ("--phase", "prepare", "--branch", "codex/contract-test", "--json"),
+            [
+                "git.executable",
+                "git.repository-identity",
+                "repository.source-marker",
+                "git.main",
+                "git.branch-absent",
+                "git.main-tracking",
+                "worktree.path",
+                "git.write-policy",
+                "git.current-checkout",
+            ],
+            id="prepare",
+        ),
+        pytest.param(
+            ("--phase", "develop", "--json"),
+            [
+                "git.topology",
+                "repository.source-marker",
+                "python.shared-environment",
+                "docker.executable",
+            ],
+            id="develop",
+        ),
+    ],
+)
+def test_real_launcher_reports_current_check_ids(args, check_ids):
+    document = json.loads(_run_launcher(*args).stdout)
+    assert document["schema_version"] == 1
+    assert [check["id"] for check in document["checks"]] == check_ids
+    assert all(set(check) == CHECK_KEYS for check in document["checks"])
 
 
 def test_neutral_docker_probe_does_not_disclose_output():
@@ -201,21 +240,6 @@ def test_neutral_docker_probe_does_not_disclose_output():
     observation = probe_docker(which=lambda _: "/docker", run=run)
     assert observation.state is ProbeState.PERMISSION
     assert not hasattr(observation, "stdout")
-
-
-def test_neutral_github_probes_auth_and_connectivity_independently():
-    seen = []
-
-    def run(args, **kwargs):
-        seen.append(tuple(args[1:]))
-        return subprocess.CompletedProcess(
-            args, 0 if args[1] == "auth" else 1, stdout="", stderr=""
-        )
-
-    observation = probe_github(which=lambda _: "/gh", run=run)
-    assert observation.authentication is ProbeState.HEALTHY
-    assert observation.connectivity is ProbeState.FAILED
-    assert seen == [("auth", "status"), ("repo", "view", "--json", "nameWithOwner")]
 
 
 @pytest.mark.parametrize("value", ["bad", "allowed-now"])
@@ -230,7 +254,7 @@ STALE = "shared tools environment receipt or interpreter is stale"
 PINS = "shared tools environment has mismatched Ruff/Pytest runner pins"
 
 
-def _publish(environment: Path, receipt: object = RECEIPT) -> None:
+def _write_receipt(environment: Path, receipt: object = RECEIPT) -> None:
     """Publish *receipt* (raw JSON text when a string) beside a venv interpreter."""
     python = readiness.venv_python(environment)
     python.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +280,7 @@ def test_develop_trusts_the_receipt_without_probing(monkeypatch, tmp_path, recei
     monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fp")
     monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
     monkeypatch.setattr(readiness.subprocess, "run", lambda *_a, **_k: pytest.fail("probed"))
-    _publish(tmp_path / "fp", receipt)
+    _write_receipt(tmp_path / "fp", receipt)
     check, commands, _python = readiness._environment_check(tmp_path)
     blocked = receipt is not RECEIPT
     assert (check.id, check.summary) == ("python.shared-environment", summary)
@@ -290,7 +314,7 @@ def test_invalid_environment_is_rebuilt_in_place(monkeypatch, tmp_path):
 def test_failed_build_leaves_neither_tree_nor_receipt(monkeypatch, tmp_path):
     module = _bootstrap_module()
     environment = tmp_path / "fp"
-    _publish(environment, {**RECEIPT, "schema_version": 1})
+    _write_receipt(environment, {**RECEIPT, "schema_version": 1})
     error = RuntimeError("pip failed")
 
     def build(environment, *_args):
@@ -332,7 +356,7 @@ def test_waiting_bootstrap_reuses_the_published_environment(monkeypatch, tmp_pat
         acquire(first)
         second = pool.submit(module.main, argv)
         assert contended.wait(30)
-        _publish(tmp_path / "fp")
+        _write_receipt(tmp_path / "fp")
         file_lock.release_file_lock(first)
         assert second.result(60) == 0
 
@@ -410,7 +434,7 @@ def test_schema_one_receipt_is_rebuilt_with_working_console_scripts(offline_boot
 def test_models_and_renderers_serialize_nested_commands():
     command = readiness.Command("check", ("python", "-V"), "/repo", "inspect", "now")
     check = readiness.Check(
-        "example", readiness.Status.READY, True, "x" * 300, write_probed=True, commands=(command,)
+        "example", readiness.Status.READY, True, "x" * 300, commands=(command,)
     )
     result = readiness.Result(
         "develop",
@@ -422,6 +446,7 @@ def test_models_and_renderers_serialize_nested_commands():
 
     assert command.as_dict()["argv"] == ["python", "-V"]
     assert len(check.as_dict()["summary"]) == 240
+    assert set(check.as_dict()) == CHECK_KEYS
     assert result.as_dict()["repository"]["branch"] == "codex/example"
     assert "Run [now] check" in readiness.render_human(result)
     assert readiness._argv(("hello world", "--flag")) == "'hello world' --flag"
@@ -430,10 +455,17 @@ def test_models_and_renderers_serialize_nested_commands():
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["--phase", "prepare"], "--branch is required"),
-        (["--phase", "publish", "--branch", "codex/x"], "only valid"),
-        (["--phase", "publish", "--require", "docker"], "only valid"),
-        (["--phase", "prepare", "--branch", "bad"], "new local"),
+        pytest.param(["--phase", "prepare"], "--branch is required", id="no-branch"),
+        pytest.param(
+            ["--phase", "develop", "--branch", "codex/x"], "only valid", id="develop-branch"
+        ),
+        pytest.param(
+            ["--phase", "prepare", "--branch", "codex/x", "--require", "docker"],
+            "only valid",
+            id="prepare-require",
+        ),
+        pytest.param(["--phase", "prepare", "--branch", "bad"], "new local", id="bad-branch"),
+        pytest.param(["--phase", "publish"], "invalid choice", id="publish-removed"),
     ],
 )
 def test_parse_args_rejects_invalid_phase_combinations(argv, message, capsys):
@@ -445,7 +477,7 @@ def test_parse_args_rejects_invalid_phase_combinations(argv, message, capsys):
 def test_main_renders_usage_error_as_json(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
 
-    assert readiness.main(["--phase", "publish", "--json"]) == 1
+    assert readiness.main(["--phase", "develop", "--json"]) == 1
     document = json.loads(capsys.readouterr().out)
     assert document["status"] == "blocked"
     assert document["checks"][0]["id"] == "repository.source-marker"
@@ -484,18 +516,14 @@ def test_run_phase_dispatches_each_phase(monkeypatch, tmp_path):
         readiness, "_prepare", lambda *args: calls.append(("prepare", args)) or expected
     )
     monkeypatch.setattr(
-        readiness, "_publish", lambda *args: calls.append(("publish", args)) or expected
-    )
-    monkeypatch.setattr(
         readiness,
         "_develop",
         lambda *args, **kwargs: calls.append(("develop", args, kwargs)) or expected,
     )
 
     readiness.run_phase(readiness._parse_args(["--phase", "prepare", "--branch", "codex/x"]))
-    readiness.run_phase(readiness._parse_args(["--phase", "publish"]))
     readiness.run_phase(readiness._parse_args(["--phase", "develop", "--require", "docker"]))
-    assert [call[0] for call in calls] == ["prepare", "publish", "develop"]
+    assert [call[0] for call in calls] == ["prepare", "develop"]
 
 
 def test_prepare_reports_safe_and_unsafe_paths(monkeypatch, tmp_path):
@@ -518,7 +546,7 @@ def test_prepare_reports_safe_and_unsafe_paths(monkeypatch, tmp_path):
     assert not result.commands
 
 
-def test_develop_and_publish_assemble_all_checks(monkeypatch, tmp_path):
+def test_develop_assembles_all_checks(monkeypatch, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     python = tmp_path / "python"
@@ -537,24 +565,11 @@ def test_develop_and_publish_assemble_all_checks(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(readiness, "_git_count", lambda *_args: 2)
     monkeypatch.setattr(readiness, "_environment_check", lambda _root: (ready_check, (), python))
-    monkeypatch.setattr(readiness, "_cache_path_check", lambda _root: ready_check)
     monkeypatch.setattr(readiness, "_docker_check", lambda required: ready_check)
     monkeypatch.setattr(readiness, "_verification_commands", lambda *_args: ())
     monkeypatch.setattr(readiness.shutil, "which", lambda _name: "/usr/bin/git")
     developed = readiness._develop(root, require_docker=True)
     assert developed.phase == "develop"
-
-    monkeypatch.setattr(
-        readiness, "_git", lambda _root, args: subprocess.CompletedProcess(args, 0, str(root), "")
-    )
-    monkeypatch.setattr(
-        readiness,
-        "probe_github",
-        lambda **_kwargs: GithubProbe("gh", ProbeState.HEALTHY, ProbeState.HEALTHY),
-    )
-    published = readiness._publish(root)
-    assert published.phase == "publish"
-    assert published.status is readiness.Status.READY
 
 
 @pytest.mark.parametrize("state", list(ProbeState))
@@ -601,7 +616,6 @@ def test_low_level_helpers_handle_failures(monkeypatch, tmp_path):
     failed = subprocess.CompletedProcess([], 1, "", "")
     monkeypatch.setattr(readiness, "_git", lambda *_args: failed)
     assert readiness._git_text(tmp_path, ()) is None
-    assert not readiness._git_success(tmp_path, ())
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: "not-an-int")
     assert readiness._git_count(tmp_path, ()) is None
     monkeypatch.setattr(
@@ -639,7 +653,7 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
 
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
     monkeypatch.setattr(readiness, "_is_linked_worktree", lambda _root: False)
-    result = readiness._result("x", tmp_path, (), (), git=None)
+    result = readiness._result("x", tmp_path, (), ())
     assert result.repository.branch is None
 
     def text_factory(items):
@@ -666,24 +680,8 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: "relative/common")
     assert len(readiness.dependency_fingerprint(source_root)) == 32
 
-    monkeypatch.setattr(readiness.sys, "platform", "win32")
-    monkeypatch.setattr(
-        readiness, "_project_dependencies", lambda _root: {"dependencies": ("x" * 30000,)}
-    )
-    with pytest.raises(RuntimeError, match="command limit"):
-        readiness.dependency_argv(tmp_path)
     monkeypatch.setattr(readiness.sys, "platform", "linux")
     assert readiness.agent_tools_root()
-
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path / "inside")
-    monkeypatch.setattr(readiness, "_within", lambda *_args: True)
-    assert readiness._cache_path_check(tmp_path).status is readiness.Status.BLOCKED
-    monkeypatch.setattr(
-        readiness.Path,
-        "read_text",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()),
-    )
-    assert not readiness._is_linked_worktree(tmp_path)
 
 
 def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
@@ -693,15 +691,6 @@ def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
         raise OSError
 
     assert probe_docker(which=lambda _name: "docker", run=docker_error).state is ProbeState.FAILED
-    assert probe_github(which=lambda _name: None).authentication is ProbeState.MISSING
-
-    def github_timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired("gh", 5)
-
-    assert (
-        probe_github(which=lambda _name: "gh", run=github_timeout).authentication
-        is ProbeState.TIMEOUT
-    )
     monkeypatch.setattr(
         readiness,
         "run_phase",
@@ -718,11 +707,6 @@ def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
 
 
 def test_remaining_probe_and_environment_branches(monkeypatch, tmp_path):
-    def github_error(*_args, **_kwargs):
-        raise OSError
-
-    observed = probe_github(which=lambda _name: "gh", run=github_error)
-    assert observed.authentication is ProbeState.FAILED
     monkeypatch.setattr(
         readiness.Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError())
     )
@@ -731,3 +715,29 @@ def test_remaining_probe_and_environment_branches(monkeypatch, tmp_path):
     assert not readiness._is_linked_worktree(tmp_path)
     monkeypatch.setattr(readiness.sys, "platform", "linux")
     assert readiness.agent_tools_root().name == "agent-tools-v2"
+
+
+@pytest.mark.parametrize(
+    ("branch", "git_result", "accepted", "expect_call"),
+    [
+        pytest.param("codex/issue-1-x", "real", True, True, id="valid"),
+        pytest.param("feature/x", "real", False, False, id="no-prefix"),
+        pytest.param("codex/x..y", "real", False, True, id="git-refuses"),
+        pytest.param(
+            "codex/ok", subprocess.CompletedProcess([], 128, "", ""), False, True, id="git-refused"
+        ),
+        pytest.param("codex/ok", None, False, True, id="git-missing"),
+    ],
+)
+def test_branch_validation_defers_to_git(monkeypatch, branch, git_result, accepted, expect_call):
+    """The codex/ prefix is gated locally; every other ref rule is Git's."""
+    real_run_process = readiness._run_process
+    calls = []
+
+    def spy(argv, cwd, **kwargs):
+        calls.append(tuple(argv))
+        return real_run_process(argv, cwd, **kwargs) if git_result == "real" else git_result
+
+    monkeypatch.setattr(readiness, "_run_process", spy)
+    assert readiness._valid_branch(branch) is accepted
+    assert calls == ([("git", "check-ref-format", "--branch", branch)] if expect_call else [])

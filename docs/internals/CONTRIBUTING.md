@@ -105,7 +105,7 @@ Unprofiled pytest keeps its existing selection and skip behavior, including CI's
 existing marker expression. The readiness JSON schema stays at version 1:
 `pytest.broad` and `optional-broad-verification` retain their IDs, while the
 command's arguments explicitly identify the selected profile. Passing an
-explicit profile to prepare or publish is a usage error.
+explicit profile to prepare is a usage error.
 
 Both profiles use up to eight xdist workers (`-n auto --maxprocesses=8`) with a
 disk-backed per-checkout `--basetemp` on POSIX. Set
