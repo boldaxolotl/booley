@@ -145,6 +145,10 @@ _FIXED_REMOTE_ENV = {
 }
 
 
+#: Issued container environment that names the pinned Sandbox Image for deep Doctor.
+SANDBOX_IMAGE_ID_ENV = "BOOLEY_SANDBOX_IMAGE_ID"
+
+
 class RuntimeSpecError(RuntimeError):
     """A Sandbox spec is missing, drifted, or outside issued policy."""
 
@@ -433,6 +437,7 @@ def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> 
                 "reconciled Sandbox Image ID no longer resolves to the same artifact"
             )
     spec["image"] = image_id
+    spec.setdefault("containerEnv", {})[SANDBOX_IMAGE_ID_ENV] = image_id
     return image_id
 
 
@@ -1384,8 +1389,11 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
     issued_roots = (container.get(COMPILER_CACHE_ROOT_ENV), remote.get(COMPILER_CACHE_ROOT_ENV))
     if issued_roots != (ISSUED_COMPILER_CACHE_ROOT, ISSUED_COMPILER_CACHE_ROOT):
         raise RuntimeSpecError("Compiler-cache root differs from fixed Sandbox policy")
+    if container.get(SANDBOX_IMAGE_ID_ENV) != spec.get("image"):
+        raise RuntimeSpecError("Sandbox Image identity environment differs from the pinned image")
     allowed_container = {
         COMPILER_CACHE_ROOT_ENV,
+        SANDBOX_IMAGE_ID_ENV,
         *git_identity_environment(GitIdentity("Dev", "dev@localhost")),
     }
     if license_environment is not None:

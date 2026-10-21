@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -15,10 +16,11 @@ import pytest
 import booley
 from booley.harness import auto_doctor, doctor
 from booley.harness import doctor_deep as deep
-from booley.runtime import doctor_stamp, health, sandbox_artifact
+from booley.runtime import doctor_stamp, health
 
 IMAGE = "sha256:" + "a" * 64
 OTHER_IMAGE = "sha256:" + "b" * 64
+IMAGE_ENV = "BOOLEY_SANDBOX_IMAGE_ID"
 
 
 def _attempt(order=1, outcome=deep.DeepOutcome.SUCCESS, *, version=None, image=IMAGE):
@@ -193,13 +195,6 @@ def _stub_orchestration(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "_run_runtime_phase", lambda *_args: None)
     monkeypatch.setattr(doctor, "_run_flow_and_core_phase", lambda *_args: None)
     monkeypatch.setattr(
-        sandbox_artifact,
-        "observe",
-        lambda *_args, **_kw: sandbox_artifact.SandboxArtifact(
-            IMAGE, "container", booley.__version__, ""
-        ),
-    )
-    monkeypatch.setattr(
         doctor,
         "observe_deep_status",
         lambda *_args, **_kw: deep.evaluate_deep_status(
@@ -286,13 +281,7 @@ def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypat
     previous = deep.load_deep_state(tmp_path)
     monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(
-        sandbox_artifact,
-        "observe_execution",
-        lambda *_args, **_kw: sandbox_artifact.SandboxArtifact(
-            IMAGE, "container", booley.__version__, ""
-        ),
-    )
+    monkeypatch.setenv(IMAGE_ENV, IMAGE)
     publication = Mock(side_effect=OSError("publication failed"))
     monkeypatch.setattr(Path, "replace", publication)
     messages = Mock()
@@ -419,14 +408,37 @@ def test_host_currency_uses_sandbox_execution_version(
     monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(booley, "__version__", host_version)
-    observation = Mock(
-        return_value=sandbox_artifact.SandboxArtifact(IMAGE, "container", sandbox_version, "")
-    )
-    monkeypatch.setattr(sandbox_artifact, "observe_execution", observation)
+    probe = subprocess.CompletedProcess([], 0, f"{IMAGE}\n{sandbox_version or ''}\n", "")
+    run = Mock(return_value=probe)
+    monkeypatch.setattr(doctor.subprocess, "run", run)
     status = doctor.observe_deep_status(tmp_path, container="sandbox")
     assert status.current is current
     assert _codes(status) == ([] if reason is None else [reason])
-    observation.assert_called_once_with(tmp_path, container="sandbox")
+    assert "sandbox" in run.call_args.args[0] and run.call_args[1]["stdin"] is subprocess.DEVNULL
+
+
+SELECTED = SimpleNamespace(container_id="selected")
+
+
+@pytest.mark.parametrize(
+    "selected,stdout,identity",
+    [
+        (SELECTED, f"{IMAGE}\n1.0\n", (IMAGE, "1.0")),
+        (SELECTED, "latest\n1.0\n", (None, "1.0")),
+        (SELECTED, "", (None, None)),
+        (None, "", (None, None)),
+        (doctor.session_runtime.SessionError("multiple running Sandboxes"), "", (None, None)),
+    ],
+    ids=["selected", "malformed", "unreadable", "absent", "ambiguous"],
+)
+def test_host_identity_reads_selected_sandbox(tmp_path, monkeypatch, selected, stdout, identity):
+    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
+    resolve = Mock(side_effect=[selected])
+    monkeypatch.setattr(doctor.session_runtime, "resolve_running_sandbox", resolve)
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, stdout, ""))
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    assert doctor._observe_sandbox_identity(tmp_path, None) == identity
+    assert all("selected" in call.args[0] for call in run.call_args_list)
 
 
 def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
@@ -435,14 +447,22 @@ def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(booley, "__version__", "upgraded")
-    monkeypatch.setattr(
-        sandbox_artifact,
-        "observe_execution",
-        lambda *_args, **_kw: sandbox_artifact.SandboxArtifact(
-            IMAGE, "container", "validated", ""
-        ),
-    )
+    monkeypatch.setenv(IMAGE_ENV, IMAGE)
     assert _codes(doctor.observe_deep_status(tmp_path)) == ["version-changed"]
+
+
+def test_inside_identity_comes_from_issued_image_variable(tmp_path, monkeypatch):
+    deep.record_deep_attempt(tmp_path, _attempt())
+    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setenv(IMAGE_ENV, IMAGE)
+    assert doctor.observe_deep_status(tmp_path).current
+    monkeypatch.setenv(IMAGE_ENV, "latest")
+    malformed = doctor.observe_deep_status(tmp_path)
+    monkeypatch.delenv(IMAGE_ENV)
+    for status in (malformed, doctor.observe_deep_status(tmp_path)):
+        assert _codes(status) == ["image-identity-unavailable"]
+        assert "cannot verify Sandbox Image identity" in status.render()
 
 
 def test_warning_only_attempt_names_warning_without_claiming_failure(tmp_path, monkeypatch):

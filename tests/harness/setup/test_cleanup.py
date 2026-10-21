@@ -397,7 +397,7 @@ def test_apply_recovers_a_quarantined_entry(tmp_path: Path) -> None:
 
 def test_file_identity_handles_missing_path() -> None:
     identity = FileIdentity("file", 1, 2, 3, 0o600)
-    assert not identity.matches(Path("/definitely/missing/booley-artifact"))
+    assert not identity.matches(Path("/definitely/missing/file"))
 
 
 def test_cleanup_rejects_invalid_modes_and_duplicate_runs(tmp_path: Path) -> None:
