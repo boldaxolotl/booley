@@ -40,7 +40,6 @@ from booley.flows.sim.coverage_waiver_application import (
 )
 from booley.flows.sim.coverage_waiver_promotion import (
     ApprovalStamps,
-    WaiverCandidateEvidence,
     build_promotion,
     render_approval_document,
     review_proof_path,
@@ -49,6 +48,7 @@ from booley.flows.sim.coverage_waiver_promotion import (
 from booley.flows.sim.coverage_waivers import (
     ApprovedWaiverSet,
     CoverageRepositoryRoots,
+    CoverageWaiverValidationError,
     load_approved_waiver_set,
 )
 from booley.goals.apply_effects import FileEffect, read_bytes
@@ -66,6 +66,16 @@ from booley.goals.waiver_policy import (
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
+
+
+@contextmanager
+def _loader_refusal_as_proposal_error() -> Generator[None]:
+    """Surface an Approved Waiver loader refusal as a proposal error naming its finding codes."""
+    try:
+        yield
+    except CoverageWaiverValidationError as exc:
+        codes = ", ".join(dict.fromkeys(finding.code for finding in exc.findings))
+        raise ProposalError(f"approval files would not load: {codes}") from exc
 
 
 class GoalWaiverService:
@@ -247,9 +257,9 @@ class GoalWaiverService:
     ) -> tuple[tuple[FileEffect, ...], CoverageEvaluation]:
         """Capture live file effects and predict strict Goal evidence with the real loader."""
         before_policy = waiver_policy_fingerprint(self.root)
-        item, _resolved, _detail = self._revalidate(proposal)
+        with _loader_refusal_as_proposal_error():
+            item, _resolved, _detail = self._revalidate(proposal)
         assert proposal.waiver is not None
-        evidence = self._evidence(item)
         stamps = ApprovalStamps(
             decision.session_key or "unknown",
             decision.at,
@@ -259,7 +269,7 @@ class GoalWaiverService:
             cast(Literal["rtl_repository", "project_data_repository"], proposal.waiver.anchor),
             proposal.waiver.directory,
         )
-        effects = self._promotion_effects(evidence, stamps, proposal)
+        effects = self._promotion_effects(item, stamps, proposal)
         after_bytes = {
             Path(config.directory)
             / effect.path.relative_to(Path(proposal.waiver.approval_root)): cast(
@@ -267,7 +277,10 @@ class GoalWaiverService:
             )
             for effect in effects
         }
-        with tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary:
+        with (
+            _loader_refusal_as_proposal_error(),
+            tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary,
+        ):
             waivers = load_promoted_waiver_set(
                 config, self._roots(), Path(temporary), self._targets(), after_bytes
             )
@@ -285,40 +298,18 @@ class GoalWaiverService:
 
         return effects, evaluate
 
-    @staticmethod
-    def _evidence(item: candidates.WaiverCandidate) -> WaiverCandidateEvidence:
-        return WaiverCandidateEvidence(
-            item.candidate_id,
-            item.binding.campaign_id,
-            item.binding.manifest_sha256,
-            item.binding.point_store_sha256,
-            item.binding.target_identity,
-            item.proposal.point_id,
-            item.proposal.source,
-            item.proposal.source_sha256,
-            cast('Literal["excluded", "unreachable"]', item.proposal.reason),
-            item.proposal.justification,
-            item.proposal.evidence_refs,
-            item.proposal_count,
-        )
-
     def _promotion_effects(
-        self, item: WaiverCandidateEvidence, stamps: ApprovalStamps, proposal: Proposal
+        self, item: candidates.WaiverCandidate, stamps: ApprovalStamps, proposal: Proposal
     ) -> tuple[FileEffect, ...]:
         assert proposal.waiver is not None
         root = Path(proposal.waiver.approval_root)
         promotion = build_promotion(item, stamps)
-        path = root / waiver_file_path(item.source)
+        path = root / waiver_file_path(item.proposal.source)
         before = read_bytes(path)
-        after = render_approval_document(
-            before,
-            source=item.source,
-            source_sha256=item.source_sha256,
-            records=(promotion.record,),
-        )
+        after = render_approval_document(before, promotion)
         effects = [FileEffect(path, before, after, "waiver")]
         if promotion.proof is not None:
-            proof = root / review_proof_path(item.waiver_id)
+            proof = root / review_proof_path(item.candidate_id)
             effects.append(FileEffect(proof, read_bytes(proof), promotion.proof, "waiver"))
         return tuple(effects)
 
