@@ -2803,18 +2803,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
-        from .campaign import collect_pre_sim_firings, read_invocation_pre_sim_firings
+        from .campaign import read_invocation_pre_sim_firings
 
         invocation = self.context._reserved_invocation_dir
         if invocation is None:
             return result
         try:
-            firings = list(read_invocation_pre_sim_firings(invocation))
-            if origin_manifest is not None:
-                firings.extend(collect_pre_sim_firings(origin_manifest))
+            firings = read_invocation_pre_sim_firings(invocation, origin_manifest)
         except (OSError, ValueError) as exc:
             return self._retain_pre_sim_after_scan_error(result, exc)
-        return self._project_published_pre_sim(result, tuple(firings), invocation)
+        return self._project_published_pre_sim(result, firings, invocation)
 
     def _project_published_pre_sim(self, result, firings, invocation) -> EndpointOutcome:
         if not firings:
@@ -2833,6 +2831,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
+        from .campaign import reread_pre_sim_firings
+
         firings = tuple(
             firing
             for outcome in getattr(self.context, "_simulation_campaign_outcomes", ())
@@ -2841,10 +2841,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         retained = False
         if firings:
             try:
-                SimulationCampaign.reauthenticate_pre_sim_firings(firings)
                 result = self._project_published_pre_sim(
                     result,
-                    tuple(replace(firing, terminal=False) for firing in firings),
+                    reread_pre_sim_firings(firings),
                     self.context._reserved_invocation_dir,
                 )
                 retained = True
