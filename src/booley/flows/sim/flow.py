@@ -78,7 +78,6 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
-    CoverageRun,
     FrozenJson,
     coverage_mapping_document,
 )
@@ -705,16 +704,8 @@ def _campaign_report_blocks(
         if getattr(outcome, "coverage_reference", None) is not None:
             suffix.extend(_waiver_block_hint_lines(campaign))
             suffix.extend(source_gap_report_lines(campaign))
-            if not hasattr(outcome, "pre_sim_firings"):
-                suffix.extend(_coverage_pre_sim_lines(selector, campaign))
         blocks.append((report_lines, suffix))
     return blocks
-
-
-def _coverage_run_label(campaign: CoverageCampaign, run: CoverageRun) -> str:
-    """Name a run by its Test, or by its Test Run when the Test ran more than once."""
-    several = sum(other.test == run.test for other in campaign.runs) > 1
-    return run.test_run if several else run.test
 
 
 def _effective_default_seed(
@@ -739,20 +730,6 @@ def _coverage_test_run_lines(
     return informative_test_run_lines(selector, typed, default_seed=default_seed)
 
 
-def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[str]:
-    lines: list[str] = []
-    for run in campaign.runs:
-        evidence = run.attributes.get("pre_sim")
-        if not isinstance(evidence, Mapping):
-            continue
-        lines.append(
-            _pre_sim_report_line(
-                selector, _coverage_run_label(campaign, run), coverage_mapping_document(evidence)
-            )
-        )
-    return lines
-
-
 def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> EndpointOutcome:
     present = Counter(result.report_text.splitlines())
     missing = []
@@ -764,6 +741,15 @@ def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> E
     if missing:
         result.report_text += "\n" + "\n".join(missing)
     return result
+
+
+_PRE_SIM_ROLE_LABELS = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
+_PRE_SIM_ROLE_HEADINGS = frozenset(f"{label}:" for label in _PRE_SIM_ROLE_LABELS.values())
+
+
+def _is_pre_sim_card_line(line: str) -> bool:
+    """Whether *line* belongs to the card's Pre-Sim block (firing line or role heading)."""
+    return line.startswith("pre_run_commands ") or line in _PRE_SIM_ROLE_HEADINGS
 
 
 def _pre_sim_integrity_failure(
@@ -778,9 +764,7 @@ def _pre_sim_integrity_failure(
         }
         result.detail["pre_sim_unauthenticated_references"] = references
         result.report_text = "\n".join(
-            line
-            for line in result.report_text.splitlines()
-            if not line.startswith("pre_run_commands ")
+            line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
     result.detail["campaign_integrity_error"] = str(error)
     line = f"Simulation Campaign integrity failure: {error}"
@@ -801,27 +785,50 @@ def _campaign_hook_inputs(outcomes, invocation):
     return firings, keys
 
 
-def _campaign_pre_sim_details(firings, current_keys, invocation: Path | None) -> dict[str, object]:
+def _pre_sim_lines(firings, current_keys) -> tuple[list[str], list[str]]:
+    """Render each current firing once: ``(flat, card)``.
+
+    *flat* keeps firing order (sim.json); *card* groups the same lines by role, with
+    role headings only when several roles are current.
+    """
     from .execution.pre_sim_reporting import pre_sim_report_line
 
+    groups: dict[str, list[str]] = {}
+    flat: list[str] = []
+    for key, firing in firings.items():
+        if key in current_keys:
+            document = firing.document
+            line = pre_sim_report_line(document["target"]["selector"], document)
+            flat.append(line)
+            groups.setdefault(document["role"], []).append(line)
+    card = [
+        line
+        for role, lines in groups.items()
+        for line in ([_PRE_SIM_ROLE_LABELS[role] + ":"] if len(groups) > 1 else []) + lines
+    ]
+    return flat, card
+
+
+def _pre_sim_projection(
+    firings, current_keys, invocation: Path | None
+) -> tuple[dict[str, object], list[str]]:
+    """The sim.json Pre-Sim detail and the matching card lines, from one pass."""
+    lines, card = _pre_sim_lines(firings, current_keys)
     manifest_refs = {}
-    lines = []
     preview = []
     preview_full = False
     roles: dict[str, dict[str, object]] = {}
     for firing in firings.values():
-        document = firing.document
-        current = firing.key in current_keys
-        if current:
-            lines.append(pre_sim_report_line(document["target"]["selector"], document))
-        _register_pre_sim_role(roles, manifest_refs, firing, invocation, current)
+        _register_pre_sim_role(
+            roles, manifest_refs, firing, invocation, firing.key in current_keys
+        )
         if not preview_full and len(preview) < 32:
             record = _pre_sim_preview_record(firing, invocation)
             if len(json.dumps([*preview, record]).encode("utf-8")) <= 16384:
                 preview.append(record)
             else:
                 preview_full = True
-    return {
+    detail = {
         "pre_sim_lines": lines,
         "pre_sim_runs": preview,
         "pre_sim_total": len(firings),
@@ -830,6 +837,7 @@ def _campaign_pre_sim_details(firings, current_keys, invocation: Path | None) ->
         "pre_sim_preview_truncated": len(preview) != len(firings),
         "pre_sim_roles": roles,
     }
+    return detail, card
 
 
 def _register_pre_sim_role(roles, manifest_refs, firing, invocation, current) -> None:
@@ -878,24 +886,6 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         ),
     )
     return record
-
-
-def _campaign_pre_sim_report_lines(firings, current_keys) -> list[str]:
-    from .execution.pre_sim_reporting import pre_sim_report_line
-
-    groups: dict[str, list[str]] = {}
-    for key, firing in firings.items():
-        if key in current_keys:
-            document = firing.document
-            groups.setdefault(document["role"], []).append(
-                pre_sim_report_line(document["target"]["selector"], document)
-            )
-    labels = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
-    return [
-        line
-        for role, lines in groups.items()
-        for line in ([labels[role] + ":"] if len(groups) > 1 else []) + lines
-    ]
 
 
 def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
@@ -2912,14 +2902,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return result
         firings = {firing.key: firing for firing in firings}
         keys = frozenset(getattr(self, "_current_published_pre_sim_keys", ()))
-        result.detail.update(_campaign_pre_sim_details(firings, keys, invocation))
+        detail, card = _pre_sim_projection(firings, keys, invocation)
+        result.detail.update(detail)
         result.report_text = "\n".join(
-            line
-            for line in result.report_text.splitlines()
-            if not line.startswith("pre_run_commands ")
-            and line not in {"Candidate:", "Cycle Count baseline:"}
+            line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
-        return _append_missing_report_lines(result, _campaign_pre_sim_report_lines(firings, keys))
+        return _append_missing_report_lines(result, card)
 
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
@@ -5327,13 +5315,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         detail: dict[str, object] = {"campaigns": campaigns}
         firings, current_keys = _campaign_hook_inputs(outcomes, invocation)
-        detail.update(_campaign_pre_sim_details(firings, current_keys, invocation))
-        hook_lines = _campaign_pre_sim_report_lines(firings, current_keys)
+        pre_sim_detail, hook_lines = _pre_sim_projection(firings, current_keys, invocation)
+        detail.update(pre_sim_detail)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
         keys = frozenset(getattr(self, "_current_published_pre_sim_keys", current_keys))
-        budget_lines = (
-            _campaign_pre_sim_report_lines(firings, keys) if keys.issubset(firings) else None
-        )
+        budget_lines = _pre_sim_lines(firings, keys)[1] if keys.issubset(firings) else None
         lines = _campaign_report_lines(outcomes, coverage_campaigns, budget_lines, **report)
         lines.extend(hook_lines)
         if coverage_targets:

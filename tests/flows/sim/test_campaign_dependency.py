@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,18 +37,11 @@ def _add_observed_cycles(monkeypatch):
     monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
 
 
-def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
-    tmp_path, monkeypatch
-):
-    from booley.flows.sim.campaign import collect_pre_sim_firings
+def _two_role_campaigns(tmp_path, monkeypatch):
+    """A candidate and a Cycle Count baseline Campaign sharing one invocation."""
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
     from booley.flows.sim.campaign.store import CampaignStore
-    from booley.flows.sim.flow import (
-        SimulateFlow,
-        _campaign_hook_inputs,
-        _campaign_pre_sim_details,
-        _campaign_pre_sim_report_lines,
-    )
+    from booley.flows.sim.flow import SimulateFlow
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     _add_observed_cycles(monkeypatch)
@@ -80,17 +74,56 @@ def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
         invocation_directory=invocation,
     )
     assert candidate.aggregate_grade == "pass"
-    assert len(collect_pre_sim_firings(candidate.manifest_path)) == 2
-    detail = _campaign_pre_sim_details(
-        *_campaign_hook_inputs([candidate, baseline], invocation), invocation
-    )
+    return invocation, candidate, baseline
+
+
+def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import collect_pre_sim_firings
+    from booley.flows.sim.execution.pre_sim import TAIL_MAX_BYTES
+    from booley.flows.sim.flow import SimulateFlow
+
+    invocation, candidate, baseline = _two_role_campaigns(tmp_path, monkeypatch)
+    firings = collect_pre_sim_firings(candidate.manifest_path)
+    assert len(firings) == 2
+
+    flow = SimulateFlow()
+    flow.context._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([candidate, baseline])
+    detail = result.detail
     assert detail["pre_sim_total"] == detail["pre_sim_current"] == 2
+    assert detail["pre_sim_historical"] == 0
     assert set(detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
-    lines = _campaign_pre_sim_report_lines(
-        *_campaign_hook_inputs([candidate, baseline], invocation)
+    card = result.report_text.splitlines()
+    card_hooks = [line for line in card if line.startswith("pre_run_commands ")]
+    assert sorted(card_hooks) == sorted(detail["pre_sim_lines"])
+    assert card.count("Candidate:") == card.count("Cycle Count baseline:") == 1
+
+    # Bounded output: previews carry no tails, persisted tails stay within the cap.
+    assert all(
+        "stdout_tail" not in run and "stderr_tail" not in run for run in detail["pre_sim_runs"]
     )
-    assert "Candidate:" in lines and "Cycle Count baseline:" in lines
-    assert len([line for line in lines if line.startswith("pre_run_commands")]) == 2
+    assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16384
+    for firing in firings:
+        for tail in (firing.document["stdout_tail"], firing.document["stderr_tail"]):
+            assert 0 < len(tail.encode()) <= TAIL_MAX_BYTES
+    assert {(run["role"], run["attempt_id"]) for run in detail["pre_sim_runs"]} == {
+        (firing.document["role"], firing.document["attempt_id"]) for firing in firings
+    }
+
+    # Failed re-authentication drops the card block and the sim.json projection together.
+    sidecar = candidate.pre_sim_firings[0].path
+    sidecar.write_bytes(sidecar.read_bytes() + b" ")
+    result = flow._attach_published_pre_sim(result)
+    assert result.exit_code == 2
+    assert not [
+        line
+        for line in result.report_text.splitlines()
+        if line.startswith("pre_run_commands ") or line in {"Candidate:", "Cycle Count baseline:"}
+    ]
+    assert [key for key in result.detail if key.startswith("pre_sim_")] == [
+        "pre_sim_unauthenticated_references"
+    ]
 
 
 def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):

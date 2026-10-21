@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- When a Simulation Campaign's Pre-Sim evidence fails re-authentication, the report
+  card no longer keeps the `Candidate:` and `Cycle Count baseline:` headings without
+  their firing lines. The card and `sim.json` now come from one projection.
 - Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
   `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
   preparation (invalid `enabled` or `max_size` values still do). The cache root is
