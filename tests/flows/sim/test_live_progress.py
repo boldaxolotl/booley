@@ -636,6 +636,7 @@ def test_unchanged_log_is_not_reopened_on_stage_update(tmp_path, monkeypatch):
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
     ):
         _checkpoint(path)
+        execution._build_session = MagicMock(**{"new_generation.return_value": prepared.work_root})
         attempt = execution._prepare_attempt(handle, ())
         root, token = prepared.build_root, attempt.identity.attempt_token
         observe_stage("sim", "building", evidence_root=root, attempt_token=token)

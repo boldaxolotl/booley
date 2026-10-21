@@ -61,6 +61,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.leased_session import canned_build_session
 
 # Built-in Flow execution inside the Sandbox.
 _FLOW_ENABLED = True
@@ -71,15 +72,9 @@ class SimulateFlow(ProductionSimulateFlow):
 
 
 @pytest.fixture(autouse=True)
-def _use_legacy_build_transport_for_canned_flow_tests():
-    """Canned builds in this module live outside a real generation slot."""
-    with patch.object(
-        SimulationExecution,
-        "_run_groups_with_session",
-        lambda self, handle, groups, **planned: self._run_planned_groups(
-            handle, groups, **planned
-        ),
-    ):
+def _canned_build_session():
+    """Run canned Flow tests against a leased build session with stubbed inputs."""
+    with canned_build_session():
         yield
 
 
@@ -566,6 +561,7 @@ class _BoundaryHarness(SimulationExecution):
     def __init__(self, flow: SimulateFlow) -> None:
         self._flow = flow
         self._attempt = None
+        self._stashed = None
         super().__init__(
             invoke=self._invoke_test_process,
             artifact_root=flow.args.report_dir,
@@ -621,8 +617,29 @@ class _BoundaryHarness(SimulationExecution):
 
     def _invoke_test_process(self, command, *, timeout):
         del timeout
-        process = self._flow._execute(command)
         assert self._attempt is not None
+        if "BOOLEY_BUILD_STAGE" not in command[-1]:
+            stashed, self._stashed = self._stashed, None
+            write_adapter_result(
+                self._attempt.identity,
+                _adapter_result_for_test_process(self._attempt.identity.selected_tests, stashed),
+            )
+            fresh_ns = time.time_ns()
+            os.utime(self._attempt.identity.result_path, ns=(fresh_ns, fresh_ns))
+            from dataclasses import replace as _r
+
+            return _r(
+                stashed,
+                stdout="".join(
+                    l
+                    for l in stashed.stdout.splitlines(keepends=True)
+                    if "BOOLEY_BUILD_STAGE" not in l
+                ),
+            )
+        from booley.flows.sim.execution.engine import _adapter_shell_command
+
+        launch = _adapter_shell_command(self._attempt)[-1]
+        process = self._flow._execute([*command[:-1], f"{command[-1]}\n{launch}"])
         combined = process.stdout + ("\n" + process.stderr if process.stderr else "")
         lowered = combined.lower()
         build_failed = (
@@ -636,12 +653,8 @@ class _BoundaryHarness(SimulationExecution):
         )
         stdout = f"{process.stdout}\n{marker}" if build_failed else f"{marker}{process.stdout}"
         if not build_failed:
-            write_adapter_result(
-                self._attempt.identity,
-                _adapter_result_for_test_process(self._attempt.identity.selected_tests, process),
-            )
-            fresh_ns = time.time_ns()
-            os.utime(self._attempt.identity.result_path, ns=(fresh_ns, fresh_ns))
+            self._stashed = process
+            return SubprocessResult(returncode=0, stdout=marker)
         return SubprocessResult(
             returncode=process.returncode,
             stdout=stdout,
