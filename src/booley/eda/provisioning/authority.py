@@ -304,17 +304,6 @@ def resolve_grant(project_root: Path, kind: str) -> ProjectGrant:
     return matches[0]
 
 
-def resolve_installation(project_root: Path) -> Installation:
-    """Resolve the grant-selected, non-drifted installation for one Project."""
-    grant = resolve_grant(project_root, VIVADO_KIND)
-    if grant.installation is None:
-        raise AuthorityError("Project grant does not authorize a Vivado installation")
-    state = load_state(allow_missing=False)
-    record = state.installations[grant.installation]
-    _revalidate_installation(record, project_root)
-    return record
-
-
 def resolve_license(project_root: Path, kind: str = VIVADO_KIND) -> LicenseProfile | None:
     """Return the host-selected License Profile for a Project, if authorized."""
     grant = resolve_grant(project_root, kind)
