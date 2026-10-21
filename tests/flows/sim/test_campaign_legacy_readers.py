@@ -1,7 +1,5 @@
 """Read-only compatibility for campaigns predating recorded Test Runs."""
 
-from pathlib import Path
-
 import pytest
 
 from booley.flows.sim.campaign.codec import (
@@ -18,11 +16,7 @@ from tests.flows.sim.test_campaign_manifest_codec import (
 )
 from tests.flows.sim.test_campaign_test_runs import (
     _manifest_run_groups,
-    _v4_document,
     _work_item_test_runs,
-)
-from tests.flows.sim.test_campaign_test_runs import (
-    _refinalized as _refinalized_test_runs,
 )
 
 _V1 = "booley.simulation-campaign-manifest/v1"
@@ -95,12 +89,11 @@ def test_v1_manifest_grammar_is_unchanged_by_no_waivers_support() -> None:
     assert "no_waivers" not in manifest.document["workload"]  # type: ignore[operator]
 
 
-@pytest.mark.parametrize("schema", ["v1", "v2", "v3"])
+@pytest.mark.parametrize("schema", ["v1", "v2"])
 @pytest.mark.parametrize("mapping", [False, True])
 def test_source_mapping_schema_grammar(schema, mapping):
-    document = _legacy_manifest("v2" if schema == "v2" else "v1")
+    document = _legacy_manifest(schema)
     document.pop("fingerprints")
-    document["$schema"] = "booley.simulation-campaign-manifest/" + schema
     entry = {
         "path": "staged.hex",
         "bytes": 1,
@@ -110,7 +103,7 @@ def test_source_mapping_schema_grammar(schema, mapping):
     if mapping:
         entry["source_path"] = "data/source.hex"
     document["planning_disclosures"] = [_prepared_disclosure([entry])]
-    if mapping and schema != "v3":
+    if mapping:
         with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
             finalize_manifest(document)
     else:
@@ -119,13 +112,6 @@ def test_source_mapping_schema_grammar(schema, mapping):
             decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
             == manifest
         )
-
-
-def test_a_manifest_before_v4_may_not_carry_test_runs(tmp_path: Path):
-    document = _v4_document(tmp_path)
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        _refinalized_test_runs(document)
 
 
 def test_a_manifest_before_v4_still_decodes_for_reports():

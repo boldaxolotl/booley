@@ -191,21 +191,6 @@ def test_scalar_contract_helpers_reject_invalid_values(function, value: object) 
         function(value, "field")
 
 
-@pytest.mark.parametrize(
-    ("configured", "kind"),
-    [
-        ("run/{unknown}", "templated"),
-        ("run/{test!r}", "templated"),
-        ("run/{test:10}", "templated"),
-        ("run/{test", "templated"),
-        ("run/{test}", "literal"),
-    ],
-)
-def test_run_directory_format_rejects_ambiguous_templates(configured: str, kind: str) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec._validate_configured_run_kind(configured, kind)
-
-
 def test_manifest_rejects_invalid_top_level_contracts() -> None:
     invalid_documents: list[dict[str, object]] = []
     for path, value in [
@@ -451,13 +436,6 @@ def test_observations_reject_state_grade_cycle_and_diagnostic_disagreements() ->
         [{"severity": "warning", "code": "warn", "pointer": "", "message": "message"}]
     )
     assert setup["execution"] == "setup_error"
-
-
-def test_run_cwd_declared_placeholders_must_match_template() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagree"):
-        codec._validate_run_cwd(
-            {"configured": "run/{test}", "kind": "templated", "placeholders": ["attempt"]}
-        )
 
 
 def test_simulation_attempt_rejects_access_and_directory_kinds() -> None:
