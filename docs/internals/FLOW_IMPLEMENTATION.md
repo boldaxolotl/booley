@@ -1152,8 +1152,9 @@ root explicitly; callers obtain Booley Directory roots through
   changed or missing recorded native payloads are accepted because full pruning
   removes the entire invocation. A terminal attempt owns its records, the files its
   result names, and its `private-build/`, `snapshot/` and used shared-build trees;
-  unknown-file refusal inside it applies to its records and `evidence/`, not to
-  those build trees. Nonterminal attempts retain directory-level ownership
+  unknown-file refusal inside it applies to its records and its exact-listed
+  directories (`evidence/`, `runtime-inputs/`, `pre-sim/`), not to those build
+  trees. Nonterminal attempts retain directory-level ownership
   only for producer-private partial outputs that cannot acquire a terminal manifest.
   Interrupted attempts may be removed after their process releases the lock.
   Authenticated pending/interrupted Campaigns, missing

@@ -332,8 +332,8 @@ def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCa
     records, for the work items that finished. *manifest_sha256* is the
     digest recorded when the campaign started; another manifest is refused.
     Every result is decoded and bound to its attempt by the store's validated
-    scan (evidence is trusted on read), and each row carries the Test Run the manifest recorded with the
-    fingerprint its observation bound. The read holds the campaign's
+    scan (evidence is trusted on read), and each row carries the Test Run the
+    manifest recorded with the fingerprint its observation bound. The read holds the campaign's
     mutation lock, so the results returned are all there are until the
     campaign is resumed.
 

@@ -362,6 +362,43 @@ def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -
         completed.store.recover_shared_build(variant, 1)
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "manifest",
+        "workload",
+        "work_item",
+        "attempt",
+        "ordinal",
+        "build_owner",
+        "snapshot_pre",
+        "snapshot_post",
+    ],
+)
+def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
+    """The scan still binds a complete result to its manifest, item and final attempt."""
+    completed = _completed(tmp_path)
+    path = completed.store.work_item_directory(completed.item_id) / "result.json"
+    result = _read(path)
+    if case in {"manifest", "workload"}:
+        result[f"{case}_sha256"] = _BAD_DIGEST
+    elif case == "work_item":
+        result["work_item_id"] = "item:9999:" + "e" * 16
+    elif case == "attempt":
+        result["attempt_id"] = str(uuid.uuid4())
+    elif case == "ordinal":
+        result["attempt_ordinal"] += 1
+    elif case == "build_owner":
+        result["build_result"]["owner"] = str(uuid.uuid4())
+    elif case == "snapshot_pre":
+        result["executable_snapshot"]["pre_launch_sha256"] = _BAD_DIGEST
+    else:
+        result["executable_snapshot"]["post_exit_sha256"] = _BAD_DIGEST
+    _write(path, result)
+    with pytest.raises(SimulationCampaignIntegrityError):
+        completed.store.scan()
+
+
 def _compatibility_manifest():
     base = _manifest_for(("alpha", "beta"))
     document = json.loads(canonical_json_bytes(base.document))

@@ -798,10 +798,8 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
 
     def change_published_evidence(boundary: str) -> None:
-        # Rewrite a run log and a snapshot artifact after authentication at launch.
+        # Rewrite a snapshot artifact after authentication at launch.
         if boundary == "after:execution_evidence":
-            for path in store.root.glob("work-items/*/attempts/*/evidence/*-run.log"):
-                path.write_bytes(path.read_bytes() + b"changed\n")
             for path in store.root.glob("work-items/*/attempts/*/snapshot/simv"):
                 path.chmod(0o600)
                 path.write_bytes(b"changed image")

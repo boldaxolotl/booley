@@ -16,7 +16,8 @@ simulator launch, verdict normalization, and trace finalization.
 The public `booley.flows.sim.campaign` package also owns storage-backed read
 capabilities. External Simulation, Coverage, and retention callers read
 one terminal work item (amended 2026-10-21, see Amendments) or inspect
-retention eligibility through that package and receive immutable typed evidence. Durable store construction, path layout,
+retention eligibility through that package and receive immutable typed evidence.
+Durable store construction, path layout,
 manifest/result recovery scanning, and summary decoding remain private to the
 Campaign implementation. Campaign coordination and child linkage retain direct
 store access because they own the durable transaction; callers do not receive a
