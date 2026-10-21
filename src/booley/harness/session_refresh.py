@@ -2,29 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 from booley.harness import init_cmd
 from booley.runtime import session_issuance as issuance
 from booley.runtime import session_refresh as runtime_refresh
-from booley.runtime.image_lifecycle import LifecycleResult, PlanAction, PreparedConvergence
+from booley.runtime.image_lifecycle import PlanAction, PreparedConvergence
 from booley.runtime.session_runtime import SessionError
 
 
 class _RuntimeImages:
     def __init__(self) -> None:
-        self._inspection: LifecycleResult | None = None
         self._prepared: PreparedConvergence | None = None
         self._spec: issuance.PreparedSessionSpec | None = None
         self._sources: init_cmd._InteractiveSpecSources | None = None
 
     def inspect(self, project_root: Path, *, verbose: bool) -> None:
-        self._inspection = init_cmd.inspect_refreshable_runtime_image(
-            project_root,
-            verbose=verbose,
-        )
-        self._sources = self._current_sources(project_root, None)
+        init_cmd.inspect_refreshable_runtime_image(project_root)
 
     def prepare(
         self,
@@ -107,13 +101,7 @@ class _RuntimeImages:
         )
 
     def prepare_spec(self, project_root: Path, image: runtime_refresh.RefreshImage) -> None:
-        current = self._current_sources(project_root, image.selected_id)
-        if (
-            self._sources is not None
-            and replace(self._sources, runtime_image_id=image.selected_id) != current
-        ):
-            raise SessionError("Sandbox inputs changed while preparing image candidates")
-        self._sources = current
+        self._sources = self._current_sources(project_root, image.selected_id)
         self._spec = issuance.preview(
             project_root, self._sources.build, expected_image_id=image.selected_id
         )
@@ -125,17 +113,6 @@ class _RuntimeImages:
         except issuance.RuntimeSpecError:
             return False
         return True
-
-    def validate_spec(self, project_root: Path) -> None:
-        assert self._spec is not None and self._sources is not None
-        current = self._current_sources(project_root, self._sources.runtime_image_id or "")
-        if current != self._sources:
-            raise SessionError("Sandbox inputs changed while preparing refresh")
-        prepared = issuance.preview(
-            project_root, current.build, expected_image_id=self._sources.runtime_image_id
-        )
-        if prepared != self._spec:
-            raise SessionError("Sandbox authority or policy changed while preparing refresh")
 
     def requires_license(self) -> bool:
         assert self._spec is not None
