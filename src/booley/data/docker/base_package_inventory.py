@@ -61,7 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         query = ["dpkg-query", "-W", "-f", DPKG_FORMAT]
         dpkg = subprocess.run(query, capture_output=True, check=True, text=True).stdout
         pip = importlib.metadata.version("pip")
-        args.output.write_text(build_document(dpkg, platform.python_version(), pip))
+        document = build_document(dpkg, platform.python_version(), pip)
+        args.output.write_text(document, encoding="utf-8")
         return 0
     try:
         problem = validate_document(args.path.read_text(encoding="utf-8"))

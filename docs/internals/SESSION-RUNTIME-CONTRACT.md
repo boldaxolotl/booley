@@ -196,17 +196,24 @@ produces the same bytes.
 The standard-library helper `/usr/local/libexec/booley/base_package_inventory.py`
 has two commands. `generate` writes the file in the base's final layer, after
 every apt and pip change, as `python -I` so user-site packages and `PYTHON*`
-variables cannot affect it. `validate` checks only the shape, which is what the
-common contract probe runs. Standard, RISC-V, and Project-derived images
+variables cannot affect it. `validate` checks only the shape (a readable JSON
+object with the expected fields and types), not sorting, `scope`, or live package
+state. The common contract probe runs it. Standard, RISC-V, and Project-derived images
 inherit the base bytes unchanged and never regenerate or relabel them. The file
-is not an SBOM or a lockfile; the SPDX attestations above remain in place.
+is not an SBOM or a lockfile; the SPDX attestations above remain in place. It
+omits the EDA builder stages and derived layers. Apt stays floating, so rebuilds
+are not reproducible. Images built before this contract lack the file and fail
+the image contract.
 
 Extract the file by running `cat` in the image:
 
 ```bash
 docker run --rm --network none --entrypoint cat IMAGE \
   /usr/local/share/booley/base-package-inventory.json > inventory.json
+cmp parent.json inventory.json
 ```
+
+A missing file, a failed `docker run`, or differing bytes fails the CI step.
 
 CI keeps these artifacts:
 
