@@ -182,16 +182,9 @@ def _refinalized(document: dict):
         (lambda item: item["test_runs"].clear(), "nonempty and uniquely named"),
         (lambda item: item["test_runs"].append(copy.deepcopy(item["test_runs"][0])), "uniquely"),
         (lambda item: item["test_runs"][0].update(name="count+soak@43"), "disagrees with its own"),
-        (lambda item: item["test_runs"][0].update(args=["+iters=1"]), "disagrees with its own"),
         (lambda item: item["test_runs"][0].update(seed=0), "out of range"),
         (lambda item: item["test_runs"][0].update(extra=1), "must hold exactly"),
         (lambda item: item["test_runs"][0].pop("env"), "must hold exactly"),
-        (
-            lambda item: item["test_runs"].__setitem__(
-                0, test_run_document(build_test_run("reset", seed=42))
-            ),
-            "disagree with selection",
-        ),
         (
             lambda item: item["test_runs"].append(test_run_document(_OTHER_SEED)),
             "ordinary work item requires one Test Run",

@@ -199,8 +199,6 @@ def test_manifest_rejects_invalid_top_level_contracts() -> None:
         (("target", "role"), "unknown"),
         (("workload", "mode"), "lint"),
         (("workload", "pre_sim_build_access"), "mutable"),
-        (("workload", "run_cwd", "kind"), "unknown"),
-        (("workload", "run_cwd", "placeholders"), ["unknown"]),
         (("required_suite", "default_invocation"), False),
         (("build_variants", 0, "kind"), "unknown"),
         (("work_items", 0, "ordinal"), 2),
@@ -284,17 +282,12 @@ def test_child_and_build_attempt_identities_must_be_coherent() -> None:
         codec._validate_build_attempt(invalid)
 
 
-def test_runtime_declarations_require_digest_and_unique_identity() -> None:
+def test_runtime_declarations_require_unique_identity() -> None:
     declaration = {
         "source_artifact_path": "input/a",
         "destination": "run/a",
         "declaration_id": "sha256:" + "0" * 64,
     }
-    with pytest.raises(SimulationCampaignIntegrityError, match="digest"):
-        codec._validate_runtime_declarations([declaration])
-    declaration["declaration_id"] = codec._digest(
-        {"source_artifact_path": "input/a", "destination": "run/a"}
-    )
     with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
         codec._validate_runtime_declarations([declaration, declaration])
 

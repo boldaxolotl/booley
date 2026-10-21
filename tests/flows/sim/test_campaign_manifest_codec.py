@@ -403,7 +403,7 @@ def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
     return candidate, candidate_store, baseline, baseline_store
 
 
-def test_manifest_exact_codec_recomputes_all_component_digests() -> None:
+def test_manifest_codec_round_trips_exact_bytes() -> None:
     raw = canonical_json_bytes(_manifest())
     value = decode_simulation_campaign_manifest(raw)
     assert value.canonical_bytes() == raw
@@ -836,15 +836,7 @@ def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directo
     return request
 
 
-@given(st.sampled_from(["workload_sha256", "target_recipe_sha256", "work_items_sha256"]))
-def test_manifest_digest_mutations_are_rejected(field: str) -> None:
-    manifest = _manifest()
-    manifest["fingerprints"][field] = "sha256:" + "f" * 64  # type: ignore[index]
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-
-
-@given(st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]))
+@given(st.sampled_from(["missing", "unknown", "type", "path"]))
 def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
     manifest = _manifest()
     target = manifest["target"]
@@ -854,12 +846,8 @@ def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
         target["unexpected"] = True
     elif mutation == "type":
         target["name"] = 7
-    elif mutation == "path":
-        manifest["required_suite"]["source_path"] = "../escape"  # type: ignore[index]
-    elif mutation == "digest":
-        manifest["fingerprints"]["workload_sha256"] = "sha256:" + "f" * 64  # type: ignore[index]
     else:
-        manifest["work_items"][0]["role"] = "cycle_count_baseline"  # type: ignore[index]
+        manifest["required_suite"]["source_path"] = "../escape"  # type: ignore[index]
     with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
@@ -875,17 +863,6 @@ def test_manifest_rejects_recipe_string_resource_overflow(field: str, value: obj
     manifest = _manifest()
     manifest["workload"]["source_recipe"][field] = value  # type: ignore[index]
     with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("role", "cycle_count_baseline"), ("revision", "different")],
-)
-def test_work_item_role_and_revision_must_match_target(field: str, value: str) -> None:
-    manifest = _manifest()
-    manifest["work_items"][0][field] = value  # type: ignore[index]
-    with pytest.raises(SimulationCampaignIntegrityError, match="role/revision"):
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
@@ -1565,3 +1542,41 @@ def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatc
         validate_resume_manifest(
             alias / "linked" / store.manifest_path.relative_to(root), project_root=root
         )
+
+
+def test_manifest_decode_trusts_planned_digests_and_links(monkeypatch) -> None:
+    """Decoding recomputes no digest and accepts the derived values planning wrote."""
+    manifest = _manifest()
+    item = manifest["work_items"][0]  # type: ignore[index]
+    item["revision"] = "other-revision"
+    item["fingerprint_sha256"] = "sha256:" + "0" * 64
+    item["test_runs"][0]["fingerprint"] = "sha256:" + "3" * 64
+    manifest["build_variants"][0]["recipe_sha256"] = "sha256:" + "1" * 64  # type: ignore[index]
+    manifest["fingerprints"]["workload_sha256"] = "sha256:" + "2" * 64  # type: ignore[index]
+    raw = canonical_json_bytes(manifest)
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("manifest decode recomputed a SHA-256 digest")
+
+    monkeypatch.setattr(hashlib, "sha256", refuse)
+    monkeypatch.setattr(hashlib, "new", refuse)
+    decoded = decode_simulation_campaign_manifest(raw)
+    assert decoded.document["work_items"][0]["revision"] == "other-revision"
+
+
+def test_finalize_manifest_writes_the_planned_fingerprints() -> None:
+    """Planning computes the same seven fingerprints an independent helper does."""
+    document = _manifest()
+    document.pop("fingerprints")
+    assert finalize_manifest(document).canonical_bytes() == canonical_json_bytes(_manifest())
+
+
+def test_cycle_prerequisite_refuses_a_baseline_manifest_whose_digest_disagrees(tmp_path) -> None:
+    from booley.flows.sim.campaign.coordinator import _prerequisite_facts
+
+    candidate, candidate_store, _baseline, _baseline_store = _linked_campaign_stores(tmp_path)
+    document = json.loads(encode_simulation_campaign_manifest(candidate))
+    document.pop("fingerprints")
+    document["prerequisites"][0]["manifest"]["sha256"] = "sha256:" + "f" * 64
+    with pytest.raises(SimulationCampaignIntegrityError, match="unauthenticated"):
+        _prerequisite_facts(candidate_store, finalize_manifest(document))

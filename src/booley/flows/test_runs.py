@@ -323,8 +323,11 @@ def build_test_run(
     seed: int | None = None,
     args: tuple[str, ...] = (),
     env: Mapping[str, str] | None = None,
+    fingerprint: str | None = None,
 ) -> TestRun:
     """Build a :class:`TestRun` and fingerprint its declared inputs.
+
+    A *fingerprint* that a trusted record already holds is kept as given.
 
     Raises :class:`TestRunNameError` for an invalid name, a Test Variant on the
     unnamed invocation, a seed that is not an integer in ``1..MAX_SEED``, or
@@ -347,7 +350,11 @@ def build_test_run(
         seed=seed,
         args=tuple(args),
         env=tuple(sorted(environment.items())),
-        fingerprint=declared_inputs_fingerprint(tuple(args), environment),
+        fingerprint=(
+            declared_inputs_fingerprint(tuple(args), environment)
+            if fingerprint is None
+            else fingerprint
+        ),
     )
 
 
@@ -407,6 +414,13 @@ def _record_args(value: object) -> tuple[str, ...]:
     return tuple(cast("list[str]", items))
 
 
+def _record_fingerprint(value: object) -> str:
+    """A trusted record's stored fingerprint: a ``sha256:`` string."""
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        raise TestRunNameError("a Test Run record's fingerprint must be a sha256 digest")
+    return value
+
+
 def _record_env(value: object) -> dict[str, str]:
     """A Test Run record's environment table."""
     table = as_dict(value)
@@ -415,12 +429,13 @@ def _record_env(value: object) -> dict[str, str]:
     return cast("dict[str, str]", table)
 
 
-def test_run_from_document(document: object) -> TestRun:
+def test_run_from_document(document: object, *, trust_fingerprint: bool = False) -> TestRun:
     """Rebuild a :class:`TestRun` from its persisted form, strictly.
 
     The document must hold exactly the fields :func:`test_run_document`
     writes, and its ``name`` and ``fingerprint`` must be the ones the other
     fields produce: a record cannot name one Test Run and describe another.
+    With *trust_fingerprint* the stored fingerprint is kept, not recomputed.
     Raises :class:`TestRunNameError`.
     """
     record = as_dict(document)
@@ -437,6 +452,7 @@ def test_run_from_document(document: object) -> TestRun:
         seed=None if seed is None else _require_seed(seed),
         args=_record_args(record["args"]),
         env=_record_env(record["env"]),
+        fingerprint=_record_fingerprint(record["fingerprint"]) if trust_fingerprint else None,
     )
     if record["name"] != run.name or record["fingerprint"] != run.fingerprint:
         raise TestRunNameError(
