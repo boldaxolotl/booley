@@ -23,11 +23,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from booley.core.host_probes import ProbeState, probe_docker, probe_github
+from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
 
 SCHEMA_VERSION = 1
-MIN_PYTHON = (3, 11)
 PINNED_RUNNERS = {
     "pytest": "9.1.1",
     "pytest-asyncio": "1.4.0",
@@ -74,7 +73,6 @@ class Check:
     status: Status
     required: bool
     summary: str
-    write_probed: bool = False
     commands: tuple[Command, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -83,7 +81,6 @@ class Check:
             "status": self.status.value,
             "required": self.required,
             "summary": self.summary[:240],
-            "write_probed": self.write_probed,
             "commands": [command.as_dict() for command in self.commands],
         }
 
@@ -193,7 +190,7 @@ class ReadinessUsageError(ValueError):
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("prepare", "develop", "publish"), default="develop")
+    parser.add_argument("--phase", choices=("prepare", "develop"), default="develop")
     parser.add_argument("--branch")
     parser.add_argument("--worktree-path", type=Path)
     parser.add_argument("--require", choices=("docker",))
@@ -218,8 +215,6 @@ def run_phase(args: argparse.Namespace) -> Result:
     root = find_source_checkout(Path.cwd())
     if args.phase == "prepare":
         return _prepare(root, args.branch, args.worktree_path)
-    if args.phase == "publish":
-        return _publish(root)
     return _develop(
         root, require_docker=args.require == "docker", test_profile=args.test_profile or "python"
     )
@@ -242,7 +237,6 @@ def find_source_checkout(start: Path) -> Path:
 
 def _prepare(root: Path, branch: str, requested_path: Path | None) -> Result:
     checks: list[Check] = []
-    checks.append(_python_check())
     git = shutil.which("git")
     checks.append(_presence_check("git.executable", git is not None, "Git executable found"))
     identity = _git(root, ("rev-parse", "--show-toplevel")) if git else None
@@ -287,7 +281,7 @@ def _prepare(root: Path, branch: str, requested_path: Path | None) -> Result:
     )
     checks.append(_current_checkout_advisory(root))
     commands = (command,) if command else ()
-    return _result("prepare", root, checks, commands, git=git)
+    return _result("prepare", root, checks, commands)
 
 
 def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") -> Result:
@@ -308,7 +302,6 @@ def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") 
     )
     environment, env_commands, shared_python = _environment_check(root)
     checks.append(environment)
-    checks.append(_cache_path_check(root))
     docker_check = _docker_check(require_docker)
     checks.append(docker_check)
     commands = list(env_commands)
@@ -319,28 +312,7 @@ def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") 
         native_ready = native_check.status is Status.READY
         commands.extend(native_check.commands)
     commands.extend(_verification_commands(shared_python, root, test_profile, native_ready))
-    return _result(
-        "develop", root, checks, tuple(commands), git=shutil.which("git"), branch=branch
-    )
-
-
-def _publish(root: Path) -> Result:
-    checks = [_git_identity_check(root, _git(root, ("rev-parse", "--show-toplevel")))]
-    gh = probe_github(which=shutil.which, run=subprocess.run, cwd=root)
-    checks.append(
-        _presence_check("github.executable", gh.executable is not None, "GitHub CLI found")
-    )
-    checks.append(
-        _probe_check(
-            "github.authentication", gh.authentication, "GitHub authentication is available"
-        )
-    )
-    checks.append(
-        _probe_check(
-            "github.connectivity", gh.connectivity, "GitHub read-only connectivity is available"
-        )
-    )
-    return _result("publish", root, checks, (), git=shutil.which("git"))
+    return _result("develop", root, checks, tuple(commands), branch=branch)
 
 
 def _result(
@@ -349,7 +321,6 @@ def _result(
     checks: Sequence[Check],
     commands: Sequence[Command],
     *,
-    git: str | None,
     branch: str | None = None,
 ) -> Result:
     kind = "linked" if _is_linked_worktree(root) else "primary"
@@ -358,8 +329,6 @@ def _result(
         if branch is not None
         else _git_text(root, ("symbolic-ref", "--short", "-q", "HEAD"))
     )
-    if git is None:
-        actual_branch = actual_branch or None
     return Result(
         phase,
         aggregate_status(checks),
@@ -397,17 +366,6 @@ def _argv(argv: Sequence[str]) -> str:
     return shlex.join(list(argv))
 
 
-def _python_check() -> Check:
-    current = sys.version_info[:2]
-    good = current >= MIN_PYTHON
-    summary = (
-        f"Python {current[0]}.{current[1]} is supported"
-        if good
-        else "Python 3.11 or newer is required"
-    )
-    return Check("python.bootstrap", Status.READY if good else Status.BLOCKED, True, summary)
-
-
 def _presence_check(identifier: str, present: bool, success: str) -> Check:
     return Check(
         identifier,
@@ -418,14 +376,10 @@ def _presence_check(identifier: str, present: bool, success: str) -> Check:
 
 
 def _valid_branch(branch: str) -> bool:
-    """Apply the portable subset of Git's branch-name rules at the CLI edge."""
-    forbidden = ("..", "//", "@{", "~", "^", ":", "?", "*", "[", "\\")
-    return (
-        bool(_BRANCH_RE.fullmatch(branch))
-        and not any(token in branch for token in forbidden)
-        and not any(part.startswith(".") or part.endswith(".lock") for part in branch.split("/"))
-        and not branch.endswith((".", "/"))
-    )
+    """Gate on the codex/ prefix pattern; Git itself owns every other ref rule."""
+    if not _BRANCH_RE.fullmatch(branch):
+        return False
+    return _successful(_run_process(("git", "check-ref-format", "--branch", branch), Path.cwd()))
 
 
 def _git_identity_check(root: Path, result: subprocess.CompletedProcess[str] | None) -> Check:
@@ -591,8 +545,6 @@ def dependency_argv(root: Path) -> tuple[str, ...]:
     values = _project_dependencies(root)
     flat = tuple(item for group in values.values() for item in group)
     argv = ("install", "--disable-pip-version-check", "--no-input", *flat)
-    if sys.platform == "win32" and sum(len(item) + 1 for item in argv) >= 30_000:
-        raise RuntimeError("agent-tools dependency command exceeds the Windows command limit")
     return argv
 
 
@@ -636,19 +588,6 @@ def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bo
     return True, "shared tools environment matches the repository fingerprint"
 
 
-def _cache_path_check(root: Path) -> Check:
-    cache = agent_tools_root().resolve()
-    safe = not _within(cache, root.resolve())
-    return Check(
-        "python.cache-path",
-        Status.READY if safe else Status.BLOCKED,
-        True,
-        "shared tools cache is outside the checkout"
-        if safe
-        else "shared tools cache would be inside the checkout",
-    )
-
-
 def _docker_check(required: bool) -> Check:
     observation = probe_docker(
         which=shutil.which,
@@ -683,15 +622,6 @@ def _docker_check(required: bool) -> Check:
         else "Docker daemon did not respond successfully"
     )
     return Check("docker.daemon", status, True, summary)
-
-
-def _probe_check(identifier: str, state: ProbeState, success: str) -> Check:
-    return Check(
-        identifier,
-        Status.READY if state is ProbeState.HEALTHY else Status.BLOCKED,
-        True,
-        success if state is ProbeState.HEALTHY else "GitHub read-only probe failed",
-    )
 
 
 def _native_test_check(root: Path) -> Check:
@@ -819,10 +749,6 @@ def _git_text(root: Path, args: Sequence[str]) -> str | None:
         return None
     value = (result.stdout or "").strip()
     return value or None
-
-
-def _git_success(root: Path, args: Sequence[str]) -> bool:
-    return _successful(_git(root, args))
 
 
 def _git_count(root: Path, args: Sequence[str]) -> int | None:

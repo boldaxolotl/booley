@@ -19,7 +19,7 @@ from booley.flows.cli_help import (
     SurfaceHelp,
     present_command,
 )
-from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV, invocation_context
+from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV, CliInvocation
 from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.harness import booley as cli
 from booley.mcp.flow_adapter import flow_schema
@@ -114,10 +114,9 @@ def test_help_command_matches_help_flag_without_project(
 
 
 def _human_parser(endpoint: object) -> argparse.ArgumentParser:
-    with invocation_context():
-        if isinstance(endpoint, BuiltinFlow):
-            return build_cli_parser(endpoint)
-        return human_endpoint_parser(endpoint)
+    if isinstance(endpoint, BuiltinFlow):
+        return build_cli_parser(endpoint, CliInvocation())
+    return human_endpoint_parser(endpoint)
 
 
 def _walk(parser: argparse.ArgumentParser, route: tuple[str, ...]):
@@ -183,8 +182,7 @@ def test_description_and_example_are_written_for_the_command_line(command: str) 
     assert f"{EXAMPLE_HEADING}\n  {declared.example}\n" in parser.format_help()
     # The example is a command this parser accepts.
     arguments = shlex.split(declared.example)[len(command.split()) :]
-    with invocation_context():
-        parser.parse_args(arguments)
+    parser.parse_args(arguments)
 
 
 @pytest.mark.parametrize("command", ["flow", "specialist"])
@@ -287,7 +285,7 @@ def test_help_from_the_booley_entry_point(
         cli.runtime_context, "ensure_proxy_env", lambda: pytest.fail("help restored proxy")
     )
 
-    with invocation_context(), pytest.raises(SystemExit) as baseline_exit:
+    with pytest.raises(SystemExit) as baseline_exit:
         ENDPOINTS[command].main([flag])
     assert baseline_exit.value.code == 0
     baseline = capsys.readouterr()

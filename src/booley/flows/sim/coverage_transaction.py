@@ -81,10 +81,7 @@ def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> Cov
             *result.findings,
             *(
                 source_gap_findings(
-                    result.build.declarations,
-                    plan.source_closure,
-                    result.native_sources,
-                    result.native_source_diagnostics,
+                    plan.rtl_candidates, plan.source_closure, result.native_sources
                 )
                 if scoreable and result.native_format.compatibility == "compatible"
                 else ()
@@ -189,9 +186,6 @@ def _execute_coverage_transaction(
         _start_target(root)
         result = collect(replace(plan.collection_request, artifact_root=root), execution)
         validate_coverage_sources(plan)
-        from .coverage_declaration_artifact import publish_declaration_evidence
-
-        result = publish_declaration_evidence(root, result)
         campaign = _evaluate(plan, _campaign(plan, result))
         outcome = _publish(
             plan,

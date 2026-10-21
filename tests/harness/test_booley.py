@@ -75,15 +75,6 @@ def test_doctor_parser_requires_deep_for_skip_agent_checks(capsys):
     assert "--skip-agent-checks requires --deep" in capsys.readouterr().err
 
 
-def test_doctor_parser_accepts_explicit_project_root(tmp_path):
-    parser = tlr._build_parser()
-
-    args = parser.parse_args(["doctor", "--project-root", str(tmp_path)])
-
-    args = tlr._normalize_args(parser, args)
-    assert tlr._resolve_cli_selection(args) == tmp_path
-
-
 def test_project_command_rejects_source_but_feedback_is_allowed(tmp_path, capsys):
     (tmp_path / "pyproject.toml").write_text(
         "[tool.booley]\nsource_checkout = true\n",
@@ -1147,20 +1138,6 @@ class TestConstants:
 # ===========================================================================
 
 
-def test_hidden_session_prepare_accepts_explicit_workspace_root():
-    """Dev Containers need not run initializeCommand from the workspace cwd."""
-    parser = tlr._build_parser()
-    args = tlr._normalize_args(
-        parser,
-        parser.parse_args(["session", "prepare", "--project-root", "/tmp/project"]),
-    )
-
-    assert args.command == "session"
-    assert args.session_command == "prepare"
-    assert args._cli_selection.value == "/tmp/project"
-    assert args._cli_selection.legacy
-
-
 @pytest.mark.parametrize("command", ["up", "prepare"])
 def test_at_cap_session_start_reports_status_two_without_success(
     command, tmp_path, monkeypatch, capsys
@@ -1210,23 +1187,6 @@ def test_session_plain_runtime_error_remains_one_line(tmp_path, monkeypatch, cap
     assert capsys.readouterr().err == "ERROR: image refresh failed\n"
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["session", "down", "--project-root", "/tmp/project"],
-    ],
-)
-def test_session_down_accepts_explicit_project_root(argv):
-    """Sidecar blockers can offer a copyable, Project-scoped shutdown command."""
-    parser = tlr._build_parser()
-    args = tlr._normalize_args(parser, parser.parse_args(argv))
-
-    assert args.command == "session"
-    assert args.session_command == "down"
-    assert args._cli_selection.value == "/tmp/project"
-    assert args._cli_selection.legacy
-
-
 @pytest.mark.parametrize("command", ["up", "enter", "status", "validate", "refresh"])
 def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
     parser = tlr._build_parser()
@@ -1242,7 +1202,6 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     from booley.runtime import session_refresh as refresh_runtime
     from booley.runtime import session_runtime
     from booley.runtime.docker_capacity import DockerCapacityError
-    from booley.runtime.image_lifecycle import LifecycleResult, Status
 
     spec = tmp_path / ".devcontainer/devcontainer.json"
     spec.parent.mkdir()
@@ -1258,7 +1217,7 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     monkeypatch.setattr(
         init_cmd,
         "inspect_refreshable_runtime_image",
-        lambda *_args, **_kwargs: LifecycleResult("project-image", "sha256:running", Status.STALE),
+        lambda *_args, **_kwargs: None,
     )
     preparations = []
 
@@ -1555,15 +1514,6 @@ def test_removed_alias_docs_still_have_project_replacement_notice(tmp_path, caps
     notice = capsys.readouterr().err
     assert option in notice
     assert "--project" in notice
-
-
-def test_bare_cheat_project_names_section_replacement(capsys):
-    parser = tlr._build_parser()
-    args = tlr._normalize_args(parser, parser.parse_args(["cheat", "--project"]))
-    assert args.project
-    notice = capsys.readouterr().err
-    assert "--project" in notice
-    assert "--project-files" in notice
 
 
 def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkeypatch):

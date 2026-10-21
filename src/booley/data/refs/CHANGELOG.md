@@ -15,7 +15,19 @@ Packaged release history starts at 0.2.7. For older changes, see
   the issued `BOOLEY_COMPILER_CACHE_ROOT` as given. When it is unset, including
   outside a Sandbox where builds previously cached under the host Booley Directory,
   builds compile uncached with a `booley session refresh` warning.
-
+- Coverage finds RTL sources without coverage points with a lexical scan at
+  Preflight instead of a Verilator declaration dump. User `--dumpi-*` Verilator
+  options now pass through to coverage builds. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`
+  no longer appears, and `` `line `` directives or token joins no longer suppress
+  `COV_RTL_SOURCE_WITHOUT_POINTS`. The Analyst `zero_point_sources` view and
+  overview drop `discovery_status`, `comparison_status` and `unusable_findings`,
+  and the verdict card omits the source line when there are no gaps. Campaigns
+  from 0.3.0 still load. A coverage Simulation Campaign interrupted before the
+  upgrade cannot be resumed because its command model changed; collect it again.
+- Deep Doctor now keeps only the latest completed deep attempt: a failed or
+  incomplete attempt makes deep status due until the next qualifying run, reports one
+  "latest deep attempt failed" reason, and `deep_status` no longer includes
+  `last_success`, the per-reason `checks` list, or the `latest-attempt-not-qualified` code. Existing deep records are replaced by the next deep run.
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a

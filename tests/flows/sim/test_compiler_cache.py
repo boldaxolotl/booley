@@ -170,15 +170,12 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
     tools = fake_ccache(tmp_path / "tools")
     monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.delenv("CCACHE_MAXSIZE", raising=False)
+    monkeypatch.delenv("OBJCACHE", raising=False)
     prepared = prepared_build(
         root, policy, 'test "$OBJCACHE" = ccache && test "$CCACHE_MAXSIZE" = 5G'
     )
-    script = simulation_build_script(
-        prepared,
-        "a" * 32,
-        run_line='test "$OBJCACHE" = run-value && test -z "$CCACHE_MAXSIZE"',
-        run_environment={"OBJCACHE": "run-value"},
-    )
+    script = simulation_build_script(prepared, "a" * 32)
+    script += '\ntest -z "$OBJCACHE" && test -z "$CCACHE_MAXSIZE"'
     # Git for Windows starts several shell processes here on loaded CI workers.
     result = subprocess.run(
         ["sh", "-c", script],

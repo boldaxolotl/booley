@@ -36,7 +36,6 @@ from .execution.freshness import (
     snapshot_artifact,
     validate_fresh_artifact,
 )
-from .verilator_declarations import DeclarationInventory, declaration_source_aliases
 from .verilator_identity import PINNED_VERILATOR, VerilatorCollectorIdentity
 
 CoverageHarness = Literal["generated_main", "custom_main", "cocotb", "hdl_testbench"]
@@ -195,7 +194,6 @@ class SimulationBuildResult:
     collector: VerilatorCollectorIdentity | None = None
     infrastructure_error: bool = False
     reason: str = ""
-    declarations: DeclarationInventory | None = None
 
 
 @dataclass(frozen=True)
@@ -268,8 +266,6 @@ class CoverageBuildEvidence:
 
     variant: SimulationBuildVariant
     instrumentation: tuple[str, ...]
-    declarations: DeclarationInventory | None = None
-    successful: bool = False
 
 
 @dataclass(frozen=True)
@@ -314,7 +310,6 @@ class CoverageCollectionResult:
     unrecognized_records: tuple[Mapping[str, FrozenJson], ...] = ()
     infrastructure_error: bool = False
     native_sources: tuple[str, ...] = ()
-    native_source_diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1287,19 +1282,20 @@ def _unknown_findings(collected: tuple[_CollectedRun, ...]) -> tuple[CoverageFin
     )
 
 
-def _native_source_presence(build, collected) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    inventory = build.declarations
-    present, unresolved = set(), set()
-    aliases = declaration_source_aliases(inventory.sources) if inventory else {}
-    for item in collected:
-        for record in item.records:
-            native = record.attributes.get("f", "")
-            source = aliases.get(native.replace("\\", "/"))
-            if source is None:
-                unresolved.add(native)
-            else:
-                present.add(source.path)
-    return tuple(sorted(present)), tuple(sorted(unresolved))
+def _native_source_presence(
+    request: CoverageCollectionRequest, collected: tuple[_CollectedRun, ...]
+) -> tuple[str, ...]:
+    """Source paths named by any native record, before metric filtering."""
+    sources = {source.native_path: source for source in request.target.sources}
+    return tuple(
+        sorted(
+            {
+                _match_source(sources, record.attributes.get("f", "")).path
+                for item in collected
+                for record in item.records
+            }
+        )
+    )
 
 
 def _result(
@@ -1314,10 +1310,8 @@ def _result(
     compatibility: Literal["compatible", "incompatible", "unknown"],
     extra_artifacts: tuple[CoverageArtifact, ...] = (),
 ) -> CoverageCollectionResult:
-    present, unresolved = _native_source_presence(build, collected)
     return CoverageCollectionResult(
-        native_sources=present,
-        native_source_diagnostics=unresolved,
+        native_sources=_native_source_presence(request, collected),
         status=status,
         build=build,
         runs=tuple(item.run for item in collected),
@@ -1362,7 +1356,7 @@ def _build_collection(
         return build, _infrastructure_failure(
             request, build, (), finding.message, code=finding.code
         )
-    return replace(build, declarations=build_result.declarations, successful=True), None
+    return build, None
 
 
 def _merge_collection(

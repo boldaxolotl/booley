@@ -347,9 +347,6 @@ def simulation_build_environment(prepared: PreparedSimulationBuild) -> dict[str,
 def simulation_build_script(
     prepared: PreparedSimulationBuild,
     token: str,
-    *,
-    run_line: str = "",
-    run_environment: Mapping[str, str] | None = None,
 ) -> str:
     """Render one build to execute now; finalizes compiler-cache availability.
 
@@ -359,8 +356,6 @@ def simulation_build_script(
         prepared.make_argv,
         token,
         build_environment=simulation_build_environment(prepared),
-        environment=run_environment,
-        run_line=run_line,
     )
 
 

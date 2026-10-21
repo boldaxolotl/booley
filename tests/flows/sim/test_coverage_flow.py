@@ -1716,8 +1716,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
         f"(Simulation Campaign {campaign['campaign_id']})\n"
         f"  manifest: {manifest.resolve()}\n"
-        f"  report: {(tmp_path / 'resumed/sim.json').resolve()}\n"
-        "RTL source discovery incomplete; sources without coverage points unavailable."
+        f"  report: {(tmp_path / 'resumed/sim.json').resolve()}"
     )
     resolved = resolve_report_artifact_reference(
         report_path,
@@ -1728,13 +1727,6 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         external_origin_target=manifest.parents[1],
     )
     assert resolved.path == manifest
-    from booley.flows.sim.coverage_source_gaps import INCOMPLETE_CODE, source_gap_summary
-
-    retained = resolve_coverage_campaign_reference(
-        manifest.parents[1] / "coverage.json"
-    ).loaded.campaign
-    assert source_gap_summary(retained).status == "incomplete"
-    assert sum(f.code == INCOMPLETE_CODE for f in retained.findings) == 1
 
 
 def test_coverage_resume_uses_manifest_when_origin_progress_is_missing(tmp_path, monkeypatch):

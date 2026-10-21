@@ -27,6 +27,7 @@ from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAccept
 from booley.flows import execution
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.execution_persistence import FlowExecutionAdapter
@@ -495,6 +496,8 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
 
     request_type: ClassVar[type[FlowRequest]] = FlowRequest
     argument_adapter: ClassVar[type[BuiltinArguments]] = BuiltinArguments
+    # The in-process caller's explicit CLI origin and outer Project; None reads the env marker.
+    _cli_invocation: CliInvocation | None = None
 
     name: str = ""
     description: str = ""

@@ -27,7 +27,6 @@ from booley.flows.sim.campaign.coordinator import (
     _new_store,
 )
 from booley.flows.sim.campaign.model import (
-    SimulationCampaignManifest,
     SimulationCampaignPlan,
     create_simulation_campaign_plan,
 )
@@ -437,11 +436,6 @@ def test_campaign_plan_is_derived_only_from_a_validated_manifest() -> None:
         SimulationCampaignPlan()
     with pytest.raises(TypeError):
         SimulationCampaignPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
-
-
-def test_campaign_plan_rejects_an_unvalidated_manifest_value() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        create_simulation_campaign_plan(SimulationCampaignManifest({}))
 
 
 def test_resume_preview_reports_all_workload_mismatches() -> None:
@@ -868,8 +862,6 @@ def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
         manifest["work_items"][0]["role"] = "cycle_count_baseline"  # type: ignore[index]
     with pytest.raises(SimulationCampaignIntegrityError):
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-    with pytest.raises(SimulationCampaignIntegrityError):
-        encode_simulation_campaign_manifest(SimulationCampaignManifest(manifest))
 
 
 @pytest.mark.parametrize(
@@ -932,17 +924,6 @@ def test_prerequisite_binds_a_baseline_target_and_valid_work_item(mutation: str)
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
-def test_run_cwd_rejects_non_string_placeholder_items_as_campaign_errors() -> None:
-    manifest = _manifest()
-    manifest["workload"]["run_cwd"] = {  # type: ignore[index]
-        "configured": "run",
-        "kind": "literal",
-        "placeholders": [[]],
-    }
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-
-
 def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
     test = SimulationTestOutcome(
         name="smoke",
@@ -956,21 +937,6 @@ def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
     assert observation["execution"] == "crash"
     assert observation["failure_class"] == "design"
     assert observation["functional"] == "not_observed"
-
-
-@pytest.mark.parametrize(
-    "configured",
-    ["{bogus}", "{test!r}", "{test:>4}", "{test", "{test/foo}"],
-)
-def test_run_cwd_rejects_noncanonical_format_syntax(configured: str) -> None:
-    manifest = _manifest()
-    manifest["workload"]["run_cwd"] = {  # type: ignore[index]
-        "configured": configured,
-        "kind": "templated",
-        "placeholders": ["test"],
-    }
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
 def _retarget_topology_manifest(document, revision):

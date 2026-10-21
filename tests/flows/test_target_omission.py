@@ -12,7 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import build_cli_parser, execute_cli
-from booley.flows.cli_selection import invocation_context
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
@@ -144,13 +144,11 @@ async def _transport_child(command, *, env=None, **kwargs):
     assert name in FLOWS and module == f"booley.mcp.{name}"
     argv = command[command.index(module) + 1 :]
     output, errors = io.StringIO(), io.StringIO()
-    with (
-        contextlib.redirect_stdout(output),
-        contextlib.redirect_stderr(errors),
-        invocation_context(transport=True),
-    ):
+    flow = FLOWS[name]()
+    flow._cli_invocation = CliInvocation(transport=True)
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         try:
-            result = execute_cli(FLOWS[name](), argv)
+            result = execute_cli(flow, argv)
             code = result.exit_code
         except SystemExit as exc:
             code = exc.code
@@ -403,8 +401,8 @@ def test_selection_notice_survives_preparation_failure(
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()
     extra = ["--coverage"] if failure == "coverage" else []
-    with invocation_context(transport=True):
-        result = flow.execute_cli(["--work-dir", str(project), *extra])
+    flow._cli_invocation = CliInvocation(transport=True)
+    result = flow.execute_cli(["--work-dir", str(project), *extra])
     captured = capsys.readouterr()
     assert result.exit_code == 2 and executed == []
     assert captured.err.count(notice) == 1 and captured.err.rstrip().endswith(notice)
