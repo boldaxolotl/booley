@@ -391,7 +391,6 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     assert resolved.path == outcome.pre_sim_firings[0].path
 
 
-# Windows CI observed 34 s; budget = 3x the slowest run, rounded up to 30 s.
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
     from types import SimpleNamespace
 

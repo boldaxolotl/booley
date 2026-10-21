@@ -1037,7 +1037,7 @@ def collect_pre_sim_firings(*manifest_paths: Path) -> tuple[PreSimFiring, ...]:
     The key ``(campaign_id, work_item_id, attempt_id, ordinal)`` keeps Candidate
     and Cycle Count baseline firings distinct.  Each distinct manifest path is
     scanned once.  Prerequisite references repeated by many work items count
-    once toward the bound, so the bound limits distinct work, not edges.
+    once per ancestor chain toward the bound.
     """
     pending = [(Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)]
     queued: set[tuple[Path, str, frozenset[str]]] = set()
