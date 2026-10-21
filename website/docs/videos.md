@@ -9,37 +9,41 @@ document: Video walkthroughs
 
 <section aria-labelledby="s1">
   <h2 class="sec" id="s1"><span class="n">1</span>Walkthroughs</h2>
+  <!-- Text cards, no embedded player or thumbnail: every link opens YouTube
+       in a new tab, so this page makes no request to YouTube. Chapter times
+       come from the videos' narration. -->
   <div class="vids">
-  <figure class="vid" aria-labelledby="v1-cap">
-    <div class="vid__frame">
-      <div class="vid__screen">
-        <!-- Plain link to YouTube. The thumbnail is self-hosted, so this page
-             makes no request to YouTube until the visitor follows the link. -->
-        <a class="vid__play" href="https://youtu.be/zHuvU4QJbvE"
-           aria-label="Watch Video 1 on YouTube: Design Optimization (12 min 43 s)">
-          <img src="../assets/video/zHuvU4QJbvE.jpg" alt="" width="1280" height="720" loading="lazy">
-          <span class="vid__btn"><svg viewBox="0 0 18 20" aria-hidden="true"><path d="M0 0 18 10 0 20z"/></svg></span>
-          <span class="vid__len" aria-hidden="true">12:43</span>
-        </a>
-      </div>
-    </div>
-    <figcaption id="v1-cap"><b>Video 1.</b> <span class="t">Design Optimization.</span> Measure, optimize, and verify an RTL divider. Duration 12:43. <a href="https://youtu.be/zHuvU4QJbvE">Watch on YouTube</a></figcaption>
-  </figure>
-  <figure class="vid" aria-labelledby="v2-cap">
-    <div class="vid__frame">
-      <div class="vid__screen">
-        <!-- Plain link to YouTube. The thumbnail is self-hosted, so this page
-             makes no request to YouTube until the visitor follows the link. -->
-        <a class="vid__play" href="https://youtu.be/hsYHHZcx82w"
-           aria-label="Watch Video 2 on YouTube: Finding and Fixing Bugs (9 min 40 s)">
-          <img src="../assets/video/hsYHHZcx82w.jpg" alt="" width="1280" height="720" loading="lazy">
-          <span class="vid__btn"><svg viewBox="0 0 18 20" aria-hidden="true"><path d="M0 0 18 10 0 20z"/></svg></span>
-          <span class="vid__len" aria-hidden="true">9:40</span>
-        </a>
-      </div>
-    </div>
-    <figcaption id="v2-cap"><b>Video 2.</b> <span class="t">Finding and Fixing Bugs.</span> Waveform debugging and independent RTL review. Duration 9:40. <a href="https://youtu.be/hsYHHZcx82w">Watch on YouTube</a></figcaption>
-  </figure>
+  <article class="vid" aria-labelledby="v1-t">
+    <p class="vid__k"><span>Video 1</span><span><span class="sr">Duration </span>12:43</span></p>
+    <h3 class="vid__t" id="v1-t">Design Optimization</h3>
+    <p class="vid__d">Measure, optimize, and verify an RTL divider.</p>
+    <ol class="vid__ch" aria-label="Chapters (each opens YouTube at that point, in a new tab)">
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=22" target="_blank" rel="noopener"><span class="vid__tc">0:22</span>Tour the PicoRV32 divider</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=73" target="_blank" rel="noopener"><span class="vid__tc">1:13</span>Simulate Dhrystone with tracing</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=172" target="_blank" rel="noopener"><span class="vid__tc">2:52</span>Show the divider in the waveform viewer</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=290" target="_blank" rel="noopener"><span class="vid__tc">4:50</span>Measure latency with bwave: 34 cycles</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=371" target="_blank" rel="noopener"><span class="vid__tc">6:11</span>Synthesize a baseline: 3.1 kGE</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=429" target="_blank" rel="noopener"><span class="vid__tc">7:09</span>Choose radix-4 plus early exit</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=555" target="_blank" rel="noopener"><span class="vid__tc">9:15</span>Implement, re-test, and re-measure</a></li>
+        <li><a href="https://youtu.be/zHuvU4QJbvE?t=626" target="_blank" rel="noopener"><span class="vid__tc">10:26</span>Results: up to 15× faster, +77% area</a></li>
+    </ol>
+    <p class="vid__go"><a href="https://youtu.be/zHuvU4QJbvE" target="_blank" rel="noopener">Watch on YouTube<span aria-hidden="true"> ↗</span><span class="sr"> (opens in a new tab)</span></a></p>
+  </article>
+  <article class="vid" aria-labelledby="v2-t">
+    <p class="vid__k"><span>Video 2</span><span><span class="sr">Duration </span>9:40</span></p>
+    <h3 class="vid__t" id="v2-t">Finding and Fixing Bugs</h3>
+    <p class="vid__d">Waveform debugging and independent RTL review.</p>
+    <ol class="vid__ch" aria-label="Chapters (each opens YouTube at that point, in a new tab)">
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=47" target="_blank" rel="noopener"><span class="vid__tc">0:47</span>The bug report: a spurious watchdog interrupt</a></li>
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=72" target="_blank" rel="noopener"><span class="vid__tc">1:12</span>Ask the agent for the root cause</a></li>
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=135" target="_blank" rel="noopener"><span class="vid__tc">2:15</span>Add a test that exposes the race</a></li>
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=159" target="_blank" rel="noopener"><span class="vid__tc">2:39</span>Walk through the failing waveform</a></li>
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=232" target="_blank" rel="noopener"><span class="vid__tc">3:52</span>Fix the RTL</a></li>
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=332" target="_blank" rel="noopener"><span class="vid__tc">5:32</span>Catch it earlier with the reviewer Specialist</a></li>
+        <li><a href="https://youtu.be/hsYHHZcx82w?t=482" target="_blank" rel="noopener"><span class="vid__tc">8:02</span>Rerun the review with a stronger model</a></li>
+    </ol>
+    <p class="vid__go"><a href="https://youtu.be/hsYHHZcx82w" target="_blank" rel="noopener">Watch on YouTube<span aria-hidden="true"> ↗</span><span class="sr"> (opens in a new tab)</span></a></p>
+  </article>
   </div>
 </section>
 
