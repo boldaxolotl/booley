@@ -117,8 +117,6 @@ class RuntimeImageOperations(Protocol):
 
     def spec_is_current(self, project_root: Path) -> bool: ...
 
-    def validate_spec(self, project_root: Path) -> None: ...
-
     def requires_license(self) -> bool: ...
 
     def finalize(self, project_root: Path) -> None: ...
@@ -692,7 +690,6 @@ def _prepare_refresh(
     parked = sr.plan_session_refresh(project, issuance)
     images.prepare_spec(project, image)
     images.validate(image)
-    images.validate_spec(project)
     return _PreparedRefresh(image, snapshot, issuance, parked)
 
 
