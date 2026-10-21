@@ -6,7 +6,7 @@ document: Evaluation designs
 <!-- Title block: same strip as the application note, labelled as an evaluation-kit document -->
 <div class="strip"><span><b>EVAL</b>Evaluation designs</span><span>Booley product family &middot; booley-rtl</span></div>
 <h1>Evaluation designs</h1>
-<p class="lede">Open-source designs already set up for Booley. Clone one, open it in VS Code, and give the agent a task.</p>
+<p class="lede">Open-source designs already set up for Booley. Clone one, open it in VS Code, and give the agent a task. They are examples, not the only designs Booley supports: you can set up any RTL project the same way.</p>
 
 <section aria-labelledby="s1">
   <h2 class="sec" id="s1"><span class="n">1</span>Available designs</h2>
@@ -33,6 +33,7 @@ document: Evaluation designs
       <li id="fn1">1. Caliptra&rsquo;s Sandbox uses the RISC-V image and asks for 28 GB of memory.</li>
     </ol>
   </div>
+  <p class="note"><b>Using your own design.</b> Booley is not limited to the designs in Table 1. Run <code>booley init</code> in your own RTL repository, then let the <code>booley-setup</code> skill plan and configure the project with you. Starting a new IP from scratch? <code>booley init --scaffold</code> writes a working starter project. See the <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md">setup guide</a>.</p>
 </section>
 
 <section aria-labelledby="s2">

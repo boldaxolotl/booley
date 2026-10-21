@@ -79,15 +79,18 @@ h2.sec .n { color: var(--mask); font-stretch: 75%; min-width: 1.2em; }
 h3 { font: 650 18px/1.3 var(--sans); font-stretch: 92%; margin: 28px 0 8px; }
 p { margin: 0 0 14px; }
 
-/* ---- Page-1 front matter: features | description + ordering ---- */
-.front { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
-.feat { list-style: none; padding: 0; margin: 0; font: 400 16px/1.45 var(--sans); }
-.feat li { padding: 0 0 10px 18px; position: relative; }
-.feat li::before { content: ""; position: absolute; left: 2px; top: 0.55em; width: 7px; height: 7px; background: var(--mask); }
-.feat li ul { list-style: none; padding: 6px 0 0 0; margin: 0; color: var(--ink-2); }
-.feat li ul li { padding: 0 0 4px 16px; }
-.feat li ul li::before { width: 7px; height: 1.5px; top: 0.7em; background: var(--ink-2); }
+/* ---- Page-1 front matter: description | quick start ---- */
+.front { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; align-items: start; }
 .front .desc p { max-width: 62ch; }
+.front .order { margin-top: 70px; }
+
+/* ---- Features: two columns, one heading + paragraph per feature ---- */
+/* Two independent stacks, so each item sits a fixed gap below the one above. */
+.feat { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; align-items: start; }
+.feat__col > div + div { margin-top: 24px; }
+.feat h3 { margin: 6px 0 8px; padding-left: 18px; position: relative; }
+.feat h3::before { content: ""; position: absolute; left: 2px; top: 0.4em; width: 7px; height: 7px; background: var(--mask); }
+.feat p { font-size: 16.5px; margin: 0; }
 
 /* ordering information box */
 .order { border: 1px solid var(--rule); margin: 18px 0 0; font-family: var(--sans); }
@@ -172,11 +175,6 @@ td.st { white-space: nowrap; }
 .amr td:nth-child(2) { font-weight: 600; }
 .amr__fine { border: 1px solid var(--rule); border-top: 0; padding: 10px 12px; font: italic 400 14px/1.5 var(--sans); color: var(--ink-2); }
 
-/* ---- Two-column detailed description ---- */
-.detail { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
-.detail p { font-size: 16.5px; }
-.detail h3:first-child { margin-top: 6px; }
-
 /* ---- Application note teaser ---- */
 .an { display: grid; grid-template-columns: 1.25fr 1fr; border: 1px solid var(--rule); margin-top: 18px; }
 .an__txt { padding: 22px 26px; }
@@ -206,7 +204,9 @@ td.st { white-space: nowrap; }
   .hdr nav { margin-left: 0; width: 100%; overflow-x: auto; }
   .hdr nav a { padding: 6px 8px; }
   .mast { grid-template-columns: 1fr; padding-top: 28px; }
-  .front, .detail, .an { grid-template-columns: 1fr; }
+  .front, .feat, .an { grid-template-columns: 1fr; }
+  .front .order { margin-top: 18px; }
+  .feat__col + .feat__col { margin-top: 24px; }
     .an__fig { border-left: 0; border-top: 1px solid var(--rule); }
   .foot__in { grid-template-columns: 1fr 1fr; gap: 12px 24px; }
   h2.sec { margin-top: 40px; }
@@ -335,34 +335,25 @@ h1 { font: 700 clamp(32px, 4.2vw, 50px)/1.08 var(--sans); font-stretch: 86%; let
 td.lnk a { white-space: nowrap; }
 sup.fn { font: 600 11px/0 var(--sans); }
 sup.fn a { text-decoration: none; padding: 0 1px; }
-/* ---- Video figures: two-up on desktop, one column below 860 px ---- */
-.vids { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
-.vid { margin: 12px 0 18px; }
-/* framed like a datasheet figure; 16:9 so the swap to the player causes no layout shift */
-.vid__frame { border: 1px solid var(--rule); padding: 10px; background: var(--paper); }
-.vid__screen { position: relative; aspect-ratio: 16 / 9; background: #0b111a; }
-.vid__screen img { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; object-fit: cover; }
-.vid__play { position: absolute; inset: 0; display: block; color: var(--mask-ink); }
-.vid__play:focus-visible { outline: 3px solid var(--mask); outline-offset: 4px; }
-/* play key: a solder-mask green square with a white triangle, nothing round or glossy */
-.vid__btn { position: absolute; left: 50%; top: 72%; width: 64px; height: 48px; margin: -24px 0 0 -32px;
-  background: var(--mask); border: 2px solid #fff; display: grid; place-items: center; }
-.vid__btn svg { width: 18px; height: 20px; fill: #fff; }
-.vid__play:hover .vid__btn { background: #08402f; }
-.vid__len { position: absolute; right: 8px; bottom: 8px; background: rgba(11, 17, 26, 0.88); color: #fff;
-  font: 600 13px/1 var(--sans); padding: 5px 7px; font-variant-numeric: tabular-nums; }
-.vid figcaption { margin-top: 10px; }
-.vid figcaption a { font-weight: 600; white-space: nowrap; }
-.vid figcaption .t { color: var(--ink); font-weight: 600; }
+/* ---- Video cards: two-up on desktop, one column below 860 px ---- */
+.vids { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 12px; }
+.vid { border: 1px solid var(--rule); border-top: 6px solid var(--mask); padding: 18px 20px 16px;
+  display: flex; flex-direction: column; font-family: var(--sans); }
+.vid__k { display: flex; justify-content: space-between; margin: 0 0 10px; font: 600 13px/1 var(--sans);
+  color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.vid__t { font: 700 22px/1.2 var(--sans); font-stretch: 90%; margin: 0 0 8px; }
+.vid__d { margin: 0 0 12px; }
+.vid__ch { list-style: none; margin: 0 0 16px; padding: 0; font: 400 15px/1.4 var(--sans); }
+.vid__ch a { display: grid; grid-template-columns: 3.4em 1fr; padding: 4px 0; color: var(--ink-2); text-decoration: none; }
+.vid__ch a:hover { color: var(--ink); text-decoration: underline; }
+.vid__tc { color: var(--mask); font-weight: 600; font-variant-numeric: tabular-nums; }
+.vid__go { margin: auto 0 0; font: 600 15px/1 var(--sans); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .note { border: 1px solid var(--rule); background: var(--fill-2); padding: 10px 14px; margin: 26px 0 0; max-width: 760px;
   font: 400 14px/1.5 var(--sans); color: var(--ink-2); }
 .note b { color: var(--ink); font-weight: 650; }
 @media (max-width: 860px) {
   .vids { grid-template-columns: 1fr; }
-}
-@media (max-width: 600px) {
-  .vid__frame { padding: 6px; }
-  .vid__btn { width: 56px; height: 42px; margin: -21px 0 0 -28px; }
 }
 @media (max-width: 860px) {
   .strip { padding-top: 28px; }
