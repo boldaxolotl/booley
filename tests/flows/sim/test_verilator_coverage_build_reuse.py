@@ -48,10 +48,6 @@ _ADAPTER_MODULE = "booley.flows.sim.backends.verilator"
 _HIT = "verified Simulation build reuse (hit)"
 _PLAIN = SimulationBuildVariant(trace=False, coverage=True)
 _TRACED = SimulationBuildVariant(trace=True, coverage=True)
-# Coverage builds add value-taking dump switches the engine-test fake does not
-# know; teach it to consume their values instead of reading them as sources.
-_VALUE_FLAGS = '("-CFLAGS", "-LDFLAGS", "--Mdir", "--prefix", "-o", "--trace-depth"'
-_COVERAGE_VALUE_FLAGS = f'{_VALUE_FLAGS}, "--dumpi-tree-json", "--dumpi-V3Global"'
 
 
 class _Invoker:
@@ -96,10 +92,6 @@ def coverage_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     verilator_bin = engine._write_fake_verilator(tmp_path)
-    wrapper = verilator_bin / "verilator"
-    script = wrapper.read_text(encoding="utf-8")
-    assert _VALUE_FLAGS in script, "engine fake Verilator changed shape"
-    wrapper.write_text(script.replace(_VALUE_FLAGS, _COVERAGE_VALUE_FLAGS), encoding="utf-8")
     path = os.pathsep.join((str(verilator_bin), str(tmp_path / "toolbin"), os.environ["PATH"]))
     monkeypatch.setenv("PATH", path)
     for name in ("VERILATOR_ROOT", "MAKEFLAGS", "MFLAGS", "EDALIZE_LAUNCHER"):

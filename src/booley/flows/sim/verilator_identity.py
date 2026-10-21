@@ -1,4 +1,4 @@
-"""Exact producing compiler identity shared by coverage and declarations."""
+"""Exact producing compiler identity of the coverage collector."""
 
 from dataclasses import dataclass
 
