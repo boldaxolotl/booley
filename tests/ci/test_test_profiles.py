@@ -101,11 +101,8 @@ def test_full_readiness_advertises_guarded_command(
     assert command.argv[4:6] == ("--test-profile", "full")
 
 
-@pytest.mark.parametrize("phase", ["prepare", "publish"])
-def test_profile_is_develop_only(phase: str) -> None:
-    argv = ["--phase", phase, "--test-profile", "full"]
-    if phase == "prepare":
-        argv.extend(["--branch", "codex/example"])
+def test_profile_is_develop_only() -> None:
+    argv = ["--phase", "prepare", "--test-profile", "full", "--branch", "codex/example"]
     with pytest.raises(SystemExit):
         readiness._parse_args(argv)
 

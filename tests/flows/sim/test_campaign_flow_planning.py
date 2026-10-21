@@ -64,6 +64,17 @@ def test_candidate_and_baseline_plans_disclose_carried_build_budget(
     assert baseline.recipe["build_timeout_ms"] == 7000
 
 
+def test_invalid_run_cwd_template_is_refused_before_a_manifest_exists(tmp_path: Path) -> None:
+    """Planning rejects a bad template; no plan means nothing can be published."""
+    project, handle, inspection, preview = _planning_fixture(tmp_path)
+    (project / "booley.toml").write_text(
+        '[flows.sim]\nrun_cwd = "runs/{bogus}"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match=r"invalid \[flows\.sim\]\.run_cwd template"):
+        _plan(handle, inspection, preview, ("reset", "count"))
+
+
 def _planning_fixture(tmp_path: Path):
     project = tmp_path / ".booley"
     project.mkdir()

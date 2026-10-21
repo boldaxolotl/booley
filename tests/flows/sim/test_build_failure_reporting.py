@@ -154,6 +154,7 @@ def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
         ),
         ("smoke",),
         cocotb=False,
+        canned_at="build",
     )
     assert result.infrastructure_failure is None
     assert diagnostic in result.tests[0].error_tail
@@ -168,6 +169,7 @@ def _engine_timeout_outcome(tmp_path: Path):
         lambda _command, timeout: _timed_out_result(),
         ("smoke",),
         cocotb=False,
+        canned_at="build",
         options=SimulationOptions(build_timeout_ms=600_000),
     )
 
@@ -444,6 +446,7 @@ def test_legacy_missing_tool_still_reported_as_missing_executable(tmp_path: Path
             ),
             ("smoke",),
             cocotb=False,
+            canned_at="build",
         )
         with pytest.raises(MissingExecutableError) as caught:
             SimulateFlow()._project_execution_outcome(outcome)
@@ -499,6 +502,7 @@ def test_hostile_oom_build_output_publishes_and_decodes(
         ),
         ("smoke",),
         cocotb=False,
+        canned_at="build",
     )
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
 

@@ -379,13 +379,12 @@ def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
     from booley.flows.test_runs import build_test_run, test_run_document
 
     run = build_test_run("stress", variant="soak", seed=7, args=("+iters=9",))
-    assert _baseline_test_run_facts(test_run_document(run), names_test_runs=True) == {
+    assert _baseline_test_run_facts(test_run_document(run)) == {
         "test_run": "stress+soak@7",
         "test_run_fingerprint": run.fingerprint,
     }
-    assert _baseline_test_run_facts(None, names_test_runs=False) == {}
     with pytest.raises(SimulationCampaignIntegrityError, match="records no Test Run to compare"):
-        _baseline_test_run_facts(None, names_test_runs=True)
+        _baseline_test_run_facts(None)
 
 
 @pytest.mark.parametrize(

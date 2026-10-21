@@ -170,16 +170,9 @@ class SimulationCampaignPlan:
     def _from_validated_manifest(
         cls, manifest: SimulationCampaignManifest
     ) -> SimulationCampaignPlan:
-        from .codec import (
-            decode_simulation_campaign_manifest,
-            encode_simulation_campaign_manifest,
-        )
-
-        raw = encode_simulation_campaign_manifest(manifest)
-        validated = decode_simulation_campaign_manifest(raw)
-        items = cast(tuple[Mapping[str, FrozenJson], ...], validated.document["work_items"])
+        items = cast(tuple[Mapping[str, FrozenJson], ...], manifest.document["work_items"])
         instance = object.__new__(cls)
-        object.__setattr__(instance, "manifest", validated)
+        object.__setattr__(instance, "manifest", manifest)
         object.__setattr__(
             instance,
             "work_item_ids",
@@ -191,5 +184,5 @@ class SimulationCampaignPlan:
 def create_simulation_campaign_plan(
     manifest: SimulationCampaignManifest,
 ) -> SimulationCampaignPlan:
-    """Validate a manifest and derive its immutable scheduled work-item order."""
+    """Derive the immutable scheduled work-item order of a decoded manifest."""
     return SimulationCampaignPlan._from_validated_manifest(manifest)
