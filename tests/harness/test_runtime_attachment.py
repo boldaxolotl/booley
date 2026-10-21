@@ -465,13 +465,14 @@ def test_protocol_failure_logs_fixed_message_and_one_remedy(
         monkeypatch.setattr(owner, name, forbidden)
     remedy = Mock(return_value="run the selected remedy")
     monkeypatch.setattr(session_runtime, "sandbox_remedy", remedy)
+    cause = "protocol_mismatch" if has_root else "protocol_unavailable"
     runtime_attachment._report_protocol_failure(
-        runtime_attachment.ExecutionResult(125, "unrecoverable", False, "protocol_mismatch"),
+        runtime_attachment.ExecutionResult(125, "unrecoverable", False, cause),
         tmp_path if has_root else None,
     )
     assert "Sandbox execution protocol is unavailable or incompatible; " in caplog.text
     if has_root:
-        remedy.assert_called_once_with(tmp_path)
+        remedy.assert_called_once_with(tmp_path, runtime_only=True)
         assert "run the selected remedy" in caplog.text
     else:
         remedy.assert_not_called()
