@@ -14,7 +14,7 @@ import booley
 from booley.audit.diagnostic_results import DiagnosticReport
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
-from booley.runtime import health, runtime_context, sandbox_artifact
+from booley.runtime import health, runtime_context
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.harness.test_doctor import _write_project
 
@@ -166,10 +166,6 @@ def _project(root):
     return SimpleNamespace(project_root=root, booley_dir=directory, booley_toml={"flows": {}})
 
 
-def _artifact(image=IMAGE, *, version=None, container="container"):
-    return sandbox_artifact.SandboxArtifact(image, container, version or booley.__version__, "")
-
-
 def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path, monkeypatch):
     project = _project(tmp_path)
     monkeypatch.setattr(doctor, "_flow_enabled", lambda *_args: False)
@@ -241,7 +237,9 @@ def test_clean_host_deep_probe_is_incomplete_and_omitted_agents_are_named(
 ):
     project = _project(tmp_path)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(sandbox_artifact, "observe_execution", lambda *_args, **_kw: _artifact())
+    monkeypatch.setattr(
+        doctor, "_observe_sandbox_identity", lambda *_args: (IMAGE, booley.__version__)
+    )
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *_args, **_kw: None)
     monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
     reporter = doctor._Reporter.create(
@@ -257,32 +255,25 @@ def test_clean_host_deep_probe_is_incomplete_and_omitted_agents_are_named(
 
 
 @pytest.mark.parametrize(
-    "after,reason",
+    "identity,reason",
     [
-        (_artifact("sha256:" + "b" * 64), "sandbox-artifact-drift"),
-        (_artifact(container="replacement"), "sandbox-artifact-drift"),
-        (_artifact(version="other"), "booley-version-mismatch"),
-        (sandbox_artifact.SandboxArtifact(), "image-identity-unavailable"),
+        ((IMAGE, "other"), "booley-version-mismatch"),
+        ((None, booley.__version__), "image-identity-unavailable"),
+        ((IMAGE, None), "sandbox-version-unavailable"),
     ],
 )
-def test_identity_drift_or_unknown_version_prevents_qualification(after, reason):
-    assert reason in doctor._deep_identity_reasons(_artifact(), after, booley.__version__)
-
-
-def test_flow_execution_is_pinned_to_inspected_container_id(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(sandbox_artifact, "observe", lambda *_args, **_kw: _artifact())
-    runtime = doctor._DoctorFlowRuntime(
-        tmp_path, "docker", "mutable-name", deep_artifact=_artifact()
+def test_start_identity_controls_qualification(tmp_path, monkeypatch, identity, reason):
+    observe = Mock(return_value=identity)
+    monkeypatch.setattr(doctor, "_observe_sandbox_identity", observe)
+    monkeypatch.setattr(doctor, "_run_deep_checks", lambda *_args, **_kw: None)
+    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
+    runtime = doctor._DoctorFlowRuntime(tmp_path, "docker", "sandbox")
+    summary = doctor._run_deep_phase(
+        _project(tmp_path), "docker", runtime, False, doctor._Reporter.create()
     )
-    argv = runtime.command(["python3", "-V"])
-    assert "container" in argv
-    assert "mutable-name" not in argv
-    monkeypatch.setattr(
-        sandbox_artifact, "observe", lambda *_args, **_kw: _artifact(container="new")
-    )
-    with pytest.raises(doctor.session_runtime.SessionError, match="changed during"):
-        runtime.command(["python3", "-V"])
+    assert summary.identity_reasons == (reason,)
+    assert not summary.complete
+    observe.assert_called_once_with(tmp_path, "sandbox")
 
 
 def test_inside_local_core_resolution_completes_without_docker(tmp_path, monkeypatch):
@@ -461,8 +452,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         "_run_project_checks",
     ):
         monkeypatch.setattr(doctor, name, lambda *_args, **_kw: None)
-    monkeypatch.setattr(sandbox_artifact, "observe_execution", lambda *_args, **_kw: _artifact())
-    monkeypatch.setattr(sandbox_artifact, "observe", lambda *_args, **_kw: _artifact())
+    monkeypatch.setenv("BOOLEY_SANDBOX_IMAGE_ID", IMAGE)
 
     monkeypatch.setattr(
         developer_probe,
