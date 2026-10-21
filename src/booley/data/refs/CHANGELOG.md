@@ -18,6 +18,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   as Doctor scratch written elsewhere. Run roots created by older versions have
   no marker and are refused; delete them by hand.
 
+- Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
+  `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
+  preparation (invalid `enabled` or `max_size` values still do). The cache root is
+  the issued `BOOLEY_COMPILER_CACHE_ROOT` as given. When it is unset, including
+  outside a Sandbox where builds previously cached under the host Booley Directory,
+  builds compile uncached with a `booley session refresh` warning.
 - Coverage finds RTL sources without coverage points with a lexical scan at
   Preflight instead of a Verilator declaration dump. User `--dumpi-*` Verilator
   options now pass through to coverage builds. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`

@@ -283,15 +283,17 @@ max_size = "5G"
 `enabled` must be a boolean. `max_size` accepts a positive integer followed by
 `M`, `G` (decimal megabytes/gigabytes), or `Mi`, `Gi` (binary units). Zero,
 fractional values, and suffixes outside this grammar are configuration errors.
-The selected checkout's `booley.toml` (or `pipeline.toml`) owns these
-settings; malformed explicit configuration fails preparation.
+These settings are read like the other `[flows.sim]` settings; an invalid
+`enabled` or `max_size` value fails preparation.
 
 The cache lives at `.runtime/compiler-cache/ccache` in the issued Booley Directory
 mount. Goal worktrees share it while retaining their own configuration and
 fresh build generations. Sandbox recreation, generation cleanup, and disabling
-caching preserve its entries. A Sandbox created before this cache existed keeps
-building, uncached, with a warning; run `booley session refresh` on the host to
-give it the fixed shared-cache identity. Deliberate cache eviction may remove this
+caching preserve its entries. The cache root is
+`BOOLEY_COMPILER_CACHE_ROOT`, which Session Issuance sets in every Sandbox. When it
+is unset (for example in a Sandbox issued before the cache existed, or any process
+outside a Sandbox), builds compile uncached and the warning tells you to run
+`booley session refresh` on the host. Deliberate cache eviction may remove this
 subtree when compilation is idle; it is recreated on the next available enabled
 build. To inspect or empty it, run ccache inside a Sandbox:
 
@@ -330,10 +332,10 @@ Declare additional compiler flags in the Target environment or Verilator
 `-CFLAGS` options rather than a Make assignment to `USER_CPPFLAGS`.
 
 Disabled caching explicitly clears `OBJCACHE` and exports no cache location.
-Mutation Tester builds use the same cache. Missing ccache in the effective
-Target `PATH`, unavailable storage, and cache-owned symlink/special-file roots
-produce an availability warning and compile uncached, without a home-cache
-fallback. Preview/import operations neither create cache storage nor run ccache.
+Mutation Tester builds use the same cache. Missing ccache on the build
+`PATH` or a cache directory that cannot be created produces one warning and an
+uncached build, without a home-cache fallback. Preview/import operations neither
+create cache storage nor run ccache.
 The cache optimizes compilation within the Project trust domain; fresh simulator
 image authorization still applies independently.
 

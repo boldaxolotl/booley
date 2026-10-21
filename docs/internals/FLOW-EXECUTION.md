@@ -105,27 +105,25 @@ current execution and persistence behavior.
 
 ### Verilator compiler cache ownership
 
-Simulation build preparation resolves strict checkout-local compiler-cache
-configuration into an immutable policy. `PreparedSimulationBuild.environment`
+Simulation build preparation resolves the compiler-cache settings
+(`resolve_compiler_cache_settings` in `flows/sim/config.py`, the shared Simulation
+reader) and the issued root into an immutable policy. `PreparedSimulationBuild.environment`
 is authoritative for compilation. `simulation_build_script` finalizes storage
 availability only for execution and scopes compiler exports to the build half;
 simulator environment and testbench fingerprints retain their existing owners.
 Ordinary, compatibility, campaign, coverage, Cocotb, and elaboration-only builds
 consume this shared interface; Mutation Tester builds, which run Make directly,
 use `simulation_build_environment`. Icarus preparation does not resolve cache
-policy. The cache policy module never reads the process environment: build
-preparation passes `read_issued_identity(os.environ)` and the ambient environment in.
-A missing (pre-cache Sandbox) or foreign issued root yields an inactive policy
-that compiles uncached with a refresh warning; only malformed configuration
-fails preparation.
+policy. The cache policy module takes the environment as an argument: build
+preparation passes `os.environ` in. An unset root yields an inactive policy that
+compiles uncached with a refresh warning; only invalid settings fail preparation.
+The root is trusted as given and `execution_environment` only creates it.
 
 Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` under the existing Project
 mount in both container and remote environments. Goal-bound and review
 subprocesses inherit it.
 Its presence/value participates in spec validation, digest/drift detection, and
-refresh; no new mount is introduced. Non-issued development resolves ownership
-through `resolve_booley_dir` and selected configuration through
-`resolve_checkout_booley_dir` plus `resolve_toml`.
+refresh; no new mount is introduced. There is no host Booley Directory fallback.
 
 The shared subtree is outside all mutable build generations. Setup cleanup
 removes only its marker-guarded run root under `tmp/setup/<run-id>/` and never

@@ -27,7 +27,7 @@ from booley.flows.sim.compiler_cache import (
 )
 from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
 from booley.runtime.booley_dir import reset_cache
-from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, IssuedCacheIdentity
+from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, COMPILER_CACHE_ROOT_ENV
 from booley.targets.catalog import TargetCatalog
 
 pytestmark = pytest.mark.skipif(
@@ -35,7 +35,6 @@ pytestmark = pytest.mark.skipif(
     reason="real smoke runs inside the pinned Booley Sandbox Image",
 )
 _TOOL_TIMEOUT_S = 300
-_HOST = IssuedCacheIdentity(root=None, in_sandbox=False)
 
 
 def _write_project(root: Path, revision: int) -> Path:
@@ -134,9 +133,9 @@ def test_rtl_edit_is_reflected_while_unchanged_objects_hit_cache(tmp_path, monke
     root = tmp_path / "project"
     data = _write_project(root, revision=1)
     monkeypatch.setenv("BOOLEY_DIR", str(data))
-    monkeypatch.delenv("BOOLEY_COMPILER_CACHE_ROOT", raising=False)
     reset_cache()
     cache_dir = data / COMPILER_CACHE_RELATIVE
+    monkeypatch.setenv(COMPILER_CACHE_ROOT_ENV, str(cache_dir))
 
     assert re.findall(r"VALUE=(\d+)", _simulate(root)) == ["1"]
     assert cache_dir.is_dir(), "enabled build must populate the Project cache"
@@ -150,7 +149,7 @@ def test_rtl_edit_is_reflected_while_unchanged_objects_hit_cache(tmp_path, monke
     )
 
 
-def _cached_build(root: Path, revision: int, cache_owner: Path) -> str:
+def _cached_build(root: Path, revision: int, cache_dir: Path) -> str:
     """Build and run one design with Booley's managed cache environment."""
     (root / ".booley").mkdir(parents=True)
     source = root / "dut.sv"
@@ -160,11 +159,11 @@ def _cached_build(root: Path, revision: int, cache_owner: Path) -> str:
         "endmodule\n"
     )
     build_root = root / "obj_dir"
-    policy = resolve_policy(root, issued=_HOST, owner=cache_owner)
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache_dir)})
     managed = compose_environment(policy, {}, ambient=os.environ, build_root=build_root)
     environment = {
         **os.environ,
-        **execution_environment(policy, managed, ambient=os.environ, build_root=build_root),
+        **execution_environment(policy, managed, ambient=os.environ),
     }
     assert environment["OBJCACHE"] == "ccache"
     subprocess.run(
@@ -202,7 +201,9 @@ def test_concurrent_builds_share_cache_without_corruption(tmp_path):
     with ThreadPoolExecutor(max_workers=len(revisions)) as pool:
         outputs = list(
             pool.map(
-                lambda revision: _cached_build(tmp_path / f"sandbox-{revision}", revision, owner),
+                lambda revision: _cached_build(
+                    tmp_path / f"sandbox-{revision}", revision, owner / COMPILER_CACHE_RELATIVE
+                ),
                 revisions,
             )
         )
@@ -212,5 +213,5 @@ def test_concurrent_builds_share_cache_without_corruption(tmp_path):
     cache_dir = owner / COMPILER_CACHE_RELATIVE
     hits_before = _cache_hits(cache_dir)
     # After the concurrent writers, the shared cache still serves correct objects.
-    assert re.findall(r"VALUE=(\d+)", _cached_build(tmp_path / "later", 9, owner)) == ["9"]
+    assert re.findall(r"VALUE=(\d+)", _cached_build(tmp_path / "later", 9, cache_dir)) == ["9"]
     assert _cache_hits(cache_dir) > hits_before
