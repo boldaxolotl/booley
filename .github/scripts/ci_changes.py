@@ -53,6 +53,12 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 10
+# Manual Ubuntu experiment: 1 keeps one complete-suite job per Python version.
+LINUX_SHARD_COUNTS = (1, 2, 3)
+DEFAULT_LINUX_SHARD_COUNT = 1
+LINUX_SCHEDULERS = ("loadscope", "worksteal")
+DEFAULT_LINUX_SCHEDULER = "loadscope"
+_LINUX_PYTHONS = ("3.11", "3.14")
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
@@ -280,15 +286,42 @@ def required_jobs(categories: set[str]) -> set[str]:
     return jobs
 
 
-def build_test_matrix(windows_shard_count: int) -> dict[str, list[dict[str, object]]]:
-    """Build the compatibility matrix for one supported Windows shard count."""
+def _linux_entries(linux_shard_count: int) -> list[dict[str, object]]:
+    """Return the Ubuntu legs: complete-suite jobs, or shards per Python version."""
+    if linux_shard_count == 1:
+        return [
+            {"name": f"ubuntu-{py}-full", "os": "ubuntu-latest", "python": py, "mode": "full"}
+            for py in _LINUX_PYTHONS
+        ]
+    return [
+        {
+            "name": f"ubuntu-{py}-shard-{index + 1}-of-{linux_shard_count}",
+            "os": "ubuntu-latest",
+            "python": py,
+            "mode": "shard",
+            "group": f"linux-{py}",
+            "shard_index": index,
+            "shard_count": linux_shard_count,
+        }
+        for py in _LINUX_PYTHONS
+        for index in range(linux_shard_count)
+    ]
+
+
+def build_test_matrix(
+    windows_shard_count: int, linux_shard_count: int = DEFAULT_LINUX_SHARD_COUNT
+) -> dict[str, list[dict[str, object]]]:
+    """Build the compatibility matrix for one supported Windows and Linux shard count."""
     if windows_shard_count not in WINDOWS_SHARD_COUNTS:
         raise ValueError(
             f"Windows shard count must be one of {', '.join(map(str, WINDOWS_SHARD_COUNTS))}"
         )
+    if linux_shard_count not in LINUX_SHARD_COUNTS:
+        raise ValueError(
+            f"Linux shard count must be one of {', '.join(map(str, LINUX_SHARD_COUNTS))}"
+        )
     include: list[dict[str, object]] = [
-        {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
-        {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
+        *_linux_entries(linux_shard_count),
         {
             "name": "windows-3.11-compatibility",
             "os": "windows-latest",
@@ -370,7 +403,12 @@ def _diff_base(repo: Path, base: str, head: str, event_name: str) -> str:
 
 
 def _write_outputs(
-    destination: Path, categories: set[str], base: str, windows_shard_count: int
+    destination: Path,
+    categories: set[str],
+    base: str,
+    windows_shard_count: int,
+    linux_shard_count: int,
+    linux_scheduler: str,
 ) -> None:
     jobs = required_jobs(categories)
     with destination.open("a", encoding="utf-8") as stream:
@@ -379,14 +417,38 @@ def _write_outputs(
         job_policy = {job: job in jobs for job in CONDITIONAL_JOBS}
         print(f"jobs={json.dumps(job_policy, separators=(',', ':'))}", file=stream)
         print(
-            f"test_matrix={json.dumps(build_test_matrix(windows_shard_count), separators=(',', ':'))}",
+            f"test_matrix={json.dumps(build_test_matrix(windows_shard_count, linux_shard_count), separators=(',', ':'))}",
             file=stream,
         )
+        print(f"linux_shard_count={linux_shard_count}", file=stream)
+        print(f"linux_scheduler={linux_scheduler}", file=stream)
         print(
             f"build_stable_base={'true' if 'stable_base' in categories else 'false'}", file=stream
         )
         print(f"required_jobs={','.join(job for job in ALL_JOBS if job in jobs)}", file=stream)
         print(f"diff_base={base}", file=stream)
+
+
+def _validate_dispatch_options(args: argparse.Namespace) -> None:
+    """Reject manual-experiment options outside workflow_dispatch or with a RISC-V arm."""
+    dispatched = args.event_name == "workflow_dispatch"
+    if args.riscv_measurement != "automatic" and not dispatched:
+        raise ValueError("RISC-V measurement arms require workflow_dispatch")
+    if args.windows_shard_benchmark and args.riscv_measurement != "automatic":
+        raise ValueError(
+            "Windows shard benchmarking cannot be combined with a RISC-V measurement arm"
+        )
+    if not dispatched and (
+        args.linux_shard_count != DEFAULT_LINUX_SHARD_COUNT
+        or args.linux_scheduler != DEFAULT_LINUX_SCHEDULER
+    ):
+        raise ValueError("Linux shard count and scheduler overrides require workflow_dispatch")
+    if args.linux_shard_benchmark and args.riscv_measurement != "automatic":
+        raise ValueError(
+            "Linux shard benchmarking cannot be combined with a RISC-V measurement arm"
+        )
+    if args.linux_shard_benchmark and not dispatched:
+        raise ValueError("Linux shard benchmarking requires workflow_dispatch")
 
 
 def main() -> int:
@@ -404,6 +466,16 @@ def main() -> int:
     )
     parser.add_argument("--windows-shard-benchmark", type=_boolean, default=False)
     parser.add_argument(
+        "--linux-shard-count",
+        type=int,
+        choices=LINUX_SHARD_COUNTS,
+        default=DEFAULT_LINUX_SHARD_COUNT,
+    )
+    parser.add_argument(
+        "--linux-scheduler", choices=LINUX_SCHEDULERS, default=DEFAULT_LINUX_SCHEDULER
+    )
+    parser.add_argument("--linux-shard-benchmark", type=_boolean, default=False)
+    parser.add_argument(
         "--event-name",
         choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
         default="",
@@ -411,23 +483,25 @@ def main() -> int:
     parser.add_argument("--riscv-measurement", choices=RISCV_MEASUREMENT_ARMS, default="automatic")
     args = parser.parse_args()
     try:
-        if args.riscv_measurement != "automatic" and args.event_name != "workflow_dispatch":
-            raise ValueError("RISC-V measurement arms require workflow_dispatch")
-        if args.windows_shard_benchmark and args.riscv_measurement != "automatic":
-            raise ValueError(
-                "Windows shard benchmarking cannot be combined with a RISC-V measurement arm"
-            )
+        _validate_dispatch_options(args)
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
-        if args.windows_shard_benchmark:
-            if args.event_name != "workflow_dispatch":
-                raise ValueError("Windows shard benchmarking requires workflow_dispatch")
+        if args.windows_shard_benchmark and args.event_name != "workflow_dispatch":
+            raise ValueError("Windows shard benchmarking requires workflow_dispatch")
+        if args.windows_shard_benchmark or args.linux_shard_benchmark:
             categories = {"python_source"}
         else:
             categories = classify(
                 paths, force_all=args.force_all, riscv_measurement=args.riscv_measurement
             )
-        _write_outputs(args.github_output, categories, base, args.windows_shard_count)
+        _write_outputs(
+            args.github_output,
+            categories,
+            base,
+            args.windows_shard_count,
+            args.linux_shard_count,
+            args.linux_scheduler,
+        )
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

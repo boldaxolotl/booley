@@ -20,7 +20,8 @@ combination before merge.
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its ten Windows shards. The
+`test-verify` checking the exact node-ID sets from its ten Windows shards and,
+when a manual run shards Ubuntu, from each Linux group. The
 independent `coverage-shards` job owns coverage execution; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
@@ -46,7 +47,9 @@ refresh read only `tests`: setup is dominated by module and session fixtures
 charged to whichever test first triggers them on each xdist worker, so it is not
 a stable per-test weight and would move with scheduling. The Ubuntu
 complete-suite legs publish the file as `pytest-timing-<leg label>` on every
-outcome, including failed test runs.
+outcome, including failed test runs. On a sharded manual
+Ubuntu run, the Ubuntu timing files, `test_phases` included, are in the
+`shard-linux-<python>-<index>` artifacts instead.
 
 ## Windows shard-count experiment
 
@@ -69,6 +72,26 @@ default; on October 8, 2026 the grown suite moved the default to eight, and on
 October 9, 2026 to ten. See [the experiment record](windows-shard-experiment.md)
 for the raw comparison, the changes, and the post-change validation
 requirement.
+
+## Ubuntu shard-count and scheduler experiment
+
+Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
+
+- `linux_shard_count` (1, 2, or 3; default 1). One keeps a complete-suite job
+  per Python version. Two or three shard each of Python 3.11 and 3.14 into group
+  `linux-<python>`, balanced by `linux-test-timings.json`. That model is empty
+  for now, so every test weighs the default until a measured model replaces it.
+- `linux_scheduler` (`loadscope` or `worksteal`; default `loadscope`). It sets
+  `--dist` for the Ubuntu legs only. Windows keeps its work-stealing scheduler.
+- `linux_shard_benchmark` selects the same required jobs as an ordinary Python
+  source change. It works only on `workflow_dispatch`, cannot be combined with a
+  RISC-V measurement arm, and may be combined with `windows_shard_benchmark`.
+
+A non-default count or scheduler is rejected outside `workflow_dispatch`, so
+pull requests, pushes, and reusable-workflow calls keep one complete-suite job
+per Python version with `loadscope`. When Ubuntu is sharded, `test-verify` also
+verifies each Linux group with the dispatched count, using the same exact-union
+check as the Windows shards.
 
 ## Exhaustive recovery policy
 
