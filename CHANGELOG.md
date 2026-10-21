@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
+  `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
+  preparation (invalid `enabled` or `max_size` values still do). The cache root is
+  the issued `BOOLEY_COMPILER_CACHE_ROOT` as given. When it is unset, including
+  outside a Sandbox where builds previously cached under the host Booley Directory,
+  builds compile uncached with a `booley session refresh` warning.
+
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a
