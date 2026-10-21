@@ -44,7 +44,13 @@ from booley.config.tests_toml_rules import (
     validate_seed,
     validate_test_or_variant_name,
 )
-from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_str_value
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    is_str_list,
+    require_sha256_digest,
+    require_str_value,
+)
 
 __all__ = [
     "DEFAULT_SEED",
@@ -415,10 +421,11 @@ def _record_args(value: object) -> tuple[str, ...]:
 
 
 def _record_fingerprint(value: object) -> str:
-    """A trusted record's stored fingerprint: a ``sha256:`` string."""
-    if not isinstance(value, str) or not value.startswith("sha256:"):
-        raise TestRunNameError("a Test Run record's fingerprint must be a sha256 digest")
-    return value
+    """A trusted record's stored fingerprint: a full ``sha256:`` digest."""
+    try:
+        return require_sha256_digest(value, field="fingerprint")
+    except BoundaryError as exc:
+        raise TestRunNameError("a Test Run record's fingerprint must be a sha256 digest") from exc
 
 
 def _record_env(value: object) -> dict[str, str]:

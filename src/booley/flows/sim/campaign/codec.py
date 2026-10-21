@@ -1060,7 +1060,7 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
     return target
 
 
-def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
+def _validate_workload(value: object, schema: str) -> None:
     # v2 adds exactly one member, ``no_waivers``; the v1 grammar never changes.
     extra = (
         {"no_waivers"}
@@ -1106,7 +1106,6 @@ def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
     _validate_build_recipe(workload["build_recipe"])
     if workload["pre_sim_build_access"] not in {"immutable", "legacy-per-test"}:
         raise SimulationCampaignIntegrityError("pre_sim_build_access is invalid")
-    return workload
 
 
 def _validate_eda(value: object) -> None:
@@ -1198,7 +1197,7 @@ def _validate_build_recipe(value: object) -> None:
     _require_digest(recipe["command_model_sha256"], "command_model_sha256")
 
 
-def _validate_required_suite(value: object) -> Mapping[str, object]:
+def _validate_required_suite(value: object) -> None:
     suite = _exact_object(
         value,
         {"names", "default_invocation", "source_path", "source_bytes", "source_sha256"},
@@ -1231,12 +1230,11 @@ def _validate_required_suite(value: object) -> Mapping[str, object]:
         raise SimulationCampaignIntegrityError(
             "default required suite must authenticate empty source"
         )
-    return suite
 
 
-def _validate_variants(value: object) -> list[Mapping[str, object]]:
+def _validate_variants(value: object) -> None:
     variants = _exact_list(value, "build_variants", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
+    ids: list[object] = []
     for index, item in enumerate(variants):
         variant = _exact_object(
             item,
@@ -1244,11 +1242,9 @@ def _validate_variants(value: object) -> list[Mapping[str, object]]:
             f"build_variants[{index}]",
         )
         _validate_variant(variant)
-        decoded.append(variant)
-    ids = [item["build_variant_id"] for item in decoded]
+        ids.append(variant["build_variant_id"])
     if len(set(ids)) != len(ids):
         raise SimulationCampaignIntegrityError("build variant IDs must be unique")
-    return decoded
 
 
 def _validate_variant(variant: Mapping[str, object]) -> None:
@@ -1260,9 +1256,8 @@ def _validate_variant(variant: Mapping[str, object]) -> None:
     _require_variant_id(variant["build_variant_id"])
 
 
-def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, object]]:
+def _validate_disclosures(value: object, schema: str) -> None:
     disclosures = _exact_list(value, "planning_disclosures", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(disclosures):
         disclosure = _exact_object(
             item,
@@ -1290,13 +1285,10 @@ def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, objec
         cleanup = _exact_object(disclosure["cleanup"], {"removed"}, "cleanup")
         if require_bool_value(cleanup["removed"], field="cleanup.removed") is not True:
             raise SimulationCampaignIntegrityError("planning scratch must be removed")
-        decoded.append(disclosure)
-    return decoded
 
 
-def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
+def _validate_prerequisites(value: object) -> None:
     prerequisites = _exact_list(value, "prerequisites", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
     identities: list[tuple[object, object, object]] = []
     for index, item in enumerate(prerequisites):
         prerequisite = _exact_object(
@@ -1334,10 +1326,8 @@ def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
         identities.append(
             (prerequisite["campaign_id"], target["project_identity"], target["revision"])
         )
-        decoded.append(prerequisite)
     if len(set(identities)) != len(identities):
         raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
-    return decoded
 
 
 def _validate_work_items(value: object, schema: str) -> None:
@@ -1364,7 +1354,7 @@ def _planned_observation_count(item: Mapping[str, object]) -> int:
 
 
 def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
-    """Bind a v4 work item's Test Runs to its selection, kind and each other."""
+    """Check a v4 work item's Test Runs are well formed, named uniquely and fit its kind."""
     entries = _exact_list(item["test_runs"], "test_runs", MAX_OBSERVATIONS)
     try:
         runs = [test_run_from_document(entry, trust_fingerprint=True) for entry in entries]
