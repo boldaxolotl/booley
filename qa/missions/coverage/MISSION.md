@@ -196,10 +196,12 @@ Try:
 - `python -m booley.flows.sim.campaign_retention --reports-root <r> --invocation N --native-target <t>`
   → only that payload gone, normalized evidence byte-identical, pruned Campaign still analyzable; repeat is
   safe. `--full` → empty `.pruned-N` tombstone, analysis now fails cleanly, next run skips N.
-- Rejections before deletion (rc2, sentinels unchanged) for native and full: ambiguous/unknown Target,
-  invalid number, unsafe path, symlink, changed native, unknown payload, unexplained missing native,
+- Native rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
+  number, unsafe path, symlink, wrong invocation, unexplained missing native on the first attempt,
   tampered points.
-- Interrupt a prune with `../../shared/coverage/faults/filesystem.py --operation unlink` under `.native-pruned/` or `.pruned-N/` →
+- Full rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
+  number, unsafe path, symlink, unknown payload/unrecognized content, tampered points.
+- Interrupt a prune with `../../shared/coverage/faults/filesystem.py --operation unlink` under `native/` (after the pruning sidecar) or `.pruned-N/` →
   retry same selection completes; prune an active invocation → rc2, lock untouched; reap producer → prune
   succeeds.
 - Follow `../../shared/coverage/simulation-campaign/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
