@@ -146,17 +146,16 @@ _PRODUCT_FAULTS = {
     "wrong-rollup": {"COV_SOURCE_ROLLUP_MISMATCH"},
     "wrong-source-rollup": {"COV_SOURCE_ROLLUP_MISMATCH"},
     "wrong-evaluation": {"COV_EVALUATION_MISMATCH"},
-    "resource-ceiling": {"COV_POINT_LIMIT"},
     "v1": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "v2": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "v3": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "invalid-overall-score": {"COV_INVALID_SCORING_SUMMARY"},
     "invalid-source-score": {"COV_INVALID_SCORING_SUMMARY"},
+    "resource-ceiling": {"COV_POINT_LIMIT"},
 }
 
 
-@pytest.mark.parametrize("mode", list(_PRODUCT_FAULTS))
-def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch, mode: str) -> None:
+def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -> None:
     from tests.conftest import require_symlinks
 
     from booley.flows.sim import coverage_campaign_store as store
@@ -164,27 +163,31 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch, m
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
 
-    if mode == "symlink":
-        require_symlinks(tmp_path)
-    owned = tmp_path / "owned"
-    reference = _product_reference(owned, mode)
-    resolve_coverage_campaign_reference(reference)
-    if mode == "resource-ceiling":
-        assert faults.POINT_CEILING_BYTES == store.MAX_UNCOMPRESSED_BYTES
-        monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
-        monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
-
-    faults.mutate(reference, owned, mode)
-
-    with pytest.raises((CoverageCampaignValidationError, CoverageCampaignStoreError)) as caught:
+    # One node, every mode; resource-ceiling is last because it patches the ceiling.
+    for mode, expected_codes in _PRODUCT_FAULTS.items():
+        if mode == "symlink":
+            require_symlinks(tmp_path)
+        owned = tmp_path / mode
+        reference = _product_reference(owned, mode)
         resolve_coverage_campaign_reference(reference)
-    error = caught.value
-    codes = (
-        {finding.code for finding in error.findings}
-        if isinstance(error, CoverageCampaignValidationError)
-        else {error.code}
-    )
-    assert _PRODUCT_FAULTS[mode] <= codes
+        if mode == "resource-ceiling":
+            assert faults.POINT_CEILING_BYTES == store.MAX_UNCOMPRESSED_BYTES
+            monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
+            monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
+
+        faults.mutate(reference, owned, mode)
+
+        with pytest.raises(
+            (CoverageCampaignValidationError, CoverageCampaignStoreError)
+        ) as caught:
+            resolve_coverage_campaign_reference(reference)
+        error = caught.value
+        codes = (
+            {finding.code for finding in error.findings}
+            if isinstance(error, CoverageCampaignValidationError)
+            else {error.code}
+        )
+        assert expected_codes <= codes
 
 
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink", "outside"])
