@@ -214,12 +214,13 @@ def test_campaign_baseline_preview_materializes_project_topologies(
         return preview, {"coremark@1": prerequisite}
 
     monkeypatch.setattr(flow, "_preview_one_campaign_baseline", inspect)
-    prerequisites, previews = flow._preview_campaign_baselines(
-        campaign, ["sim_core"], {"sim_core": ["coremark"]}
-    )
-    assert previews == [preview]
-    assert prerequisites == {"sim_core": [prerequisite]}
-    assert flow.args.work_dir == root
+    with flow.context.publication_resources:
+        prerequisites, previews = flow._preview_campaign_baselines(
+            campaign, ["sim_core"], {"sim_core": ["coremark"]}
+        )
+        assert previews == [preview]
+        assert prerequisites == {"sim_core": [prerequisite]}
+        assert flow.args.work_dir == root
     assert roots and not roots[0].exists()
 
 

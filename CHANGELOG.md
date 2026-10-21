@@ -46,6 +46,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   reported finding is missing from the JSON or, when it carries a severity, rated
   lower there. A `ReportFindings` verdict (`CONFIRMED`/`PLAUSIBLE`) no longer
   counts as a severity.
+- `sim` with a relative Cycle Count Goal (for example
+  `cycle_count_increase_at_most: "10%"`) no longer fails planning with
+  `fatal: '.../.baseline-wt-...' already exists`. One run now checks out the
+  baseline revision once and uses that checkout for Target authorization,
+  planning, and the baseline Simulation.
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a
