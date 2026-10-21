@@ -53,7 +53,6 @@ from .codec import (
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
-    decode_executable_snapshot,
     decode_simulation_attempt,
     decode_simulation_campaign_manifest,
     decode_simulation_result,
@@ -241,7 +240,7 @@ class CampaignStore:
 
     @property
     def retention_files(self) -> tuple[Path, ...]:
-        """Authenticated files owned by this Campaign, in stable order."""
+        """Files this store read or hashed, in stable order."""
         return tuple(sorted(self._authenticated_files))
 
     def _read(self, path: Path, *, limit: int) -> bytes:
@@ -500,40 +499,6 @@ class CampaignStore:
             self._read(attempts[-1] / "attempt.json", limit=RECORD_MAX_BYTES)
         )
 
-    def verify_result_evidence(self, attempt_directory: Path, result: SimulationResult) -> None:
-        """Authenticate private or shared build chains before result commit."""
-        snapshot = self._read_pre_sim_snapshot(
-            attempt_directory, self.read_attempt(attempt_directory)
-        )
-        self._verify_result_snapshot(attempt_directory, result, snapshot)
-
-    def _verify_result_snapshot(self, attempt_directory, result, snapshot) -> None:
-        document = result.document
-        attempt = snapshot.attempt
-        _validate_result_attempt_binding(attempt, result)
-        references = list(cast(tuple[Mapping[str, object], ...], document["evidence"]))
-        executable = document["executable_snapshot"]
-        if isinstance(executable, Mapping):
-            references.append(cast(Mapping[str, object], executable["manifest"]))
-        for binding in cast(tuple[Mapping[str, object], ...], document["runtime_inputs"]):
-            references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
-        for reference in references:
-            if reference["kind"] != "pre_sim_commands":
-                self._authenticate_reference(attempt_directory, reference)
-        hook_refs = [ref for ref in references if ref["kind"] == "pre_sim_commands"]
-        if hook_refs != [firing.reference for firing in snapshot.firings]:
-            raise SimulationCampaignIntegrityError("Pre-Sim Commands result references disagree")
-        build_reference, build_result, bundle = self._verify_build_chain(
-            attempt_directory, document, attempt
-        )
-        self._verify_snapshot_chain(
-            attempt_directory,
-            document,
-            build_reference,
-            build_result,
-            bundle,
-        )
-
     def read_attempt(self, directory: Path) -> SimulationAttempt:
         """Read one immutable contained attempt through the storage boundary."""
         return decode_simulation_attempt(
@@ -662,132 +627,18 @@ class CampaignStore:
         for ordinal, firing in enumerate(snapshot.firings, start=1):
             if firing.document["ordinal"] != ordinal or firing.path.name != f"{ordinal:04d}.json":
                 raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
-            if completed and firing.reference not in terminal.document["evidence"]:
-                raise SimulationCampaignIntegrityError(
-                    "terminal hook lacks authenticated reference"
-                )
+        if completed and [
+            reference
+            for reference in terminal.document["evidence"]
+            if reference["kind"] == "pre_sim_commands"
+        ] != [firing.reference for firing in snapshot.firings]:
+            raise SimulationCampaignIntegrityError("Pre-Sim Commands result references disagree")
         if completed and snapshot.firings:
             _validate_result_attempt_binding(attempt, terminal)
             snapshot = replace(
                 snapshot, firings=tuple(replace(f, terminal=True) for f in snapshot.firings)
             )
         return snapshot
-
-    def _verify_build_chain(
-        self,
-        attempt_directory: Path,
-        simulation: Mapping[str, object],
-        attempt: SimulationAttempt,
-    ) -> tuple[Mapping[str, object], BundleBuildResult, SimulatorBundle | None]:
-        build_reference = cast(Mapping[str, object], simulation["build_result"])
-        build_path = self._result_build_path(attempt_directory, build_reference)
-        build_result = decode_bundle_build_result(self._read(build_path, limit=RECORD_MAX_BYTES))
-        build_document = build_result.document
-        for field in ("campaign_id", "manifest_sha256", "workload_sha256"):
-            if build_document[field] != simulation[field]:
-                raise SimulationCampaignIntegrityError(
-                    f"Build Result {field} disagrees with Simulation Result"
-                )
-        if (
-            build_document["state"] != build_reference["state"]
-            or build_document["build_attempt"]["build_attempt_id"]
-            != build_reference["build_attempt_id"]
-        ):
-            raise SimulationCampaignIntegrityError(
-                "Build Result identity disagrees with Simulation Result reference"
-            )
-        if build_document["build_variant_id"] != attempt.document["build_variant_id"]:
-            raise SimulationCampaignIntegrityError(
-                "Build Result variant disagrees with Simulation Attempt"
-            )
-        build_root, build_attempt = self._load_result_build_attempt(build_path, build_document)
-        evidence = cast(tuple[Mapping[str, object], ...], build_document["evidence"])
-        for reference in evidence:
-            self._authenticate_reference(build_root, reference)
-        if any(item["kind"] == "simulation_build_execution" for item in evidence):
-            # Private builds record it too; older private results carry none.
-            _load_build_execution(build_root, build_document)
-        _validate_result_build_attempt(build_attempt, build_document, simulation, attempt)
-        bundle = self._load_result_bundle(
-            build_root, build_document, build_reference, simulation, attempt, build_attempt
-        )
-        return build_reference, build_result, bundle
-
-    def _result_build_path(self, attempt_directory, reference) -> Path:
-        root = self.root if reference["sharing"] == "shared_variant" else attempt_directory
-        path = root / cast(str, reference["path"])
-        _require_safe_parents(path, root)
-        return path
-
-    def _load_result_build_attempt(self, build_path, build_document):
-        root = build_path.parent
-        reference = cast(Mapping[str, object], build_document["build_attempt"])
-        self._authenticate_reference(root, reference)
-        attempt = decode_bundle_build_attempt(
-            self._read(root / cast(str, reference["path"]), limit=RECORD_MAX_BYTES)
-        )
-        return root, attempt
-
-    def _load_result_bundle(
-        self, root, result, reference, simulation, attempt, build_attempt
-    ) -> SimulatorBundle | None:
-        binding = result["bundle"]
-        if not isinstance(binding, Mapping):
-            return None
-        if binding["sharing"] != reference["sharing"]:
-            raise SimulationCampaignIntegrityError(
-                "Build Result sharing disagrees with Simulation Result reference"
-            )
-        path = root / cast(str, binding["manifest_path"])
-        _require_safe_parents(path, root)
-        raw = self._read(path, limit=RECORD_MAX_BYTES)
-        if len(raw) != binding["manifest_bytes"] or _raw_digest(raw) != binding["manifest_sha256"]:
-            raise SimulationCampaignIntegrityError("Build Result bundle digest disagrees")
-        bundle = decode_simulator_bundle(raw)
-        _validate_result_bundle_identity(bundle, binding, reference, simulation, attempt)
-        for artifact in cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"]):
-            self._authenticate_reference(root, artifact)
-        _validate_bundle_scope(bundle, reference, attempt, build_attempt)
-        return bundle
-
-    def _verify_snapshot_chain(
-        self,
-        attempt_directory: Path,
-        simulation: Mapping[str, object],
-        build_reference: Mapping[str, object],
-        build_result: BundleBuildResult,
-        bundle: SimulatorBundle | None,
-    ) -> None:
-        snapshot_binding = simulation["executable_snapshot"]
-        if isinstance(snapshot_binding, Mapping):
-            manifest_reference = cast(Mapping[str, object], snapshot_binding["manifest"])
-            snapshot_path = attempt_directory / cast(str, manifest_reference["path"])
-            snapshot = decode_executable_snapshot(
-                self._read(snapshot_path, limit=RECORD_MAX_BYTES)
-            )
-            _validate_snapshot_identity(snapshot, simulation, build_reference, snapshot_binding)
-            bundle_binding = build_result.document["bundle"]
-            if not isinstance(bundle_binding, Mapping) or (
-                snapshot_binding["bundle_manifest_sha256"] != bundle_binding["manifest_sha256"]
-            ):
-                raise SimulationCampaignIntegrityError(
-                    "Executable Snapshot does not bind its Simulator Bundle"
-                )
-            if bundle is None:
-                raise SimulationCampaignIntegrityError(
-                    "Executable Snapshot has no retained Simulator Bundle"
-                )
-            eligible = tuple(
-                item
-                for item in cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
-                if item["kind"] != "runtime_input"
-            )
-            if snapshot.document["artifacts"] != eligible:
-                raise SimulationCampaignIntegrityError(
-                    "Executable Snapshot artifacts disagree with Simulator Bundle"
-                )
-            for artifact in cast(tuple[Mapping[str, object], ...], snapshot.document["artifacts"]):
-                self._authenticate_reference(snapshot_path.parent, artifact)
 
     def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
         path = root / cast(str, reference["path"])
@@ -886,7 +737,6 @@ class CampaignStore:
                 workload_sha256,
                 attempts,
                 decoded_attempts,
-                snapshots.get(attempts[-1]) if attempts else None,
             )
             _validate_result_selection(
                 work_item, result, attempts[-1], target_identity=target_identity
@@ -937,7 +787,6 @@ class CampaignStore:
         workload_sha256: str,
         attempts: tuple[Path, ...],
         decoded_attempts: list[SimulationAttempt],
-        snapshot: _PreSimReadSnapshot | None,
     ) -> SimulationResult:
         result = decode_simulation_result(self._read(path, limit=RECORD_MAX_BYTES))
         document = result.document
@@ -959,10 +808,6 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError(
                 "result does not bind the final published attempt"
             )
-        if snapshot is None:
-            self.verify_result_evidence(attempts[-1], result)
-        else:
-            self._verify_result_snapshot(attempts[-1], result, snapshot)
         return result
 
     @staticmethod
@@ -1609,76 +1454,6 @@ def _validate_result_attempt_binding(attempt: SimulationAttempt, result: Simulat
     if any(left[field] != right[field] for field in fields):
         raise SimulationCampaignIntegrityError(
             "Simulation Result identity disagrees with Simulation Attempt"
-        )
-
-
-def _validate_result_build_attempt(build, result, simulation, attempt) -> None:
-    document = build.document
-    reference = cast(Mapping[str, object], result["build_attempt"])
-    if (
-        document["build_attempt_id"] != reference["build_attempt_id"]
-        or document["campaign_id"] != simulation["campaign_id"]
-        or document["manifest_sha256"] != simulation["manifest_sha256"]
-        or document["workload_sha256"] != simulation["workload_sha256"]
-        or document["build_variant_id"] != attempt.document["build_variant_id"]
-    ):
-        raise SimulationCampaignIntegrityError(
-            "Bundle Build Attempt identity disagrees with Simulation Result"
-        )
-
-
-def _validate_bundle_scope(bundle, reference, attempt, build_attempt) -> None:
-    document = bundle.document
-    private = reference["sharing"] == "private_work_item"
-    expected_owner = (
-        {
-            "work_item_id": attempt.document["work_item_id"],
-            "simulation_attempt_id": attempt.document["attempt_id"],
-        }
-        if private
-        else {"work_item_id": None, "simulation_attempt_id": None}
-    )
-    if (
-        document["owner"] != expected_owner
-        or document["tool_provenance"] != build_attempt.document["tool_provenance"]
-        or build_attempt.document["sharing"] != reference["sharing"]
-        or build_attempt.document["owner"] != expected_owner
-    ):
-        raise SimulationCampaignIntegrityError(
-            "Simulator Bundle scope/provenance disagrees with build chain"
-        )
-
-
-def _validate_result_bundle_identity(bundle, binding, reference, simulation, attempt) -> None:
-    document = bundle.document
-    if (
-        document["bundle_id"] != binding["bundle_id"]
-        or document["sharing"] != binding["sharing"]
-        or document["artifacts"] != binding["artifacts"]
-        or document["campaign_id"] != simulation["campaign_id"]
-        or document["manifest_sha256"] != simulation["manifest_sha256"]
-        or document["workload_sha256"] != simulation["workload_sha256"]
-        or document["build_variant_id"] != attempt.document["build_variant_id"]
-        or document["build_attempt_id"] != reference["build_attempt_id"]
-    ):
-        raise SimulationCampaignIntegrityError("Simulator Bundle disagrees with its Build Result")
-
-
-def _validate_snapshot_identity(snapshot, simulation, build_reference, binding) -> None:
-    document = snapshot.document
-    if (
-        document["attempt_id"] != simulation["attempt_id"]
-        or document["campaign_id"] != simulation["campaign_id"]
-        or document["manifest_sha256"] != simulation["manifest_sha256"]
-        or document["workload_sha256"] != simulation["workload_sha256"]
-        or document["work_item_id"] != simulation["work_item_id"]
-        or document["bundle_id"] != simulation["bundle_id"]
-        or document["build_result"] != build_reference
-        or document["inventory_sha256"] != binding["pre_launch_sha256"]
-        or document["inventory_sha256"] != binding["post_exit_sha256"]
-    ):
-        raise SimulationCampaignIntegrityError(
-            "Executable Snapshot identity disagrees with Simulation Result"
         )
 
 

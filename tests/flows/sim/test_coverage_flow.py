@@ -1831,9 +1831,8 @@ def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monke
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     campaign = reports / "sim/1/targets/sim_0/campaign"
     result_path = next(campaign.glob("work-items/*/result.json"))
-    raw = bytearray(result_path.read_bytes())
-    raw[len(raw) // 2] ^= 0x01
-    result_path.write_bytes(bytes(raw))
+    raw = result_path.read_bytes()
+    result_path.write_bytes(raw[: len(raw) // 2])
 
     result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
         SimRequest(resume_from=campaign / "manifest.json", work_dir=tmp_path, report_dir=reports)

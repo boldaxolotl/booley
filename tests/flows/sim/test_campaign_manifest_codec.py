@@ -750,7 +750,6 @@ def test_serial_executor_authenticates_planned_generator_closure(
         assert store.scan().interrupted == (item["work_item_id"],)  # type: ignore[index]
         return
     result = executor.execute(request)
-    store.verify_result_evidence(attempt_directory, result)
     store.publish_result(item["work_item_id"], result)  # type: ignore[index]
     assert store.scan().complete == (item["work_item_id"],)  # type: ignore[index]
     assert result.document["grade"] == "pass"

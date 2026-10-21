@@ -1426,10 +1426,8 @@ def _launch_snapshot(
     snapshot = _create_snapshot(request, build_directory, build_result, bundle, snapshot_root)
     publication_checkpoint("after:snapshot_manifest")
     pre_launch = authenticate_executable_snapshot(snapshot, snapshot_root)
-    publication_checkpoint("integrity:prelaunch_authentication")
     outcome = group.launch_snapshot(snapshot_root, run_cwd)  # type: ignore[attr-defined]
     post_exit = authenticate_executable_snapshot(snapshot, snapshot_root)
-    publication_checkpoint("integrity:post_exit_authentication")
     return _snapshot_result(
         request,
         build_directory,

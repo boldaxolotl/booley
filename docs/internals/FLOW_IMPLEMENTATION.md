@@ -1150,8 +1150,10 @@ root explicitly; callers obtain Booley Directory roots through
   `.prune.json`; without that journal it is refused. Unknown files are named and
   refused without mutation;
   changed or missing recorded native payloads are accepted because full pruning
-  removes the entire invocation. Terminal attempts use only their exact
-  authenticated inventory; nonterminal attempts retain directory-level ownership
+  removes the entire invocation. A terminal attempt owns its records, the files its
+  result names, and its `private-build/`, `snapshot/` and used shared-build trees;
+  unknown-file refusal inside it applies to its records and `evidence/`, not to
+  those build trees. Nonterminal attempts retain directory-level ownership
   only for producer-private partial outputs that cannot acquire a terminal manifest.
   Interrupted attempts may be removed after their process releases the lock.
   Authenticated pending/interrupted Campaigns, missing

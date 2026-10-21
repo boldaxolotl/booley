@@ -1992,3 +1992,16 @@ def test_partial_campaign_planning_keeps_known_and_unknown_tools(tmp_path, monke
     assert result.exit_code == 2
     report = json.loads((tmp_path / "reports/sim.json").read_bytes())
     assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": None}
+
+
+def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path, monkeypatch):
+    """The Pre-Sim read boundary binds a terminal result's firing references both ways."""
+    from booley.flows.sim.campaign import SimulationCampaignIntegrityError
+    from booley.flows.sim.campaign.store import CampaignStore
+
+    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    outcome.pre_sim_firings[0].path.unlink()
+    store = CampaignStore(invocation / "targets/sim/campaign")
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
+        store.read_pre_sim_firings()

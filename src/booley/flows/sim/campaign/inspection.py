@@ -30,7 +30,7 @@ class SimulationCampaignWorkItemError(SimulationCampaignIntegrityError):
 
 @dataclass(frozen=True, slots=True)
 class CampaignWorkItemEvidence:
-    """Authenticated immutable evidence for one terminal Campaign work item."""
+    """Immutable evidence read from one terminal Campaign work item."""
 
     manifest_path: Path
     manifest_sha256: str
@@ -167,7 +167,7 @@ def _retention_inventory(
         if path.name == "attempt.json" and path.parent.parent.name == "attempts"
     }
     completed_attempts = {
-        cast(str, item.result.document["attempt_id"])
+        cast(str, item.result.document["attempt_id"]): item.result.document
         for item in recovery.items
         if item.result is not None
     }
@@ -176,6 +176,9 @@ def _retention_inventory(
         attempt_id = attempt.name.split("-", 1)[1]
         if attempt_id in completed_attempts:
             coverage_directories.append(attempt / "coverage-campaign")
+            retention_files.update(
+                _result_named_files(store.root, attempt, completed_attempts[attempt_id])
+            )
             continue
         for name in (
             "private-build",
@@ -189,6 +192,24 @@ def _retention_inventory(
                 path.absolute() for path in (attempt / name).rglob("*") if path.is_file()
             )
     return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
+
+
+def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object]) -> set[Path]:
+    """Files a terminal result names, plus the Booley-written build trees it used, unhashed."""
+    references = list(cast(tuple[Mapping[str, object], ...], result["evidence"]))
+    snapshot = result["executable_snapshot"]
+    if isinstance(snapshot, Mapping):
+        references.append(cast(Mapping[str, object], snapshot["manifest"]))
+    for binding in cast(tuple[Mapping[str, object], ...], result["runtime_inputs"]):
+        references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
+    named = {(attempt / cast(str, reference["path"])).absolute() for reference in references}
+    trees = [attempt / "private-build", attempt / "snapshot"]
+    build = cast(Mapping[str, object], result["build_result"])
+    if build["sharing"] == "shared_variant":
+        trees.append((root / cast(str, build["path"])).parent)
+    for tree in trees:
+        named.update(path.absolute() for path in tree.rglob("*") if path.is_file())
+    return named
 
 
 @contextmanager
@@ -310,8 +331,8 @@ def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCa
     killed): the same Test Run rows a completed campaign's acceptance
     records, for the work items that finished. *manifest_sha256* is the
     digest recorded when the campaign started; another manifest is refused.
-    Every result and its evidence is authenticated by the store's validated
-    scan, and each row carries the Test Run the manifest recorded with the
+    Every result is decoded and bound to its attempt by the store's validated
+    scan (evidence is trusted on read), and each row carries the Test Run the manifest recorded with the
     fingerprint its observation bound. The read holds the campaign's
     mutation lock, so the results returned are all there are until the
     campaign is resumed.
