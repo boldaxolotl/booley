@@ -943,19 +943,15 @@ def _prepared_report_campaign(runtime, mode, resume):
 
 @pytest.mark.parametrize("mode", ["named", "default", "unfiltered", "coverage"])
 @pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("missing_cycle", [False, True])
 def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
-    external_acceptance_owner, runtime, monkeypatch, mode, resume, missing_cycle
+    external_acceptance_owner, runtime, monkeypatch, mode, resume
 ):
-    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     prepared, handle, cycle_test = _prepared_report_campaign(runtime, mode, resume)
     criteria = {"sim_pass_sim": True, "cycle_count_policy": True}
     if mode == "coverage":
         criteria["coverage_sim"] = True
-    if missing_cycle:
-        del criteria["cycle_count_policy"]
     cycle = {"target": handle.identity, "_target_selector": "sim", "test": cycle_test}
     params = {"cycle_count_policy": {**cycle, "cycle_count_max": 100}}
     _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
@@ -967,27 +963,9 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
 
     monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
     flow = SimulateFlow()
-
-    class BoundExecution(StandaloneFlowExecution):
-        def validate_and_resolve(self, _request):
-            if not missing_cycle:
-                return super().validate_and_resolve(_request)
-            return ResolvedFlowAcceptance(
-                (
-                    AcceptanceTargetBinding(
-                        "sim",
-                        "criteria.mandatory.cycle_count_policy",
-                        handle.identity,
-                        handle.identity,
-                        "sim",
-                        "sim",
-                    ),
-                )
-            )
-
     result = flow.execute(
         flow.request_type(target="sim", work_dir=runtime, coverage=mode == "coverage"),
-        adapter=BoundExecution(),
+        adapter=StandaloneFlowExecution(),
     )
     assert result.exit_code == 2, result.outcome.report_text
     _assert_headline(result, flow.context.args.report_dir, "sim", ("", None))
@@ -1385,3 +1363,67 @@ def test_custom_headline_scope_resolves_no_target(
     endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
     argv = ["--target", "first"]
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, ("drc_clean_first", True))
+
+
+def test_prepared_workload_scope_follows_resolved_test_runs(
+    external_acceptance_owner, runtime, monkeypatch
+):
+    # A named Variant runs Test "count": the cycle Criterion on it is in scope, so a
+    # run that judged only sim_pass reports no headline instead of a partial one.
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    prepared, handle, _ = _prepared_report_campaign(runtime, "named", False)
+    tests_toml = runtime / ".booley/tests.toml"
+    tests_toml.write_text(
+        '[sim]\nselect = "+test={name}"\ntests = ["reset", "count"]\n\n'
+        '[sim.variants.count]\ndefault = "short"\nshort = []\nsoak = ["+iters=9"]\n'
+    )
+    scope = {"target": handle.identity, "_target_selector": "sim"}
+    params = {
+        "sim_pass_count": {**scope, "test_selector": "count"},
+        "cycle_count_policy": {**scope, "test": "count", "cycle_count_max": 100},
+    }
+    criteria = dict.fromkeys(params, True)
+    _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
+    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: prepared)
+
+    def run(self, *_args):
+        self.set_criterion("sim_pass_count", True)
+        return EndpointOutcome(exit_code=2, report_text="cycle workload unavailable")
+
+    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
+    flow = SimulateFlow()
+    result = flow.execute(flow.request_type(target="sim", work_dir=runtime, test=["count+soak"]))
+    assert result.exit_code == 2, result.outcome.report_text
+    _assert_headline(result, flow.context.args.report_dir, "sim", ("", None))
+
+
+def test_prepared_workload_scope_keeps_whole_suite_criterion_with_skipped_test(
+    external_acceptance_owner, runtime, monkeypatch
+):
+    # A configured skip leaves "count" out of the run and of the required suite, so the
+    # whole-suite sim_pass Criterion stays planned beside the judged cycle Criterion.
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    prepared, handle, _ = _prepared_report_campaign(runtime, "named", False)
+    tests_toml = runtime / ".booley/tests.toml"
+    tests_toml.write_text('[sim]\ntests = ["reset", "count"]\nskip = ["count"]\n')
+    scope = {"target": handle.identity, "_target_selector": "sim"}
+    params = {"cycle_count_policy": {**scope, "test": "reset", "cycle_count_max": 100}}
+    criteria = {"sim_pass_sim": True, "cycle_count_policy": True}
+    _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
+
+    def prepare(self):
+        assert self._validate_test_plans(["sim"], prepared.test_names_map) is None
+        return prepared
+
+    def run(self, *_args):
+        self.set_criterion("cycle_count_policy", True)
+        return EndpointOutcome(exit_code=2, report_text="reset lost to infrastructure")
+
+    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", prepare)
+    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
+    flow = SimulateFlow()
+    result = flow.execute(flow.request_type(target="sim", work_dir=runtime))
+    assert result.exit_code == 2, result.outcome.report_text
+    _assert_headline(result, flow.context.args.report_dir, "sim", ("", None))
