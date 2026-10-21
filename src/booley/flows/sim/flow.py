@@ -5319,7 +5319,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         detail.update(pre_sim_detail)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
         keys = frozenset(getattr(self, "_current_published_pre_sim_keys", current_keys))
-        budget_lines = _pre_sim_lines(firings, keys)[1] if keys.issubset(firings) else None
+        budget_lines: list[str] | None = None
+        if keys.issubset(firings):
+            _, budget_lines = _pre_sim_lines(firings, keys)
         lines = _campaign_report_lines(outcomes, coverage_campaigns, budget_lines, **report)
         lines.extend(hook_lines)
         if coverage_targets:
