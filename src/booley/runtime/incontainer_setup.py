@@ -554,7 +554,7 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
 
 
 def upsert_codex(path: Path) -> bool:
-    """Migrate owned MCP settings and default warning preference without redumping."""
+    """Migrate owned MCP settings and default warning preference without rewriting the settings file."""
     existing = _read_codex_config(path)
     parsed = _codex_data(existing, path=path)
     if _codex_entry_is_current(existing):

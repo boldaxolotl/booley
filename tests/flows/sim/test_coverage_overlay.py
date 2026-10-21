@@ -120,18 +120,8 @@ class TestCoverageOverlay:
             overlay.cleanup()
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        ["--dumpi-tree-json", "9", "--dumpi-V3Global", "0"],
-        ["--dumpi-tree-json=9", "--dumpi-V3Global=0"],
-        ["--no-dump-tree-json", "--no-dumpi-tree-json", "--no-dumpi-V3Global"],
-        ["--dumpi-tree-json", "2", "--dumpi-tree-json=0", "--dumpi-V3Global", "1"],
-    ],
-)
-def test_canonical_declaration_switches_preserve_unrelated_debug_options(options):
+def test_coverage_overlay_passes_user_dump_options_through_without_declaration_switches():
     from booley.flows.sim.coverage_overlay import _with_coverage_options
-    from booley.flows.sim.verilator_declarations import DECLARATION_OPTIONS
 
-    result = _with_coverage_options(["--dumpi-V3LinkCells", "3", *options], ("--coverage-line",))
-    assert result == ["--dumpi-V3LinkCells", "3", *DECLARATION_OPTIONS, "--coverage-line"]
+    options = ["--dumpi-tree-json", "9", "--no-dumpi-V3Global", "--coverage-line"]
+    assert _with_coverage_options(options, ("--coverage-line",)) == options

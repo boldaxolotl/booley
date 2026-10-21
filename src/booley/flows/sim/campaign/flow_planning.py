@@ -214,7 +214,6 @@ def _recipes(
     inspection: TargetInspection,
     sources: list[dict[str, object]],
     trace: bool,
-    coverage: bool,
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Build the frozen source and build recipes of a Target workload."""
     root = handle.project_root.resolve()
@@ -227,17 +226,7 @@ def _recipes(
         "defines": _defines(inspection.flow_options),
         "pre_sim_commands": list(resolve_pre_sim_commands(root)),
     }
-    from ..verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
-
     command_model = {
-        **(
-            {
-                "declaration_contract": DECLARATION_CONTRACT,
-                "declaration_options": DECLARATION_OPTIONS,
-            }
-            if coverage
-            else {}
-        ),
         "target_identity": handle.identity,
         "toplevel": inspection.toplevel,
         "eda_tool": inspection.eda_tool or "",
@@ -264,7 +253,7 @@ def _workload_document(
     no_waivers: bool = False,
 ) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
     root = handle.project_root.resolve()
-    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace, coverage)
+    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace)
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"

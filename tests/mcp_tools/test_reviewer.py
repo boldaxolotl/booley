@@ -21,6 +21,7 @@ from booley.specialists.reviewer import (
     SEVERITY_MAJOR,
     SEVERITY_MINOR,
     TB_FOCUS_CATEGORIES,
+    MirrorFinding,
     ReviewerSpecialist,
     ReviewIssue,
     _finding_record,
@@ -31,7 +32,7 @@ from booley.specialists.reviewer import (
     format_summary_line,
     parse_issues,
     parse_review_output,
-    report_findings_to_issues,
+    report_findings_to_mirror,
     validate_scope_category,
 )
 
@@ -626,66 +627,23 @@ def _make_report_findings_result(findings: list[dict], output: str = "") -> Magi
 
 
 class TestReportFindingsMapper:
-    """Unit tests for the ReportFindings -> ReviewIssue mapping."""
+    """Unit tests for the ReportFindings -> MirrorFinding mapping."""
 
-    def test_confirmed_maps_to_blocking_major(self):
-        issues, dropped = report_findings_to_issues(
+    def test_keeps_sent_severity_and_ignores_verdict(self):
+        mirror = report_findings_to_mirror(
             [
-                {
-                    "file": "rtl/a.sv",
-                    "line": 7,
-                    "summary": "off-by-one",
-                    "verdict": "CONFIRMED",
-                    "failure_scenario": "idx=N overflows",
-                }
-            ],
-            focus="bugs",
+                {"file": "./rtl/a.sv", "line": 7, "summary": "x", "severity": "critical"},
+                {"file": "rtl/a.sv", "line": 8, "summary": "y", "verdict": "CONFIRMED"},
+            ]
         )
-        assert dropped == 0
-        assert len(issues) == 1
-        iss = issues[0]
-        assert iss.severity == SEVERITY_MAJOR
-        assert iss.confidence == "HIGH"
-        assert iss.category == "bugs"  # forced to focus, not RF's slug
-        assert iss.file == "rtl/a.sv"
-        assert iss.line == 7
-        assert "idx=N overflows" in iss.fix_suggestion
-
-    def test_absent_verdict_is_fail_closed_major(self):
-        """A single-pass review usually omits verdict -> must still block."""
-        issues, _ = report_findings_to_issues(
-            [{"file": "rtl/a.sv", "line": 1, "summary": "x"}],
-            focus="quality",
-        )
-        assert issues[0].severity == SEVERITY_MAJOR
-
-    def test_plausible_maps_to_advisory_minor(self):
-        issues, _ = report_findings_to_issues(
-            [{"file": "rtl/a.sv", "line": 1, "summary": "maybe", "verdict": "PLAUSIBLE"}],
-            focus="bugs",
-        )
-        assert issues[0].severity == SEVERITY_MINOR
-        assert issues[0].confidence == "MEDIUM"
-
-    def test_entries_missing_file_or_summary_dropped(self):
-        issues, dropped = report_findings_to_issues(
-            [
-                {"file": "", "summary": "no file", "verdict": "CONFIRMED"},
-                {"file": "rtl/a.sv", "summary": "", "verdict": "CONFIRMED"},
-                {"file": "rtl/a.sv", "summary": "ok", "verdict": "CONFIRMED"},
-                "not-a-dict",
-            ],
-            focus="bugs",
-        )
-        assert len(issues) == 1
-        assert dropped == 3
+        assert mirror == [
+            MirrorFinding(file="rtl/a.sv", line=7, severity=SEVERITY_CRITICAL),
+            MirrorFinding(file="rtl/a.sv", line=8, severity=None),
+        ]
 
     def test_bad_line_defaults_to_zero(self):
-        issues, _ = report_findings_to_issues(
-            [{"file": "rtl/a.sv", "line": "nope", "summary": "x"}],
-            focus="bugs",
-        )
-        assert issues[0].line == 0
+        mirror = report_findings_to_mirror([{"file": "rtl/a.sv", "line": "nope", "summary": "x"}])
+        assert mirror[0].line == 0
 
 
 class TestReportFindingsCapture:
@@ -898,7 +856,7 @@ class TestChannelDisagreement:
     ):
         """PLAUSIBLE via endpoint + CRITICAL in text: the blocking channel wins, no merge."""
         mock_agent.return_value = _make_report_findings_result(
-            [{"file": "rtl/mod_a.sv", "line": 3, "summary": "nit", "verdict": "PLAUSIBLE"}],
+            [{"file": "rtl/mod_a.sv", "line": 42, "summary": "nit", "verdict": "PLAUSIBLE"}],
             output=json.dumps(_CRITICAL_TEXT_ISSUE),
         )
         endpoint = ReviewerSpecialist()
@@ -1094,6 +1052,76 @@ class TestChannelDisagreement:
         text = ReviewerSpecialist._output_instructions("bugs")
         assert "ReportFindings" in text
         assert "mirror" in text.lower()
+
+
+def _run_mirror_review(calls: list[list[dict]], canonical: list[dict]) -> int:
+    """Run one review whose agent made ``calls`` ReportFindings calls; return its exit code."""
+    with patch("booley.specialists.specialist._call_agent_sync") as mock_agent:
+        mock_agent.return_value = MagicMock(
+            output=json.dumps({"issues": canonical}),
+            structured=None,
+            captured_agent_capability_calls={
+                "ReportFindings": [{"findings": findings} for findings in calls]
+            },
+        )
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(_review_args())
+        endpoint.read_state()
+        return endpoint._run().exit_code
+
+
+class TestMirrorAgreement:
+    """#1963: the mirror must match canonical findings, not out-count them."""
+
+    def test_repeated_report_agrees_with_canonical_listed_once(self, state_file: Path):
+        """Replay of a recorded run: the same 3 findings reported twice, no severity sent.
+
+        The canonical JSON rates the first CONFIRMED finding MINOR and the
+        PLAUSIBLE one MAJOR; neither verdict is a severity.
+        """
+        mirror = [
+            {"file": "rtl/mod_a.sv", "line": 316, "summary": "no timeout", "verdict": "CONFIRMED"},
+            {"file": "rtl/mod_a.sv", "line": 1156, "summary": "no edges", "verdict": "PLAUSIBLE"},
+            {"file": "rtl/mod_a.sv", "line": 384, "summary": "no stalls", "verdict": "CONFIRMED"},
+        ]
+        canonical = [
+            _make_issue_dict("MAJOR", line=316, summary="no timeout"),
+            _make_issue_dict("MAJOR", line=1156, summary="no edge vectors"),
+            _make_issue_dict("MINOR", line=384, summary="no stall injection"),
+        ]
+
+        assert _run_mirror_review([mirror, mirror], canonical) == 0
+        assert DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
+
+    def test_confirmed_finding_rated_minor_agrees(self, state_file: Path):
+        mirror = [{"file": "rtl/mod_a.sv", "line": 42, "summary": "x", "verdict": "CONFIRMED"}]
+
+        assert _run_mirror_review([mirror], [_make_issue_dict("MINOR")]) == 0
+
+    def test_split_report_that_resends_a_finding_agrees(self, state_file: Path):
+        first = {"file": "rtl/mod_a.sv", "line": 5, "summary": "a", "severity": "MAJOR"}
+        second = {"file": "./rtl/mod_a.sv", "line": 9, "summary": "b", "severity": "MINOR"}
+        canonical = [
+            _make_issue_dict("MAJOR", line=5, summary="a"),
+            _make_issue_dict("MINOR", line=9, summary="b"),
+        ]
+
+        assert _run_mirror_review([[first], [first, second]], canonical) == 0
+
+    def test_mirror_severity_above_canonical_still_fails(self, state_file: Path):
+        mirror = [{"file": "rtl/mod_a.sv", "line": 42, "summary": "x", "severity": "CRITICAL"}]
+
+        assert _run_mirror_review([mirror], [_make_issue_dict("MAJOR")]) == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
+
+    def test_mirror_finding_missing_beside_a_more_severe_canonical_issue_fails(
+        self, state_file: Path
+    ):
+        """A severe canonical issue elsewhere in the file must not hide an omitted finding."""
+        mirror = [{"file": "rtl/mod_a.sv", "line": 7, "summary": "x", "verdict": "PLAUSIBLE"}]
+
+        assert _run_mirror_review([mirror], [_make_issue_dict("CRITICAL")]) == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
 
 class TestReadOnlyEnforcement:
