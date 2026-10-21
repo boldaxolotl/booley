@@ -190,7 +190,7 @@ exclusive `consumed` marker permits exactly one EIO across descendants.
 | Simulation publication | rename to exact Target `/simulation.json`; fail before replacement. |
 | Acceptance state | rename to the captured Goal Record `goals/<record-id>/booley_state.json`; fail only when temporary JSON adds an acceptance transaction absent from the baseline state. |
 | Terminal progress | rename to exact invocation `/progress.json`; fail only when temporary JSON has `complete: true`. Earlier observational writes pass through. |
-| Native-prune interruption | unlink of a recorded raw/merged payload beneath that Target's `.native-pruned/`, after native rename and journal. Select a concrete relative suffix from the recorded deletion set. |
+| Native-prune interruption | unlink of a recorded raw/merged payload beneath that Target's `native/`, after the `pruning` availability sidecar write. Select a concrete relative suffix from the recorded deletion set. |
 | Full-prune interruption | unlink of a recorded payload beneath exact `.pruned-N/`, excluding `.prune.json`, after invocation rename and journal. |
 
 Save the source temporary JSON while the syscall is paused, the consumed event,
