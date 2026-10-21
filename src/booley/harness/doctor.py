@@ -767,7 +767,16 @@ def _report_deep_currency(
             attempt = summary.attempt(
                 version=booley.__version__,
                 clean=not blockers,
-                blocking_checks=tuple(f.check_id for f in blockers if f.check_id is not None),
+                # A blocker without a check ID still gets named, so it is never hidden.
+                blocking_checks=tuple(
+                    f.check_id
+                    or (
+                        "unidentified-failure"
+                        if f.severity == Severity.FAIL
+                        else "unidentified-warning"
+                    )
+                    for f in blockers
+                ),
             )
             if not doctor_deep.record_deep_attempt(booley_dir, attempt):
                 info("deep result was not saved")

@@ -90,7 +90,8 @@ provider probe; run deep Doctor inside the Sandbox for full evidence.
 A completed failed, warning-blocked, or incomplete deep attempt replaces the
 saved record, so deep Doctor is due until a later attempt qualifies. A failed
 attempt says “latest deep attempt failed” and names up to eight blocking check IDs
-(failures, unwaived warnings, and checks that did not run); an incomplete one says
+(failures, unwaived warnings, and checks that did not run; a blocker with no ID shows
+as `unidentified-failure` or `unidentified-warning`) and how many more are hidden; an incomplete one says
 “applicable deep checks incomplete” and names the checks that did not run.
 Cancellation or an unexpected abort before a completed result leaves the previous
 record intact;

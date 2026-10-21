@@ -21,7 +21,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Deep Doctor now keeps only the latest completed deep attempt: a failed or
   incomplete attempt makes deep status due until the next qualifying run, reports one
   "latest deep attempt failed" reason, and `deep_status` no longer includes
-  `last_success`. Existing deep records are replaced by the next deep run.
+  `last_success`, the per-reason `checks` list, or the `latest-attempt-not-qualified` code. Existing deep records are replaced by the next deep run.
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a

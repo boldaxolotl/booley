@@ -172,11 +172,13 @@ def evaluate_deep_status(
         reasons.append(
             DeepReason("image-identity-unavailable", "cannot verify Sandbox Image identity")
         )
+    # Only failed or incomplete attempts can lack an image ID; they are due anyway.
     elif record is not None and record.image_id not in (None, image_id):
         reasons.append(DeepReason("image-changed", "Sandbox Image changed"))
     if record is not None and record.outcome != DeepOutcome.SUCCESS:
         shown = ", ".join(record.reasons[:_SHOWN_CHECKS])
-        detail = f" ({shown})" if shown else ""
+        hidden = len(record.reasons) - _SHOWN_CHECKS
+        detail = f" ({shown}{f'; +{hidden} more' if hidden > 0 else ''})" if shown else ""
         if record.outcome == DeepOutcome.FAILED:
             reasons.append(
                 DeepReason("latest-attempt-failed", f"latest deep attempt failed{detail}")

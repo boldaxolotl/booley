@@ -110,7 +110,7 @@ def test_failed_attempt_after_success_is_due_until_next_success(tmp_path, monkey
         pytest.param(
             [DiagnosticFinding(Severity.WARN, "w", check_id=f"warning-{i}") for i in range(10)],
             (),
-            " (" + ", ".join(f"warning-{i}" for i in range(8)) + ")",
+            " (" + ", ".join(f"warning-{i}" for i in range(8)) + "; +2 more)",
             id="warning-only",
         ),
         pytest.param(
@@ -122,7 +122,15 @@ def test_failed_attempt_after_success_is_due_until_next_success(tmp_path, monkey
             " (git.worktree-portability, sim.bad, sim.selftest.bad)",
             id="with-failure",
         ),
-        pytest.param([DiagnosticFinding(Severity.FAIL, "f")], (), "", id="unidentified-failure"),
+        pytest.param(
+            [
+                DiagnosticFinding(Severity.FAIL, "f"),
+                DiagnosticFinding(Severity.WARN, "w", check_id="git.worktree-portability"),
+            ],
+            (),
+            " (git.worktree-portability, unidentified-failure)",
+            id="unidentified-failure",
+        ),
     ],
 )
 def test_failed_attempt_names_first_eight_blocking_checks(

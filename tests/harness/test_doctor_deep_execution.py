@@ -546,6 +546,8 @@ def test_runtime_policy_full_doctor_qualification(
     record = deep.load_deep_record(audit.booley_dir)
     assert record.outcome is expected
     blocking = {f.check_id for f in result.diagnostics.active_findings if f.check_id}
+    if any(not f.check_id for f in result.diagnostics.active_findings):
+        blocking.add("unidentified-failure")
     if expected is deep.DeepOutcome.FAILED:
         extra = {"core.resolve.d97e8ce47f651215"} if missing == "core" else set()
         assert record.reasons == tuple(sorted(blocking | extra))
