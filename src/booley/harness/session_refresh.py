@@ -18,7 +18,7 @@ class _RuntimeImages:
         self._sources: init_cmd._InteractiveSpecSources | None = None
 
     def inspect(self, project_root: Path, *, verbose: bool) -> None:
-        init_cmd.inspect_refreshable_runtime_image(project_root, verbose=verbose)
+        init_cmd.inspect_refreshable_runtime_image(project_root)
 
     def prepare(
         self,

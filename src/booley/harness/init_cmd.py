@@ -913,9 +913,8 @@ def _step_image_lifecycle(
 # ---------------------------------------------------------------------------
 
 
-def inspect_refreshable_runtime_image(project_root: Path, *, verbose: bool = False) -> None:
+def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
-    del verbose
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
         raise RuntimeError(

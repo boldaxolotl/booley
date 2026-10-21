@@ -1242,7 +1242,6 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     from booley.runtime import session_refresh as refresh_runtime
     from booley.runtime import session_runtime
     from booley.runtime.docker_capacity import DockerCapacityError
-    from booley.runtime.image_lifecycle import LifecycleResult, Status
 
     spec = tmp_path / ".devcontainer/devcontainer.json"
     spec.parent.mkdir()
@@ -1258,7 +1257,7 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     monkeypatch.setattr(
         init_cmd,
         "inspect_refreshable_runtime_image",
-        lambda *_args, **_kwargs: LifecycleResult("project-image", "sha256:running", Status.STALE),
+        lambda *_args, **_kwargs: None,
     )
     preparations = []
 

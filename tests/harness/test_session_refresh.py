@@ -417,7 +417,7 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         patch.object(
             harness_refresh.init_cmd,
             "inspect_refreshable_runtime_image",
-            side_effect=lambda root, *, verbose: events.append(("inspect", root, verbose)),
+            side_effect=lambda root: events.append(("inspect", root)),
         ),
         patch.object(
             harness_refresh.init_cmd,
@@ -467,7 +467,7 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         wheel_source_fingerprint="payload-123",
     )
     assert events == [
-        ("inspect", tmp_path, True),
+        ("inspect", tmp_path),
         ("prepare", tmp_path, True),
         ("validate", prepared),
         ("abort", prepared),
