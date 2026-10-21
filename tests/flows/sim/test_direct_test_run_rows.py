@@ -13,8 +13,8 @@ from booley.flows.test_runs import build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
+    _canned_build_session,  # noqa: F401 -- autouse fixture
     _make_flow,
-    _use_legacy_build_transport_for_canned_flow_tests,  # noqa: F401 -- autouse fixture
 )
 
 _TESTS = {

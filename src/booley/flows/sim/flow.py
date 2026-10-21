@@ -190,12 +190,12 @@ from .campaign import (
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
-from .campaign.coordinator import CampaignPublicationError
+from .campaign.coordinator import CampaignPublicationError, CampaignPublicationFailure
 from .campaign.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
+    _endpoint_collection,
     _failure_test,
-    project_coverage_failure,
 )
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
@@ -296,6 +296,32 @@ class PreparedSimulationEndpoint:
     resume: ValidatedResumeManifest | None
     selected_targets: tuple[str, ...]
     test_names_map: Mapping[str, list[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class ReportTarget:
+    """Candidate identity of a resume that has no catalog binding."""
+
+    identity: str
+    selector: str
+    name: str
+
+    @classmethod
+    def from_document(cls, document: Mapping[str, Any]) -> ReportTarget:
+        """The Target a campaign manifest records."""
+        target = document["target"]
+        return cls(
+            f"{target['vlnv']}#{target['name']}", str(target["selector"]), str(target["name"])
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateWorkload:
+    """One prepared candidate's Tests and the sim_pass Criteria they can judge."""
+
+    handle: TargetHandle | ReportTarget
+    selected: frozenset[str]
+    eligible: frozenset[str]
 
 
 def _raise_if_missing_executable(text: str) -> None:
@@ -1442,6 +1468,49 @@ class _CoverageTargetError(RuntimeError):
         self.detail = detail
 
 
+def _observed_failure_detail(
+    selector: str, observations: tuple[Mapping[str, object], ...], evaluation: str
+) -> dict[str, object]:
+    """Report the Simulation truth in `observations` with an infrastructure collection."""
+    simulation = simulation_status_from_observations(observations)
+    detail: dict[str, object] = {
+        "target": selector,
+        "passed": None if simulation == "not_run" else simulation == "pass",
+        "simulation": simulation,
+        "collection": "infrastructure_error",
+        "evaluation": evaluation,
+    }
+    if observations:
+        detail["tests"] = [_failure_test(item) for item in observations]
+    return detail
+
+
+def _publication_failure_detail(
+    failure: CampaignPublicationFailure, evaluation: str, report_invocation: Path | None
+) -> dict[str, object]:
+    """Project a publication failure from coordinator-held facts with one nested load."""
+    detail = _observed_failure_detail(failure.target_selector, failure.observations, evaluation)
+    if failure.nested_campaign is not None:
+        try:
+            campaign = load_coverage_campaign(failure.nested_campaign).campaign
+        except (OSError, ValueError):
+            pass  # No committed nested Campaign: keep infrastructure_error and the prepared policy.
+        else:
+            detail.update(
+                collection=_endpoint_collection(campaign.collection["status"]),
+                evaluation=campaign.evaluation["status"],
+                coverage_metrics=coverage_metrics(campaign),
+            )
+    if failure.coverage_reference is not None:
+        _attach_failure_reference(
+            detail,
+            failure.target_root / "coverage.json",
+            report_invocation,
+            str(failure.coverage_reference.document["simulation_campaign_id"]),
+        )
+    return detail
+
+
 def _coverage_failed_target(
     failed: str,
     error: Exception,
@@ -1452,34 +1521,11 @@ def _coverage_failed_target(
     """Use one failure precedence, retaining simulation truth without retrying retention."""
     if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
         detail = {str(key): _structured_json(value) for key, value in error.detail.items()}
-    elif (
-        isinstance(error, CampaignPublicationError)
-        and (published := project_coverage_failure(error.context)) is not None
-    ):
-        detail, has_reference = published
-        if has_reference:
-            _attach_failure_reference(
-                detail,
-                error.context.target_root / "coverage.json",
-                report_invocation,
-                error.context.campaign_id,
-            )
+    elif isinstance(error, CampaignPublicationError):
+        detail = _publication_failure_detail(error.failure, evaluation, report_invocation)
     else:
         observations = outcome.observations if outcome is not None else ()
-        if not observations and isinstance(error, CampaignPublicationError):
-            observations = cast(
-                tuple[Mapping[str, object], ...], error.context.result.document["observations"]
-            )
-        simulation = simulation_status_from_observations(observations)
-        detail = {
-            "target": failed,
-            "passed": None if simulation == "not_run" else simulation == "pass",
-            "simulation": simulation,
-            "collection": "infrastructure_error",
-            "evaluation": evaluation,
-        }
-        if observations:
-            detail["tests"] = [_failure_test(item) for item in observations]
+        detail = _observed_failure_detail(failed, observations, evaluation)
     detail.update(error=str(error), abort_remaining=True)
     return detail
 
@@ -2632,13 +2678,60 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if outcomes and invocation is not None:
             result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
 
-    def report_simulation_criterion_keys(
-        self, identity: str, selector: str, name: str, registered: set[str], selected: set[str]
-    ) -> set[str]:
-        """Expose campaign eligibility to reporting without preparing EDA again."""
+    def report_candidate_workloads(
+        self, prepared: PreparedSimulationEndpoint
+    ) -> tuple[tuple[CandidateWorkload, ...], bool]:
+        """Prepared candidates and their workloads; baseline prerequisites are not candidates."""
+        if prepared.resume is None:
+            handles = prepared.targets[: len(prepared.selected_targets)]
+            coverage = bool(getattr(self.args, "coverage", False))
+            # A coverage manifest records the declared suite; any other keeps skips removed.
+            skips = {} if coverage else _get_test_skips(self.args.work_dir)
+            workloads = tuple(
+                self._candidate_workload(
+                    handle,
+                    {
+                        test
+                        for test in resolve_target_test_suite(
+                            handle.selector,
+                            test_names=dict(prepared.test_names_map),
+                            test_skips=skips,
+                        ).tests
+                        if test is not None
+                    },
+                    {
+                        "default" if test is None else test
+                        for test in self._resolve_tests_to_run(
+                            handle.selector, dict(prepared.test_names_map)
+                        )
+                    },
+                )
+                for handle in handles
+            )
+            return workloads, coverage
+        manifest = prepared.resume.candidate.manifest
+        document: Any = manifest.document
+        binding = prepared.resume.binding_for(manifest)
+        handle = binding.handle if binding is not None else ReportTarget.from_document(document)
+        suite, items = document["required_suite"], document["work_items"]
+        registered = set(suite["names"])
+        selected = set().union(
+            *(set(item["selection"]["names"]) for item in items if item["role"] == "candidate")
+        ) or ({"default"} if suite["default_invocation"] else registered)
+        coverage = bool(items) and items[0].get("kind") == "coverage_aggregate"
+        return (self._candidate_workload(handle, registered, selected),), coverage
+
+    def _candidate_workload(
+        self, handle: TargetHandle | ReportTarget, registered: set[str], selected: set[str]
+    ) -> CandidateWorkload:
+        """Fill an empty selection like the manifest does and attach acceptance eligibility."""
         from .acceptance import eligible_simulation_keys
 
-        return eligible_simulation_keys(self.state, identity, selector, name, registered, selected)
+        selected = selected or ({"default"} if not registered else set())
+        eligible = eligible_simulation_keys(
+            self.state, handle.identity, handle.selector, handle.name, registered, selected
+        )
+        return CandidateWorkload(handle, frozenset(selected), frozenset(eligible))
 
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
