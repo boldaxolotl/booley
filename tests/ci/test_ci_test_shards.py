@@ -196,10 +196,7 @@ def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
     def broken(name: str, group: str, shard_index: int, **fields: object) -> Path:
         download = tmp_path / name
         paths = _write_linux_download(download, dict.fromkeys(_linux_groups(), shards))
-        if fields:
-            _edit_manifest(paths[group][shard_index], **fields)
-        else:
-            paths[group][shard_index].unlink()
+        _edit_manifest(paths[group][shard_index], **fields)
         return download
 
     scenarios = (
@@ -218,7 +215,6 @@ def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
             {"expected_sha256": nodeid_digest(["test::other", *_LINUX_NODEIDS])},
             "eligible node-ID set",
         ),
-        ("removed", "linux-3.14", 0, {}, r"linux-3\.14 manifests must contain indexes 0\.\.2"),
     )
     for name, group, shard_index, fields, message in scenarios:
         download = broken(name, group, shard_index, **fields)

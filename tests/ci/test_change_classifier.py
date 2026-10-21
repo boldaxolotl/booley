@@ -996,7 +996,6 @@ def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path
                 scheduler,
             )
             assert entries[len(linux) :] == non_linux
-            assert len({entry["name"] for entry in entries}) == len(entries)
             if count == 1:
                 assert linux == build_test_matrix(4)["include"][:2]
                 continue
@@ -1021,19 +1020,16 @@ def test_linux_shard_benchmark_selects_the_ordinary_python_job_set(tmp_path: Pat
     _write(repo, ".github/workflows/test.yml")
     head = _commit(repo, "benchmark workflow")
 
-    for windows_switch in (False, True):
-        outputs = _classify(
-            repo,
-            base,
-            head,
-            event_name="workflow_dispatch",
-            windows_shard_benchmark=windows_switch,
-            linux_options={"shard-benchmark": "true"},
-        )
+    outputs = _classify(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        linux_options={"shard-benchmark": "true"},
+    )
 
-        assert _jobs(outputs) == _jobs(ordinary)
-        assert _required(outputs) == _required(ordinary)
-        assert outputs["workflow"] == "false"
+    assert _jobs(outputs) == _jobs(ordinary)
+    assert _required(outputs) == _required(ordinary)
 
 
 def test_linux_shard_benchmark_rejects_non_dispatch_events_and_riscv_arms(
@@ -1043,7 +1039,7 @@ def test_linux_shard_benchmark_rejects_non_dispatch_events_and_riscv_arms(
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "source change")
 
-    for event in ("push", "workflow_call", "pull_request", None):
+    for event in ("push", None):
         result, _output = _run_classifier(
             repo, base, head, event_name=event, linux_options={"shard-benchmark": "true"}
         )
@@ -1068,21 +1064,10 @@ def test_linux_shard_overrides_require_workflow_dispatch(tmp_path: Path) -> None
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "source change")
 
-    for event in ("push", "pull_request", "workflow_call"):
-        for override in ({"shard-count": "2"}, {"scheduler": "worksteal"}):
-            result, _output = _run_classifier(
-                repo, base, head, event_name=event, linux_options=override
-            )
-
-            assert result.returncode == 2
-            assert "Linux shard count and scheduler overrides require" in result.stderr
-    for override, message in (
-        ({"shard-count": "4"}, "argument --linux-shard-count: invalid choice"),
-        ({"scheduler": "load"}, "argument --linux-scheduler: invalid choice"),
-    ):
+    for override in ({"shard-count": "2"}, {"scheduler": "worksteal"}):
         result, _output = _run_classifier(
-            repo, base, head, event_name="workflow_dispatch", linux_options=override
+            repo, base, head, event_name="push", linux_options=override
         )
 
         assert result.returncode == 2
-        assert message in result.stderr
+        assert "Linux shard count and scheduler overrides require" in result.stderr

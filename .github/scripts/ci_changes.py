@@ -438,6 +438,8 @@ def _validate_dispatch_options(args: argparse.Namespace) -> None:
         raise ValueError(
             "Windows shard benchmarking cannot be combined with a RISC-V measurement arm"
         )
+    if args.windows_shard_benchmark and not dispatched:
+        raise ValueError("Windows shard benchmarking requires workflow_dispatch")
     if not dispatched and (
         args.linux_shard_count != DEFAULT_LINUX_SHARD_COUNT
         or args.linux_scheduler != DEFAULT_LINUX_SCHEDULER
@@ -451,7 +453,7 @@ def _validate_dispatch_options(args: argparse.Namespace) -> None:
         raise ValueError("Linux shard benchmarking requires workflow_dispatch")
 
 
-def main() -> int:
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--base", default="")
@@ -481,13 +483,15 @@ def main() -> int:
         default="",
     )
     parser.add_argument("--riscv-measurement", choices=RISCV_MEASUREMENT_ARMS, default="automatic")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
     try:
         _validate_dispatch_options(args)
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
         paths = _changed_paths(_git_diff(args.repo, base, args.head))
-        if args.windows_shard_benchmark and args.event_name != "workflow_dispatch":
-            raise ValueError("Windows shard benchmarking requires workflow_dispatch")
         if args.windows_shard_benchmark or args.linux_shard_benchmark:
             categories = {"python_source"}
         else:

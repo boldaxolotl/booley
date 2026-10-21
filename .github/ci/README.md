@@ -79,8 +79,9 @@ Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 
 - `linux_shard_count` (1, 2, or 3; default 1). One keeps a complete-suite job
   per Python version. Two or three shard each of Python 3.11 and 3.14 into group
-  `linux-<python>`, balanced by `linux-test-timings.json`. That model is empty
-  for now, so every test weighs the default until a measured model replaces it.
+  `linux-<python>`, balanced by `linux-test-timings.json`; a test missing from that model weighs
+  its `default_seconds`, so until a measured model lands the shards are
+  count-balanced only and timing comparisons are indicative.
 - `linux_scheduler` (`loadscope` or `worksteal`; default `loadscope`). It sets
   `--dist` for the Ubuntu legs only. Windows keeps its work-stealing scheduler.
 - `linux_shard_benchmark` selects the same required jobs as an ordinary Python

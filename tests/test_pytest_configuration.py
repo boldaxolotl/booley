@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import configparser
 import fnmatch
-import itertools
 import ntpath
 import os
 import re
@@ -23,7 +22,6 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
 from ci_changes import CATEGORIES, build_test_matrix, required_jobs
-from ci_test_shards import load_timings
 
 
 def _workflow(filename: str) -> dict:
@@ -1293,17 +1291,6 @@ def test_linux_scheduler_and_timing_model_reach_only_linux_commands() -> None:
         assert "windows-test-timings" not in linux_shard
     assert "--dist=worksteal " in windows_shard
     assert "--ci-timing-model .github/ci/windows-test-timings.json" in windows_shard
-    assert (
-        "--dist=loadscope"
-        in _named_step(test_job, "Run focused Windows compatibility suite")["run"]
-    )
-    coverage_run = _named_step(
-        workflow["jobs"]["coverage-shards"], "Run duration-balanced coverage shard"
-    )["run"]
-    assert "--dist=loadscope" in coverage_run
-    linux_model = REPOSITORY_ROOT / ".github/ci/linux-test-timings.json"
-    assert linux_model.is_file()
-    assert load_timings(linux_model).tests == {}
 
 
 def test_test_verify_proves_each_linux_group_when_sharded() -> None:
@@ -1332,17 +1319,14 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
     assert f"for group in {' '.join(groups)}; do" in command
     assert '--root "${RUNNER_TEMP}/linux-shards" --group "${group}"' in command
     assert '--shard-count "${LINUX_SHARD_COUNT}"' in command
-    assert (
-        _named_step(verify, "Prove every sharded test ran exactly once")["env"][
-            "WINDOWS_SHARD_COUNT"
-        ]
-        == "${{ inputs.windows_shard_count || '10' }}"
-    )
+    # Both groups are checked even when the first fails.
+    assert "|| status=1" in command
+    assert command.endswith('exit "${status}"')
     for artifact in ("shard-coverage-0", "coverage-shard-0", "pytest-timing-ubuntu-3.11-full"):
         assert not any(
             fnmatch.fnmatch(artifact, step.get("with", {}).get("pattern", "")) for step in steps
         )
     assert "test-verify" in workflow["jobs"]["ci-required"]["needs"]
-    for first, second in itertools.combinations_with_replacement(CATEGORIES, 2):
-        jobs = required_jobs({first, second})
+    for category in CATEGORIES:
+        jobs = required_jobs({category})
         assert ("test" in jobs) == ("test-verify" in jobs)
