@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import logging
+import posixpath
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -621,65 +622,102 @@ def parse_review_output(
 # sub-agent runs on a Claude backend it reports findings through this capability
 # call rather than printing the ``{"issues": [...]}`` text contract, so the
 # harness captures the call inputs (see AgentCallParams.capture_agent_capability_calls)
-# and this module maps them onto ReviewIssues.
+# and this module checks them against the canonical issues JSON.
 REPORT_FINDINGS_CAPABILITY = "ReportFindings"
 
 
-def _report_finding_severity(verdict: str) -> tuple[str, str]:
-    """Map a ReportFindings ``verdict`` to (severity, confidence).
+_SEVERITY_ORDER = {SEVERITY_MINOR: 0, SEVERITY_MAJOR: 1, SEVERITY_CRITICAL: 2}
 
-    ReportFindings carries no severity/confidence — only a ``verdict`` that is
-    ``CONFIRMED`` (survived adversarial verification) or ``PLAUSIBLE`` (likely
-    but unverified), and is often *absent* on a single-pass review. The gate
-    blocks on CRITICAL/MAJOR, so:
-      - CONFIRMED or absent -> MAJOR (fail-closed: a reported defect blocks)
-      - PLAUSIBLE           -> MINOR (advisory: noted, does not block)
+
+@dataclass(frozen=True)
+class MirrorFinding:
+    """One ``ReportFindings`` entry, reduced to what the mirror check compares.
+
+    ``severity`` is set only when the agent sent one. The capability's own
+    schema has no severity field, but agents add one (seen in recorded
+    reviews). Its ``CONFIRMED``/``PLAUSIBLE`` verdict says whether a finding
+    was verified, not how severe it is, so it is not used.
     """
-    if verdict.strip().upper() == "PLAUSIBLE":
-        return SEVERITY_MINOR, CONFIDENCE_MEDIUM
-    return SEVERITY_MAJOR, CONFIDENCE_HIGH
+
+    file: str
+    line: int
+    severity: str | None
 
 
-def report_findings_to_issues(
-    findings: list[Any],
-    focus: str,
-) -> tuple[list[ReviewIssue], int]:
-    """Map captured ReportFindings entries onto ReviewIssues.
+def _is_mirror_entry(item: Any) -> bool:
+    """True for a ReportFindings entry that names a file and a summary."""
+    return (
+        isinstance(item, dict)
+        and bool(str(item.get("file", "")).strip())
+        and bool(str(item.get("summary", "")).strip())
+    )
 
-    Returns (issues, dropped) where ``dropped`` counts entries skipped for
-    missing a file or summary. ``category`` is forced to the active ``focus``
-    (ReportFindings' own free-form ``category`` slug is not one of our focus
-    names); the finding's ``failure_scenario`` is preserved as the fix hint so
-    the downstream coder keeps the concrete repro.
+
+def report_findings_to_mirror(findings: list[dict[str, Any]]) -> list[MirrorFinding]:
+    """Map one call's valid ReportFindings entries onto MirrorFindings.
+
+    File paths are normalized (``./a`` == ``a``) so they compare equal to
+    the canonical JSON's.
     """
-    issues: list[ReviewIssue] = []
-    dropped = 0
+    mirror: list[MirrorFinding] = []
     for f in findings:
-        if not isinstance(f, dict):
-            dropped += 1
-            continue
-        file_ = str(f.get("file", "")).strip()
-        summary = str(f.get("summary", "")).strip()
-        if not file_ or not summary:
-            dropped += 1
-            continue
-        severity, confidence = _report_finding_severity(str(f.get("verdict", "")))
         line = f.get("line", 0)
         if not isinstance(line, int) or isinstance(line, bool) or line < 0:
             line = 0
-        scenario = str(f.get("failure_scenario", "")).strip()
-        issues.append(
-            ReviewIssue(
-                severity=severity,
-                confidence=confidence,
-                category=focus,
-                file=file_,
+        severity = str(f.get("severity", "")).strip().upper()
+        mirror.append(
+            MirrorFinding(
+                file=posixpath.normpath(str(f["file"]).strip()),
                 line=line,
-                summary=summary,
-                fix_suggestion=(f"Failure scenario: {scenario}" if scenario else ""),
+                severity=severity if severity in _SEVERITY_ORDER else None,
             )
         )
-    return issues, dropped
+    return mirror
+
+
+def merge_report_calls(calls: list[list[MirrorFinding]]) -> list[MirrorFinding]:
+    """Union several ReportFindings calls into one report.
+
+    Agents re-send their findings, or split them across calls. A finding
+    from a later call replaces an earlier call's finding at the same
+    file:line, so a repeated report counts each finding once (#1963).
+    """
+    merged: list[MirrorFinding] = []
+    for call in calls:
+        resent = {(f.file, f.line) for f in call}
+        merged = [f for f in merged if (f.file, f.line) not in resent] + call
+    return merged
+
+
+def mirror_findings_missing_from_canonical(
+    mirror: list[MirrorFinding],
+    canonical: list[ReviewIssue],
+) -> list[MirrorFinding]:
+    """Return mirror findings the canonical JSON leaves out or rates lower.
+
+    Each mirror finding claims its own canonical issue at the same file and
+    line, the most severe one when several share it. Severity is compared
+    only when the mirror sent one.
+    """
+    unclaimed = list(canonical)
+    disagreeing: list[MirrorFinding] = []
+    for finding in mirror:
+        same_place = [
+            issue
+            for issue in unclaimed
+            if (posixpath.normpath(issue.file), issue.line) == (finding.file, finding.line)
+        ]
+        if not same_place:
+            disagreeing.append(finding)
+            continue
+        match = max(same_place, key=lambda issue: _SEVERITY_ORDER[issue.severity])
+        unclaimed.remove(match)
+        if (
+            finding.severity
+            and _SEVERITY_ORDER[finding.severity] > _SEVERITY_ORDER[match.severity]
+        ):
+            disagreeing.append(finding)
+    return disagreeing
 
 
 def parse_issues(output: str) -> list[ReviewIssue]:
@@ -710,18 +748,6 @@ def count_by_severity(issues: list[ReviewIssue]) -> dict[str, int]:
 def check_gate(counts: dict[str, int]) -> bool:
     """Gate passes when there are zero critical and zero major issues."""
     return counts[SEVERITY_CRITICAL] == 0 and counts[SEVERITY_MAJOR] == 0
-
-
-def _channel_severity_rank(issues: list[ReviewIssue]) -> tuple[int, int, int, int]:
-    """Order two reporting channels by how severe their verdict is.
-
-    Sorts on (gate fails, criticals, majors, total) so that "blocks the
-    gate" always outranks "more issues but all advisory". Used to resolve a
-    ReportFindings-vs-text-JSON disagreement without merging (SETUP-F-33).
-    """
-    counts = count_by_severity(issues)
-    gate_failed = 0 if check_gate(counts) else 1
-    return (gate_failed, counts[SEVERITY_CRITICAL], counts[SEVERITY_MAJOR], len(issues))
 
 
 def _format_status_and_counts(
@@ -1559,7 +1585,8 @@ downgrade to MINOR or omit.
 The ``ReportFindings`` agent capability is available but is only a *mirror* of this
 JSON, never a replacement: whatever you report through it MUST also
 appear in the ``issues`` array above (its ``summary``/``file``/``line``
-map straight across). A ``ReportFindings`` call with an empty
+map straight across). Call ``ReportFindings`` at most once, with every
+finding in that one call. A ``ReportFindings`` call with an empty
 ``findings`` list does not mean "clean" — only ``{{"issues": []}}`` in
 this final message does. Always end your final message with the JSON
 object, even after calling the capability.
@@ -2493,13 +2520,13 @@ Schema enforcement (applied upstream by the harness):
             ).items()
         }
 
-    def _capability_channel_issues(
+    def _capability_channel_findings(
         self,
         result: Any,
         focus: str,
         output_lines: list[str],
-    ) -> list[ReviewIssue] | None:
-        """Map captured ``ReportFindings`` calls onto issues.
+    ) -> list[MirrorFinding] | None:
+        """Merge captured ``ReportFindings`` calls into one mirror report.
 
         Returns ``None`` when the agent never called the capability (channel
         absent), which is different from an empty call (channel present,
@@ -2509,11 +2536,29 @@ Schema enforcement (applied upstream by the harness):
         rf_calls = rf_map.get(REPORT_FINDINGS_CAPABILITY) if isinstance(rf_map, dict) else None
         if not isinstance(rf_calls, list):
             return None
-        findings: list[Any] = []
+        calls = self._valid_mirror_calls(rf_calls, output_lines)
+        findings = merge_report_calls([report_findings_to_mirror(call) for call in calls])
+        logger.info(
+            "Reviewer Specialist for %s/%s reported %d finding(s) in %d %s call(s)",
+            self.args.category,
+            focus,
+            len(findings),
+            len(calls),
+            REPORT_FINDINGS_CAPABILITY,
+        )
+        return findings
+
+    def _valid_mirror_calls(
+        self,
+        rf_calls: list[Any],
+        output_lines: list[str],
+    ) -> list[list[dict[str, Any]]]:
+        """Return each call's valid entries; record malformed wrappers and entries."""
+        calls: list[list[Any]] = []
         for ordinal, call in enumerate(rf_calls, 1):
             raw = call.get("findings", []) if isinstance(call, dict) else call
             if isinstance(raw, list):
-                findings.extend(raw)
+                calls.append(raw)
             else:
                 self._record_rejections(
                     [
@@ -2525,35 +2570,19 @@ Schema enforcement (applied upstream by the harness):
                     ],
                     "ReportFindings mirror",
                 )
-        malformed = []
-        for ordinal, item in enumerate(findings, 1):
-            if (
-                not isinstance(item, dict)
-                or not str(item.get("file", "")).strip()
-                or not str(item.get("summary", "")).strip()
-            ):
-                malformed.append(
-                    {
-                        "ordinal": ordinal,
-                        "raw": item,
-                        "errors": ["mirror entry requires file and summary"],
-                    }
-                )
+        flat = (item for call in calls for item in call)
+        malformed = [
+            {"ordinal": ordinal, "raw": item, "errors": ["mirror entry requires file and summary"]}
+            for ordinal, item in enumerate(flat, 1)
+            if not _is_mirror_entry(item)
+        ]
         self._record_rejections(malformed, "ReportFindings mirror")
-        issues, dropped = report_findings_to_issues(findings, focus)
-        if dropped:
+        if malformed:
             output_lines.append(
-                f"WARN: dropped {dropped} malformed {REPORT_FINDINGS_CAPABILITY} "
-                "entr" + ("y" if dropped == 1 else "ies") + " (missing file/summary)",
+                f"WARN: dropped {len(malformed)} malformed {REPORT_FINDINGS_CAPABILITY} "
+                "entr" + ("y" if len(malformed) == 1 else "ies") + " (missing file/summary)",
             )
-        logger.info(
-            "Reviewer Specialist for %s/%s reported %d finding(s) via %s",
-            self.args.category,
-            focus,
-            len(issues),
-            REPORT_FINDINGS_CAPABILITY,
-        )
-        return issues
+        return [[item for item in call if _is_mirror_entry(item)] for call in calls]
 
     def _extract_review_issues(
         self,
@@ -2566,8 +2595,8 @@ Schema enforcement (applied upstream by the harness):
         Claude-backend agents report through the native ``ReportFindings``
         capability (captured via ``capture_agent_capability_calls``); Codex agents — and Claude
         agents that print the JSON instead — use the ``{"issues": [...]}`` text
-        contract. Both channels are read and the *more severe* verdict wins
-        (see ``_channel_severity_rank``).
+        contract. The text JSON is canonical; the capability calls are a mirror
+        that must agree with it (see ``mirror_findings_missing_from_canonical``).
 
         Trusting the agent-capability channel alone produced a false PASS on a planted
         CRITICAL (SETUP-F-33): the agent described the bug in a full issue
@@ -2580,8 +2609,8 @@ Schema enforcement (applied upstream by the harness):
         Returns ``None`` only when *neither* contract yielded a
         recognizable result (treated as a Specialist error, not a clean pass).
         """
-        capability_issues = self._capability_channel_issues(result, focus, output_lines)
-        if capability_issues is None:
+        mirror = self._capability_channel_findings(result, focus, output_lines)
+        if mirror is None:
             return self._interpret_review_parse(result.output, focus, output_lines)
 
         text_parsed = parse_review_output(result.output, allowed_category=focus)
@@ -2601,8 +2630,8 @@ Schema enforcement (applied upstream by the harness):
 
         if self._note_rejected_issues(text_parsed, focus, output_lines):
             return None
-        return self._pick_review_channel(
-            capability_issues, text_parsed.issues, focus, output_lines
+        return self._canonical_issues_if_mirror_agrees(
+            mirror, text_parsed.issues, focus, output_lines
         )
 
     def _note_rejected_issues(
@@ -2638,36 +2667,36 @@ Schema enforcement (applied upstream by the harness):
         )
         return True
 
-    def _pick_review_channel(
+    def _canonical_issues_if_mirror_agrees(
         self,
-        capability_issues: list[ReviewIssue],
+        mirror: list[MirrorFinding],
         text_issues: list[ReviewIssue],
         focus: str,
         output_lines: list[str],
     ) -> list[ReviewIssue] | None:
-        """Use canonical text metadata unless the capability channel is more severe.
+        """Return the canonical text issues unless the mirror reports more.
 
-        ReportFindings cannot carry disposition fields. The final JSON
-        is therefore canonical. A more-severe capability verdict indicates a
-        broken mirror and fails the Specialist instead of persisting an
-        unbound finding.
+        ReportFindings cannot carry disposition fields, so the final JSON is
+        canonical. A mirror finding that the JSON leaves out or rates lower
+        means a broken mirror; that fails the Specialist instead of
+        persisting an unbound finding (SETUP-F-33).
         """
-        capability_rank = _channel_severity_rank(capability_issues)
-        text_rank = _channel_severity_rank(text_issues)
-        if capability_rank <= text_rank:
+        missing = mirror_findings_missing_from_canonical(mirror, text_issues)
+        if not missing:
             return text_issues
+        cited = ", ".join(f"{f.file}:{f.line}" for f in missing)
         logger.error(
-            "Review channel disagreement for %s/%s: %s reported %d issue(s) "
-            "but the canonical text JSON reported %d with a weaker verdict",
+            "Review channel disagreement for %s/%s: %s reported %d finding(s) that the "
+            "canonical text JSON leaves out or rates lower: %s",
             self.args.category,
             focus,
             REPORT_FINDINGS_CAPABILITY,
-            len(capability_issues),
-            len(text_issues),
+            len(missing),
+            cited,
         )
         output_lines.append(
-            f"ERROR: {REPORT_FINDINGS_CAPABILITY} reported a more severe verdict than its "
-            "canonical issues JSON mirror",
+            f"ERROR: {REPORT_FINDINGS_CAPABILITY} reported finding(s) its canonical issues "
+            f"JSON leaves out or rates lower: {cited}",
         )
         return None
 
