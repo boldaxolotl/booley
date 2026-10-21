@@ -358,7 +358,8 @@ class SimulationCampaign:
     ) -> CampaignOutcome:
         self._raise_if_cancelled(request)
         self._preflight_owner(store, manifest, authenticated_sha256, request)
-        self._run_prerequisites(store, manifest, request, set())
+        owner = cast(str, manifest.document["campaign_id"])
+        self._run_prerequisites(store, manifest, request, frozenset({owner}), set())
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
         self._raise_if_cancelled(request)
@@ -470,7 +471,9 @@ class SimulationCampaign:
             return  # _run_pending performs the same check for the sole campaign.
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._preflight_incomplete(manifest, recovery, request)
-        self._preflight_prerequisites(store, manifest, request, set())
+        self._preflight_prerequisites(
+            store, manifest, request, {cast(str, manifest.document["campaign_id"])}
+        )
 
     @staticmethod
     def _preflight_incomplete(
@@ -497,23 +500,17 @@ class SimulationCampaign:
         request: CampaignRunRequest,
         visited: set[str],
     ) -> None:
-        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``."""
-        entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
+        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``.
+
+        Each campaign is checked once; ``_run_prerequisites`` rejects cycles.
+        """
         invocation = owner_store.root.parents[2]
-        for entry in entries:
+        for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
             campaign_id = cast(str, entry["campaign_id"])
             if campaign_id in visited:
-                return  # cycles are rejected by _run_prerequisites itself
+                continue
             visited.add(campaign_id)
-            reference = cast(Mapping[str, object], entry["manifest"])
-            node = (
-                request.validated.prerequisite_for(reference)
-                if isinstance(request, ResumeCampaignRunRequest)
-                else None
-            )
-            path = node.path if node is not None else invocation / cast(str, reference["path"])
-            store = CampaignStore(path.parent)
-            prerequisite = node.manifest if node is not None else store.load_manifest()
+            store, prerequisite = _prerequisite_campaign(entry, invocation, request)
             self._preflight_incomplete(prerequisite, store.scan(), request)
             self._preflight_prerequisites(store, prerequisite, request, visited)
 
@@ -522,31 +519,34 @@ class SimulationCampaign:
         owner_store: CampaignStore,
         manifest: SimulationCampaignManifest,
         request: CampaignRunRequest,
-        visited: set[str],
+        ancestors: frozenset[str],
+        finished: set[str],
     ) -> None:
-        entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
+        """Run every prerequisite campaign once, then require each linked result.
+
+        Several entries may link work items of one campaign (one per relative
+        Cycle Count Test), so a campaign is a cycle only when it is its own
+        ancestor; a campaign already *finished* by a sibling is not rerun.
+        """
         invocation = owner_store.root.parents[2]
-        for entry in entries:
+        for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
             campaign_id = cast(str, entry["campaign_id"])
-            if campaign_id in visited:
+            if campaign_id in ancestors:
                 raise SimulationCampaignIntegrityError("cyclic prerequisite campaign")
-            visited.add(campaign_id)
-            reference = cast(Mapping[str, object], entry["manifest"])
-            node = (
-                request.validated.prerequisite_for(reference)
-                if isinstance(request, ResumeCampaignRunRequest)
-                else None
-            )
-            path = node.path if node is not None else invocation / cast(str, reference["path"])
-            prerequisite_store = CampaignStore(path.parent)
-            prerequisite = (
-                node.manifest if node is not None else prerequisite_store.load_manifest()
-            )
-            with prerequisite_store.mutation_lock():
-                self._run_prerequisites(prerequisite_store, prerequisite, request, visited)
-                recovery = prerequisite_store.scan()
-                self._run_pending(prerequisite_store, prerequisite, recovery, request)
-                prerequisite_store.regenerate_summary()
+            prerequisite_store, prerequisite = _prerequisite_campaign(entry, invocation, request)
+            if campaign_id not in finished:
+                with prerequisite_store.mutation_lock():
+                    self._run_prerequisites(
+                        prerequisite_store,
+                        prerequisite,
+                        request,
+                        ancestors | {campaign_id},
+                        finished,
+                    )
+                    recovery = prerequisite_store.scan()
+                    self._run_pending(prerequisite_store, prerequisite, recovery, request)
+                    prerequisite_store.regenerate_summary()
+                finished.add(campaign_id)
             selected = prerequisite_store.scan()
             match = next(
                 (item for item in selected.items if item.work_item_id == entry["work_item_id"]),
@@ -1092,6 +1092,21 @@ def _observation_facts(
             fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
         facts.append(fact)
     return facts
+
+
+def _prerequisite_campaign(
+    entry: Mapping[str, object], invocation: Path, request: CampaignRunRequest
+) -> tuple[CampaignStore, SimulationCampaignManifest]:
+    """Open the campaign one prerequisite *entry* links, authenticated on resume."""
+    reference = cast(Mapping[str, object], entry["manifest"])
+    node = (
+        request.validated.prerequisite_for(reference)
+        if isinstance(request, ResumeCampaignRunRequest)
+        else None
+    )
+    path = node.path if node is not None else invocation / cast(str, reference["path"])
+    store = CampaignStore(path.parent)
+    return store, node.manifest if node is not None else store.load_manifest()
 
 
 def _prerequisite_facts(
