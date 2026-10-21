@@ -2,8 +2,7 @@
 
 ``prepare`` stamps ``.booley/tmp/setup/<run-id>/``; ``apply`` removes only a stamped root
 after snapshotting Findings attachments, deleting the marker last so failures stay retryable.
-Known limit: an attachment added between the final re-read and deletion would dangle (the
-Findings lock cannot span deletion; Setup is the run root's only writer).
+Known limit: an attachment added after the final re-read would dangle (Setup is the only writer).
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ def _locate(project_root: Path, run_id: str) -> tuple[Path, Path]:
     root = project_root.resolve()
     try:
         booley_dir = resolve_checkout_booley_dir(root)
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         raise CleanupRefusedError(f"cannot resolve the Booley Directory: {exc}") from exc
     if booley_dir != root / BOOLEY_DIR_NAME or not booley_dir.is_dir():
         raise CleanupRefusedError("no .booley directory was found")
@@ -115,14 +114,16 @@ def apply(project_root: Path, run_id: str) -> dict[str, Any]:
         return _keep(report, f"{corrupt} corrupt Findings Log line(s)", blockers)
     try:
         materialize.materialize_attachments(booley_dir, attached)
-    except (RuntimeError, OSError) as exc:  # corrupt log, materialization, lock timeout, I/O
+    except (RuntimeError, OSError, ValueError) as exc:  # corrupt log, lock timeout, I/O
         return _keep(report, str(exc), blockers)
-    if left := _attached(booley_dir, run_root)[0]:
-        return _keep(report, "attachment still points under the run root", left)
+    left, corrupt_now = _attached(booley_dir, run_root)  # a half-written append shows as corrupt
+    if left or corrupt_now != corrupt:
+        return _keep(report, "Findings Log changed during cleanup", left or blockers)
     try:  # children first, marker last: a failed removal stays retryable
         for path in sorted(run_root.iterdir(), key=lambda entry: entry.name == MARKER):
             shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
         run_root.rmdir()
     except OSError as exc:
+        (run_root / MARKER).touch()  # a late file made rmdir fail: restore ownership for the retry
         return _keep(report, str(exc), {Path(exc.filename or run_root)})
     return report

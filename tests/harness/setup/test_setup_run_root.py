@@ -256,3 +256,76 @@ def test_preview_lists_files_and_mutates_nothing(tmp_path, capsys):
     assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == tree
     assert log_path(booley_dir).read_bytes() == log
     assert _cli(tmp_path, capsys, "preview", "--run-id", "absent")[1]["status"] == "gone"
+
+
+def test_apply_restores_marker_when_final_rmdir_fails(tmp_path, capsys, monkeypatch):
+    """A file appearing at the last moment must leave the root retryable, not unowned."""
+    _, run_root = _prepared(tmp_path, capsys)
+    real_rmdir = Path.rmdir
+
+    def failing_rmdir(path: Path) -> None:
+        if path == run_root:
+            raise OSError("directory not empty")
+        real_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", failing_rmdir)
+    code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")
+    assert (code, out["status"]) == (1, "kept") and (run_root / MARKER).is_file()
+
+    monkeypatch.undo()
+    assert _cli(tmp_path, capsys, "apply", "--run-id", "r1")[1]["status"] == "removed"
+    assert not run_root.exists()
+
+
+def test_apply_keeps_root_when_log_gains_corrupt_line_during_snapshot(
+    tmp_path, capsys, monkeypatch
+):
+    """A half-written concurrent append (corrupt on re-read) must block deletion."""
+    booley_dir, run_root = _prepared(tmp_path, capsys)
+    source = run_root / "doctor.log"
+    source.write_text("evidence\n", encoding="utf-8")
+    append(Finding(title="attached", attachments=[str(source)]), booley_dir)
+    real = cleanup_cli.run_root_cleanup.materialize.materialize_attachments
+
+    def materialize_then_corrupt(*args, **kwargs):
+        real(*args, **kwargs)
+        with log_path(booley_dir).open("a", encoding="utf-8") as stream:
+            stream.write('{"title": "half-written\n')
+
+    monkeypatch.setattr(
+        cleanup_cli.run_root_cleanup.materialize,
+        "materialize_attachments",
+        materialize_then_corrupt,
+    )
+    code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")
+    assert (code, out["status"]) == (1, "kept") and (run_root / MARKER).is_file()
+
+
+def test_apply_refuses_unreadable_findings_log_without_deleting(tmp_path, capsys):
+    booley_dir, run_root = _prepared(tmp_path, capsys)
+    (run_root / "keep.log").write_text("x", encoding="utf-8")
+    log_path(booley_dir).write_bytes(b"\xff\xfe not utf-8\n")
+
+    code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")
+
+    assert code == 2 and "error" in out
+    assert (run_root / "keep.log").exists() and (run_root / MARKER).exists()
+
+
+def test_apply_refuses_when_booley_directory_cannot_be_resolved(tmp_path, capsys, monkeypatch):
+    _, run_root = _prepared(tmp_path, capsys)
+
+    def fail(_root: Path) -> Path:
+        raise RuntimeError("layout is ambiguous")
+
+    monkeypatch.setattr(cleanup_cli.run_root_cleanup, "resolve_checkout_booley_dir", fail)
+    code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")
+    assert code == 2 and "cannot resolve" in out["error"] and (run_root / MARKER).exists()
+
+
+def test_prepare_refuses_when_tmp_is_a_file(tmp_path, capsys):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "tmp").write_text("not a directory", encoding="utf-8")
+    code, out = _cli(tmp_path, capsys, "prepare", "--run-id", "r1")
+    assert code == 2 and "error" in out

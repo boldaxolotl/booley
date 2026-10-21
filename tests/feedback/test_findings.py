@@ -79,6 +79,16 @@ def test_read_log_of_missing_file_is_empty_not_an_error(booley_dir):
     assert log.corrupt_lines == 0
 
 
+def test_non_object_json_line_is_a_corrupt_line_not_a_crash(booley_dir):
+    append(Finding(title="good one"), booley_dir)
+    with log_path(booley_dir).open("a", encoding="utf-8") as fh:
+        fh.write("[1, 2]\n")
+
+    log = read_log(booley_dir)
+    assert [e.title for e in log.entries] == ["good one"]
+    assert log.corrupt_lines == 1
+
+
 def test_corrupt_line_costs_one_finding_not_the_log(booley_dir):
     append(Finding(title="good one"), booley_dir)
     with log_path(booley_dir).open("a", encoding="utf-8") as fh:

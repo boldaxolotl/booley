@@ -43,7 +43,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     root = Path(args.project_root).resolve() if args.project_root else project_root
     try:
         report = _OPERATIONS[args.cleanup_command][1](root, args.run_id)
-    except run_root_cleanup.CleanupRefusedError as exc:
+    except (run_root_cleanup.CleanupRefusedError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else _text(report))

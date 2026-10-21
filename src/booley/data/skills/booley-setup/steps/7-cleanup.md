@@ -12,12 +12,9 @@ that this run created. The helper owns path safety; this skill never writes
 ## 1. Resume the ledger
 
 Read the §3 **Execution ledger** in `SETUP-PLAN.md`. With no run ID there is
-nothing to clean: report that and stop. A full setup creates the root before
-execution:
-
-```console
-booley cleanup prepare --run-id <ledger-run-id>
-```
+nothing to clean: report that and stop. Step 0 already created the root with
+`booley cleanup prepare` and recorded its run ID; do not prepare it again (a
+second `prepare` refuses because the root exists).
 
 Every setup-authored capture, exit-code sidecar, probe, conversion, and
 Developer Agent note goes beneath that root; nothing is registered. Flow output
@@ -40,7 +37,8 @@ attaches, and changes nothing. Then follow row 21 of the approved plan:
 - `diagnostic` skips `booley cleanup apply`: report the retained run root.
 
 Exit codes: 0 removed or already gone, 1 kept, 2 refused (nothing deleted:
-unsafe or symlinked path, or a run root without its ownership marker). Exit 1
+unsafe or symlinked path, a run root without its ownership marker, or an
+unreadable Findings Log). Exit 1
 prints each reason and path: fix the named Finding, attachment, or permission
 and rerun `apply`; retries are safe. Then record the bytes removed (or the
 retained root and why) in the ledger's **Final disposition**.
