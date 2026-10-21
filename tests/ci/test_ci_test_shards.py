@@ -11,11 +11,13 @@ import pytest
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
+from ci_changes import build_test_matrix
 from ci_test_shards import (
     ShardError,
     TimingModel,
     assign_shards,
     load_timings,
+    nodeid_digest,
     verify_manifests,
     write_manifest,
 )
@@ -128,3 +130,96 @@ def test_manifest_verifier_rejects_incorrect_expected_count(tmp_path: Path) -> N
 
     with pytest.raises(ShardError, match="expected test count"):
         verify_manifests(paths, group="windows", shard_count=2)
+
+
+_LINUX_TIMING_MODEL = _ROOT / ".github/ci/linux-test-timings.json"
+_LINUX_NODEIDS = ("test::a", "test::b", "test::c", "test::d", "test::e")
+
+
+def _write_linux_download(
+    root: Path, selected: dict[str, tuple[tuple[str, ...], ...]]
+) -> dict[str, list[Path]]:
+    """Write the manifests the shared linux-shards download holds, plus Windows evidence."""
+    paths: dict[str, list[Path]] = {}
+    for group, shards in {**selected, "windows": (("test::w",), ("test::x",))}.items():
+        everything = tuple(nodeid for shard in shards for nodeid in shard)
+        paths[group] = []
+        for index in range(len(shards)):
+            path = root / f"shard-{group}-{index}" / "shard-manifest.json"
+            write_manifest(
+                path, group=group, shard_index=index, shards=shards, all_nodeids=everything
+            )
+            paths[group].append(path)
+    return paths
+
+
+def _linux_groups() -> list[str]:
+    """Group names the dispatched three-shard matrix emits."""
+    include = build_test_matrix(10, linux_shard_count=3)["include"]
+    return sorted({str(entry["group"]) for entry in include if entry["os"] == "ubuntu-latest"})
+
+
+def _edit_manifest(path: Path, **fields: object) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload | fields), encoding="utf-8")
+
+
+def _verify_download(download: Path, group: str) -> int:
+    return verify_manifests(
+        sorted(download.rglob("shard-manifest.json")), group=group, shard_count=3
+    )
+
+
+def test_linux_group_assigns_tests_absent_from_the_linux_timing_model(tmp_path: Path) -> None:
+    assert _LINUX_TIMING_MODEL.is_file()
+    model = json.loads(_LINUX_TIMING_MODEL.read_text(encoding="utf-8"))
+    model["tests"]["test::a"] = 9.0
+    modelled = tmp_path / "model.json"
+    modelled.write_text(json.dumps(model), encoding="utf-8")
+    timings = load_timings(modelled)
+    shards = assign_shards(_LINUX_NODEIDS, 3, timings)
+    groups = _linux_groups()
+    _write_linux_download(tmp_path / "download", dict.fromkeys(groups, shards))
+
+    assert groups == ["linux-3.11", "linux-3.14"]
+    assert "test::e" not in timings.tests
+    assert sum("test::e" in shard for shard in shards) == 1
+    for group in groups:
+        assert _verify_download(tmp_path / "download", group) == len(_LINUX_NODEIDS)
+
+
+def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
+    tmp_path: Path,
+) -> None:
+    shards = assign_shards(_LINUX_NODEIDS, 3, TimingModel(1.0, {}))
+
+    def broken(name: str, group: str, shard_index: int, **fields: object) -> Path:
+        download = tmp_path / name
+        paths = _write_linux_download(download, dict.fromkeys(_linux_groups(), shards))
+        _edit_manifest(paths[group][shard_index], **fields)
+        return download
+
+    scenarios = (
+        ("omitted", "linux-3.14", 1, {"selected": shards[1][:-1]}, "union mismatch"),
+        (
+            "duplicated",
+            "linux-3.11",
+            1,
+            {"selected": [*shards[1], shards[2][0]]},
+            "more than once",
+        ),
+        (
+            "inconsistent",
+            "linux-3.14",
+            2,
+            {"expected_sha256": nodeid_digest(["test::other", *_LINUX_NODEIDS])},
+            "eligible node-ID set",
+        ),
+    )
+    for name, group, shard_index, fields, message in scenarios:
+        download = broken(name, group, shard_index, **fields)
+        healthy_group = "linux-3.11" if group == "linux-3.14" else "linux-3.14"
+
+        with pytest.raises(ShardError, match=message):
+            _verify_download(download, group)
+        assert _verify_download(download, healthy_group) == len(_LINUX_NODEIDS)

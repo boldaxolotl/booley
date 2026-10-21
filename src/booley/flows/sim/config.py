@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from string import Formatter
 from typing import Any, Final
 
-from booley.core.boundary import BoundaryError, require_int
+from booley.core.boundary import (
+    BoundaryError,
+    require_bool,
+    require_dict,
+    require_int,
+    require_str_value,
+)
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
 from booley.flows.sim.campaign_reports import is_report_link
 from booley.targets.flow_names import config_section
@@ -157,6 +164,23 @@ def resolve_sim_build_timeout_ms(work_dir: Path | str | None = None) -> int:
     if timeout_ms <= 0:
         raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
     return timeout_ms
+
+
+_CACHE_SIZE_RE = re.compile(r"[1-9][0-9]*(?:M|G|Mi|Gi)")
+
+
+def resolve_compiler_cache_settings(work_dir: Path | str | None = None) -> tuple[bool, str]:
+    """Return ``(enabled, max_size)`` from ``[flows.sim.compiler_cache]``."""
+    field = "flows.sim.compiler_cache"
+    section = require_dict(_sim_config(work_dir).get("compiler_cache", {}), field=field)
+    enabled = require_bool(section, "enabled", default=True, field=f"{field}.enabled")
+    max_size = require_str_value(section.get("max_size", "5G"), field=f"{field}.max_size")
+    if not _CACHE_SIZE_RE.fullmatch(max_size):
+        raise BoundaryError(
+            f"{field}.max_size must be a positive integer with suffix M, G, Mi, or Gi "
+            f"(for example 5G), got {max_size!r}"
+        )
+    return enabled, max_size
 
 
 def resolve_sim_time_grace_s(work_dir: Path | str | None = None) -> float:

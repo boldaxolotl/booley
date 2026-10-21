@@ -66,7 +66,6 @@ from .codec import (
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     RESULT_SCHEMA,
-    RESULT_V2_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -1531,20 +1530,15 @@ def _create_snapshot(
 
 def _named_observations(
     work_item: Mapping[str, object], observations: list[dict[str, object]]
-) -> tuple[str, list[dict[str, object]]]:
-    """The result schema and the observations, each naming the Test Run it observed.
-
-    A work item of a manifest that records no Test Runs keeps the earlier
-    result schema and its observations as they are.
-    """
+) -> list[dict[str, object]]:
+    """The observations, each naming the Test Run it observed."""
     bound = observation_test_runs(work_item, observations)
-    if bound is None:
-        return RESULT_V2_SCHEMA, observations
-    named = [
+    # Every written manifest is v4 (resume refuses older ones), so Test Runs are recorded.
+    assert bound is not None
+    return [
         {**observation, "test_run": name}
         for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
     ]
-    return RESULT_SCHEMA, named
 
 
 def _result(
@@ -1561,9 +1555,9 @@ def _result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
-    schema, observations = _named_observations(request.work_item, observations)
+    observations = _named_observations(request.work_item, observations)
     document = {
-        "$schema": schema,
+        "$schema": RESULT_SCHEMA,
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,

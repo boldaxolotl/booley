@@ -9,13 +9,39 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
+  `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
+  preparation (invalid `enabled` or `max_size` values still do). The cache root is
+  the issued `BOOLEY_COMPILER_CACHE_ROOT` as given. When it is unset, including
+  outside a Sandbox where builds previously cached under the host Booley Directory,
+  builds compile uncached with a `booley session refresh` warning.
+- Coverage finds RTL sources without coverage points with a lexical scan at
+  Preflight instead of a Verilator declaration dump. User `--dumpi-*` Verilator
+  options now pass through to coverage builds. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`
+  no longer appears, and `` `line `` directives or token joins no longer suppress
+  `COV_RTL_SOURCE_WITHOUT_POINTS`. The Analyst `zero_point_sources` view and
+  overview drop `discovery_status`, `comparison_status` and `unusable_findings`,
+  and the verdict card omits the source line when there are no gaps. Campaigns
+  from 0.3.0 still load. A coverage Simulation Campaign interrupted before the
+  upgrade cannot be resumed because its command model changed; collect it again.
+- Deep Doctor now keeps only the latest completed deep attempt: a failed or
+  incomplete attempt makes deep status due until the next qualifying run, reports one
+  "latest deep attempt failed" reason, and `deep_status` no longer includes
+  `last_success`, the per-reason `checks` list, or the `latest-attempt-not-qualified` code. Existing deep records are replaced by the next deep run.
+- The Reviewer no longer fails when a Claude agent reports its findings through
+  `ReportFindings` more than once. Each `ReportFindings` finding must now match an
+  issue at the same file and line in the final issues JSON, instead of the two
+  channels being compared by issue counts. The run still fails when a
+  reported finding is missing from the JSON or, when it carries a severity, rated
+  lower there. A `ReportFindings` verdict (`CONFIRMED`/`PLAUSIBLE`) no longer
+  counts as a severity.
+
 - When `booley init` retires the old hook files in the Booley Directory's `hooks/`,
   a modified copy is now renamed to `<name>.pre-booley` (was
   `<name>.pre-booley.<digest>`). If that name already exists, the file stays in
   place with a warning, and a symlink or directory at a retired name is preserved
   with a warning. A failed hook step no longer rolls back earlier changes; fix the
   cause and rerun `booley init`, which finishes the reconciliation.
-
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a

@@ -688,6 +688,37 @@ def test_custom_main_hook_failures_are_public_collector_errors(
     assert expected_code in result.outcome.report_text
 
 
+def test_publication_failure_reports_collector_error_as_infrastructure_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-commit publication failure maps a nested `collector_error` to the endpoint value."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    _configure_custom_main_coverage(tmp_path)
+    project_data = tmp_path / ".booley"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    def fail_after_summary(boundary: str) -> None:
+        if boundary == "after:summary_replace":
+            raise OSError("injected post-commit publication failure")
+
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: _CustomMainHookExecution(
+            [{"hook": "start", "sequence": 1, "success": True}], missing_raw=True
+        ),
+        campaign_publication_checkpoint=fail_after_summary,
+    ).execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+
+    assert result.exit_code == 2
+    target = result.outcome.detail["targets"]["sim_0"]
+    assert target["collection"] == "infrastructure_error"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
 @pytest.mark.parametrize("relative", ["unreadable", ".booley/unreadable"])
 def test_unreadable_unrelated_directory_does_not_block_coverage(
@@ -1716,8 +1747,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
         f"(Simulation Campaign {campaign['campaign_id']})\n"
         f"  manifest: {manifest.resolve()}\n"
-        f"  report: {(tmp_path / 'resumed/sim.json').resolve()}\n"
-        "RTL source discovery incomplete; sources without coverage points unavailable."
+        f"  report: {(tmp_path / 'resumed/sim.json').resolve()}"
     )
     resolved = resolve_report_artifact_reference(
         report_path,
@@ -1728,13 +1758,6 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         external_origin_target=manifest.parents[1],
     )
     assert resolved.path == manifest
-    from booley.flows.sim.coverage_source_gaps import INCOMPLETE_CODE, source_gap_summary
-
-    retained = resolve_coverage_campaign_reference(
-        manifest.parents[1] / "coverage.json"
-    ).loaded.campaign
-    assert source_gap_summary(retained).status == "incomplete"
-    assert sum(f.code == INCOMPLETE_CODE for f in retained.findings) == 1
 
 
 def test_coverage_resume_uses_manifest_when_origin_progress_is_missing(tmp_path, monkeypatch):
@@ -2044,9 +2067,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     def unreadable(*_args, **_kwargs):
         raise OSError("nested coverage evidence unreadable")
 
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.coverage_execution.load_coverage_campaign", unreadable
-    )
+    monkeypatch.setattr("booley.flows.sim.flow.load_coverage_campaign", unreadable)
     if resumed:
 
         def checkpoint(boundary):

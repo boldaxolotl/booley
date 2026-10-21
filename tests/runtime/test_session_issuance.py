@@ -2776,34 +2776,6 @@ def test_sealing_rejects_policy_violations_before_issuance(
         runtime_spec.seal(project, spec)
 
 
-def test_refresh_adapter_observes_git_drift_with_unchanged_image(issued, monkeypatch):
-    """Exercise the real init builder and prepared-spec comparison, not a drift mock."""
-    from booley.harness import init_cmd
-    from booley.harness.session_refresh import _RuntimeImages
-
-    project, _spec, _path, stamp = issued
-    monkeypatch.setattr(init_cmd, "_resolve_auth_token_source", lambda _app: None)
-    monkeypatch.setattr(init_cmd, "_resolve_token_seed_source", lambda _app: None)
-    monkeypatch.setattr(init_cmd, "_resolve_config_seed_source", lambda _app: None)
-    monkeypatch.setattr(init_cmd.auth_token, "resolve_token", lambda _app: None)
-    adapter = _RuntimeImages()
-    image = session_refresh.RefreshImage(
-        "booley-sandbox", stamp.image_id, image_graph_changed=False
-    )
-    adapter.prepare_spec(project, image)
-    adapter.reissue(project, image.selected_id, verbose=False)
-    assert adapter.spec_is_current(project)
-    config = project / ".booley" / "booley.toml"
-    config.write_text('[agent.git]\nname = "Changed Name"\nemail = "changed@example.test"\n')
-    changed = _RuntimeImages()
-    changed.prepare_spec(project, image)
-    assert not changed.spec_is_current(project)
-    changed.reissue(project, image.selected_id, verbose=False)
-    assert changed.spec_is_current(project)
-    current = json.loads(dc.devcontainer_path(project).read_text())
-    assert "Changed Name" in current["containerEnv"].values()
-
-
 def _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch):
     if setting == "project-data-source":
         source = tmp_path / "new-trusted-source"
@@ -2953,15 +2925,52 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
     assert events == ["park", "reissue", "up"]
     assert result.outcome == "replaced"
     assert result.previous_container_id == "old" and result.container_id == "new"
-    assert runtime_spec.validate(
-        project,
-        json.loads(dc.devcontainer_path(project).read_text()),
-        dc.devcontainer_path(project),
+    reissued = json.loads(dc.devcontainer_path(project).read_text())
+    assert runtime_spec.validate(project, reissued, dc.devcontainer_path(project))
+    if setting == "git-name":
+        assert "Changed Name" in reissued["containerEnv"].values()
+
+
+def test_refresh_observes_sources_and_preview_once_before_parking(issued, monkeypatch):
+    """Preparation builds sources and previews the spec once, then reaches parking."""
+    from booley.harness import init_cmd
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, _path, stamp = issued
+    prior = runtime_spec.load_issued_snapshot(project)
+    image = session_refresh.RefreshImage(
+        "booley-sandbox", stamp.image_id, image_graph_changed=False
     )
+    observed = {"sources": 0, "preview": 0}
+    build_sources = init_cmd._interactive_spec_sources
+    preview = runtime_spec.preview
+
+    def count_sources(*args, **kwargs):
+        observed["sources"] += 1
+        return build_sources(*args, **kwargs)
+
+    def count_preview(*args, **kwargs):
+        observed["preview"] += 1
+        return preview(*args, **kwargs)
+
+    class Images(_RuntimeImages):
+        def prepare(self, *_args, **_kwargs):
+            return image
+
+        def validate(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(init_cmd, "inspect_refreshable_runtime_image", lambda *a, **k: None)
+    monkeypatch.setattr(init_cmd, "_interactive_spec_sources", count_sources)
+    monkeypatch.setattr(runtime_spec, "preview", count_preview)
+    monkeypatch.setattr(session_runtime, "plan_session_refresh", lambda *_: None)
+    images = Images()
+    images.inspect(project, verbose=False)
+    session_refresh._prepare_refresh(project, prior, images, verbose=False)
+    assert observed == {"sources": 1, "preview": 1}
 
 
-@pytest.mark.parametrize("boundary", ["before-park", "issuance-lease"])
-def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch, boundary):
+def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch):
     from booley.harness.session_refresh import _RuntimeImages
 
     project, _spec, path, stamp = issued
@@ -2972,22 +2981,17 @@ def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch, bo
     adapter.prepare_spec(project, image)
     before = path.read_bytes(), runtime_spec.stamp_path(project).read_bytes()
     config = project / ".booley" / "booley.toml"
-    if boundary == "before-park":
-        config.write_text('[sandbox]\nmemory="8g"\n')
-        with pytest.raises(session_runtime.SessionError, match="inputs changed"):
-            adapter.validate_spec(project)
-    else:
-        lease = runtime_spec.eda_requirements.lease_build_requirements
+    lease = runtime_spec.eda_requirements.lease_build_requirements
 
-        @contextmanager
-        def mutate(*args, **kwargs):
-            with lease(*args, **kwargs) as requirements:
-                config.write_text('[sandbox]\nmemory="8g"\n')
-                yield requirements
+    @contextmanager
+    def mutate(*args, **kwargs):
+        with lease(*args, **kwargs) as requirements:
+            config.write_text('[sandbox]\nmemory="8g"\n')
+            yield requirements
 
-        monkeypatch.setattr(runtime_spec.eda_requirements, "lease_build_requirements", mutate)
-        with pytest.raises(runtime_spec.RuntimeSpecError, match="inputs changed"):
-            adapter.reissue(project, image.selected_id, verbose=False)
+    monkeypatch.setattr(runtime_spec.eda_requirements, "lease_build_requirements", mutate)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="inputs changed"):
+        adapter.reissue(project, image.selected_id, verbose=False)
     assert (path.read_bytes(), runtime_spec.stamp_path(project).read_bytes()) == before
 
 
@@ -3116,17 +3120,3 @@ def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, 
     changed.prepare_spec(project, image)
     assert dc.render_devcontainer_json(changed._spec.spec) == before
     assert not changed.spec_is_current(project)
-
-
-def test_validate_tampered_spec_selects_reseed_instead_of_circular_refresh(issued, monkeypatch):
-    from booley.runtime import runtime_context
-
-    project, spec, path, _stamp = issued
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
-    spec["remoteEnv"]["UNISSUED_SETTING"] = "changed"
-    path.write_text(json.dumps(spec))
-    with pytest.raises(session_runtime.SessionError) as caught:
-        session_runtime.validate(project)
-    assert "booley init --seed" in str(caught.value)
-    assert "booley session refresh" not in str(caught.value)

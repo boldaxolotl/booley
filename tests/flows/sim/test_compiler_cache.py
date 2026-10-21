@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -18,17 +17,9 @@ from booley.flows.sim.compiler_cache import (
     execution_environment,
     resolve_policy,
 )
-from booley.runtime.compiler_cache import (
-    COMPILER_CACHE_RELATIVE,
-    COMPILER_CACHE_ROOT_ENV,
-    ISSUED_COMPILER_CACHE_ROOT,
-    IssuedCacheIdentity,
-)
+from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV
 
-# A host process: nothing issued, not inside a Sandbox.
-HOST = IssuedCacheIdentity(root=None, in_sandbox=False)
-# A Sandbox issued before the shared compiler cache existed.
-UNREFRESHED_SANDBOX = IssuedCacheIdentity(root=None, in_sandbox=True)
+MANAGED = {"OBJCACHE", "CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_COMPILERCHECK"}
 
 
 @pytest.fixture
@@ -41,126 +32,18 @@ def project(tmp_path, monkeypatch):
     return root, data
 
 
-def test_defaults_are_pure_and_owner_is_explicit(project, tmp_path):
-    root, data = project
-    owner = tmp_path / "shared"
-    owner.mkdir()
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    assert policy == CompilerCachePolicy(True, owner / COMPILER_CACHE_RELATIVE, "5G")
-    assert not (owner / ".runtime").exists()
-    (data / "pipeline.toml").write_text(
-        '[flows.sim.compiler_cache]\nenabled=false\nmax_size="1Mi"\n'
-    )
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    assert not policy.enabled
-    assert policy.environment()["OBJCACHE"] == ""
-    assert not policy.root.exists()
+def fake_ccache(directory: Path) -> Path:
+    """Put an executable ``ccache`` stub in *directory*; return the directory."""
+    directory.mkdir(exist_ok=True)
+    stub = directory / ("ccache.exe" if os.name == "nt" else "ccache")
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    return directory
 
 
-@pytest.mark.parametrize(
-    "setting",
-    [
-        'enabled="yes"',
-        "enabled=1",
-        "max_size=0",
-        'max_size="0G"',
-        'max_size="1.5G"',
-        'max_size="-1G"',
-        'max_size="1T"',
-        "max_size=[]",
-        'max_size="5"',
-        'max_size="1GB"',
-    ],
-)
-def test_invalid_explicit_settings_fail(project, setting):
-    root, data = project
-    (data / "booley.toml").write_text("[flows.sim.compiler_cache]\n" + setting)
-    with pytest.raises(CompilerCacheConfigurationError):
-        resolve_policy(root, issued=HOST, owner=data)
-
-
-@pytest.mark.parametrize(
-    "content", ["flows=1", "[flows]\nsim=[]", "[flows.sim]\ncompiler_cache=false", "[broken"]
-)
-def test_selected_checkout_errors_do_not_fall_back(project, tmp_path, monkeypatch, content):
-    root, data = project
-    main = tmp_path / "main-data"
-    main.mkdir()
-    (main / "booley.toml").write_text('[flows.sim.compiler_cache]\nmax_size="2G"')
-    monkeypatch.setenv("BOOLEY_DIR", str(main))
-    (data / "booley.toml").write_text(content)
-    with pytest.raises(CompilerCacheConfigurationError):
-        resolve_policy(root, issued=HOST, owner=main)
-
-
-@pytest.mark.parametrize("tool_directory", ["caller", "compiler"])
-def test_relative_path_availability_uses_compiler_directory(tmp_path, monkeypatch, tool_directory):
-    caller = tmp_path / "caller"
-    compiler = tmp_path / "compiler"
-    caller.mkdir()
-    compiler.mkdir()
-    tools = (caller if tool_directory == "caller" else compiler) / "tools"
-    tools.mkdir()
-    executable = tools / ("ccache.exe" if os.name == "nt" else "ccache")
-    executable.write_text("#!/bin/sh\nexit 0\n")
-    executable.chmod(0o755)
-    monkeypatch.chdir(caller)
-    policy = CompilerCachePolicy(True, tmp_path / COMPILER_CACHE_RELATIVE, "5G")
-    environment = execution_environment(
-        policy, {**policy.environment(), "PATH": "tools"}, ambient={}, build_root=compiler
-    )
-    assert environment["OBJCACHE"] == ("ccache" if tool_directory == "compiler" else "")
-
-
-def test_effective_path_and_precedence(project, tmp_path, caplog):
-    root, owner = project
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    ccache = tools / ("ccache.exe" if os.name == "nt" else "ccache")
-    ccache.write_text("#!/bin/sh\nexit 0\n")
-    ccache.chmod(0o755)
-    target = {"PATH": str(tools), "CCACHE_DIR": "unrelated", "CCACHE_MAXSIZE": "0", "OTHER": "yes"}
-    environment = compose_environment(policy, target, ambient={})
-    assert environment["OTHER"] == "yes"
-    assert environment["CCACHE_DIR"] == str(policy.root)
-    assert "conflicts" in caplog.text
-    assert execution_environment(policy, environment, ambient={})["OBJCACHE"] == "ccache"
-    assert policy.root.is_dir()
-    environment["PATH"] = str(tmp_path / "missing")
-    assert execution_environment(policy, environment, ambient={})["OBJCACHE"] == ""
-    assert "unavailable" in caplog.text
-
-
-@pytest.mark.parametrize(
-    "relative", [".runtime", ".runtime/compiler-cache", COMPILER_CACHE_RELATIVE]
-)
-def test_symlink_ancestors_fall_back_without_writing(project, tmp_path, monkeypatch, relative):
-    root, owner = project
-    destination = tmp_path / "outside"
-    destination.mkdir()
-    link = owner / relative
-    link.parent.mkdir(parents=True, exist_ok=True)
-    from tests.conftest import symlink_or_skip
-
-    symlink_or_skip(link, destination, target_is_directory=True)
-    monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: "/ccache")
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    assert execution_environment(policy, policy.environment(), ambient={})["OBJCACHE"] == ""
-    assert list(destination.iterdir()) == []
-
-
-def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
-    root, owner = project
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    assert not policy.root.exists(), "resolution alone must not create storage"
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    (tools / "ccache").write_text("#!/bin/sh\nexit 0\n")
-    (tools / "ccache").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.delenv("CCACHE_MAXSIZE", raising=False)
-    prepared = PreparedSimulationBuild(
+def prepared_build(root: Path, policy: CompilerCachePolicy, check: str):
+    """A prepared build whose make command runs the shell *check*."""
+    return PreparedSimulationBuild(
         "sim",
         "id",
         cast(object, None),
@@ -168,16 +51,131 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
         root,
         "verilator",
         "top",
-        ("sh", "-c", 'test "$OBJCACHE" = ccache && test "$CCACHE_MAXSIZE" = 5G'),
+        ("sh", "-c", check),
         policy.environment(),
         compiler_cache=policy,
     )
-    script = simulation_build_script(
-        prepared,
-        "a" * 32,
-        run_line='test "$OBJCACHE" = run-value && test -z "$CCACHE_MAXSIZE"',
-        run_environment={"OBJCACHE": "run-value"},
+
+
+def test_defaults_use_issued_root_without_creating_storage(project, tmp_path):
+    root, data = project
+    cache = tmp_path / "issued" / "ccache"
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
+    assert policy == CompilerCachePolicy(True, cache, "5G")
+    assert policy.environment().keys() == MANAGED
+    assert not cache.parent.exists()
+    (data / "booley.toml").write_text('[flows.sim.compiler_cache]\nmax_size="1Gi"\n')
+    assert resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)}).max_size == "1Gi"
+
+
+INVALID_SETTINGS = (
+    '[flows.sim.compiler_cache]\nenabled="yes"',
+    '[flows.sim.compiler_cache]\nmax_size="0G"',
+    '[flows.sim.compiler_cache]\nmax_size="1GB"',
+    "[flows.sim.compiler_cache]\nmax_size=5",
+    "[flows.sim]\ncompiler_cache=false",
+)
+
+
+def test_invalid_settings_fail(project):
+    root, data = project
+    for content in INVALID_SETTINGS:
+        (data / "booley.toml").write_text(content)
+        with pytest.raises(CompilerCacheConfigurationError):
+            resolve_policy(root, {})
+
+
+@pytest.mark.timeout(180 if os.name == "nt" else 60)
+def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monkeypatch, caplog):
+    root, _data = project
+    cache = tmp_path / "cache"
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
+    monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: None)
+    prepared = prepared_build(root, policy, 'test -z "$OBJCACHE"')
+    result = subprocess.run(
+        ["sh", "-c", simulation_build_script(prepared, "b" * 32)],
+        capture_output=True,
+        text=True,
+        timeout=60 if os.name == "nt" else 10,
+        check=False,
     )
+    assert result.returncode == 0
+    assert not cache.exists()
+    assert "ccache is missing from the build PATH" in caplog.text
+
+
+def test_unset_root_builds_uncached_and_names_refresh(project, caplog):
+    root, data = project
+    policy = resolve_policy(root, {})
+    environment = execution_environment(
+        policy, compose_environment(policy, {}, ambient={}), ambient={}
+    )
+    assert environment["OBJCACHE"] == ""
+    assert "CCACHE_DIR" not in environment
+    assert caplog.text.count("booley session refresh") == 1
+    assert not (data / ".runtime").exists()
+
+
+def test_storage_error_builds_uncached(project, tmp_path, caplog):
+    root, _data = project
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(blocker / "ccache")})
+    environment = {**policy.environment(), "PATH": str(fake_ccache(tmp_path / "tools"))}
+    assert execution_environment(policy, environment, ambient={})["OBJCACHE"] == ""
+    assert "cannot create cache storage" in caplog.text
+
+
+def test_disabled_exports_no_cache_location_and_keeps_entries(project, tmp_path):
+    root, data = project
+    (data / "booley.toml").write_text("[flows.sim.compiler_cache]\nenabled=false\n")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "entry").write_text("keep")
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
+    environment = execution_environment(
+        policy, compose_environment(policy, {}, ambient={}, build_root=root), ambient={}
+    )
+    assert environment["OBJCACHE"] == ""
+    assert (
+        not {"CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_BASEDIR", COMPILER_CACHE_ROOT_ENV}
+        & environment.keys()
+    )
+    assert (cache / "entry").read_text() == "keep"
+
+
+def test_debug_prefix_map_keeps_authored_user_cppflags(project, tmp_path, caplog):
+    root, _data = project
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(tmp_path / "cache")})
+    generated = root / "build directory$literal"
+    environment = compose_environment(
+        policy,
+        {"USER_CPPFLAGS": "-DUSER=1", "CCACHE_DIR": "unrelated"},
+        ambient={},
+        build_root=generated,
+    )
+    assert environment["CCACHE_BASEDIR"] == str(generated)
+    assert environment["USER_CPPFLAGS"].startswith("-DUSER=1 ")
+    assert "-fdebug-prefix-map=" in environment["USER_CPPFLAGS"]
+    assert "$$literal" in environment["USER_CPPFLAGS"]
+    assert environment["CCACHE_DIR"] == str(policy.root)
+    assert "yields to Booley" in caplog.text
+
+
+def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
+    root, _data = project
+    cache = tmp_path / "cache"
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
+    assert not cache.exists(), "resolution alone must not create storage"
+    tools = fake_ccache(tmp_path / "tools")
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.delenv("CCACHE_MAXSIZE", raising=False)
+    monkeypatch.delenv("OBJCACHE", raising=False)
+    prepared = prepared_build(
+        root, policy, 'test "$OBJCACHE" = ccache && test "$CCACHE_MAXSIZE" = 5G'
+    )
+    script = simulation_build_script(prepared, "a" * 32)
+    script += '\ntest -z "$OBJCACHE" && test -z "$CCACHE_MAXSIZE"'
     # Git for Windows starts several shell processes here on loaded CI workers.
     result = subprocess.run(
         ["sh", "-c", script],
@@ -188,35 +186,7 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "rc=0" in result.stdout
-    assert policy.root.is_dir()
-
-
-@pytest.mark.timeout(180 if os.name == "nt" else 60)
-def test_missing_ccache_builds_uncached_without_storage(project, monkeypatch):
-    root, owner = project
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: None)
-    prepared = PreparedSimulationBuild(
-        "sim",
-        "id",
-        cast(object, None),
-        root,
-        root,
-        "verilator",
-        "top",
-        ("sh", "-c", 'test -z "$OBJCACHE"'),
-        policy.environment(),
-        compiler_cache=policy,
-    )
-    result = subprocess.run(
-        ["sh", "-c", simulation_build_script(prepared, "b" * 32)],
-        capture_output=True,
-        text=True,
-        timeout=60 if os.name == "nt" else 10,
-        check=False,
-    )
-    assert result.returncode == 0
-    assert not policy.root.exists()
+    assert cache.is_dir()
 
 
 def _prepare_real_verilator_target(root: Path, options: dict, *, legacy: bool = False):
@@ -264,14 +234,11 @@ def _prepare_real_verilator_target(root: Path, options: dict, *, legacy: bool = 
     "assignment", ["OBJCACHE=", "--eval=CCACHE_DIR:=x"], ids=["assign", "eval"]
 )
 def test_real_edalize_preparation_preserves_make_overrides(
-    project, monkeypatch, legacy, assignment, source
+    project, tmp_path, monkeypatch, legacy, assignment, source
 ):
-    from booley.runtime.booley_dir import reset_cache
-
-    root, data = project
-    monkeypatch.setenv("BOOLEY_DIR", str(data))
-    reset_cache()
-    monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+    root, _data = project
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv(COMPILER_CACHE_ROOT_ENV, str(cache_dir))
     for name in ("MAKEFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MFLAGS"):
         monkeypatch.delenv(name, raising=False)
     options = {"make_options": ["-j2", "OTHER=yes"]}
@@ -283,125 +250,5 @@ def test_real_edalize_preparation_preserves_make_overrides(
     recipe = (prepared.build_root / ("config.mk" if legacy else "Makefile")).read_text()
     assert all(option in recipe for option in options["make_options"])
     assert prepared.environment["OBJCACHE"] == "ccache"
-    assert prepared.environment["CCACHE_DIR"] == str(data / COMPILER_CACHE_RELATIVE)
-    assert not (data / ".runtime" / "compiler-cache").exists()
-
-
-def test_real_preparation_in_unrefreshed_sandbox_builds_uncached(project, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache
-
-    root, data = project
-    monkeypatch.setenv("BOOLEY_DIR", str(data))
-    reset_cache()
-    monkeypatch.setattr(
-        "booley.flows.sim.build.read_issued_identity", lambda _environ: UNREFRESHED_SANDBOX
-    )
-    prepared = _prepare_real_verilator_target(root, {"make_options": ["-j2"]})
-    assert prepared.compiler_cache is not None
-    assert prepared.compiler_cache.root is None
-    assert prepared.environment["OBJCACHE"] == ""
-    assert "CCACHE_DIR" not in prepared.environment
-
-
-@pytest.mark.parametrize("issued", ["relative/cache", "/other/.runtime/compiler-cache/ccache"])
-def test_issued_root_cannot_widen_authority(project, caplog, issued):
-    root, owner = project
-    policy = resolve_policy(
-        root, issued=IssuedCacheIdentity(root=issued, in_sandbox=True), owner=owner
-    )
-    assert policy.root is None
-    assert "authorized Project mount" in policy.unavailable_reason
-    environment = execution_environment(policy, policy.environment(), ambient={})
-    assert environment["OBJCACHE"] == ""
-    assert "CCACHE_DIR" not in environment
-    assert "compiling uncached" in caplog.text
-
-
-@pytest.mark.parametrize("enabled", ["true", "false"])
-def test_unrefreshed_sandbox_compiles_uncached(project, caplog, enabled):
-    root, data = project
-    (data / "booley.toml").write_text(f"[flows.sim.compiler_cache]\nenabled={enabled}\n")
-    policy = resolve_policy(root, issued=UNREFRESHED_SANDBOX, owner=data)
-    assert policy.root is None
-    assert not policy.active
-    environment = execution_environment(
-        policy, compose_environment(policy, {}, ambient={}), ambient={}
-    )
-    assert environment["OBJCACHE"] == ""
-    assert "CCACHE_DIR" not in environment
-    assert ("booley session refresh" in caplog.text) is (enabled == "true")
-    assert not (data / ".runtime").exists()
-
-
-def test_disabled_policy_exports_no_cache_location(project):
-    root, data = project
-    (data / "booley.toml").write_text("[flows.sim.compiler_cache]\nenabled=false\n")
-    environment = resolve_policy(root, issued=HOST, owner=data).environment()
-    assert environment["OBJCACHE"] == ""
-    assert not {"CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_BASEDIR"} & environment.keys()
-
-
-def test_issued_owner_survives_ticket_booley_dir(project, tmp_path, monkeypatch):
-    root, data = project
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "ticket-data"))
-    (data / "booley.toml").write_text('[flows.sim.compiler_cache]\nmax_size="1Gi"')
-    issued = IssuedCacheIdentity(root=ISSUED_COMPILER_CACHE_ROOT, in_sandbox=True)
-    policy = resolve_policy(root, issued=issued)
-    assert policy.root == Path("/booley-project/.runtime/compiler-cache/ccache")
-    assert policy.environment()[COMPILER_CACHE_ROOT_ENV] == ISSUED_COMPILER_CACHE_ROOT
-    assert policy.max_size == "1Gi"
-
-
-def test_storage_failure_uses_uncached_build(project, monkeypatch, caplog):
-    root, owner = project
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: "/ccache")
-
-    def denied(_root):
-        raise PermissionError("denied")
-
-    monkeypatch.setattr("booley.flows.sim.compiler_cache._prepare_directory", denied)
-    assert execution_environment(policy, policy.environment(), ambient={})["OBJCACHE"] == ""
-    assert "unavailable" in caplog.text
-    assert not policy.root.exists()
-
-
-def test_disabled_cache_preserves_existing_entries(project):
-    _root, data = project
-    policy = CompilerCachePolicy(False, data / COMPILER_CACHE_RELATIVE, "5G")
-    policy.root.mkdir(parents=True)
-    entry = policy.root / "entry"
-    entry.write_text("keep")
-    assert execution_environment(policy, policy.environment(), ambient={})["OBJCACHE"] == ""
-    assert entry.read_text() == "keep"
-
-
-def test_debug_mapping_is_limited_to_generated_build_and_preserves_flags(project):
-    root, owner = project
-    policy = resolve_policy(root, issued=HOST, owner=owner)
-    generated = root / "build directory$literal"
-    environment = compose_environment(
-        policy, {"USER_CPPFLAGS": "-DUSER=1"}, ambient={}, build_root=generated
-    )
-    assert environment["CCACHE_BASEDIR"] == str(generated)
-    assert environment["USER_CPPFLAGS"].startswith("-DUSER=1 ")
-    assert "-fdebug-prefix-map=" in environment["USER_CPPFLAGS"]
-    assert "-ffile-prefix-map=" not in environment["USER_CPPFLAGS"]
-    assert "$$literal" in environment["USER_CPPFLAGS"]
-    disabled = replace(policy, enabled=False)
-    assert (
-        compose_environment(
-            disabled, {"USER_CPPFLAGS": "-DUSER=1"}, ambient={}, build_root=generated
-        )["USER_CPPFLAGS"]
-        == "-DUSER=1"
-    )
-
-
-@pytest.mark.parametrize("filename", ["booley.toml", "pipeline.toml"])
-def test_broken_selected_config_is_not_absent(project, filename):
-    from tests.conftest import symlink_or_skip
-
-    root, data = project
-    symlink_or_skip(data / filename, data / "missing.toml")
-    with pytest.raises(CompilerCacheConfigurationError, match="broken link"):
-        resolve_policy(root, issued=HOST, owner=data)
+    assert prepared.environment["CCACHE_DIR"] == str(cache_dir)
+    assert not cache_dir.exists()

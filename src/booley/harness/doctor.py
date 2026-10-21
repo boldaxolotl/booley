@@ -767,11 +767,15 @@ def _report_deep_currency(
             attempt = summary.attempt(
                 version=booley.__version__,
                 clean=not blockers,
-                failure_count=sum(finding.severity == Severity.FAIL for finding in blockers),
-                blocking_warning_ids=tuple(
-                    finding.check_id
-                    for finding in blockers
-                    if finding.severity == Severity.WARN and finding.check_id is not None
+                # A blocker without a check ID still gets named, so it is never hidden.
+                blocking_checks=tuple(
+                    f.check_id
+                    or (
+                        "unidentified-failure"
+                        if f.severity == Severity.FAIL
+                        else "unidentified-warning"
+                    )
+                    for f in blockers
                 ),
             )
             if not doctor_deep.record_deep_attempt(booley_dir, attempt):
@@ -787,11 +791,11 @@ def observe_deep_status(
     container: str | None = None,
 ) -> doctor_deep.DeepStatus:
     """Read and report currency without starting checks or modifying evidence."""
-    state = doctor_deep.DeepState()
+    record = None
     with contextlib.suppress(FileNotFoundError, OSError):
-        state = doctor_deep.load_deep_state(resolve_checkout_booley_dir(project_root))
+        record = doctor_deep.load_deep_record(resolve_checkout_booley_dir(project_root))
     image_id, version = _observe_sandbox_identity(project_root, container)
-    return doctor_deep.evaluate_deep_status(state, version=version, image_id=image_id)
+    return doctor_deep.evaluate_deep_status(record, version=version, image_id=image_id)
 
 
 # Prints the issued image variable and the package version from inside a Sandbox.

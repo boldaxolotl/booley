@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import fnmatch
 import ntpath
 import os
 import re
@@ -18,6 +19,9 @@ import pytest
 import yaml
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
+
+from ci_changes import CATEGORIES, build_test_matrix, required_jobs
 
 
 def _workflow(filename: str) -> dict:
@@ -31,6 +35,23 @@ def _test_workflow() -> dict:
 
 def _deep_tests_workflow() -> dict:
     return _workflow("deep-tests.yml")
+
+
+_RUNNER_OS_CHOICE = re.compile(r"\$\{\{ runner\.os == '(\w+)' && (.+?) \|\| (.+?) \}\}")
+_LINUX_SCHEDULER_OUTPUT = "needs.changes.outputs.linux_scheduler"
+
+
+def _render_expressions(run: str, runner_os: str, scheduler: str) -> str:
+    """Resolve the scheduler output and the `runner.os == X && A || B` choices."""
+
+    def operand(text: str) -> str:
+        return scheduler if text == _LINUX_SCHEDULER_OUTPUT else text.strip("'")
+
+    def choose(match: re.Match[str]) -> str:
+        return operand(match[2] if match[1] == runner_os else match[3])
+
+    resolved = _RUNNER_OS_CHOICE.sub(choose, run)
+    return resolved.replace("${{ " + _LINUX_SCHEDULER_OUTPUT + " }}", scheduler)
 
 
 def _named_step(job: dict, name: str) -> dict:
@@ -93,7 +114,9 @@ def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
         step for step in test_steps if step.get("name") == "Run duration-balanced shard"
     )
 
-    assert "pytest tests/ -q --tb=short -n 4 --dist=worksteal" in parallel_step["run"].replace(
+    windows_command = _render_expressions(parallel_step["run"], "Windows", "loadscope")
+
+    assert "pytest tests/ -q --tb=short -n 4 --dist=worksteal" in windows_command.replace(
         "\n", " "
     )
     assert "--ci-shard-count" in parallel_step["run"]
@@ -1214,3 +1237,96 @@ def _nested_runs(node: object) -> list[str]:
     return own + [
         run for key, child in node.items() if key != "run" for run in _nested_runs(child)
     ]
+
+
+def test_linux_shard_dispatch_inputs_reach_the_classifier() -> None:
+    workflow = _test_workflow()
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    changes = workflow["jobs"]["changes"]
+    classify = _named_step(changes, "Classify changed paths")
+
+    assert (inputs["linux_shard_count"]["options"], inputs["linux_shard_count"]["default"]) == (
+        ["1", "2", "3"],
+        "1",
+    )
+    assert (inputs["linux_scheduler"]["options"], inputs["linux_scheduler"]["default"]) == (
+        ["loadscope", "worksteal"],
+        "loadscope",
+    )
+    assert inputs["linux_shard_benchmark"]["type"] == "boolean"
+    assert inputs["linux_shard_benchmark"]["default"] is False
+    for expected in (
+        "--linux-shard-count \"${{ inputs.linux_shard_count || '1' }}\"",
+        "--linux-scheduler \"${{ inputs.linux_scheduler || 'loadscope' }}\"",
+        '--linux-shard-benchmark "${{ inputs.linux_shard_benchmark || false }}"',
+    ):
+        assert expected in classify["run"]
+    assert "!inputs.linux_shard_benchmark" in classify["env"]["FORCE_ALL"]
+    for output in ("linux_shard_count", "linux_scheduler"):
+        assert changes["outputs"][output] == f"${{{{ steps.classify.outputs.{output} }}}}"
+
+
+def test_linux_scheduler_and_timing_model_reach_only_linux_commands() -> None:
+    workflow = _test_workflow()
+    test_job = workflow["jobs"]["test"]
+    full = _named_step(test_job, "Run full compatibility suite")["run"]
+    shard = _named_step(test_job, "Run duration-balanced shard")["run"]
+    scheduler_users = {
+        (job_name, step.get("name"))
+        for job_name, job in workflow["jobs"].items()
+        for step in job.get("steps", [])
+        if _LINUX_SCHEDULER_OUTPUT in step.get("run", "")
+    }
+    windows_shard = _render_expressions(shard, "Windows", "loadscope")
+
+    assert scheduler_users == {
+        ("test", "Run full compatibility suite"),
+        ("test", "Run duration-balanced shard"),
+    }
+    for scheduler in ("loadscope", "worksteal"):
+        linux_shard = _render_expressions(shard, "Linux", scheduler)
+        assert f"--dist={scheduler} " in _render_expressions(full, "Linux", scheduler)
+        assert f"--dist={scheduler} " in linux_shard
+        assert "--ci-timing-model .github/ci/linux-test-timings.json" in linux_shard
+        assert "windows-test-timings" not in linux_shard
+    assert "--dist=worksteal " in windows_shard
+    assert "--ci-timing-model .github/ci/windows-test-timings.json" in windows_shard
+
+
+def test_test_verify_proves_each_linux_group_when_sharded() -> None:
+    workflow = _test_workflow()
+    verify = workflow["jobs"]["test-verify"]
+    steps = verify["steps"]
+    names = [step.get("name") for step in steps]
+    download = _named_step(verify, "Download Linux shard manifests")
+    prove = _named_step(verify, "Prove every Linux sharded test ran exactly once")
+    gate = "${{ !cancelled() && needs.changes.outputs.linux_shard_count != '1' }}"
+    groups = sorted(
+        {
+            str(entry["group"])
+            for entry in build_test_matrix(10, linux_shard_count=2)["include"]
+            if entry["os"] == "ubuntu-latest"
+        }
+    )
+    command = " ".join(prove["run"].replace("\\\n", " ").split())
+
+    assert verify["needs"] == ["changes", "test"]
+    assert names.index(download["name"]) < names.index(prove["name"])
+    assert download["if"] == prove["if"] == gate
+    assert download["with"]["pattern"] == "shard-linux-*"
+    assert download["with"]["path"] == "${{ runner.temp }}/linux-shards"
+    assert prove["env"]["LINUX_SHARD_COUNT"] == "${{ needs.changes.outputs.linux_shard_count }}"
+    assert f"for group in {' '.join(groups)}; do" in command
+    assert '--root "${RUNNER_TEMP}/linux-shards" --group "${group}"' in command
+    assert '--shard-count "${LINUX_SHARD_COUNT}"' in command
+    # Both groups are checked even when the first fails.
+    assert "|| status=1" in command
+    assert command.endswith('exit "${status}"')
+    for artifact in ("shard-coverage-0", "coverage-shard-0", "pytest-timing-ubuntu-3.11-full"):
+        assert not any(
+            fnmatch.fnmatch(artifact, step.get("with", {}).get("pattern", "")) for step in steps
+        )
+    assert "test-verify" in workflow["jobs"]["ci-required"]["needs"]
+    for category in CATEGORIES:
+        jobs = required_jobs({category})
+        assert ("test" in jobs) == ("test-verify" in jobs)
