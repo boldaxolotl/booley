@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import StandaloneFlowExecution
-from booley.flows.flow_session import FlowSession
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
@@ -88,10 +88,10 @@ def test_typed_request_executes_without_constructing_a_parser(
     assert result.exit_code == 0
     assert result.outcome.detail["evidence"] == "same"
     assert result.outcome.detail.get("acceptance_effect") == ("diagnostic" if diagnostic else None)
-    assert not hasattr(flow.context, "_cli_parser")
+    assert not hasattr(flow, "_cli_parser")
     assert request.report_dir is None
     report_root = runtime / "flow-reports"
-    assert flow.context.args.report_dir == report_root
+    assert flow.args.report_dir == report_root
     assert (report_root / f"{flow.name}.json").is_file()
     assert (report_root / flow.name / "1/report.json").is_file()
 
@@ -105,14 +105,14 @@ def test_flow_report_root_precedence(runtime, monkeypatch):
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
 
     flow.execute(flow.request_type(target="demo", work_dir=runtime, report_dir=explicit))
-    assert flow.context.args.report_dir == explicit
+    assert flow.args.report_dir == explicit
 
     flow.execute(flow.request_type(target="demo", work_dir=runtime))
-    assert flow.context.args.report_dir == runtime / "runtime/flow-reports"
+    assert flow.args.report_dir == runtime / "runtime/flow-reports"
 
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR")
     flow.execute(flow.request_type(target="demo", work_dir=runtime))
-    assert flow.context.args.report_dir == runtime / "flow-reports"
+    assert flow.args.report_dir == runtime / "flow-reports"
 
 
 def test_adapter_report_root_wins_over_direct_default(runtime, monkeypatch):
@@ -135,7 +135,7 @@ def test_adapter_report_root_wins_over_direct_default(runtime, monkeypatch):
     )
 
     assert result.exit_code == 0
-    assert flow.context.args.report_dir == selected
+    assert flow.args.report_dir == selected
 
 
 def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypatch):
@@ -149,7 +149,7 @@ def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypat
         reserved.append(session.reserve_invocation_dir())
         return EndpointOutcome()
 
-    monkeypatch.setattr(FlowSession, "_run", run)
+    monkeypatch.setattr(SimulateFlow, "_run", run)
     for _ in range(3):
         flow = SimulateFlow()
         result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
@@ -169,7 +169,7 @@ def test_uninitialized_flow_fails_before_state_or_execution(runtime, monkeypatch
     reset_cache()
     flow = LintFlow()
     monkeypatch.setattr(
-        FlowSession, "read_state", lambda self: pytest.fail("loaded state before report root")
+        EndpointState, "read_state", lambda self: pytest.fail("loaded state before report root")
     )
     monkeypatch.setattr(flow, "_run", lambda: pytest.fail("executed uninitialized Flow"))
 
@@ -255,7 +255,7 @@ def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypa
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = flow_type()
     monkeypatch.setattr(
-        FlowSession, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
     )
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
     assert result.exit_code == 2
@@ -284,7 +284,7 @@ group = "verification"
     flow = LintFlow()
     flow.satisfies = ["project_check"]
     monkeypatch.setattr(
-        FlowSession, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
     )
 
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
@@ -324,7 +324,9 @@ def test_acceptance_failures_keep_their_distinct_persistence_semantics(
     monkeypatch.setattr(flow, "_run", run)
     monkeypatch.setattr(DevelopmentState, "save", save_state)
     monkeypatch.setattr(
-        FlowSession, "_record_acceptance_changes" if phase == "update" else "_pre_save_hook", fail
+        EndpointState,
+        "_record_acceptance_changes" if phase == "update" else "_pre_save_hook",
+        fail,
     )
     request = flow.request_type(target="demo", work_dir=runtime)
     if phase == "update":
@@ -479,15 +481,15 @@ def test_repeated_typed_calls_get_fresh_invocation_metadata(runtime, monkeypatch
     flow = LintFlow()
     monkeypatch.setattr(flow, "_run", EndpointOutcome)
     flow.execute_cli(["--target", "demo"])
-    first_id = flow.context._invocation_id
-    flow.context._eda_tool = "previous tool"
-    flow.context._reserved_invocation_dir = runtime / "old-invocation"
+    first_id = flow._invocation_id
+    flow._eda_tool = "previous tool"
+    flow._reserved_invocation_dir = runtime / "old-invocation"
     request = flow.request_type(target="demo", work_dir=runtime)
     flow.execute(request)
-    assert flow.context._invocation_id != first_id
-    assert flow.context._raw_argv is None
-    assert flow.context._eda_tool is None
-    assert flow.context._reserved_invocation_dir is None
+    assert flow._invocation_id != first_id
+    assert flow._raw_argv is None
+    assert flow._eda_tool is None
+    assert flow._reserved_invocation_dir is None
     assert request.report_dir is None
 
 
@@ -499,7 +501,7 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
     flow = LintFlow()
     claim = object()
     store = Mock()
-    monkeypatch.setattr(FlowSession, "_acquire_job_slot", lambda self: (store, claim))
+    monkeypatch.setattr(EndpointState, "_acquire_job_slot", lambda self: (store, claim))
 
     def run():
         raise failure("interrupted execution")
@@ -664,7 +666,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
     )
     flow = SimulateFlow()
     monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: prepared)
-    monkeypatch.setattr(FlowSession, "admission", lambda *_args: nullcontext())
+    monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext())
 
     def run(*_args):
         flow.set_criterion("sim_pass_candidate", True)
@@ -813,7 +815,7 @@ def test_alias_first_headline_ignores_family_key_acceptance_also_binds(
 
     def run():
         # Acceptance may update the alias and the bare family; the report takes the alias.
-        bound = endpoint_acceptance._bound_criterion_keys(flow.context, "first")
+        bound = endpoint_acceptance._bound_criterion_keys(flow, "first")
         assert bound == ["lint_clean_atomic", "lint_clean"]
         flow.set_criterion("lint_clean_first", met)
         return EndpointOutcome()
@@ -865,7 +867,7 @@ def test_prepared_identity_partial_report_is_null(
     _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
     identities = frozenset({"acme:lib:dut:1#first", "acme:lib:dut:1#second"})
     assert self_scope(flow) == identities
-    assert flow.context._report_criteria.targets == identities
+    assert flow._report_criteria.targets == identities
     assert flow.state.criteria[f"{family}_first"].met is met
 
 
@@ -990,7 +992,7 @@ def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
         adapter=BoundExecution(),
     )
     assert result.exit_code == 2, result.outcome.report_text
-    _assert_headline(result, flow.context.args.report_dir, "sim", ("", None))
+    _assert_headline(result, flow.args.report_dir, "sim", ("", None))
 
 
 def _report_extension_type(endpoint_kind, key):

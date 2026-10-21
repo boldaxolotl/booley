@@ -159,10 +159,9 @@ class _CampaignProbe(McpTool):
 
     def _run(self) -> McpToolResult:
         self._simulation_campaign_outcomes = (object(),)
-        self.flow = SimpleNamespace(record_campaign_acceptance=self._record_campaign)
         return McpToolResult(exit_code=0, report_text="campaign passed")
 
-    def _record_campaign(self, _outcomes: tuple[object, ...]) -> None:
+    def record_campaign_acceptance(self, _outcomes: tuple[object, ...]) -> None:
         shadow = DevelopmentState.from_json_object(self.state.to_dict())
         changes = shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
         self._acceptance_recorder.record_or_verify_transaction(

@@ -1159,7 +1159,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="synth",
-            basis_bound=self._flow_acceptance.basis_bound,
+            basis_bound=self.flow_acceptance.basis_bound,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -2233,7 +2233,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 self.state.criteria,
                 "synthesis_ok_",
                 handles,
-                basis=self._flow_acceptance if self._flow_acceptance.basis_bound else None,
+                basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
                 flow="synth",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)

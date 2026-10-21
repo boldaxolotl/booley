@@ -1925,13 +1925,14 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, targets
             str(tmp_path / "reports"),
         ]
     )
+    flow.read_state()  # parse_args starts a new invocation
     with patch.object(
         flow,
         "_run_single_target",
         return_value=FpgaMetrics(lut_count=1, ff_count=1, wns_ns=0.1, whs_ns=0.1),
     ):
         result = flow._run()
-    path = flow.context.write_report(result)
+    path = flow.write_report(result)
     report = json.loads(path.read_bytes())
     expected = (
         {"eda_tool": "vivado"}

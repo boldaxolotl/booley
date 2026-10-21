@@ -626,7 +626,7 @@ def test_closed_console_does_not_skip_postcommit_checkpoint(
     from booley.flows.sim.flow import SimulateFlow
 
     flow = SimulateFlow()
-    flow.context._console_publication_requested = True
+    flow._console_publication_requested = True
     stream = io.StringIO()
     stream.close()
     monkeypatch.setattr("booley.flows.sim.flow.sys.stderr", stream)
@@ -670,7 +670,7 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
         for item in (baseline, manifest)
     ]
     flow = SimulateFlow()
-    flow.context._console_publication_requested = True
+    flow._console_publication_requested = True
     published: list[Path] = []
     campaign = SimulationCampaign(manifest_published=flow._manifest_publisher(published))
     paths = [campaign.publish_new(request) for request in requests]
@@ -692,13 +692,12 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     assert published == paths
 
 
-def test_minimal_context_defaults_to_silent_manifest_notification(
+def test_fresh_flow_defaults_to_silent_manifest_notification(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.flows.sim.flow import SimulateFlow
 
     flow = SimulateFlow()
-    flow.context = SimpleNamespace()
     published: list[Path] = []
     flow._manifest_publisher(published)(tmp_path / "manifest.json")
     assert published == [tmp_path / "manifest.json"]

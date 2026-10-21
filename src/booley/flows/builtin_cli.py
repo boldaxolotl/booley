@@ -95,26 +95,24 @@ def execute_cli(
     adapter: FlowExecutionAdapter | None = None,
 ) -> ExecutionResult:
     from booley.flows.execution_persistence import StandaloneFlowExecution
-    from booley.flows.flow_session import FlowSession
 
     invocation = CliInvocation.of(flow)
     request, quiet = _parse_cli(flow, argv, invocation)
-    flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
-    if not invocation.transport and not flow.context._acceptance_recorder.acceptance_identity():
+    flow._start_invocation(adapter or StandaloneFlowExecution(), request)
+    if not invocation.transport and not flow._acceptance_recorder.acceptance_identity():
         from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
         warn_cli_goal_recording(request.work_dir)
-    flow.context._args = request
-    flow.context._raw_argv = argv if argv is not None else sys.argv[1:]
-    flow.context._console_publication_requested = True
+    flow._raw_argv = argv if argv is not None else sys.argv[1:]
+    flow._console_publication_requested = True
     if (
         quiet
         or invocation.transport
         or os.environ.get("BOOLEY_RUNTIME_DIR")
-        or not isinstance(flow.context.execution_adapter, StandaloneFlowExecution)
+        or not isinstance(flow.execution_adapter, StandaloneFlowExecution)
         or getattr(request, "dry_run", False)
     ):
-        return flow.context.execute_prepared()
+        return flow.execute_prepared()
     from booley.flows.terminal_progress import TerminalProgress
 
     observer = TerminalProgress(
@@ -123,9 +121,9 @@ def execute_cli(
         request.work_dir,
         stream=sys.stderr,
     )
-    flow.context.terminal_progress = observer
+    flow.terminal_progress = observer
     try:
         with observer.installed():
-            return flow.context.execute_prepared()
+            return flow.execute_prepared()
     finally:
-        flow.context.terminal_progress = None
+        flow.terminal_progress = None

@@ -75,12 +75,11 @@ def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None 
     if ledger.frozen:
         return
     ledger.frozen = True
-    owner = getattr(endpoint, "flow", endpoint)
     if simulation is not None and not hasattr(simulation, "targets"):
         simulation = None
     ledger.targets = frozenset(endpoint._requested_targets())
     try:
-        handles, identities = _candidate_scope(owner, simulation)
+        handles, identities = _candidate_scope(endpoint, simulation)
         if identities is not None:
             ledger.targets = identities
         ledger.planned = frozenset(_planned_keys(endpoint, handles, simulation))
@@ -89,7 +88,7 @@ def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None 
         ledger.known = False
 
 
-def _candidate_scope(owner, simulation):
+def _candidate_scope(endpoint, simulation):
     if simulation is not None:
         if simulation.resume is not None:
             manifest = simulation.resume.candidate.manifest
@@ -103,8 +102,8 @@ def _candidate_scope(owner, simulation):
             return (candidate,), frozenset({candidate.identity})
         handles = simulation.targets[: len(simulation.selected_targets)]
         return handles, frozenset(handle.identity for handle in handles)
-    selection = getattr(owner, "_prepared_target_selection", None)
-    if selection is not None and selection.matches(owner.args.work_dir, owner.args.target):
+    selection = getattr(endpoint, "_prepared_target_selection", None)
+    if selection is not None and selection.matches(endpoint.args.work_dir, endpoint.args.target):
         return selection.handles, frozenset(handle.identity for handle in selection.handles)
     return (), None
 
@@ -132,9 +131,8 @@ def _families(endpoint: EndpointState, simulation) -> set[str]:
 def _planned_keys(
     endpoint: EndpointState, handles: tuple[TargetHandle, ...], simulation
 ) -> set[str]:
-    owner = getattr(endpoint, "flow", endpoint)
     if endpoint.name == "reviewer":
-        return {owner._criterion_key()}
+        return {endpoint._criterion_key()}
     families = _families(endpoint, simulation)
     keys: set[str] = set()
     if "elaborate_standalone" in families and (
@@ -179,8 +177,7 @@ def _named_keys(endpoint, name: str, families: set[str], conventional: set[str])
 
 
 def _conventional_families(endpoint: EndpointState, simulation) -> set[str]:
-    owner = getattr(endpoint, "flow", endpoint)
-    if "_run" in owner.__dict__:
+    if "_run" in endpoint.__dict__:
         return set()
     families = {"synth": {"synthesis_ok"}, "fpga": {"fpga_impl_ok"}, "lint": {"lint_clean"}}
     if endpoint.name != "sim":
@@ -297,7 +294,7 @@ def _campaign_keys(endpoint, handle, keys: set[str], simulation) -> set[str]:
             selected = {"default"}
         skip = getattr(endpoint.args, "skip", None)
         selected.difference_update((skip or "").split(","))
-    sim_keys = endpoint.flow.report_simulation_criterion_keys(
+    sim_keys = endpoint.report_simulation_criterion_keys(
         handle.identity, handle.selector, handle.name, registered, selected
     )
     eligible = set()

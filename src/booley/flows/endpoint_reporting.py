@@ -286,7 +286,7 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
 
 
 def _refresh_report_detail(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    refresh = getattr(getattr(endpoint, "flow", endpoint), "refresh_campaign_report_detail", None)
+    refresh = getattr(endpoint, "refresh_campaign_report_detail", None)
     if callable(refresh):
         refresh(result)
 

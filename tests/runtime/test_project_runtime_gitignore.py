@@ -294,15 +294,15 @@ def test_actual_flow_report_publication_keeps_project_clean(versioned_project, f
         "synth": AsicSynthesizeFlow,
         "fpga": FpgaImplFlow,
     }[family]()
-    flow.context._args = flow.request_type(target="demo", work_dir=root, report_dir=data / owner)
-    with flow.context.publication_resources:
-        path = endpoint_reporting.write_report(flow.context, EndpointOutcome(exit_code=0))
+    flow._args = flow.request_type(target="demo", work_dir=root, report_dir=data / owner)
+    with flow.publication_resources:
+        path = endpoint_reporting.write_report(flow, EndpointOutcome(exit_code=0))
     assert path is not None and path.is_file()
     assert (data / owner / f"{family}.json").is_file()
     assert_clean(repo)
     if family == "lint":
         flow._lint_invocation_dir = flow.reserve_invocation_dir()
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             path = flow._write_lint_report(["demo"], [], 0.0)
         assert path is not None and path.is_file()
         assert_clean(repo)

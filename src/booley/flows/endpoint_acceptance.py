@@ -448,7 +448,7 @@ def record_acceptance(
 def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
     campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
     if campaign_outcomes:
-        handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
+        handler = getattr(endpoint, "record_campaign_acceptance", None)
         if not callable(handler):
             raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
         try:
@@ -489,9 +489,7 @@ def _retain_partial_campaign_acceptance(
     campaign_outcomes: tuple[object, ...],
 ) -> None:
     """Expose durable per-Target acceptance completed before projection failed."""
-    flow = getattr(endpoint, "flow", endpoint)
-    context = getattr(flow, "context", flow)
-    accepted = tuple(getattr(context, "_simulation_acceptance_outcomes", ()))
+    accepted = tuple(getattr(endpoint, "_simulation_acceptance_outcomes", ()))
     entries: list[dict[str, object]] = []
     for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
         target = getattr(campaign, "target", {})

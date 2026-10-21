@@ -251,7 +251,7 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
             tmp_path / "invocation", None, ["sim_core"], {"sim_core": ["coremark"]}
         )
     finally:
-        flow.context.publication_resources.close()
+        flow.publication_resources.close()
 
     assert (requests, prerequisites) == ([], {"sim_core": []})
     reason = flow._test_runs.baseline.refusals[("sim_core", "coremark@1")]

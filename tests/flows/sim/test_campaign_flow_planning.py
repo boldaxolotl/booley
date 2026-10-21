@@ -177,7 +177,7 @@ def test_campaign_baseline_planning_materializes_project_topologies(
         assert flow.args.work_dir == root
         assert roots and roots[0].exists()
     finally:
-        flow.context.publication_resources.close()
+        flow.publication_resources.close()
     assert not roots[0].exists()
 
 

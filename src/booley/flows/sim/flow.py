@@ -2597,7 +2597,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 except (LockContentionError, FileExistsError):
                     number += 1
                     continue
-                self.context.publication_resources.push(attempt.pop_all())
+                self.publication_resources.push(attempt.pop_all())
                 return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
@@ -2606,11 +2606,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from .acceptance import record_campaign_acceptance
 
         record_campaign_acceptance(
-            self.context, outcomes, baseline_refusals=self._test_runs.baseline.refusals
+            self, outcomes, baseline_refusals=self._test_runs.baseline.refusals
         )
 
     def _capture_cycle_report(self, outcomes: Sequence[CampaignOutcome]) -> None:
-        if self.context.cycle_report_json is not None:
+        if self.cycle_report_json is not None:
             return
         try:
             rows = {
@@ -2620,15 +2620,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 ]
                 for outcome in outcomes
             }
-            self.context.cycle_report_json = json.dumps({"cycle_counts": rows}) if rows else "{}"
+            self.cycle_report_json = json.dumps({"cycle_counts": rows}) if rows else "{}"
         except Exception:  # optional metadata cannot change verdict or acceptance
             logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
-            self.context.cycle_report_json = '{"cycle_counts_error":"unavailable"}'
+            self.cycle_report_json = '{"cycle_counts_error":"unavailable"}'
 
     def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
         """Bind final projection references after acceptance publication."""
-        outcomes = getattr(self.context, "_simulation_campaign_outcomes", ())
-        invocation = self.context._reserved_invocation_dir
+        outcomes = self._simulation_campaign_outcomes
+        invocation = self._reserved_invocation_dir
         if outcomes and invocation is not None:
             result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
 
@@ -2657,7 +2657,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return prepared
             targets, resume, selected_targets, test_names_map = prepared
             if resume is None:
-                self.context.set_report_targets(list(selected_targets))
+                self.set_report_targets(list(selected_targets))
             if (
                 resume is not None
                 and (refusal := self._refuse_unfinished_coverage_resume(resume)) is not None
@@ -2678,7 +2678,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 coverage_error = self._prepare_coverage()
                 if coverage_error is not None:
                     return coverage_error
-            rejection = authorize_simulation_targets(self.context, targets)
+            rejection = authorize_simulation_targets(self, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -2805,7 +2805,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
         from .campaign import read_invocation_pre_sim_firings
 
-        invocation = self.context._reserved_invocation_dir
+        invocation = self._reserved_invocation_dir
         if invocation is None:
             return result
         try:
@@ -2835,7 +2835,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         firings = tuple(
             firing
-            for outcome in getattr(self.context, "_simulation_campaign_outcomes", ())
+            for outcome in self._simulation_campaign_outcomes
             for firing in outcome.pre_sim_firings
         )
         retained = False
@@ -2844,15 +2844,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 result = self._project_published_pre_sim(
                     result,
                     reread_pre_sim_firings(firings),
-                    self.context._reserved_invocation_dir,
+                    self._reserved_invocation_dir,
                 )
                 retained = True
             except (OSError, ValueError):
                 pass
-        self.context._simulation_campaign_outcomes = ()
-        self.context._pending_criteria_set = ()
-        self.context._report_criteria.evaluated.clear()
-        self.context._report_criteria.known = False
+        self._simulation_campaign_outcomes = ()
+        self._pending_criteria_set = ()
+        self._report_criteria.evaluated.clear()
+        self._report_criteria.known = False
         return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
 
     def _prepare_campaign_targets(
@@ -2874,7 +2874,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     return Path(self.args.work_dir)
                 revision = target["revision"]
                 if revision not in roots:
-                    resources = self.context.publication_resources
+                    resources = self.publication_resources
                     roots[revision] = resources.enter_context(
                         baseline_worktree(
                             Path(self.args.work_dir),
@@ -2908,7 +2908,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Resolve Criterion baselines from their historical checkout."""
         if revision is None or not selectors:
             return ()
-        root = self.context.publication_resources.enter_context(
+        root = self.publication_resources.enter_context(
             baseline_worktree(
                 Path(self.args.work_dir),
                 revision,
@@ -3533,7 +3533,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         # The destination lock is already held; also retain the resumed origin.
         try:
-            self.context.publication_resources.enter_context(
+            self.publication_resources.enter_context(
                 campaign_invocation_lock(validated.path.parents[3])
             )
         except (OSError, ValueError) as exc:
@@ -3875,7 +3875,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             DevelopmentState.load(self.args.state_file)
             if self.args.state_file
             else DevelopmentState(),
-            recorder=self.context._acceptance_recorder,
+            recorder=self._acceptance_recorder,
         )
         runs = (
             tuple(
@@ -3964,7 +3964,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     if self.args.state_file
                     else DevelopmentState()
                 ),
-                recorder=self.context._acceptance_recorder,
+                recorder=self._acceptance_recorder,
             )
             selection = self._selected_target_selection()
             prepared = prepare_coverage_invocation(
@@ -4173,20 +4173,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         failed_outcome: CampaignOutcome | None = None,
     ) -> EndpointOutcome:
         """Report a fatal aggregate without inventing a terminal Simulation result."""
-        self.context._simulation_campaign_outcomes = tuple(outcomes)
+        self._simulation_campaign_outcomes = tuple(outcomes)
         self._capture_cycle_report(
             (*outcomes, failed_outcome) if failed_outcome is not None else outcomes
         )
         targets = _coverage_compatibility_targets(
             outcomes,
-            self.context._reserved_invocation_dir,
+            self._reserved_invocation_dir,
         )
         failed = _coverage_request_selector(request)
         evaluation = self._coverage_failure_evaluation(request, error)
         if evaluation is None:
             return _unmatched_coverage_failure(outcomes, targets, error)
         targets[failed] = _coverage_failed_target(
-            failed, error, evaluation, failed_outcome, self.context._reserved_invocation_dir
+            failed, error, evaluation, failed_outcome, self._reserved_invocation_dir
         )
         pending = [failed, *[_coverage_request_selector(item) for item in requests[index + 1 :]]]
         return _coverage_failure_outcome(
@@ -4194,7 +4194,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             targets,
             pending,
             error,
-            self.context._reserved_invocation_dir,
+            self._reserved_invocation_dir,
         )
 
     def _coverage_failure_evaluation(
@@ -4303,7 +4303,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         campaign is published but its acceptance never is, its Test Run
         outcomes can still be accounted for.
         """
-        adapter = getattr(self.context, "execution_adapter", None)
+        adapter = self.execution_adapter
         if not wants_campaigns(adapter) or self.args.diagnostic:
             return
         root = target_report_directory(invocation, target.handle.selector)
@@ -4322,10 +4322,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             started_at=started_at,
             acceptance=coverage_acceptance(
                 self.state,
-                self.context._acceptance_recorder,
+                self._acceptance_recorder,
                 diagnostic=self.args.diagnostic,
-                observer=self.context.record_report_criteria,
-                on_discard=self.context.discard_evidence,
+                observer=self.record_report_criteria,
+                on_discard=self.discard_evidence,
             ),
         )
         options = SimulationOptions(
@@ -4481,8 +4481,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     result,
                     failure,
                     "publish simulation progress",
-                    path=self.context._reserved_invocation_dir / "progress.json"
-                    if self.context._reserved_invocation_dir is not None
+                    path=self._reserved_invocation_dir / "progress.json"
+                    if self._reserved_invocation_dir is not None
                     else None,
                 )
             return self._attach_legacy_pre_sim(
@@ -4607,20 +4607,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if path in published:
                 return
             published.append(path)
-            adapter = getattr(self.context, "execution_adapter", None)
-            diagnostic = getattr(getattr(self.context, "_args", None), "diagnostic", False)
+            adapter = self.execution_adapter
+            diagnostic = getattr(self._args, "diagnostic", False)
             if wants_campaigns(adapter) and diagnostic is not True:
                 # Before any of its work runs: a campaign that never returns an
                 # outcome still leaves results its Goals must account for.
                 register_campaign_for(adapter, started_campaign(path))
-            if getattr(self.context, "_console_publication_requested", False):
+            if self._console_publication_requested:
                 with suppress(OSError, ValueError):
                     print(f"campaign manifest: {path.resolve()}", file=sys.stderr, flush=True)
 
         return publish
 
     def _report_destination(self) -> Path | None:
-        args = getattr(self.context, "_args", None)
+        args = self._args
         if args is None or getattr(args, "dry_run", False):
             return None
         root = getattr(args, "report_dir", None)
@@ -4848,7 +4848,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         links = self._baseline_links(targets, test_names_map)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
-        worktree = self.context.publication_resources.enter_context(
+        worktree = self.publication_resources.enter_context(
             baseline_worktree(
                 Path(self.args.work_dir),
                 baseline_ref,
@@ -5211,7 +5211,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
 
     def _campaign_endpoint_outcome(self, outcomes: list[CampaignOutcome]) -> EndpointOutcome:
-        self.context._simulation_campaign_outcomes = tuple(outcomes)
+        self._simulation_campaign_outcomes = tuple(outcomes)
         self._capture_cycle_report(outcomes)
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
@@ -5225,7 +5225,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "report_path": self._report_destination(),
             "default_seeds": self._test_runs.default_seeds,
         }
-        invocation = self.context._reserved_invocation_dir
+        invocation = self._reserved_invocation_dir
         campaigns = _campaign_structured_details(outcomes, invocation)
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
@@ -5247,7 +5247,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail.update(coverage=True, targets=coverage_targets, pending_targets=[])
         return EndpointOutcome(
             exit_code=exit_code,
-            cycle_report_json=self.context.cycle_report_json or "{}",
+            cycle_report_json=self.cycle_report_json or "{}",
             criterion_met=exit_code == EXIT_SUCCESS and not threshold_missed,
             detail=detail,
             report_text="\n".join(lines),
@@ -5339,7 +5339,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except ProgressPublicationError as exc:
             if result is not None:
                 failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
-                invocation = self.context._reserved_invocation_dir
+                invocation = self._reserved_invocation_dir
                 return normalize_completion_error(
                     result,
                     failure,
@@ -6410,7 +6410,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     @property
     def _target_eda_tools(self) -> dict[str, str | None]:
         """Standalone probes share the invocation's resolved tool metadata."""
-        return self.context._eda_tools
+        return self._eda_tools
 
     def _record_eda_tool(self, target: str, eda_tool: str | None) -> None:
         """Remember *target*'s raw resolved EDA tool (e.g. ``"verilator"``).
@@ -6705,7 +6705,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _simulation_artifact_root(self, role: WorkUnitRole | None) -> Path | None:
         """Return the authorized direct-run evidence namespace without reserving."""
-        invocation_dir = self.context._reserved_invocation_dir
+        invocation_dir = self._reserved_invocation_dir
         if invocation_dir is None:
             return None
         if role != "baseline":
@@ -6980,7 +6980,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         report calls diagnostic come from one reading.
         """
         if not self._test_runs.frozen:
-            self._test_runs.frozen = (frozen_test_runs_for(self.context.execution_adapter),)
+            self._test_runs.frozen = (frozen_test_runs_for(self.execution_adapter),)
         return self._test_runs.frozen[0]
 
     def _with_diagnostic_test_run_note(self, result: EndpointOutcome) -> EndpointOutcome:
@@ -6994,7 +6994,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if frozen is None:
             return result
         if self.args.diagnostic:
-            adapter = self.context.execution_adapter
+            adapter = self.execution_adapter
             return _with_frozen_runs_of_a_diagnostic_run(
                 result, frozen, self._target_names, lambda key: execution_goal_name(adapter, key)
             )

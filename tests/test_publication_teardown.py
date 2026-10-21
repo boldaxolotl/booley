@@ -24,7 +24,7 @@ resources = None
 def test_leak(tmp_path):
     global reservation, resources
     flow = SimulateFlow()
-    resources = flow.context.publication_resources
+    resources = flow.publication_resources
     if __LEAK__ == "reservation":
         reservation = flow._next_invocation_dir(tmp_path / "reports")
         resources.callback(marker.touch)
@@ -35,7 +35,7 @@ def test_leak(tmp_path):
         reservation = tmp_path / "1"
         campaign_invocation_lock_context = campaign_invocation_lock(reservation)
         campaign_invocation_lock_context.__enter__()
-        # Retain it outside the Flow session so the independent probe is tested.
+        # Retain it outside the Flow so the independent probe is tested.
         resources = campaign_invocation_lock_context
     else:
         with resources:
@@ -81,7 +81,7 @@ def test_publication_guard_detects_before_cleanup(tmp_path: Path, leak: str) -> 
     assert "2 passed" in output, output
     assert result.returncode == (0 if leak in {"none", "owned_callback"} else 1), output
     if leak in {"reservation", "callback"}:
-        assert "Flow session 'sim'" in output, output
+        assert "Flow invocation 'sim'" in output, output
     if leak in {"reservation", "lock"}:
         assert "Simulation invocation lock still held:" in output, output
         assert ".invocation-1.lock" in output, output
@@ -131,9 +131,9 @@ def fail_cleanup():
 def test_failure(request):
     global guard, original_probe
     for index in range(2):
-        session = SimulateFlow().context
-        resources.append(session.publication_resources)
-        session.publication_resources.callback((root / f"cleaned-{index}").touch)
+        flow = SimulateFlow()
+        resources.append(flow.publication_resources)
+        flow.publication_resources.callback((root / f"cleaned-{index}").touch)
     if __FAILURE__ == "cleanup":
         resources[-1].callback(fail_cleanup)
     elif __FAILURE__ == "finalizer":
@@ -159,7 +159,7 @@ def test_cleanup():
 
 @pytest.mark.parametrize("failure", ["cleanup", "finalizer", "probe"])
 def test_publication_guard_cleans_sessions_after_failure(tmp_path: Path, failure: str) -> None:
-    """A failing callback, finalizer, or probe cannot strand another session."""
+    """A failing callback, finalizer, or probe cannot strand another invocation."""
     source = _CHILD_FAILURE_TESTS.replace("__ROOT__", repr(str(tmp_path))).replace(
         "__FAILURE__", repr(failure)
     )

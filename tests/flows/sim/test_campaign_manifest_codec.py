@@ -1001,7 +1001,7 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
         assert tests == {}
         assert roots[0].exists()
     finally:
-        flow.context.publication_resources.close()
+        flow.publication_resources.close()
     assert not roots[0].exists()
 
 

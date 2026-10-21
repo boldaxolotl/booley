@@ -743,7 +743,7 @@ def test_generic_endpoint_delegates_campaign_acceptance_to_owning_flow() -> None
     received: list[tuple[object, ...]] = []
     endpoint = SimpleNamespace(
         _simulation_campaign_outcomes=("campaign-outcome",),
-        flow=SimpleNamespace(record_campaign_acceptance=received.append),
+        record_campaign_acceptance=received.append,
         evidence_discarded=None,
     )
 
@@ -761,7 +761,7 @@ def test_cancelled_campaign_suppresses_acceptance_publication() -> None:
     endpoint = SimpleNamespace(
         _pending_criteria_set=("sim",),
         _simulation_campaign_outcomes=("partial-outcome",),
-        flow=SimpleNamespace(record_campaign_acceptance=received.append),
+        record_campaign_acceptance=received.append,
     )
 
     record_acceptance(

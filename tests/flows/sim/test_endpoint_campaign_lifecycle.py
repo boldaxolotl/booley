@@ -181,7 +181,7 @@ def _public_hook_endpoint(flow, invocation):
         flow=flow,
         name="sim",
         endpoint_kind="flow",
-        _acceptance_recorder=flow.context._acceptance_recorder,
+        _acceptance_recorder=flow._acceptance_recorder,
         _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
@@ -208,7 +208,7 @@ def test_successful_pre_sim_firing_reaches_public_reports(
 
     invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, access)
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([campaign])
     endpoint = _public_hook_endpoint(flow, invocation)
@@ -241,7 +241,7 @@ def test_failed_hook_reports_real_exit_code_without_changing_adapter_grade(
         tmp_path, monkeypatch, access, commands=("echo failed-out; echo failed-err >&2; exit 7",)
     )
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([campaign])
     assert result.exit_code == 1
@@ -265,7 +265,7 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
             mutate_snapshot=True,
             observer=flow._record_pre_sim_firing,
         )
-    flow.context._reserved_invocation_dir = tmp_path / "reports/1"
+    flow._reserved_invocation_dir = tmp_path / "reports/1"
     result = flow._attach_published_pre_sim(
         EndpointOutcome(exit_code=2, report_text="integrity error")
     )
@@ -279,7 +279,7 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
 ):
     invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([campaign])
     assert result.detail["pre_sim_current"] == 1
@@ -293,9 +293,10 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     assert result.detail["pre_sim_unauthenticated_references"]
 
 
-class _Flow:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
+class _Endpoint:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.name = "sim"
 
     def run_prepared_simulation(
         self, prepared: object, admission: object | None
@@ -304,13 +305,6 @@ class _Flow:
         assert prepared == ("target",)
         assert admission == "borrowed-admission"
         return EndpointOutcome(report_text="ok")
-
-
-class _Endpoint:
-    def __init__(self) -> None:
-        self.events: list[str] = []
-        self.flow = _Flow(self.events)
-        self.name = "sim"
 
     @contextmanager
     def admission(self, prepared: PreparedExecution) -> Iterator[object]:
@@ -503,7 +497,7 @@ def test_legacy_result_survives_terminal_progress_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = tmp_path
+    flow._reserved_invocation_dir = tmp_path
     monkeypatch.setattr(flow, "_prepare_legacy_run", lambda *_args: (["PASS"], True))
     monkeypatch.setattr(
         flow,
@@ -566,7 +560,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         )
     )
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(
         target=["sim"], result_verbosity="brief", report_dir=invocation.parent
     )
@@ -576,7 +570,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         flow=flow,
         name="sim",
         endpoint_kind="flow",
-        _acceptance_recorder=flow.context._acceptance_recorder,
+        _acceptance_recorder=flow._acceptance_recorder,
         _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
@@ -1149,15 +1143,15 @@ def _cycle_ticket(tmp_path):
 def _public_cycle_flow(campaign, monkeypatch):
     from contextlib import nullcontext
 
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.endpoint_state import EndpointState
 
     flow = SimulateFlow()
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    monkeypatch.setattr(FlowSession, "_criterion_binding_gate", lambda _self: None)
+    monkeypatch.setattr(EndpointState, "_criterion_binding_gate", lambda _self: None)
     monkeypatch.setattr(flow, "prepare_target_endpoint", lambda: None)
     monkeypatch.setattr(flow, "prepare_simulation_endpoint", object)
     monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
-    monkeypatch.setattr(FlowSession, "admission", lambda *_args: nullcontext(None))
+    monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext(None))
     monkeypatch.setattr(
         flow, "run_prepared_simulation", lambda *_args: flow._campaign_endpoint_outcome([campaign])
     )
@@ -1191,7 +1185,7 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     monkeypatch.setattr(json, "dumps", encode)
     monkeypatch.setattr(endpoint_reporting, "atomic_write_json", write)
     if failure in {"console", "atomic_console"}:
-        monkeypatch.setattr(type(flow.context), "_publish_console_report", fail)
+        monkeypatch.setattr(type(flow), "_publish_console_report", fail)
     if failure == "acceptance":
         monkeypatch.setattr(flow, "record_campaign_acceptance", fail)
     if failure in {"render", "structured"}:
@@ -1278,7 +1272,7 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
         AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
     )
     assert result.exit_code != 0
-    assert flow.context._simulation_campaign_outcomes == ()
+    assert flow._simulation_campaign_outcomes == ()
     if cancelled:
         assert result.detail == {}
     _assert_partial_acceptance_policy(flow, result, tmp_path, campaign)
@@ -1303,7 +1297,7 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
-    assert flow.context._simulation_campaign_outcomes == ()
+    assert flow._simulation_campaign_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)
 
@@ -1340,7 +1334,7 @@ def _assert_partial_acceptance_policy(flow, result, tmp_path, campaign):
 
     path, state, _key, recorder = _cycle_ticket(tmp_path)
     flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
-    context = flow.context
+    context = flow
     context._state = state
     context.configure_flow_execution(recorder)
     context._pending_criteria_set = ("preexisting",)
@@ -1425,8 +1419,8 @@ def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
 
     from booley.flows.endpoint_reporting import write_report
 
-    with flow.context.publication_resources:
-        path = write_report(flow.context, result)
+    with flow.publication_resources:
+        path = write_report(flow, result)
     report = json.loads(path.read_text())
     expected = [{"test": None if unnamed else "smoke", "cycle_count": None}]
     assert report["cycle_counts"]["sim"] == expected
@@ -1484,7 +1478,7 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
 def _assert_coverage_failure_counts(flow, reports, returned):
     import json
 
-    assert flow.context._simulation_campaign_outcomes == tuple(returned[:1])
+    assert flow._simulation_campaign_outcomes == tuple(returned[:1])
     report = json.loads((reports / "sim/1/report.json").read_text())
     expected = {
         f"sim_{index}": [{"test": "reset", "cycle_count": None}] for index in range(len(returned))
@@ -1783,7 +1777,7 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
     assert outcome is returned
     assert isinstance(error, OSError)
     assert phases == ["starting", "running", "complete", "aborted"]
-    assert flow.context.cycle_report_json is None
+    assert flow.cycle_report_json is None
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
@@ -1802,7 +1796,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
     reports = tmp_path / "reports"
 
     def invoke(command, *, timeout=None):
-        invocation = flow.context._reserved_invocation_dir
+        invocation = flow._reserved_invocation_dir
         if invocation is not None and (invocation / "progress.json").exists():
             progress = json.loads((invocation / "progress.json").read_text())
             for active in progress.get("active", []):
@@ -1906,7 +1900,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(_Group, "compile", fail_build)
     invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "legacy-per-test")
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([campaign])
     assert result.exit_code == 1

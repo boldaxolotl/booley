@@ -276,7 +276,7 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     assert observation["detail"]["text"].splitlines()[0] == TIMEOUT_REASON
     assert store.scan().interrupted == ()
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     endpoint = flow._campaign_endpoint_outcome([campaign])
     assert endpoint.exit_code == EXIT_ERROR
@@ -606,7 +606,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     assert [item["test"] for item in result.document["observations"]] == list(names)
     assert _first_build_result(store)["observation"]["detail"]["build_stage"]["timed_out"]
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     endpoint = flow._campaign_endpoint_outcome([campaign])
     assert endpoint.detail["eda_tool_error"] == "build_infrastructure"

@@ -14,7 +14,7 @@ from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.endpoint_cli import normalize_target_arg
-from booley.flows.flow_session import FlowSession
+from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
@@ -94,7 +94,7 @@ def test_duplicate_target_fails_before_start_event_or_admission(
         lambda *_args: pytest.fail("published start event for invalid Target selection"),
     )
     monkeypatch.setattr(
-        FlowSession,
+        EndpointState,
         "_acquire_job_slot",
         lambda _self: pytest.fail("acquired a slot for invalid Target selection"),
     )
@@ -272,7 +272,7 @@ def test_cli_report_preserves_authored_repeated_target_argv(
         lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")}),
     )
 
-    with mock.patch.object(FlowSession, "admission", return_value=nullcontext(None)):
+    with mock.patch.object(EndpointState, "admission", return_value=nullcontext(None)):
         result = flow.execute_cli(argv)
 
     report = json.loads((report_dir / "lint.json").read_text())
@@ -463,7 +463,7 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
         ),
     )
 
-    with mock.patch.object(FlowSession, "admission", return_value=nullcontext(None)):
+    with mock.patch.object(EndpointState, "admission", return_value=nullcontext(None)):
         execution = flow.execute_cli(
             ["--target", "demo", "--coverage", "--work-dir", str(tmp_path)]
         )
@@ -493,12 +493,12 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
 
     with (
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_acquire_job_slot",
             side_effect=AssertionError("dry-run acquired a heavy slot"),
         ),
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_post_run",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),
@@ -582,12 +582,12 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
 
     with (
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_acquire_job_slot",
             side_effect=AssertionError("dry-run acquired a heavy slot"),
         ),
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_post_run",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),

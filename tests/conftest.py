@@ -239,42 +239,45 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         tempfile.tempdir = None
 
 
-_FLOW_SESSIONS = pytest.StashKey[list[Any]]()
+_FLOW_PUBLICATIONS = pytest.StashKey[list[tuple[str, Any]]]()
 
 
 @pytest.fixture(autouse=True)
-def _track_flow_sessions(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Record each Flow session a test creates for the teardown lock check below.
+def _track_flow_invocations(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Record each Flow invocation's publication stack for the teardown lock check below.
 
     Minimal CI environments (for example the production-image smoke jobs) lack
-    Flow dependencies such as PyYAML. No Flow session can exist there, so the
+    Flow dependencies such as PyYAML. No Flow invocation can exist there, so the
     fixture tracks nothing instead of failing every test's setup.
     """
     try:
-        from booley.flows.flow_session import FlowSession
+        from booley.flows.base import BuiltinFlow
     except ModuleNotFoundError:
         yield
         return
 
-    sessions = request.node.stash.setdefault(_FLOW_SESSIONS, [])
-    initialize = FlowSession.__init__
+    stacks = request.node.stash.setdefault(_FLOW_PUBLICATIONS, [])
+    start = getattr(BuiltinFlow, "_start_invocation", None)
+    if start is None:  # a Flow without an invocation-start hook has no stack to track
+        yield
+        return
 
-    def tracking_init(session: FlowSession, *args: Any, **kwargs: Any) -> None:
-        initialize(session, *args, **kwargs)
-        sessions.append(session)
+    def tracking_start(flow: BuiltinFlow, *args: Any, **kwargs: Any) -> None:
+        start(flow, *args, **kwargs)
+        stacks.append((flow.name, flow.publication_resources))
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(FlowSession, "__init__", tracking_init)
+        patch.setattr(BuiltinFlow, "_start_invocation", tracking_start)
         yield
 
 
-def _publication_leaks(item: pytest.Item, sessions: list[Any]) -> list[str]:
+def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list[str]:
     """Observe callbacks and locks before emergency cleanup can hide a leak."""
     # ExitStack has no public callback-count API; this is test-only introspection.
     leaks = [
-        f"Flow session {session.name!r} ({id(session):#x}) has publication callbacks"
-        for session in sessions
-        if session.publication_resources._exit_callbacks
+        f"Flow invocation {name!r} ({id(stack):#x}) has publication callbacks"
+        for name, stack in stacks
+        if stack._exit_callbacks
     ]
     tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
     if sys.platform != "win32" and isinstance(tmp_path, Path):
@@ -290,7 +293,7 @@ def _publication_leaks(item: pytest.Item, sessions: list[Any]) -> list[str]:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
-    """Detect leaked publication resources, then close every tracked session.
+    """Detect leaked publication resources, then close every tracked stack.
 
     Direct Flow calls must own their publication scope. Observe leaks after all
     fixture finalizers so test patches of Path or fcntl are no longer active.
@@ -299,13 +302,13 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     try:
         return (yield)
     finally:
-        sessions = item.stash.get(_FLOW_SESSIONS, [])
+        stacks = item.stash.get(_FLOW_PUBLICATIONS, [])
         try:
-            leaks = _publication_leaks(item, sessions)
+            leaks = _publication_leaks(item, stacks)
         finally:
             with ExitStack() as cleanup:
-                for session in sessions:
-                    cleanup.callback(session.publication_resources.close)
+                for _name, stack in stacks:
+                    cleanup.callback(stack.close)
         if leaks:
             pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
 

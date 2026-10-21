@@ -151,7 +151,7 @@ def test_public_simulation_precedence_table(
         patch("booley.flows.sim.flow._get_test_names", return_value={}),
         patch.object(SimulateFlow, "_flow_enabled", return_value=True),
         patch.object(flow, "_execute", return_value=process),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         outcome = flow._run()
 
@@ -185,7 +185,7 @@ def test_compatibility_projection_and_endpoint_detail_shape(
         patch.object(flow, "_execute", return_value=process),
         patch.object(flow, "_compile_command_str", return_value=None),
         patch.object(flow, "_fileset_for_report", return_value=None),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         outcome = flow._run()
 
@@ -763,10 +763,10 @@ def test_standalone_legacy_simulation_final_report_is_run_local(
         patch("booley.flows.sim.flow._get_test_names", return_value={}),
         patch.object(SimulateFlow, "_flow_enabled", return_value=True),
         patch.object(flow, "_execute", return_value=process),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         outcome = flow._run()
-        final_report_omits_headline(flow.context, outcome)
+        final_report_omits_headline(flow, outcome)
     assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None
