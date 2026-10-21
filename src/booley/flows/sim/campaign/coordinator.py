@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
-from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMA_V1
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
@@ -1019,12 +1018,9 @@ def _acceptance_facts(
     by_id = {item["work_item_id"]: item for item in items}
     consumed, observations = collected_result_facts(store, recovery, by_id)
     suite = cast(Mapping[str, object], manifest.document["required_suite"])
-    names_test_runs = all("test_runs" in item for item in items)
     facts = AcceptanceFacts(
         {
-            "$schema": (
-                ACCEPTANCE_FACTS_SCHEMA if names_test_runs else ACCEPTANCE_FACTS_SCHEMA_V1
-            ),
+            "$schema": ACCEPTANCE_FACTS_SCHEMA,
             "campaign_id": manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(manifest),
             "origin": manifest.document["origin"],
@@ -1034,7 +1030,7 @@ def _acceptance_facts(
                 "default_invocation": suite["default_invocation"],
                 "source_sha256": suite["source_sha256"],
             },
-            "prerequisites": _prerequisite_facts(store, manifest, names_test_runs=names_test_runs),
+            "prerequisites": _prerequisite_facts(store, manifest),
             "consumed_results": consumed,
             "observations": observations,
             "coverage_reference": _coverage_acceptance_reference(
@@ -1141,8 +1137,6 @@ def _observation_facts(
 def _prerequisite_facts(
     owner_store: CampaignStore,
     manifest: SimulationCampaignManifest,
-    *,
-    names_test_runs: bool,
 ) -> list[dict[str, object]]:
     facts: list[dict[str, object]] = []
     entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
@@ -1182,23 +1176,18 @@ def _prerequisite_facts(
                     "test": observation["test"],
                     "cycle_count": observation["cycle_count"],
                     "unit": "cycles",
-                    **_baseline_test_run_facts(baseline_run, names_test_runs=names_test_runs),
+                    **_baseline_test_run_facts(baseline_run),
                 },
             }
         )
     return facts
 
 
-def _baseline_test_run_facts(
-    run: Mapping[str, object] | None, *, names_test_runs: bool
-) -> dict[str, object]:
+def _baseline_test_run_facts(run: Mapping[str, object] | None) -> dict[str, object]:
     """Name the Test Run a baseline observed, so facts show both revisions ran it.
 
-    Facts that name Test Runs need the baseline's too: a baseline campaign
-    that recorded none cannot be compared and is refused.
+    A baseline campaign that recorded none cannot be compared and is refused.
     """
-    if not names_test_runs:
-        return {}
     if run is None:
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite records no Test Run to compare"
