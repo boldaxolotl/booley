@@ -163,7 +163,15 @@ def render_approval_document(existing: bytes | None, promotion: WaiverPromotion)
 
 
 def _inline_code(text: str) -> str:
-    """Return *text* as a Markdown code span that no backtick run can close early."""
+    """Return *text* as a Markdown code span that no backtick run can close early.
+
+    Single-line binding and stamp values come from the Sandbox-writable candidate
+    record, which the loader never sees (it hashes the proof).  A line break would
+    end the span and let the value inject Markdown into the committed review proof,
+    so control characters are refused.
+    """
+    if _CONTROL_RE.search(text):
+        raise WaiverPromotionError(f"single-line proof value {text!r} holds control characters")
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     fence = "`" * (longest + 1)
     padded = f" {text} " if text.startswith("`") or text.endswith("`") else text

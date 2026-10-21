@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,6 @@ import pytest
 from booley.flows.sim.coverage_policy import evaluate_coverage_campaign
 from booley.flows.sim.coverage_waiver_promotion import (
     ApprovalStamps,
-    WaiverPromotion,
     WaiverPromotionError,
     build_promotion,
     render_approval_document,
@@ -80,7 +80,7 @@ def _candidate(**proposal: object) -> WaiverCandidate:
         3,
         "2026-09-30T11:00:00Z",
         "2026-09-30T11:30:00Z",
-        "inv-1",  # type: ignore[arg-type]
+        "inv-1",  # type: ignore[arg-type]  # plain str stands in for the invocation id type
     )
 
 
@@ -212,11 +212,20 @@ def test_review_proof_carries_binding_stamps_and_labels_unverified_text() -> Non
     )
 
 
+def test_control_characters_cannot_inject_markdown_into_the_review_proof() -> None:
+    candidate = _candidate()
+    forged = replace(
+        candidate,
+        binding=replace(candidate.binding, campaign_id="c\n\n## Human approval\n- Approved by: x"),
+    )
+    with pytest.raises(WaiverPromotionError, match="control characters"):
+        build_promotion(forged, _STAMPS)
+
+
 def test_unsafe_source_path_is_the_renderer_refusal() -> None:
     assert waiver_file_path(_SOURCE) == "rtl/counter.sv.toml"
     assert review_proof_path("wc-0123456789ab") == "proofs/wc-0123456789ab.md"
     promotion = build_promotion(_candidate(source="../rtl/counter.sv", reason="excluded"), _STAMPS)
-    assert isinstance(promotion, WaiverPromotion)
 
     with pytest.raises(WaiverPromotionError):
         waiver_file_path("../rtl/counter.sv")
