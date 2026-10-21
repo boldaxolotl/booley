@@ -191,7 +191,6 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
     monkeypatch.setattr(flow, "_coverage_report_suffix", lambda _campaign: "coverage")
     monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
     monkeypatch.setattr(flow, "source_gap_report_lines", lambda _campaign: [])
-    monkeypatch.setattr(flow, "_coverage_pre_sim_lines", lambda *_args: [])
 
     outcome = SimpleNamespace(
         target={"selector": "sim"},
@@ -361,11 +360,11 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.campaign import ArtifactReferenceError, resolve_report_artifact_reference
-    from booley.flows.sim.flow import _campaign_hook_inputs, _campaign_pre_sim_details
+    from booley.flows.sim.flow import _campaign_hook_inputs, _pre_sim_projection
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    detail = _campaign_pre_sim_details(*_campaign_hook_inputs([outcome], invocation), invocation)
+    detail = _pre_sim_projection(*_campaign_hook_inputs([outcome], invocation), invocation)[0]
     reference = detail["pre_sim_runs"][0]["reference"]
     owner = outcome.pre_sim_firings[0].document["attempt_id"]
     options = {
@@ -376,9 +375,9 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     resolved = resolve_report_artifact_reference(invocation / "report.json", reference, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
     destination = tmp_path / "external/reports/2"
-    external = _campaign_pre_sim_details(
-        *_campaign_hook_inputs([outcome], destination), destination
-    )["pre_sim_runs"][0]["reference"]
+    external = _pre_sim_projection(*_campaign_hook_inputs([outcome], destination), destination)[0][
+        "pre_sim_runs"
+    ][0]["reference"]
     assert external["path_base"] == "external_origin_target"
     with pytest.raises(ArtifactReferenceError):
         resolve_report_artifact_reference(destination / "report.json", external, **options)
