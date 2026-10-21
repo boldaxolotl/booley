@@ -279,9 +279,6 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
     points_path = target_dir / POINT_STORE_NAME
     if campaign_path.exists() or points_path.exists():
         raise CoverageCampaignStoreError("Coverage Campaign publication cannot replace evidence")
-    from .coverage_declaration_artifact import validate_declaration_publication
-
-    validate_declaration_publication(target_dir, campaign)
     points_bytes, reference = _point_store_bytes(campaign)
     manifest_bytes = _manifest_bytes(_manifest(campaign, reference))
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
@@ -722,14 +719,6 @@ def _load_current(
             "COV_SOURCE_ROLLUP_MISMATCH",
             "Source coverage summaries do not match the deterministic point derivation",
         )
-    from .coverage_declaration_artifact import load_declaration_artifact
-
-    try:
-        load_declaration_artifact(path.parent, campaign)
-    except (OSError, ValueError) as exc:
-        raise CoverageCampaignStoreError(
-            "COV_DECLARATION_INTEGRITY", f"Cannot authenticate declaration evidence: {exc}"
-        ) from exc
     return LoadedCoverageCampaign(summary, campaign)
 
 
