@@ -532,8 +532,8 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         self._args = request
         self.terminal_progress: TerminalProgress | None = None
         self.publication_resources = contextlib.ExitStack()
-        self._simulation_campaign_outcomes: tuple[object, ...] = ()
-        self._simulation_acceptance_outcomes: tuple[object, ...] = ()
+        self._simulation_campaign_outcomes: tuple[Any, ...] = ()
+        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
         self.reset_report_metadata()
 
     @property

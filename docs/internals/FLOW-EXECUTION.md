@@ -30,8 +30,8 @@ location are environment-derived preparation fields, excluded from constructors.
 - `FlowMechanics` supplies subprocess execution, timeout/cancellation cleanup,
   artifact age checks and the Flow pre-state gate.
 - `BuiltinFlow` inherits `FlowMechanics` and `EndpointState` and is the single
-  owner of its invocation state. Each entry point (`execute`, `execute_cli`,
-  `parse_args`) starts an invocation that reinitializes every per-invocation
+  owner of its invocation state. Each entry point (construction, `execute`,
+  `execute_cli`, `parse_args`) starts an invocation that reinitializes every per-invocation
   field plus the Flow's own extras (publication resources, terminal progress,
   Simulation outcomes). Its CLI convenience methods keep existing commands and
   module entry points callable without inheriting the legacy endpoint facade.

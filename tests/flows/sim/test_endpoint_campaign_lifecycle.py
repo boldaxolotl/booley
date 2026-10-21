@@ -178,7 +178,7 @@ def _public_hook_endpoint(flow, invocation):
 
     endpoint = SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
-        flow=flow,
+        refresh_campaign_report_detail=flow.refresh_campaign_report_detail,
         name="sim",
         endpoint_kind="flow",
         _acceptance_recorder=flow._acceptance_recorder,
@@ -567,7 +567,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     result = flow._campaign_endpoint_outcome([campaign])
     endpoint = SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
-        flow=flow,
+        refresh_campaign_report_detail=flow.refresh_campaign_report_detail,
         name="sim",
         endpoint_kind="flow",
         _acceptance_recorder=flow._acceptance_recorder,
