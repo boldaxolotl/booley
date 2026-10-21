@@ -14,7 +14,7 @@ from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.flow import CandidateWorkload, PreparedSimulationEndpoint
     from booley.targets.domain import TargetHandle
 
 
@@ -82,7 +82,10 @@ def freeze(endpoint: EndpointState, simulation: PreparedSimulationEndpoint | Non
         ledger.known = False
 
 
-def _workload_keys(endpoint: EndpointState, workload, families: set[str]) -> set[str]:
+def _workload_keys(
+    endpoint: EndpointState, workload: CandidateWorkload, families: set[str]
+) -> set[str]:
+    """Planned Criterion keys one prepared candidate workload can judge."""
     standalone = endpoint.state._file_path is None
     keys = _target_keys(endpoint, workload.handle, families, {"sim_pass"} if standalone else set())
     return {

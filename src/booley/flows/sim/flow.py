@@ -2656,15 +2656,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Prepared candidates and their workloads; baseline prerequisites are not candidates."""
         if prepared.resume is None:
             handles = prepared.targets[: len(prepared.selected_targets)]
+            coverage = bool(getattr(self.args, "coverage", False))
+            # A coverage manifest records the declared suite; any other keeps skips removed.
+            skips = {} if coverage else _get_test_skips(self.args.work_dir)
             workloads = tuple(
                 self._candidate_workload(
                     handle,
-                    {  # the required suite the campaign manifest records, skips removed
+                    {
                         test
                         for test in resolve_target_test_suite(
                             handle.selector,
                             test_names=dict(prepared.test_names_map),
-                            test_skips=_get_test_skips(self.args.work_dir),
+                            test_skips=skips,
                         ).tests
                         if test is not None
                     },
@@ -2677,7 +2680,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 for handle in handles
             )
-            return workloads, bool(getattr(self.args, "coverage", False))
+            return workloads, coverage
         manifest = prepared.resume.candidate.manifest
         document = manifest.document
         binding = prepared.resume.binding_for(manifest)
@@ -2697,7 +2700,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         coverage = bool(items) and items[0].get("kind") == "coverage_aggregate"
         return (self._candidate_workload(handle, registered, selected),), coverage
 
-    def _candidate_workload(self, handle, registered: set[str], selected: set[str]):
+    def _candidate_workload(
+        self, handle: TargetHandle | ReportTarget, registered: set[str], selected: set[str]
+    ) -> CandidateWorkload:
+        """Fill an empty selection like the manifest does and attach acceptance eligibility."""
         from .acceptance import eligible_simulation_keys
 
         selected = selected or ({"default"} if not registered else set())

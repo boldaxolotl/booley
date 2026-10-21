@@ -1427,3 +1427,33 @@ def test_prepared_workload_scope_keeps_whole_suite_criterion_with_skipped_test(
     result = flow.execute(flow.request_type(target="sim", work_dir=runtime))
     assert result.exit_code == 2, result.outcome.report_text
     _assert_headline(result, flow.context.args.report_dir, "sim", ("", None))
+
+
+def test_prepared_coverage_workload_keeps_declared_suite_with_skipped_test(
+    external_acceptance_owner, runtime, monkeypatch
+):
+    # A coverage manifest records the declared suite, skips included, so a partial
+    # selection leaves the whole-suite sim_pass Criterion out of the planned scope.
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    prepared, _, _ = _prepared_report_campaign(runtime, "named", False)
+    tests_toml = runtime / ".booley/tests.toml"
+    tests_toml.write_text('[sim]\ntests = ["reset", "count"]\nskip = ["count"]\n')
+    criteria = {"sim_pass_sim": True, "coverage_sim": True}
+    _headline_state(runtime, monkeypatch, criteria, strict=True)
+
+    def prepare(self):
+        assert self._validate_test_plans(["sim"], prepared.test_names_map) is None
+        return prepared
+
+    def run(self, *_args):
+        self.set_criterion("coverage_sim", True)
+        return EndpointOutcome(exit_code=0, report_text="coverage met")
+
+    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", prepare)
+    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
+    flow = SimulateFlow()
+    result = flow.execute(
+        flow.request_type(target="sim", work_dir=runtime, coverage=True, test=["reset"])
+    )
+    _assert_headline(result, flow.context.args.report_dir, "sim", ("coverage_sim", True))
