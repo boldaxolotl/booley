@@ -446,53 +446,37 @@ def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, cap
     assert time.monotonic() - started < 2
 
 
-@pytest.mark.parametrize(
-    "stale,cause,expected",
-    [
-        (True, "protocol_mismatch", "refresh"),
-        (False, "protocol_mismatch", "rebuild"),
-        (False, "protocol_unavailable", "verify/repair"),
-    ],
-)
-def test_protocol_repair_distinguishes_spec_drift_from_runtime_defect(
-    tmp_path, monkeypatch, caplog, stale, cause, expected
+@pytest.mark.parametrize("has_root", [True, False], ids=["root", "no-root"])
+def test_protocol_failure_logs_fixed_message_and_one_remedy(
+    tmp_path, monkeypatch, caplog, has_root
 ):
-    from types import SimpleNamespace
+    from unittest.mock import Mock
 
-    from booley.runtime import (
-        image_identity,
-        interactive_docker,
-        session_issuance,
-        session_runtime,
-    )
+    from booley.runtime import interactive_docker, session_issuance, session_runtime
 
-    path = tmp_path / "devcontainer.json"
-    path.write_text("{}")
-    monkeypatch.setattr(
-        session_issuance, "load_issued_snapshot", lambda _root: SimpleNamespace(image="immutable")
-    )
-    monkeypatch.setattr(session_runtime.dc, "devcontainer_path", lambda _root: path)
-    monkeypatch.setattr(session_issuance, "validate", lambda *_args: None)
-    monkeypatch.setattr(
-        interactive_docker,
-        "compare_issued_build",
-        lambda _image: SimpleNamespace(
-            status=image_identity.Status.MISMATCH if stale else image_identity.Status.MATCH
-        ),
-    )
-    monkeypatch.setattr(
-        session_runtime,
-        "sandbox_remedy",
-        lambda _root, *, runtime_only: "rebuild" if runtime_only else "refresh",
-    )
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("protocol failure must not load, validate or compare identity")
+
+    for owner, name in (
+        (session_issuance, "load_issued_snapshot"),
+        (session_issuance, "validate"),
+        (interactive_docker, "compare_issued_build"),
+    ):
+        monkeypatch.setattr(owner, name, forbidden)
+    remedy = Mock(return_value="run the selected remedy")
+    monkeypatch.setattr(session_runtime, "sandbox_remedy", remedy)
+    cause = "protocol_mismatch" if has_root else "protocol_unavailable"
     runtime_attachment._report_protocol_failure(
-        runtime_attachment.ExecutionResult(125, "unrecoverable", False, cause), tmp_path
+        runtime_attachment.ExecutionResult(125, "unrecoverable", False, cause),
+        tmp_path if has_root else None,
     )
-    assert expected in caplog.text
-    if stale:
-        assert "rebuild" not in caplog.text
+    assert "Sandbox execution protocol is unavailable or incompatible; " in caplog.text
+    if has_root:
+        remedy.assert_called_once_with(tmp_path, runtime_only=True)
+        assert "run the selected remedy" in caplog.text
     else:
-        assert "refresh" not in caplog.text
+        remedy.assert_not_called()
+        assert session_runtime.SANDBOX_HOST_INSPECTION_REMEDY in caplog.text
 
 
 def test_cwd_disappearing_at_startup_is_not_reported_as_image_defect(
