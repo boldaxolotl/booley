@@ -20,7 +20,7 @@ from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring
-from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings
+from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings, reread_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
 
@@ -375,9 +375,11 @@ __all__ = [
     "SimulationCampaignWorkItemError",
     "authenticate_retained_campaign_inventory",
     "authenticate_work_item",
+    "collect_pre_sim_firings",
     "inspect_retained_campaign",
     "read_durable_results",
     "recover_retained_campaign_resources",
+    "reread_pre_sim_firings",
     "retained_campaign_lock",
     "started_campaign",
 ]
