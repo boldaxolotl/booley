@@ -9,6 +9,15 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
+  run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
+  that point into it; `booley cleanup preview --run-id <id>` lists its files.
+  `booley cleanup record` and the `--digest`, `--retention` and
+  `--cache-disposition` options are removed, and plan row 22 (build-cache
+  disposition) is gone. Setup cleanup removes nothing outside the run root, such
+  as Doctor scratch written elsewhere. Run roots created by older versions have
+  no marker and are refused; delete them by hand.
+
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a

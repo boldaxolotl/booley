@@ -127,7 +127,7 @@ refresh; no new mount is introduced. Non-issued development resolves ownership
 through `resolve_booley_dir` and selected configuration through
 `resolve_checkout_booley_dir` plus `resolve_toml`.
 
-The shared subtree is outside all mutable build generations and is never
-registered as a disposable `flow-cache` artifact. Setup cleanup preserves
-unowned runtime residue. Baseline core copying only copies the core subtree;
+The shared subtree is outside all mutable build generations. Setup cleanup
+removes only its marker-guarded run root under `tmp/setup/<run-id>/` and never
+touches the shared subtree. Baseline core copying only copies the core subtree;
 ordinary Project Git ignores exclude `.runtime` from source snapshots.

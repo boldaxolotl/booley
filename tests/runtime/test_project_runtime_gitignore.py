@@ -236,16 +236,16 @@ def _publish_logs_and_cache(root, data, repo):
 
 
 def _publish_cleanup_and_projection(root, data, repo):
-    """Setup recovery and isolated FuseSoC projection: tmp/."""
+    """Setup run root and isolated FuseSoC projection: tmp/."""
     from booley.fusesoc.core_projection import reconcile_isolated_registry
-    from booley.harness.setup.cleanup import prepare_run
+    from booley.harness.setup.run_root_cleanup import MARKER, prepare
 
-    scratch = prepare_run(root, "audit")
-    assert (scratch / "manifest.json").is_file()
+    scratch = Path(prepare(root, "audit")["run_root"])
+    assert (scratch / MARKER).is_file()
     assert_clean(repo)
     projection = reconcile_isolated_registry(root)
     assert projection.written
-    return (scratch / "manifest.json", *projection.written)
+    return (scratch / MARKER, *projection.written)
 
 
 def test_audited_storage_families_keep_project_clean(versioned_project):
