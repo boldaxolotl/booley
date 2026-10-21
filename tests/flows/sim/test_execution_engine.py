@@ -1088,7 +1088,9 @@ def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path, observed) 
         install_progress(sink) if observed else nullcontext(),
         patch("booley.flows.run_log.begin_run_log", side_effect=OSError("read-only filesystem")),
     ):
-        outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+        outcome = _run_execution(
+            handle, prepared, invoke, ("smoke",), cocotb=False, canned_at="raw"
+        )
 
     assert outcome.verdict == "error"
     assert outcome.infrastructure_failure is not None
@@ -1361,6 +1363,7 @@ def test_conflicting_runtime_input_is_typed_infrastructure_failure(tmp_path: Pat
         invoke,
         ("dhry",),
         cocotb=False,
+        canned_at="raw",
     )
 
     assert outcome.verdict == "error"

@@ -27,10 +27,10 @@ from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
 @pytest.fixture(autouse=True)
-def _use_legacy_build_transport_for_canned_cocotb_tests(
+def _canned_cocotb_build_session(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Canned FuseSoC output here has no leased generation."""
+    """Canned FuseSoC output here: real leased session, stubbed capture and image gates."""
     monkeypatch.setattr(
         execution_engine,
         "resolve_target_compile_surface",

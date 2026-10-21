@@ -51,14 +51,19 @@ def without_build_record(process: SubprocessResult) -> SubprocessResult:
     )
 
 
-def split_invoker(invoke: Invoker, *, canned_at: Literal["launch", "build"] = "launch") -> Invoker:
+def split_invoker(
+    invoke: Invoker, *, canned_at: Literal["launch", "build", "raw"] = "launch"
+) -> Invoker:
     """Turn a one-call canned invoker into separate build and launch calls.
 
     ``canned_at="launch"`` runs the canned invoker at launch and answers the
     build with a passing record. ``canned_at="build"`` runs it at the build,
     for fakes that model a failed build; a passing canned process is replayed
-    at launch.
+    at launch. ``canned_at="raw"`` returns the invoker unchanged, so a test
+    can assert that neither a build nor a launch was attempted.
     """
+    if canned_at == "raw":
+        return invoke
     stash: list[SubprocessResult] = []
 
     def wrapped(command: list[str], *, timeout: float) -> SubprocessResult:

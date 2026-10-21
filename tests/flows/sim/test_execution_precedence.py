@@ -19,6 +19,7 @@ from booley.flows.sim.execution import NamedTests, SimulationExecution, Simulati
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.leased_session import canned_build_session, without_build_record
 
 _TOKEN = "abc123"
 
@@ -59,9 +60,6 @@ def _prepared(handle: TargetHandle) -> PreparedSimulationBuild:
         "tb_core",
         ("make",),
     )
-
-
-from tests.flows.sim.leased_session import canned_build_session, without_build_record
 
 
 def _run(

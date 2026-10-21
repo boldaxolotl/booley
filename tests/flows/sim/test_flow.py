@@ -28,6 +28,7 @@ from booley.flows.sim.execution import (
     SimulationExecution,
     SimulationOptions,
 )
+from booley.flows.sim.execution.engine import _adapter_shell_command
 from booley.flows.sim.execution.telemetry import (
     parse_build_seconds,
     parse_run_seconds,
@@ -61,7 +62,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
-from tests.flows.sim.leased_session import canned_build_session
+from tests.flows.sim.leased_session import canned_build_session, without_build_record
 
 # Built-in Flow execution inside the Sandbox.
 _FLOW_ENABLED = True
@@ -626,18 +627,7 @@ class _BoundaryHarness(SimulationExecution):
             )
             fresh_ns = time.time_ns()
             os.utime(self._attempt.identity.result_path, ns=(fresh_ns, fresh_ns))
-            from dataclasses import replace as _r
-
-            return _r(
-                stashed,
-                stdout="".join(
-                    l
-                    for l in stashed.stdout.splitlines(keepends=True)
-                    if "BOOLEY_BUILD_STAGE" not in l
-                ),
-            )
-        from booley.flows.sim.execution.engine import _adapter_shell_command
-
+            return without_build_record(stashed)
         launch = _adapter_shell_command(self._attempt)[-1]
         process = self._flow._execute([*command[:-1], f"{command[-1]}\n{launch}"])
         combined = process.stdout + ("\n" + process.stderr if process.stderr else "")
