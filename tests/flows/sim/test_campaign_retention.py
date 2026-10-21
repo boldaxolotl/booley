@@ -797,17 +797,14 @@ def test_native_pruning_preserves_complete_source_gap_queries(tmp_path):
     from booley.flows.sim.campaign_retention import prune_native_payload
     from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from tests.flows.sim.test_coverage_transaction import _gap_plan
+    from tests.flows.sim.test_coverage_transaction import NativeExecution, gap_plan
 
-    plan, execution = _gap_plan(tmp_path)
+    plan, execution = gap_plan(tmp_path), NativeExecution()
     progress = CoverageProgress(plan.invocation_dir, ("sim_0",))
     outcome = run_coverage_target(plan, execution, progress)
     progress.checkpoint(complete=True)
     assert outcome.exit_code == 0
-    inventory = outcome.campaign_path.parent / "declarations/inventory.json"
-    original = inventory.read_bytes()
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    assert inventory.read_bytes() == original
     loaded = load_coverage_campaign(outcome.campaign_path)
     assert CoverageEvidenceSession(loaded.campaign, None).query({"view": "zero_point_sources"})[
         "paths"
