@@ -99,7 +99,7 @@ def test_registration_grant_resolution_and_referential_integrity(
         project, "vivado", installation="vivado_2025_2", license_profile=profile.name
     )
 
-    assert authority.resolve_installation(project).source == str(source.resolve())
+    assert authority.resolve_for_inspection(project, True)[0].source == str(source.resolve())
     assert authority.resolve_license(project) == profile
     assert grant.project_root == str(project.resolve())
     with pytest.raises(authority.AuthorityError, match="live grant"):
