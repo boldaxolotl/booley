@@ -298,6 +298,32 @@ class PreparedSimulationEndpoint:
     test_names_map: Mapping[str, list[str]]
 
 
+@dataclass(frozen=True, slots=True)
+class ReportTarget:
+    """Candidate identity of a resume that has no catalog binding."""
+
+    identity: str
+    selector: str
+    name: str
+
+    @classmethod
+    def from_document(cls, document: Mapping[str, Any]) -> ReportTarget:
+        """The Target a campaign manifest records."""
+        target = document["target"]
+        return cls(
+            f"{target['vlnv']}#{target['name']}", str(target["selector"]), str(target["name"])
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateWorkload:
+    """One prepared candidate's Tests and the sim_pass Criteria they can judge."""
+
+    handle: TargetHandle | ReportTarget
+    selected: frozenset[str]
+    eligible: frozenset[str]
+
+
 def _raise_if_missing_executable(text: str) -> None:
     """Escalate an absent-binary report in *text* to :class:`MissingExecutableError`.
 
@@ -2632,13 +2658,60 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if outcomes and invocation is not None:
             result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
 
-    def report_simulation_criterion_keys(
-        self, identity: str, selector: str, name: str, registered: set[str], selected: set[str]
-    ) -> set[str]:
-        """Expose campaign eligibility to reporting without preparing EDA again."""
+    def report_candidate_workloads(
+        self, prepared: PreparedSimulationEndpoint
+    ) -> tuple[tuple[CandidateWorkload, ...], bool]:
+        """Prepared candidates and their workloads; baseline prerequisites are not candidates."""
+        if prepared.resume is None:
+            handles = prepared.targets[: len(prepared.selected_targets)]
+            coverage = bool(getattr(self.args, "coverage", False))
+            # A coverage manifest records the declared suite; any other keeps skips removed.
+            skips = {} if coverage else _get_test_skips(self.args.work_dir)
+            workloads = tuple(
+                self._candidate_workload(
+                    handle,
+                    {
+                        test
+                        for test in resolve_target_test_suite(
+                            handle.selector,
+                            test_names=dict(prepared.test_names_map),
+                            test_skips=skips,
+                        ).tests
+                        if test is not None
+                    },
+                    {
+                        "default" if test is None else test
+                        for test in self._resolve_tests_to_run(
+                            handle.selector, dict(prepared.test_names_map)
+                        )
+                    },
+                )
+                for handle in handles
+            )
+            return workloads, coverage
+        manifest = prepared.resume.candidate.manifest
+        document: Any = manifest.document
+        binding = prepared.resume.binding_for(manifest)
+        handle = binding.handle if binding is not None else ReportTarget.from_document(document)
+        suite, items = document["required_suite"], document["work_items"]
+        registered = set(suite["names"])
+        selected = set().union(
+            *(set(item["selection"]["names"]) for item in items if item["role"] == "candidate")
+        ) or ({"default"} if suite["default_invocation"] else registered)
+        coverage = bool(items) and items[0].get("kind") == "coverage_aggregate"
+        return (self._candidate_workload(handle, registered, selected),), coverage
+
+    def _candidate_workload(
+        self, handle: TargetHandle | ReportTarget, registered: set[str], selected: set[str]
+    ) -> CandidateWorkload:
+        """Fill an empty selection like the manifest does and attach acceptance eligibility."""
         from .acceptance import eligible_simulation_keys
 
-        return eligible_simulation_keys(self.state, identity, selector, name, registered, selected)
+        selected = selected or ({"default"} if not registered else set())
+        eligible = eligible_simulation_keys(
+            self.state, handle.identity, handle.selector, handle.name, registered, selected
+        )
+        return CandidateWorkload(handle, frozenset(selected), frozenset(eligible))
 
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,

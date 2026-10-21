@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 from booley.criteria.state import CriterionChange
 from booley.fusesoc.fusesoc_registry import FuseSocError
@@ -15,24 +15,6 @@ from booley.targets.domain import criterion_matches_target
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
     from booley.targets.domain import TargetHandle
-
-
-class PreparedReportSimulation(Protocol):
-    """Read-only candidate scope supplied by simulation preparation."""
-
-    targets: tuple[TargetHandle, ...]
-    resume: Any
-    selected_targets: tuple[str, ...]
-    test_names_map: Mapping[str, list[str]]
-
-
-@dataclass(frozen=True)
-class ReportTarget:
-    """Candidate identity retained when a resume has no catalog binding."""
-
-    identity: str
-    selector: str
-    name: str
 
 
 @dataclass
@@ -67,7 +49,7 @@ class ReportCriteria:
             outcome.criterion_met = self.evaluated[key]
 
 
-def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None = None) -> None:
+def freeze(endpoint: EndpointState, simulation: Any = None) -> None:
     """Use prepared candidate authorities once, without changing invocation validation."""
     if endpoint.endpoint_kind not in {"flow", "specialist"}:
         return
@@ -76,40 +58,45 @@ def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None 
         return
     ledger.frozen = True
     owner = getattr(endpoint, "flow", endpoint)
-    if simulation is not None and not hasattr(simulation, "targets"):
-        simulation = None
     ledger.targets = frozenset(endpoint._requested_targets())
     try:
-        handles, identities = _candidate_scope(owner, simulation)
-        if identities is not None:
-            ledger.targets = identities
-        ledger.planned = frozenset(_planned_keys(endpoint, handles, simulation))
+        if simulation is not None and hasattr(simulation, "targets"):
+            workloads, coverage = owner.report_candidate_workloads(simulation)
+            ledger.targets = frozenset(workload.handle.identity for workload in workloads)
+            families = {"sim_pass", "cycle_count"} | ({"coverage"} if coverage else set())
+            ledger.planned = frozenset(
+                key
+                for workload in workloads
+                for key in _workload_keys(endpoint, workload, families)
+            )
+            return
+        handles: tuple[TargetHandle, ...] = ()
+        selection = getattr(owner, "_prepared_target_selection", None)
+        if selection is not None and selection.matches(owner.args.work_dir, owner.args.target):
+            handles = selection.handles
+            ledger.targets = frozenset(handle.identity for handle in handles)
+        ledger.planned = frozenset(_planned_keys(endpoint, handles))
     except (FuseSocError, OSError, ValueError):
         # Reporting lookups must not replace the endpoint's own admission errors.
         ledger.known = False
 
 
-def _candidate_scope(owner, simulation):
-    if simulation is not None:
-        if simulation.resume is not None:
-            manifest = simulation.resume.candidate.manifest
-            binding = simulation.resume.binding_for(manifest)
-            if binding is not None:
-                return (binding.handle,), frozenset({binding.handle.identity})
-            target = manifest.document["target"]
-            candidate = ReportTarget(
-                f"{target['vlnv']}#{target['name']}", str(target["selector"]), str(target["name"])
-            )
-            return (candidate,), frozenset({candidate.identity})
-        handles = simulation.targets[: len(simulation.selected_targets)]
-        return handles, frozenset(handle.identity for handle in handles)
-    selection = getattr(owner, "_prepared_target_selection", None)
-    if selection is not None and selection.matches(owner.args.work_dir, owner.args.target):
-        return selection.handles, frozenset(handle.identity for handle in selection.handles)
-    return (), None
+def _workload_keys(endpoint: EndpointState, workload: Any, families: set[str]) -> set[str]:
+    """Planned Criterion keys one prepared candidate workload can judge."""
+    standalone = endpoint.state._file_path is None
+    keys = _target_keys(endpoint, workload.handle, families, {"sim_pass"} if standalone else set())
+    return {
+        key
+        for key in keys
+        if (standalone or not key.startswith("sim_pass") or key in workload.eligible)
+        and (
+            not key.startswith("cycle_count_")
+            or endpoint.state.criteria[key].params.get("test") in workload.selected
+        )
+    }
 
 
-def _families(endpoint: EndpointState, simulation) -> set[str]:
+def _families(endpoint: EndpointState) -> set[str]:
     if endpoint.name != "sim":
         return set(endpoint.satisfies)
     mode = str(getattr(endpoint.args, "mode", "simulate"))
@@ -118,36 +105,27 @@ def _families(endpoint: EndpointState, simulation) -> set[str]:
     if mode == "elab_only":
         return {"elab_pass"}
     families = {"sim_pass", "cycle_count"}
-    coverage = bool(getattr(endpoint.args, "coverage", False))
-    if simulation is not None and simulation.resume is not None:
-        items = simulation.resume.candidate.manifest.document["work_items"]
-        coverage = bool(items) and items[0].get("kind") == "coverage_aggregate"
-    if coverage:
+    if getattr(endpoint.args, "coverage", False):
         families.add("coverage")
-    if simulation is None and endpoint.state._file_path is not None:
+    if endpoint.state._file_path is not None:
         families.add("elab_pass")
     return families
 
 
-def _planned_keys(
-    endpoint: EndpointState, handles: tuple[TargetHandle, ...], simulation
-) -> set[str]:
+def _planned_keys(endpoint: EndpointState, handles: tuple[TargetHandle, ...]) -> set[str]:
     owner = getattr(endpoint, "flow", endpoint)
     if endpoint.name == "reviewer":
         return {owner._criterion_key()}
-    families = _families(endpoint, simulation)
+    families = _families(endpoint)
     keys: set[str] = set()
     if "elaborate_standalone" in families and (
         "elaborate_standalone" in endpoint.state.criteria or not endpoint.state.strict_criteria
     ):
         keys.add("elaborate_standalone")
     families.discard("elaborate_standalone")
-    conventional = _conventional_families(endpoint, simulation)
+    conventional = _conventional_families(endpoint)
     for handle in handles:
-        mapped = _target_keys(endpoint, handle, families, conventional)
-        if endpoint.name == "sim" and simulation is not None:
-            mapped = _campaign_keys(endpoint, handle, mapped, simulation)
-        keys.update(mapped)
+        keys.update(_target_keys(endpoint, handle, families, conventional))
     # Overrides use stored selector bindings without re-running preparation.
     if not handles:
         for token in endpoint._requested_targets():
@@ -178,7 +156,7 @@ def _named_keys(endpoint, name: str, families: set[str], conventional: set[str])
     return keys
 
 
-def _conventional_families(endpoint: EndpointState, simulation) -> set[str]:
+def _conventional_families(endpoint: EndpointState) -> set[str]:
     owner = getattr(endpoint, "flow", endpoint)
     if "_run" in owner.__dict__:
         return set()
@@ -190,7 +168,7 @@ def _conventional_families(endpoint: EndpointState, simulation) -> set[str]:
         return {"elab_pass"}
     if endpoint.state._file_path is None:
         return {"sim_pass"}
-    return {"sim_pass", "elab_pass"} if simulation is None else set()
+    return {"sim_pass", "elab_pass"}
 
 
 def _target_keys(
@@ -204,7 +182,6 @@ def _target_keys(
             entry.params or {}, identity=handle.identity, selector=handle.selector
         ):
             keys.add(key)
-    keys.update(_binding_keys(endpoint, handle.identity, handle.selector, families))
     for family in families:
         generic = f"{family}_{handle.name}"
         if generic not in endpoint.state.criteria and any(
@@ -229,22 +206,8 @@ def _eligible_family(key: str, families: set[str]) -> bool:
     return any(key == family or key.startswith(f"{family}_") for family in families)
 
 
-def _binding_keys(endpoint, identity: str | None, selector: str, families: set[str]) -> set[str]:
-    keys: set[str] = set()
-    for binding in endpoint.flow_acceptance.bindings:
-        if binding.flow != endpoint.name or binding.candidate_selector != selector:
-            continue
-        if identity is not None and binding.candidate != identity:
-            continue
-        key = binding.criterion_key
-        if endpoint.name != "sim" or _eligible_family(key, families):
-            keys.add(key)
-    return keys
-
-
 def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[str]) -> set[str]:
     keys = _named_keys(endpoint, token.rsplit("#", 1)[-1], families, conventional)
-    keys.update(_binding_keys(endpoint, None, token, families))
     detail = _selection_detail(endpoint)
     for key, entry in endpoint.state.criteria.items():
         if not _eligible_family(key, families):
@@ -271,52 +234,6 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
             continue
         keys.add(key)
     return keys
-
-
-def _campaign_keys(endpoint, handle, keys: set[str], simulation) -> set[str]:
-    from booley.config.project_config import lookup_target_section
-
-    if simulation.resume is not None:
-        document = simulation.resume.candidate.manifest.document
-        suite = document["required_suite"]
-        registered = set(suite["names"])
-        selected = set().union(
-            *(
-                set(item["selection"]["names"])
-                for item in document["work_items"]
-                if item["role"] == "candidate"
-            )
-        )
-        if not selected:
-            selected = {"default"} if suite["default_invocation"] else registered
-    else:
-        registered = set(lookup_target_section(simulation.test_names_map, handle.selector) or [])
-        requested = getattr(endpoint.args, "test", None)
-        selected = set((requested,) if isinstance(requested, str) else requested or registered)
-        if not selected and not registered:
-            selected = {"default"}
-        skip = getattr(endpoint.args, "skip", None)
-        selected.difference_update((skip or "").split(","))
-    sim_keys = endpoint.flow.report_simulation_criterion_keys(
-        handle.identity, handle.selector, handle.name, registered, selected
-    )
-    eligible = set()
-    for key in keys:
-        if (
-            key.startswith("sim_pass")
-            and key not in sim_keys
-            and endpoint.state._file_path is not None
-        ):
-            continue
-        if key.startswith("cycle_count_"):
-            entry = endpoint.state.criteria.get(key)
-            if entry is None:
-                endpoint._report_criteria.known = False
-                continue
-            if entry.params.get("test") not in selected:
-                continue
-        eligible.add(key)
-    return eligible
 
 
 def project(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
