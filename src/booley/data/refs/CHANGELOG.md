@@ -9,6 +9,15 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Native-only coverage pruning (`--native-target`) now deletes the Target's whole
+  `native/` directory, including files Booley did not record, after writing the
+  `pruning` availability sidecar; it no longer re-hashes native files or uses a
+  `.native-pruned/` quarantine. An interrupted `--full` prune finishes whenever
+  `.pruned-N` holds `.prune.json`. If an older interrupted native prune
+  (`availability.json` status `pruning`) left a `.native-pruned/` directory,
+  delete it by hand before retrying: a retry no longer looks there and records
+  `pruned`, and `--full` refuses the leftover directory.
+
 - Verilator `make_options` and ambient Make variables (`OBJCACHE`, `CCACHE_*`,
   `MAKEFLAGS`, and the like) are no longer rejected. Booley passes them through
   to Make and its managed compiler-cache environment is unchanged; a Make
