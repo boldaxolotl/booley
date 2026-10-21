@@ -114,7 +114,7 @@ simulator environment and testbench fingerprints retain their existing owners.
 Ordinary, compatibility, campaign, coverage, Cocotb, and elaboration-only builds
 consume this shared interface; Mutation Tester builds, which run Make directly,
 use `simulation_build_environment`. Icarus preparation does not resolve cache
-policy. The cache policy module never reads the process environment: build
+policy. The cache policy module takes the environment as an argument: build
 preparation passes `os.environ` in. An unset root yields an inactive policy that
 compiles uncached with a refresh warning; only invalid settings fail preparation.
 The root is trusted as given and `execution_environment` only creates it.

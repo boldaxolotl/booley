@@ -86,7 +86,7 @@ def test_invalid_settings_fail(project):
 
 
 @pytest.mark.timeout(180 if os.name == "nt" else 60)
-def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monkeypatch):
+def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monkeypatch, caplog):
     root, _data = project
     cache = tmp_path / "cache"
     policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
@@ -101,6 +101,7 @@ def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monke
     )
     assert result.returncode == 0
     assert not cache.exists()
+    assert "ccache is missing from the build PATH" in caplog.text
 
 
 def test_unset_root_builds_uncached_and_names_refresh(project, caplog):
@@ -122,7 +123,7 @@ def test_storage_error_builds_uncached(project, tmp_path, caplog):
     policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(blocker / "ccache")})
     environment = {**policy.environment(), "PATH": str(fake_ccache(tmp_path / "tools"))}
     assert execution_environment(policy, environment, ambient={})["OBJCACHE"] == ""
-    assert "unavailable" in caplog.text
+    assert "cannot create cache storage" in caplog.text
 
 
 def test_disabled_exports_no_cache_location_and_keeps_entries(project, tmp_path):
@@ -136,7 +137,10 @@ def test_disabled_exports_no_cache_location_and_keeps_entries(project, tmp_path)
         policy, compose_environment(policy, {}, ambient={}, build_root=root), ambient={}
     )
     assert environment["OBJCACHE"] == ""
-    assert not {"CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_BASEDIR"} & environment.keys()
+    assert (
+        not {"CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_BASEDIR", COMPILER_CACHE_ROOT_ENV}
+        & environment.keys()
+    )
     assert (cache / "entry").read_text() == "keep"
 
 

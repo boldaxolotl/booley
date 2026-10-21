@@ -334,7 +334,8 @@ Declare additional compiler flags in the Target environment or Verilator
 Disabled caching explicitly clears `OBJCACHE` and exports no cache location.
 Mutation Tester builds use the same cache. Missing ccache on the build
 `PATH` or a cache directory that cannot be created produces one warning and an
-uncached build, without a home-cache fallback. Preview/import operations neither create cache storage nor run ccache.
+uncached build, without a home-cache fallback. Preview/import operations neither
+create cache storage nor run ccache.
 The cache optimizes compilation within the Project trust domain; fresh simulator
 image authorization still applies independently.
 
