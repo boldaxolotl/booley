@@ -369,9 +369,7 @@ def test_session_up_reports_deep_once_through_all_health_branches(
         lambda *_args, **_kw: healthy if early == "changed" else None,
     )
     observe = Mock(
-        return_value=deep.evaluate_deep_status(
-            deep.DeepState(), version=booley.__version__, image_id=IMAGE
-        )
+        return_value=deep.evaluate_deep_status(None, version=booley.__version__, image_id=IMAGE)
     )
     monkeypatch.setattr(doctor, "observe_deep_status", observe)
     assert cli._session_up(argparse.Namespace(), tmp_path) == 0
@@ -545,20 +543,17 @@ def test_runtime_policy_full_doctor_qualification(
                 if item.check_id == "git.worktree-portability" and item.severity == "warn"
             ]
         ) is (data_policy == "false")
-    state = deep.load_deep_state(audit.booley_dir)
-    assert state.latest_completed_attempt.outcome is expected
-    attempt = state.latest_completed_attempt
-    assert attempt.failure_count == int(health_failure or missing == "core")
-    warnings = tuple(
-        sorted({f.check_id for f in result.diagnostics.active_findings if f.severity == "warn"})
-    )
-    assert attempt.blocking_warning_ids == warnings
-    assert attempt.blocking_warning_count == len(
-        [f for f in result.diagnostics.active_findings if f.severity == "warn"]
-    )
-    if expected is deep.DeepOutcome.FAILED and not (health_failure or missing == "core"):
-        assert "latest-attempt-not-qualified" in [r.code for r in result.deep_status.reasons]
-        assert "failed" not in result.deep_status.render()
+    record = deep.load_deep_record(audit.booley_dir)
+    assert record.outcome is expected
+    blocking = {f.check_id for f in result.diagnostics.active_findings if f.check_id}
+    if expected is deep.DeepOutcome.FAILED:
+        extra = {"core.resolve.d97e8ce47f651215"} if missing == "core" else set()
+        assert record.reasons == tuple(sorted(blocking | extra))
+        assert [r.code for r in result.deep_status.reasons] == ["latest-attempt-failed"]
+    elif expected is deep.DeepOutcome.INCOMPLETE:
+        assert record.reasons == ("developer-probe",)
+    else:
+        assert not record.reasons
     assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
     assert result.clean is (
         policy == "true" and data_policy != "false" and missing != "core" and not health_failure
@@ -573,13 +568,9 @@ def test_runtime_policy_full_doctor_qualification(
     }
     assert ("developer-probe" in completions) is (missing != "developer")
     assert all(value for key, value in completions.items() if key != "developer-probe")
-    assert state.latest_completed_attempt.complete is (missing is None)
     assert doctor._doctor_targets(audit, "sim") == ["sim_fast"]
     assert not doctor._flow_enabled(audit, "lint")
     assert not doctor._flow_enabled(audit, "synth")
-    if expected is deep.DeepOutcome.SUCCESS:
-        assert state.latest_completed_attempt.complete
-        assert not state.latest_completed_attempt.reasons
 
 
 def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypatch):
@@ -602,18 +593,12 @@ def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypa
     result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
     assert not result.clean and result.exit_code == 0
     assert result.deep_status.current
-    state = deep.load_deep_state(audit.booley_dir)
-    assert state.last_success == state.latest_completed_attempt
-    assert state.last_success.outcome is deep.DeepOutcome.SUCCESS
+    assert deep.load_deep_record(audit.booley_dir).outcome is deep.DeepOutcome.SUCCESS
     before = deep.deep_stamp_path(audit.booley_dir).read_bytes()
     upgrade_review.acknowledge(audit.booley_dir, "2.0.0", packaged_changelog=_changelog(tmp_path))
     final = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
     assert final.clean and final.deep_status.current
     assert deep.deep_stamp_path(audit.booley_dir).read_bytes() == before
-    assert (
-        deep.load_deep_state(audit.booley_dir).last_success.attempt_id
-        == state.last_success.attempt_id
-    )
     assert commands == ["smoke", "good", "bad", "core"]
     assert len(completions) == 5
 
@@ -630,10 +615,15 @@ def test_real_qualification_applies_warning_waiver_without_inventing_execution(
         )
     commands, _completions = _qualification_transport(monkeypatch, missing, audit)
     result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
-    attempt = deep.load_deep_state(audit.booley_dir).latest_completed_attempt
+    record = deep.load_deep_record(audit.booley_dir)
     assert result.deep_status.current is (waived and missing is None)
-    assert attempt.failure_count == 0
-    assert attempt.blocking_warning_ids == (() if waived else ("git.worktree-portability",))
-    assert attempt.complete is (missing is None)
+    assert record.outcome is (
+        deep.DeepOutcome.FAILED
+        if not waived
+        else deep.DeepOutcome.SUCCESS
+        if missing is None
+        else deep.DeepOutcome.INCOMPLETE
+    )
+    assert ("git.worktree-portability" in record.reasons) is (not waived)
     assert result.counts["waived"] == (3 if waived else 0)
     assert commands == ["smoke", "good", "bad", "core"]
