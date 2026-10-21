@@ -53,8 +53,7 @@
 | 18 | Cross-check Booley's results against your existing scripts (parity check)? | Compare results after setup only when both paths use the same EDA tool; propose sim for an identical runnable script, otherwise none. | Parity check (optional): native EDA-tool match per phase → tier, else `none` |  |  |  |  |  |
 | 19 | Which AI provider and account does Booley use? | Preserve the provider and authentication selected during initialization; ask only for missing fields. | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a missing field |  |  |  |  |  |
 | 20 | Scrub AI/tool names out of commit messages (stealth)? | Record the git-history answer’s commit-message scrub and hidden-core projection policy; existing explicit config wins. | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored |  |  |  |  |  |
-| 21 | Keep setup's scratch evidence, or clean it up? | Preserve durable configuration and reports; minimal removes only current-run scratch, while diagnostic keeps raw evidence. | Setup artifact retention: `minimal` (recommended) or `diagnostic` |  |  |  |  |  |
-| 22 | Keep or clear the build cache (flow cache) after setup? | Preserve reusable build products by default; explicit eviction of setup-touched cache costs a rebuild. | Flow-cache disposition: `preserve` (recommended) or `evict-setup-touched` |  |  |  |  |  |
+| 21 | Keep setup's scratch evidence, or clean it up? | Preserve durable configuration and reports; minimal removes the run's scratch root, while diagnostic keeps it. | Setup artifact retention: `minimal` (recommended) or `diagnostic` |  |  |  |  |  |
 | 23 | Swap generic cells for your foundry library's cells (Tech Cell Replacement)? | Record one shared mapping and evidence for all synthesis builds; not applicable when synthesis is disabled. | Tech Cell Replacement: one Project-wide mapping shared by enabled synthesis Targets; `evidence-forced: not applicable` when synthesis is disabled |  |  |  |  |  |
 
 <!-- Repo-specific rows: continue numbering from 24 (git submodules, generator
@@ -162,12 +161,11 @@
 
 ### Execution ledger
 
-<!-- One resumable state machine for Steps 1–7 and cleanup. Missing ledger
-     metadata on a plan without an ownership ledger deliberately means inventory-only cleanup. -->
+<!-- One resumable state machine for Steps 1–7 and cleanup. A plan without a
+     run ID has no cleanup. -->
 
 - **Run ID:** <unset>
 - **Scratch root:** <unset>
-- **Manifest path:** <unset>
 - **Step 1 status:** pending
 - **Step 2 status:** pending
 - **Step 3 status:** pending
@@ -175,8 +173,6 @@
 - **Step 5 status:** pending
 - **Step 6 status:** pending
 - **Step 7 status:** pending
-- **Cleanup preview digest:** <unset>
-- **Recovery journal:** idle
 - **Final disposition:** <unset>
 
 ### Goalset policy
