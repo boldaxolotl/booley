@@ -321,19 +321,26 @@ def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False)
     return original, resumed, counters, invocation
 
 
+@pytest.mark.timeout(120)  # the external resume case runs a second full Campaign
+@pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_resume_separates_historical_hooks_from_real_new_firings(
-    tmp_path, monkeypatch, interrupted
+    tmp_path, monkeypatch, interrupted, external
 ):
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import SimulateFlow
 
     original, resumed, counters, invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, interrupted
+        tmp_path, monkeypatch, interrupted, external=external
     )
+    if external:  # an external invocation reuses the number of the producing one
+        assert original.producer_invocation_directory.name == invocation.name == "1"
+        assert original.producer_invocation_directory != invocation
     expected_runs = int(interrupted)
-    assert counters == {"compile": expected_runs, "durable_reuse": 0, "launch": expected_runs}
+    assert counters["launch"] == expected_runs
+    if not external:  # an external invocation reuses the durable build instead
+        assert counters == {"compile": expected_runs, "durable_reuse": 0, "launch": expected_runs}
     assert len(resumed.pre_sim_firings) == 1 + expected_runs
     flow = SimulateFlow()
     flow.context._reserved_invocation_dir = invocation
@@ -385,31 +392,6 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
 
 
 # Windows CI observed 34 s; budget = 3x the slowest run, rounded up to 30 s.
-@pytest.mark.timeout(120)
-@pytest.mark.parametrize("interrupted", [False, True])
-def test_external_resume_number_collision_reports_only_actual_new_firings(
-    tmp_path, monkeypatch, interrupted
-):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import SimulateFlow
-
-    original, resumed, counters, invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, interrupted, external=True
-    )
-    assert original.producer_invocation_directory.name == invocation.name == "1"
-    assert original.producer_invocation_directory != invocation
-    flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([resumed])
-    assert counters["launch"] == int(interrupted)
-    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
-    assert result.detail["pre_sim_current"] == int(interrupted)
-    assert result.detail["pre_sim_historical"] == 1
-    assert result.report_text.count("pre_run_commands") == int(interrupted)
-
-
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
     from types import SimpleNamespace
 
@@ -450,25 +432,18 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     return flow, PreparedSimulationEndpoint((), validated, ("sim",), {})
 
 
-@pytest.mark.parametrize("interrupted", [False, True])
-def test_production_resume_override_preserves_external_current_identity(
-    tmp_path, monkeypatch, interrupted
-):
-    from tests.flows.sim.test_campaign_phase3_integrity import _admission
-
+def _third_invocation_resume(tmp_path, monkeypatch, *, interrupted=False):
+    """Resume an externally resumed Campaign again from a third invocation."""
     original, _prior, _counters, _invocation = _resume_hook_campaign(
         tmp_path, monkeypatch, False, external=True
     )
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    invocation = tmp_path / "third/reports/1"
-    flow, prepared = _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters)
-    result = flow.run_prepared_simulation(prepared, _admission())
-    assert counters["launch"] == int(interrupted)
-    assert result.detail["pre_sim_current"] == int(interrupted)
-    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
-    assert result.detail["pre_sim_historical"] == 1
+    flow, prepared = _production_resume_flow(
+        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
+    )
+    return original, flow, prepared, counters
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -477,13 +452,7 @@ def test_production_resume_corruption_uses_campaign_integrity_outcome(
 ):
     from tests.flows.sim.test_campaign_phase3_integrity import _admission
 
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, False, external=True
-    )
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    flow, prepared = _production_resume_flow(
-        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
-    )
+    original, flow, prepared, counters = _third_invocation_resume(tmp_path, monkeypatch)
     flow._args.dry_run = dry_run
     (original.pre_sim_firings[0].path.parents[3] / "result.json").write_text("{}")
     result = flow.run_prepared_simulation(prepared, _admission())
@@ -567,15 +536,10 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
 ):
     from tests.flows.sim.test_campaign_phase3_integrity import _admission
 
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, False, external=True
+    original, flow, prepared, counters = _third_invocation_resume(
+        tmp_path, monkeypatch, interrupted=True
     )
     result_path = original.pre_sim_firings[0].path.parents[3] / "result.json"
-    result_path.unlink()
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    flow, prepared = _production_resume_flow(
-        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
-    )
     project = flow._campaign_endpoint_outcome
 
     def corrupt_after_authenticated_projection(outcomes):
@@ -714,6 +678,33 @@ def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_pa
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
 
 
+def test_published_hook_collection_scans_each_campaign_once(tmp_path, monkeypatch):
+    from collections import Counter
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    scans = Counter()
+    inspect = CampaignStore.inspect_pre_sim_firings
+
+    def counted(store, manifest=None):
+        scans[store.manifest_path] += 1
+        return inspect(store, manifest)
+
+    monkeypatch.setattr(CampaignStore, "inspect_pre_sim_firings", counted)
+    result = flow._attach_published_pre_sim(
+        EndpointOutcome(report_text=""), candidate.manifest_path
+    )
+    assert result.detail["pre_sim_total"] == result.detail["pre_sim_current"] == 2
+    assert set(result.detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
+    assert sorted(scans.values()) == [1, 1], "each Campaign is scanned once"
+
+
 def _published_hook_budget_boundary(flow, candidate, roomy):
     from booley.flows.sim import flow as module
     from booley.runtime.endpoint_execution import EndpointOutcome
@@ -750,9 +741,9 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
         reads = []
         reader = campaign.read_invocation_pre_sim_firings
 
-        def read(invocation):
+        def read(invocation, *args):
             reads.append(invocation)
-            return reader(invocation)
+            return reader(invocation, *args)
 
         monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", read)
         if corrupt:
@@ -858,14 +849,8 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     from tests.flows.sim.test_campaign_phase3_integrity import _admission
 
     _add_observed_cycles(monkeypatch)
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, False, external=True
-    )
-    if interrupted:
-        (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    flow, prepared = _production_resume_flow(
-        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
+    original, flow, prepared, counters = _third_invocation_resume(
+        tmp_path, monkeypatch, interrupted=interrupted
     )
     probe = module._campaign_report_lines
     calls = []
@@ -881,6 +866,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     assert result.report_text.count("cycles=17") == 1
     assert result.detail["pre_sim_current"] == int(interrupted)
     assert result.detail["pre_sim_historical"] == 1
+    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
     assert len(calls) == 1
     keys, lines = calls[0]
     assert keys == frozenset(flow._current_published_pre_sim_keys)
@@ -891,7 +877,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
 def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.campaign import SimulationCampaign, SimulationCampaignIntegrityError
+    from booley.flows.sim.campaign import SimulationCampaignIntegrityError, reread_pre_sim_firings
     from tests.conftest import require_symlinks, symlink_or_skip
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
@@ -914,7 +900,7 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
     with pytest.raises(SimulationCampaignIntegrityError):
-        SimulationCampaign.reauthenticate_pre_sim_firings((firing,))
+        reread_pre_sim_firings((firing,))
 
 
 @pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
@@ -1006,11 +992,10 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
         decode_simulation_projection(_read_object(path), coverage_expected=False)
 
 
-def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign import SimulationCampaign
+def _two_firing_store(tmp_path):
+    """Run a coverage Campaign whose one attempt holds two failed Pre-Sim firings."""
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.verilator_coverage import SimulationRunResult
-    from tests.flows.sim.test_campaign_phase3_integrity import _observe_pre_sim_reads
     from tests.flows.sim.test_campaign_phase5_adversarial import _run_coverage_campaign
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
@@ -1031,12 +1016,51 @@ def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeyp
     )
     firings = store.read_pre_sim_firings()
     assert len(firings) == 2 and outcome.complete
+    return firings
+
+
+def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import reread_pre_sim_firings
+    from tests.flows.sim.test_campaign_phase3_integrity import _observe_pre_sim_reads
+
+    firings = _two_firing_store(tmp_path)
     accesses, decodes = _observe_pre_sim_reads(monkeypatch)
-    SimulationCampaign.reauthenticate_pre_sim_firings(firings)
+    reread_pre_sim_firings(firings)
     assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
         "each sidecar must be decoded once"
     )
     assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
+
+
+def test_prior_firing_reread_returns_only_prior_firings(tmp_path):
+    from booley.flows.sim.campaign import reread_pre_sim_firings
+
+    first, second = _two_firing_store(tmp_path)
+    assert first.path.parent == second.path.parent
+    fresh = reread_pre_sim_firings((first,))
+    assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
+
+
+def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign import (
+        SimulationCampaignIntegrityError,
+        read_invocation_pre_sim_firings,
+        store,
+    )
+    from booley.flows.sim.flow import SimulateFlow
+
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    invocation = candidate.manifest_path.parents[3]
+    # Three roots reach one baseline reference: only distinct references count.
+    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
+    assert len(read_invocation_pre_sim_firings(invocation, candidate.manifest_path)) == 2
+    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
+    with pytest.raises(SimulationCampaignIntegrityError, match="exceeds DAG bound"):
+        read_invocation_pre_sim_firings(invocation, candidate.manifest_path)
 
 
 def test_campaign_card_renders_each_target_once(monkeypatch):

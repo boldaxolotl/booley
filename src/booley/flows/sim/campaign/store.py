@@ -584,42 +584,6 @@ class CampaignStore:
                 )
         return _PreSimReadSnapshot(attempt, tuple(firings))
 
-    def collect_pre_sim_firings(self) -> tuple[PreSimFiring, ...]:
-        """Read the bounded prerequisite DAG through its storage owner."""
-        pending = [(self.manifest_path, None, frozenset())]
-        visited: set[str] = set()
-        firings = {}
-        for _ in range(4096):
-            if not pending:
-                return tuple(firings.values())
-            path, expected, ancestors = pending.pop()
-            if path.name != "manifest.json" or path.parent.name != "campaign":
-                raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
-            store = CampaignStore(path.parent)
-            manifest = store.load_manifest()
-            if expected is not None and manifest_digest(manifest) != expected:
-                raise SimulationCampaignIntegrityError(
-                    "prerequisite hook manifest digest disagrees"
-                )
-            campaign_id = str(manifest.document["campaign_id"])
-            if campaign_id in ancestors:
-                raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
-            if campaign_id in visited:
-                continue
-            visited.add(campaign_id)
-            for firing in store.inspect_pre_sim_firings(manifest):
-                firings[firing.key] = firing
-            for entry in manifest.document["prerequisites"]:
-                reference = entry["manifest"]
-                pending.append(
-                    (
-                        store.root.parents[2] / reference["path"],
-                        reference["sha256"],
-                        ancestors | {campaign_id},
-                    )
-                )
-        raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
-
     def inspect_pre_sim_firings(
         self, manifest: SimulationCampaignManifest | None = None
     ) -> tuple[PreSimFiring, ...]:
@@ -629,32 +593,30 @@ class CampaignStore:
         self._scan_manifest(manifest, _manifest_sha256(manifest), pre_sim_receiver=firings.extend)
         return tuple(firings)
 
-    def reauthenticate_pre_sim_firings(self, firings: tuple[PreSimFiring, ...]) -> None:
-        """Recheck prior reporting evidence without accepting a terminal result."""
-        manifest = self.load_manifest()
+    def _reread_prior_attempt(
+        self,
+        manifest: SimulationCampaignManifest,
+        items: Mapping[str, Mapping[str, object]],
+        directory: Path,
+        owned: list[PreSimFiring],
+    ) -> dict[tuple[str, str, str, int], PreSimFiring]:
+        """Check one attempt once and return the fresh firings matching its prior ones."""
         digest = _manifest_sha256(manifest)
-        items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
-        snapshots = {}
-        for firing in firings:
-            if digest != firing.document["manifest_sha256"]:
-                raise SimulationCampaignIntegrityError("prior hook manifest changed")
-            item = items.get(firing.key[1])
-            if item is None or firing.manifest_path != self.manifest_path:
-                raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
-            directory = firing.path.parent.parent
-            if directory not in snapshots:
-                _require_safe_parents(directory, self.root)
-                if directory.parent != self._work_item_directory(item) / "attempts":
-                    raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
-                snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, None)
-                snapshots[directory] = snapshot.firings if snapshot is not None else ()
-            if not any(
-                candidate.key == firing.key
-                and candidate.path == firing.path
-                and candidate.reference == firing.reference
-                for candidate in snapshots[directory]
-            ):
+        item = items.get(owned[0].key[1])
+        if any(firing.document["manifest_sha256"] != digest for firing in owned):
+            raise SimulationCampaignIntegrityError("prior hook manifest changed")
+        if item is None:
+            raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
+        _require_safe_parents(directory, self.root)
+        if directory.parent != self._work_item_directory(item) / "attempts":
+            raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
+        snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, None)
+        fresh = {candidate.key: candidate for candidate in snapshot.firings} if snapshot else {}
+        for firing in owned:
+            match = fresh.get(firing.key)
+            if match is None or (match.path, match.reference) != (firing.path, firing.reference):
                 raise SimulationCampaignIntegrityError("prior hook reference changed")
+        return {firing.key: fresh[firing.key] for firing in owned}
 
     def read_pre_sim_firings(
         self, manifest: SimulationCampaignManifest | None = None
@@ -1064,6 +1026,72 @@ class CampaignStore:
         _require_safe_parents(self.summary_path, self.root)
         _replace_projection(self.summary_path, raw)
         return json.loads(raw)
+
+
+_PRE_SIM_DAG_BOUND = 4096
+
+
+def collect_pre_sim_firings(*manifest_paths: Path) -> tuple[PreSimFiring, ...]:
+    """Read every root's prerequisite DAG once and deduplicate by full firing identity.
+
+    The key ``(campaign_id, work_item_id, attempt_id, ordinal)`` keeps Candidate
+    and Cycle Count baseline firings distinct.  Each distinct manifest path is
+    scanned once.  Prerequisite references repeated by many work items count
+    once toward the bound, so the bound limits distinct work, not edges.
+    """
+    pending = [(Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)]
+    queued: set[tuple[Path, str, frozenset[str]]] = set()
+    visited: set[Path] = set()
+    firings = {}
+    allowed_pops = len(manifest_paths) + _PRE_SIM_DAG_BOUND
+    while pending:
+        if allowed_pops == 0:
+            raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
+        allowed_pops -= 1
+        path, expected, ancestors = pending.pop()
+        if path.name != "manifest.json" or path.parent.name != "campaign":
+            raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
+        store = CampaignStore(path.parent)
+        manifest = store.load_manifest()
+        if expected is not None and manifest_digest(manifest) != expected:
+            raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
+        campaign_id = str(manifest.document["campaign_id"])
+        if campaign_id in ancestors:
+            raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
+        if path in visited:
+            continue
+        visited.add(path)
+        for firing in store.inspect_pre_sim_firings(manifest):
+            firings[firing.key] = firing
+        for entry in manifest.document["prerequisites"]:
+            reference = entry["manifest"]
+            edge = (store.root.parents[2] / reference["path"], reference["sha256"])
+            chain = ancestors | {campaign_id}
+            if (*edge, chain) not in queued:
+                queued.add((*edge, chain))
+                pending.append((*edge, chain))
+    return tuple(firings.values())
+
+
+def reread_pre_sim_firings(prior: tuple[PreSimFiring, ...]) -> tuple[PreSimFiring, ...]:
+    """Freshly reread earlier-authenticated firings, one snapshot per attempt.
+
+    No terminal record is consulted, so unrelated terminal corruption cannot
+    drop valid firing evidence, and changed sidecar bytes change the reference
+    and raise.  Only fresh firings matching a prior key are returned.
+    """
+    by_manifest: dict[Path, dict[Path, list[PreSimFiring]]] = {}
+    for firing in prior:
+        attempts = by_manifest.setdefault(firing.manifest_path, {})
+        attempts.setdefault(firing.path.parent.parent, []).append(firing)
+    fresh = {}
+    for manifest_path, attempts in by_manifest.items():
+        store = CampaignStore(manifest_path.parent)
+        manifest = store.load_manifest()
+        items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
+        for directory, owned in attempts.items():
+            fresh.update(store._reread_prior_attempt(manifest, items, directory, owned))
+    return tuple(fresh[key] for key in dict.fromkeys(firing.key for firing in prior))
 
 
 def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
