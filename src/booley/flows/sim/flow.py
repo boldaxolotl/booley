@@ -2682,7 +2682,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     {
                         "default" if test is None else test
                         for test in self._resolve_tests_to_run(
-                            handle.selector, prepared.test_names_map
+                            handle.selector, dict(prepared.test_names_map)
                         )
                     },
                 )
@@ -2690,7 +2690,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
             return workloads, coverage
         manifest = prepared.resume.candidate.manifest
-        document = manifest.document
+        document: Any = manifest.document
         binding = prepared.resume.binding_for(manifest)
         handle = binding.handle if binding is not None else ReportTarget.from_document(document)
         suite, items = document["required_suite"], document["work_items"]
