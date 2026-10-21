@@ -561,7 +561,7 @@ What counts as RTL:
   and whose text, with comments removed, has a line starting with `module` or
   `macromodule`. The scan does no preprocessing, so a module inside an `ifdef`
   counts at face value. A file whose records Verilator remaps elsewhere
-  (`line directives) may still be reported.
+  (`` `line `` directives) may still be reported.
 - Points are per instance: a module instantiated four times contributes four
   sets of points, and each instance must be exercised.
 

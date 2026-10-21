@@ -37,6 +37,12 @@ def test_absent_points_warns_only_for_module_bearing_non_include_rtl(tmp_path):
     assert paths == ["rtl/unused.sv"]
 
 
+def test_input_listed_twice_yields_one_candidate(tmp_path):
+    # gap_plan lists counter.sv first and again from ``sources``.
+    plan = gap_plan(tmp_path, {"rtl/counter.sv": "module counter; endmodule\n"})
+    assert plan.rtl_candidates == ("rtl/counter.sv",)
+
+
 class _ExtraRecordsExecution(NativeExecution):
     """Native output that adds an fsm and an unknown-type record, neither scored."""
 

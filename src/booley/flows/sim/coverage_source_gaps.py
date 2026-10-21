@@ -26,12 +26,14 @@ def rtl_module_candidates(inspection: TargetInspection) -> tuple[str, ...]:
     root = inspection.handle.project_root
     return tuple(
         sorted(
-            Path(item.path).as_posix()
-            for item in inspection.inputs
-            if item.file_type in _VERILOG
-            and not item.is_include
-            and "tb" not in item.tags
-            and declares_module((root / item.path).read_text("utf-8", errors="replace"))
+            {
+                Path(item.path).as_posix()
+                for item in inspection.inputs
+                if item.file_type in _VERILOG
+                and not item.is_include
+                and "tb" not in item.tags
+                and declares_module((root / item.path).read_text("utf-8", errors="replace"))
+            }
         )
     )
 
