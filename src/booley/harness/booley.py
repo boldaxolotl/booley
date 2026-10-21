@@ -379,10 +379,11 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
 
     selected = getattr(args, "_cli_endpoint_project", None)
     supported = supports_shared_cli(endpoint)
-    if selected is not None and not supported:
+    # A tail selector stays in argv, so an override would receive it raw.
+    if (selected is not None or getattr(args, "_cli_tail_selection", False)) and not supported:
         print(
             "ERROR: endpoint overrides the shared CLI entrypoint; implement the common parser "
-            "to support outer --project selection.",
+            "to support --project selection.",
             file=sys.stderr,
         )
         return 2

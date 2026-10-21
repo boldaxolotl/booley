@@ -513,8 +513,9 @@ def test_shared_plugin_outer_selection_and_override_refusal(projects, capsys):
         def main(self, argv=None):
             pytest.fail("override executed")
 
-    args = argparse.Namespace(_cli_endpoint_project=projects[1])
-    assert cli._invoke_endpoint(Override(), [], args) == 2
+    ns = argparse.Namespace
+    for args in (ns(_cli_endpoint_project=projects[1]), ns(_cli_tail_selection=True)):
+        assert cli._invoke_endpoint(Override(), [], args) == 2
     assert "overrides the shared CLI" in capsys.readouterr().err
     assert Plugin.main is EndpointContext.main
 
