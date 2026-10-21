@@ -166,7 +166,10 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
     # One node, every mode; resource-ceiling is last because it patches the ceiling.
     for mode, expected_codes in _PRODUCT_FAULTS.items():
         if mode == "symlink":
-            require_symlinks(tmp_path)
+            try:
+                require_symlinks(tmp_path)
+            except pytest.skip.Exception:
+                continue  # only this mode needs symlinks; keep the others running
         owned = tmp_path / mode
         reference = _product_reference(owned, mode)
         resolve_coverage_campaign_reference(reference)

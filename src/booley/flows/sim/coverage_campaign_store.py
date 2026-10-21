@@ -153,7 +153,7 @@ def _write_line(stream: gzip.GzipFile, value: object, total: int) -> int:
     total += len(line)
     if total > MAX_UNCOMPRESSED_BYTES:
         raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Uncompressed Coverage Point storage exceeds V2 limit"
+            "COV_POINT_LIMIT", "Coverage Point storage exceeds its ceiling"
         )
     stream.write(line)
     return total
