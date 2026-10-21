@@ -303,7 +303,7 @@ def test_missing_json_remains_error_with_durable_empty_audit(reviewer, monkeypat
     assert evidence(result)["review_error"] is True
 
 
-def test_more_severe_mirror_keeps_rejections_on_error(reviewer, monkeypatch):
+def test_disagreeing_mirror_keeps_rejections_on_error(reviewer, monkeypatch):
     output(
         reviewer,
         monkeypatch,
@@ -321,7 +321,7 @@ def test_more_severe_mirror_keeps_rejections_on_error(reviewer, monkeypatch):
     )
     result = reviewer._run()
     assert result.exit_code == 2
-    assert "more severe" in result.report_text
+    assert "leaves out or rates lower" in result.report_text
 
 
 def test_reused_specialist_starts_audit_history_for_new_contract(reviewer, monkeypatch):
