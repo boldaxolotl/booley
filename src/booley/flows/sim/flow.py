@@ -306,6 +306,14 @@ class ReportTarget:
     selector: str
     name: str
 
+    @classmethod
+    def from_document(cls, document: Mapping[str, Any]) -> ReportTarget:
+        """The Target a campaign manifest records."""
+        target = document["target"]
+        return cls(
+            f"{target['vlnv']}#{target['name']}", str(target["selector"]), str(target["name"])
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateWorkload:
@@ -2684,14 +2692,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         manifest = prepared.resume.candidate.manifest
         document = manifest.document
         binding = prepared.resume.binding_for(manifest)
-        target = document["target"]
-        handle = (
-            binding.handle
-            if binding is not None
-            else ReportTarget(
-                f"{target['vlnv']}#{target['name']}", str(target["selector"]), str(target["name"])
-            )
-        )
+        handle = binding.handle if binding is not None else ReportTarget.from_document(document)
         suite, items = document["required_suite"], document["work_items"]
         registered = set(suite["names"])
         selected = set().union(
