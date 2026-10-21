@@ -15,14 +15,14 @@ Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Deve
 
 ## What it does
 
-- **Typed EDA Flows:** `sim`, `lint`, `synth`, and `fpga` each run an EDA job end to end and return pass/fail plus metrics such as area, timing, or cycle counts, not just raw logs. The interface stays the same across EDA tools and projects, and it is built on FuseSoC, so there is no per-repo EDA glue.
-- **Sandboxed Developer Agent:** the agent and every command it runs stay inside a Docker container with restricted mounts and network access, so it can work unattended.
-- **Goal Mode:** you set Goals up front (passing tests, lint, area, timing, cycle counts, coverage, mutation testing, code review), and Booley checks them in deterministic code against fresh recorded results, not against the agent's claim of success.
-- **Waveform queries:** `bwave` lets the agent find, sample, snapshot, and measure real simulation traces instead of guessing from RTL.
-- **Reproducible team environment:** one Docker environment supplies the same pinned EDA stack and agent tooling to everyone on the project.
-- **One VS Code window:** RTL, agent, terminals, EDA runs, waveforms, and the Booley Dashboard live side by side.
+- **Typed EDA Flows:** `sim`, `lint`, `synth`, and `fpga` replace per-repo glue Tcl scripts. Each Flow runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts, not just raw logs. Flows are built on FuseSoC, and the interface stays the same across tools and projects: `sim` stays `sim` whether it runs Verilator today or Xcelium tomorrow.
+- **Reproducible team environment:** Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker)).
+- **One VS Code window:** RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts RTL, agent sessions, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window.
+- **Sandboxed Developer Agent:** Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.
+- **Goal Mode:** You set mandatory Goals up front, such as `SYNTH:synth_fifo (area increase ≤ 10%)` or `COVERAGE:sim_fifo (line ≥ 90%, tests all)`. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent's claim of success ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode)).
+- **Waveform queries:** `bwave` lets the agent find, sample, snapshot, and measure real simulation traces. Ask "When did `data_o` equal `0xDEADBEEF`?" and it answers from simulation data instead of guessing from RTL.
 
-The [website](https://boldaxolotl.github.io/booley/#features) explains each feature in full; [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) is the complete reference.
+[FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) is the complete feature reference.
 
 ## Quick Start
 

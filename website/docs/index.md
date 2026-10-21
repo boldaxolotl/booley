@@ -17,47 +17,56 @@ document: Booley product datasheet
     <section aria-labelledby="description" class="desc">
       <h2 class="sec" id="description"><span class="n">1</span>Description</h2>
       <p>Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
-      <p>You design; it does the grunt work. <a href="#limitations">Section 5</a> lists what Booley does not do; read it before you start.</p>
+      <p>You design; it does the grunt work. <a href="#limitations">Section 4</a> lists what Booley does not do; read it before you start.</p>
+    </section>
 
-      <div class="order" aria-labelledby="order-h">
-        <div class="order__h" id="order-h">Quick start</div>
+    <div class="order" aria-labelledby="order-h">
+      <div class="order__h" id="order-h">Quick start</div>
 <pre><code style="all:unset"><span class="p">$ </span>pipx install booley-rtl
 <span class="p">$ </span>booley bootstrap</code></pre>
-        <div class="order__f">Requirements, upgrades, and troubleshooting: <a href="https://github.com/boldaxolotl/booley#installation">installation guide</a>.</div>
-      </div>
-    </section>
-
-    <section aria-labelledby="features">
-      <h2 class="sec" id="features"><span class="n">2</span>Features</h2>
-      <ul class="feat">
-        <li><strong>Typed EDA Flows:</strong> <code>sim</code>, <code>lint</code>, <code>synth</code>, and <code>fpga</code> each run an EDA job end to end and return pass/fail plus metrics such as area, timing, or cycle counts, not just raw logs. The interface stays the same across EDA tools and projects, and it is built on FuseSoC, so there is no per-repo EDA glue.</li>
-        <li><strong>Sandboxed Developer Agent:</strong> the agent and every command it runs stay inside a Docker container with restricted mounts and network access, so it can work unattended.</li>
-        <li><strong>Goal Mode:</strong> you set Goals up front (passing tests, lint, area, timing, cycle counts, coverage, mutation testing, code review), and Booley checks them in deterministic code against fresh recorded results, not against the agent’s claim of success.</li>
-        <li><strong>Waveform queries:</strong> <code>bwave</code> lets the agent find, sample, snapshot, and measure real simulation traces instead of guessing from RTL.</li>
-        <li><strong>Reproducible team environment:</strong> one Docker environment supplies the same pinned EDA stack and agent tooling to everyone on the project.</li>
-        <li><strong>One VS Code window:</strong> RTL, agent, terminals, EDA runs, waveforms, and the Booley Dashboard live side by side.</li>
-      </ul>
-    </section>
+      <div class="order__f">Requirements, upgrades, and troubleshooting: <a href="https://github.com/boldaxolotl/booley#installation">installation guide</a>.</div>
+    </div>
   </div>
+
+  <!-- Word for word the README's "What it does" list, same order (left
+       column, then right; tests/test_site_contract.py). Left = tooling,
+       right = the agent. -->
+  <section aria-labelledby="features">
+    <h2 class="sec" id="features"><span class="n">2</span>Features</h2>
+    <div class="feat">
+      <div class="feat__col">
+        <div>
+          <h3>Typed EDA Flows</h3>
+          <p><code>sim</code>, <code>lint</code>, <code>synth</code>, and <code>fpga</code> replace per-repo glue Tcl scripts. Each Flow runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts, not just raw logs. Flows are built on FuseSoC, and the interface stays the same across tools and projects: <code>sim</code> stays <code>sim</code> whether it runs Verilator today or Xcelium tomorrow.</p>
+        </div>
+        <div>
+          <h3>Reproducible team environment</h3>
+          <p>Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker">why Docker</a>).</p>
+        </div>
+        <div>
+          <h3>One VS Code window</h3>
+          <p>RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts RTL, agent sessions, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window.</p>
+        </div>
+      </div>
+      <div class="feat__col">
+        <div>
+          <h3>Sandboxed Developer Agent</h3>
+          <p>Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.</p>
+        </div>
+        <div>
+          <h3>Goal Mode</h3>
+          <p>You set mandatory Goals up front, such as <code>SYNTH:synth_fifo (area increase ≤ 10%)</code> or <code>COVERAGE:sim_fifo (line ≥ 90%, tests all)</code>. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent’s claim of success (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode">details</a>).</p>
+        </div>
+        <div>
+          <h3>Waveform queries</h3>
+          <p><code>bwave</code> lets the agent find, sample, snapshot, and measure real simulation traces. Ask “When did <code>data_o</code> equal <code>0xDEADBEEF</code>?” and it answers from simulation data instead of guessing from RTL.</p>
+        </div>
+      </div>
+    </div>
+  </section>
 
 <!-- Figure 1: generated by website/illustration/build.py -->
 --8<-- "ide-figure.html"
-
-  <h2 class="sec" id="detailed-description"><span class="n">3</span>Detailed description</h2>
-  <div class="detail">
-    <div>
-      <h3>Integrated development environment</h3>
-      <p>RTL development is fragmented across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley brings that workflow together in one reproducible VS Code workspace (Figure 1).</p>
-      <p>Booley uses Flows instead of glue Tcl scripts to drive EDA tools. Each Flow runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts. <code>sim</code> stays <code>sim</code> whether it runs Verilator today or Xcelium tomorrow, and on every project you work on.</p>
-      <p>Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to every team member (Figure 2; <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker">why Docker</a>).</p>
-    </div>
-    <div>
-      <h3>Built for agentic workflows</h3>
-      <p>Booley treats the Developer Agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. Booley gives it a constrained workspace, explicit specifications, automated checks, and human review.</p>
-      <p>In Goal Mode you set mandatory Goals at entry, such as <code>SYNTH:synth_fifo (area increase ≤ 10%)</code> or <code>COVERAGE:sim_fifo (line ≥ 90%, tests all)</code>. Booley checks each one in deterministic code, using recorded Flow results rather than the model's claim of success (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode">details</a>).</p>
-      <p><code>bwave</code> lets the agent query real traces: "When did <code>data_o</code> equal <code>0xDEADBEEF</code>?" It answers from simulation data instead of reasoning from code and getting it wrong (Listing 1).</p>
-    </div>
-  </div>
 
   <!-- Listing 1: a typical session (illustrative). Synthetic example, not a
        transcript: fifo_top, test names, cycle and area numbers are made up.
@@ -334,7 +343,7 @@ document: Booley product datasheet
     <figcaption id="fig2cap"><b>Figure 2.</b> Booley architecture.</figcaption>
   </figure>
 
-  <h2 class="sec" id="flows"><span class="n">4</span>Flow characteristics</h2>
+  <h2 class="sec" id="flows"><span class="n">3</span>Flow characteristics</h2>
   <div class="tbl">
     <p class="tbl__cap">Table 1. Booley Flows <span>(see <a href="https://github.com/boldaxolotl/booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md">supported EDA tools</a> for versions)</span></p>
     <table>
@@ -350,7 +359,7 @@ document: Booley product datasheet
     </table>
   </div>
 
-  <h2 class="sec" id="limitations"><span class="n">5</span>Absolute maximum ratings</h2>
+  <h2 class="sec" id="limitations"><span class="n">4</span>Absolute maximum ratings</h2>
   <div class="tbl amr">
     <p class="tbl__cap">Table 2. Limits of use</p>
     <table>
@@ -367,7 +376,7 @@ document: Booley product datasheet
     <p class="amr__fine">Operating beyond these ratings will not damage your silicon, but it will waste your afternoon.</p>
   </div>
 
-  <h2 class="sec" id="application-notes"><span class="n">6</span>Application notes</h2>
+  <h2 class="sec" id="application-notes"><span class="n">5</span>Application notes</h2>
   <article class="an">
     <div class="an__txt">
       <p class="an__id">AN-001</p>
@@ -384,7 +393,7 @@ document: Booley product datasheet
     </div>
   </article>
 
-  <h2 class="sec" id="how-it-is-built"><span class="n">7</span>How it is built</h2>
+  <h2 class="sec" id="how-it-is-built"><span class="n">6</span>How it is built</h2>
   <div class="detail">
     <p>Booley was designed and is maintained by a hardware engineer, not a career software engineer. Its first-party code was written by Claude and Codex, but this is not vibe-coding: I define the architecture and specifications, weigh tradeoffs, review plans and code, and make the final engineering decisions.</p>
     <p>Every change goes through separate agent and human reviews, with isolated branches, type checking, linting, automated tests, coverage requirements, and CI (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CODING_PRINCIPLES.md">coding principles</a>). Reviews from experienced software engineers are especially welcome.</p>

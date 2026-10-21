@@ -1,7 +1,7 @@
 """Project site wording contracts, and the facts it must share with the README.
 
-The site (website/docs/) is the full feature tour; the README keeps the same
-feature list, the install commands, and the pinned PicoRV32 demo revision.
+The site (website/docs/) and the README share the feature list word for word,
+the install commands, and the pinned PicoRV32 demo revision.
 These tests fail when either copy drifts from the other, when a README link
 points at a site section or page that no longer exists, or when the generated
 home-page illustration is stale.
@@ -27,7 +27,10 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 def _plain(markup: str) -> str:
     """Return the visible text of HTML or inline Markdown, whitespace-normalized."""
     text = html.unescape(re.sub(r"<[^>]+>", "", markup))
-    text = text.replace("**", "").replace("`", "").replace("\u2019", "'")  # typographic apostrophe
+    text = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", text)  # Markdown link -> its text
+    text = text.replace("**", "").replace("`", "")
+    for typographic, plain in (("\u2019", "'"), ("\u201c", '"'), ("\u201d", '"')):
+        text = text.replace(typographic, plain)
     return " ".join(text.split())
 
 
@@ -43,9 +46,12 @@ def test_features_match_the_readme_word_for_word():
     """One canonical feature list: the README's "What it does" is the site's Features."""
     readme_section = README.split("## What it does\n", 1)[1].strip().split("\n\n", 1)[0]
     readme_features = [_plain(line[2:]) for line in readme_section.splitlines()]
-    site_list = re.search(r'<ul class="feat">(.*?)</ul>', _site_section("features"), re.S)
-    assert site_list
-    site_features = [_plain(item) for item in re.findall(r"<li>(.*?)</li>", site_list[1], re.S)]
+    site_features = [
+        _plain(f"{name}: {text}")
+        for name, text in re.findall(
+            r"<h3>(.*?)</h3>\s*<p>(.*?)</p>", _site_section("features"), re.S
+        )
+    ]
 
     assert site_features
     assert readme_features == site_features
@@ -63,9 +69,9 @@ def test_inline_goal_examples_match_the_real_goal_presentation():
     ]
     translation = translate_goals(parse_goal_args(examples))
     assert translation.warnings == ()
-    detail = _site_section("detailed-description")
+    features = _site_section("features")
     for goal in translation.goals:
-        assert f"<code>{goal_presentation(goal).text}</code>" in detail
+        assert f"<code>{goal_presentation(goal).text}</code>" in features
 
 
 def test_quick_start_commands_match_the_readme_install_block():
