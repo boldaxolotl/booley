@@ -14,7 +14,6 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
     MANIFEST_SCHEMA,
-    MANIFEST_V3_SCHEMA,
     decode_simulation_campaign_manifest,
 )
 from booley.goals.derivation import selected_observations
@@ -87,14 +86,11 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
 def _declares_source_identities(producer: Mapping[str, object]) -> bool:
     """Whether a campaign manifest's disclosures map generated files to sources.
 
-    Manifest v3 was written exactly for such campaigns. v4 is written for
-    every campaign, so the same fact is read from its disclosures: a setup
-    planner with contract version 2, or any entry that names a source path.
+    The fact is read from the disclosures: a setup planner with contract
+    version 2, or any entry that names a source path. Older manifests never
+    declare source identities.
     """
-    schema = producer["$schema"]
-    if schema == MANIFEST_V3_SCHEMA:
-        return True
-    if schema != MANIFEST_SCHEMA:
+    if producer["$schema"] != MANIFEST_SCHEMA:
         return False
     disclosures = cast("tuple[Mapping[str, Any], ...]", producer["planning_disclosures"])
     return any(

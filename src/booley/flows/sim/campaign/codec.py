@@ -11,7 +11,6 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from string import Formatter
 from typing import TypeAlias, TypeVar, cast
 
 from booley.core.boundary import (
@@ -99,29 +98,23 @@ def canonical_json_bytes(value: object) -> bytes:
 
 
 _MANIFEST_V1_SCHEMA = "booley.simulation-campaign-manifest/v1"
-# v2 = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).  v1 is
-# immutable; v3 additionally permits explicit declared source identities in disclosures.
+# v2 (v0.3.0) = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).
+# v1 and v2 are immutable and stay readable.
 _MANIFEST_V2_SCHEMA = "booley.simulation-campaign-manifest/v2"
-MANIFEST_V3_SCHEMA = "booley.simulation-campaign-manifest/v3"
-# v4 = v3 plus the required ``test_runs`` of every work item: the concrete
+# v4 = v2 plus the required ``test_runs`` of every work item: the concrete
 # Test Runs (Test Variant, seed, declared arguments and environment) the item
-# executes (ADR 0072). It is the only version written; v1-v3 stay readable.
+# executes (ADR 0072), an optional ``no_waivers`` and explicit declared source
+# identities in disclosures. It is the only version written.
 _MANIFEST_V4_SCHEMA = "booley.simulation-campaign-manifest/v4"
 MANIFEST_SCHEMA = _MANIFEST_V4_SCHEMA
-_MANIFEST_SCHEMAS = frozenset(
-    {_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA}
-)
-# Versions whose workload may carry ``no_waivers`` and whose disclosures may
-# declare source identities without the v1/v2 restrictions.
-_OPEN_GRAMMAR_SCHEMAS = frozenset({MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA})
+_MANIFEST_SCHEMAS = frozenset({_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, _MANIFEST_V4_SCHEMA})
 
-RESULT_V2_SCHEMA = "booley.simulation-result/v2"
+_RESULT_V2_SCHEMA = "booley.simulation-result/v2"
 # v3 = v2 plus the required ``test_run`` of every observation: the resolved
 # name of the Test Run it observed (ADR 0072). Observations are then unique by
-# Test Run instead of by Test. A result of a work item that records Test Runs
-# is written as v3; v1 and v2 stay readable.
+# Test Run instead of by Test. v2 (v0.3.0) stays readable.
 RESULT_SCHEMA = "booley.simulation-result/v3"
-_RESULT_SCHEMAS = frozenset({RESULT_V2_SCHEMA, RESULT_SCHEMA})
+_RESULT_SCHEMAS = frozenset({_RESULT_V2_SCHEMA, RESULT_SCHEMA})
 
 _MANIFEST_FIELDS = frozenset(
     {
@@ -471,10 +464,7 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
     )
     if run_directory["kind"] not in {"literal", "templated"}:
         raise SimulationCampaignIntegrityError("invalid run directory kind")
-    configured = _bounded_string(
-        run_directory["configured"], "run_directory.configured", allow_empty=True
-    )
-    _validate_configured_run_kind(configured, cast(str, run_directory["kind"]))
+    _bounded_string(run_directory["configured"], "run_directory.configured", allow_empty=True)
     _validate_run_directory_path(run_directory["resolved"], "run_directory.resolved")
     _validate_run_directory_path(run_directory["collision_key"], "run_directory.collision_key")
     require_bool_value(run_directory["owned"], field="run_directory.owned")
@@ -1063,7 +1053,7 @@ def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
         if (
             schema == _MANIFEST_V2_SCHEMA
             or (
-                schema in _OPEN_GRAMMAR_SCHEMAS
+                schema == _MANIFEST_V4_SCHEMA
                 and isinstance(value, Mapping)
                 and "no_waivers" in value
             )
@@ -1097,7 +1087,6 @@ def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
     _validate_eda(workload["eda"])
     _bounded_string(workload["planner_contract_version"], "planner_contract_version")
     _bounded_string(workload["adapter_contract_version"], "adapter_contract_version")
-    _validate_run_cwd(workload["run_cwd"])
     _validate_runtime_declarations(workload["runtime_inputs"])
     _validate_source_recipe(workload["source_recipe"])
     _validate_build_recipe(workload["build_recipe"])
@@ -1110,64 +1099,6 @@ def _validate_eda(value: object) -> None:
     eda = _exact_object(value, {"kind", "version"}, "eda")
     for key, item in eda.items():
         _bounded_string(item, f"eda.{key}")
-
-
-def _validate_run_cwd(value: object) -> None:
-    run_cwd = _exact_object(value, {"configured", "kind", "placeholders"}, "run_cwd")
-    if run_cwd["kind"] not in {"literal", "templated"}:
-        raise SimulationCampaignIntegrityError("run_cwd.kind is invalid")
-    placeholders = _bounded_string_list(
-        run_cwd["placeholders"],
-        "run_cwd.placeholders",
-        count_limit=4,
-        byte_limit=MAX_STRING_BYTES,
-        unique=True,
-    )
-    if set(placeholders) - {
-        "campaign",
-        "target",
-        "test",
-        "attempt",
-    }:
-        raise SimulationCampaignIntegrityError("run_cwd placeholders are invalid")
-    configured = _bounded_string(run_cwd["configured"], "run_cwd.configured", allow_empty=True)
-    parsed = _validate_configured_run_kind(configured, cast(str, run_cwd["kind"]))
-    if placeholders != parsed:
-        raise SimulationCampaignIntegrityError(
-            "run_cwd placeholders/kind disagree with configured value"
-        )
-
-
-def _validate_configured_run_kind(configured: str, kind: str) -> list[str]:
-    placeholders = _parse_run_placeholders(configured)
-    if (kind == "literal") != (not placeholders):
-        raise SimulationCampaignIntegrityError(
-            "run-directory kind disagrees with configured value"
-        )
-    return placeholders
-
-
-def _parse_run_placeholders(configured: str) -> list[str]:
-    allowed = {"campaign", "target", "test", "attempt"}
-    ordered: list[str] = []
-    try:
-        parts = Formatter().parse(configured)
-        for _, field_name, format_spec, conversion in parts:
-            if field_name is None:
-                continue
-            if field_name not in allowed:
-                raise SimulationCampaignIntegrityError(
-                    f"unknown run-directory placeholder {field_name!r}"
-                )
-            if conversion is not None or format_spec:
-                raise SimulationCampaignIntegrityError(
-                    "run-directory placeholders cannot use conversion or format specs"
-                )
-            if field_name not in ordered:
-                ordered.append(field_name)
-    except ValueError as exc:
-        raise SimulationCampaignIntegrityError("invalid run-directory format string") from exc
-    return ordered
 
 
 def _validate_runtime_declarations(value: object) -> None:
@@ -1345,12 +1276,12 @@ def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, objec
         _validate_source_entries(
             disclosure["scratch_inputs"],
             "scratch_inputs",
-            source_mapping=schema in _OPEN_GRAMMAR_SCHEMAS,
+            source_mapping=schema == _MANIFEST_V4_SCHEMA,
         )
         _validate_source_entries(
             disclosure["generated_files"],
             "generated_files",
-            source_mapping=schema in _OPEN_GRAMMAR_SCHEMAS,
+            source_mapping=schema == _MANIFEST_V4_SCHEMA,
         )
         provenance = _exact_object(
             disclosure["tool_provenance"],
@@ -1417,7 +1348,7 @@ def _validate_work_items(
     target: Mapping[str, object],
     suite: Mapping[str, object],
     variants: list[Mapping[str, object]],
-    schema: str = _MANIFEST_V1_SCHEMA,
+    schema: str,
 ) -> list[Mapping[str, object]]:
     items = _exact_list(value, "work_items", MAX_WORK_ITEMS)
     variant_ids = {variant["build_variant_id"] for variant in variants}
@@ -1488,9 +1419,7 @@ def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
         )
 
 
-def _decode_work_item(
-    value: object, ordinal: int, schema: str = _MANIFEST_V1_SCHEMA
-) -> Mapping[str, object]:
+def _decode_work_item(value: object, ordinal: int, schema: str) -> Mapping[str, object]:
     item = _exact_object(
         value,
         ({"test_runs"} if schema == _MANIFEST_V4_SCHEMA else set())
@@ -1557,10 +1486,9 @@ def _validate_work_item_run_directory(value: object) -> None:
     )
     if run_directory["kind"] not in {"literal", "templated"}:
         raise SimulationCampaignIntegrityError("work item run-directory kind is invalid")
-    configured = _bounded_string(
+    _bounded_string(
         run_directory["configured"], "work item run_directory.configured", allow_empty=True
     )
-    _validate_configured_run_kind(configured, cast(str, run_directory["kind"]))
     _validate_run_directory_path(
         run_directory["collision_template"],
         "work item run_directory.collision_template",
@@ -1713,7 +1641,7 @@ _DOCUMENT_SPECS: dict[
         _validate_build_result,
     ),
     SimulationResult: (
-        RESULT_V2_SCHEMA,
+        _RESULT_V2_SCHEMA,
         _RESULT_FIELDS,
         RECORD_MAX_BYTES,
         _validate_simulation_result,
@@ -1733,7 +1661,6 @@ _DOCUMENT_SPECS: dict[
 }
 _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
 _DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[MANIFEST_V3_SCHEMA] = _validate_manifest
 _DOCUMENT_VALIDATORS[_MANIFEST_V4_SCHEMA] = _validate_manifest
 _DOCUMENT_VALIDATORS[RESULT_SCHEMA] = _validate_simulation_result
 
@@ -1768,13 +1695,6 @@ decode_build_result = decode_bundle_build_result
 
 
 def decode_simulation_result(raw: bytes) -> SimulationResult:
-    try:
-        document = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        document = None
-    if isinstance(document, dict) and document.get("$schema") == "booley.simulation-result/v1":
-        document["$schema"] = RESULT_V2_SCHEMA
-        raw = canonical_json_bytes(document)
     return _decode_registered(raw, SimulationResult)
 
 
@@ -1792,9 +1712,7 @@ def _encode_checked(
 ) -> bytes:
     if type(value) is not expected_type:
         raise SimulationCampaignIntegrityError(f"expected {expected_type.__name__}")
-    raw = canonical_json_bytes(value.document)
-    _decode_registered(raw, expected_type)
-    return raw
+    return canonical_json_bytes(value.document)
 
 
 def encode_simulation_campaign_manifest(value: SimulationCampaignManifest) -> bytes:
@@ -1826,7 +1744,7 @@ def encode_executable_snapshot(value: ExecutableSnapshot) -> bytes:
 
 
 def encode_simulation_campaign_document(value: SimulationCampaignDocument) -> bytes:
-    """Validate and canonically encode any Phase-1 campaign document value."""
+    """Canonically encode any Phase-1 campaign document value."""
     value_type = type(value)
     if value_type not in _DOCUMENT_SPECS:
         raise SimulationCampaignIntegrityError(
