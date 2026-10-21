@@ -1347,3 +1347,41 @@ def test_direct_generic_completion_preserves_empty_criterion_fields():
     event = _endpoint_end_event("generic", None, EndpointOutcome(), 0.0)
     assert event["criterion_key"] == ""
     assert event["criterion_met"] is False
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+def test_custom_headline_keeps_same_name_selector_uncertain(
+    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, strict
+):
+    # A custom endpoint prepares no Target selection, so reporting does not resolve
+    # one either: a same-name selector on another core stays an unevaluated potential.
+    _report_targets(runtime)
+    _headline_state(
+        runtime,
+        monkeypatch,
+        {"drc_clean_first": True, "drc_rules_policy73": True},
+        strict=strict,
+        criterion_params={"drc_rules_policy73": {"target": "other:lib:x#first"}},
+    )
+    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
+    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", "first"], ("", None))
+
+
+@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+def test_custom_headline_scope_resolves_no_target(
+    external_acceptance_owner, runtime, monkeypatch, endpoint_kind
+):
+    # Non-strict, so admission's own binding gate resolves nothing either.
+    from booley.targets.catalog import TargetCatalog
+
+    _report_targets(runtime)
+    _headline_state(runtime, monkeypatch, {"drc_clean_first": True}, strict=False)
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("report headline resolved a Target catalog")
+
+    monkeypatch.setattr(TargetCatalog, "build", refuse)
+    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
+    argv = ["--target", "first"]
+    _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, ("drc_clean_first", True))
