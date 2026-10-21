@@ -6,15 +6,10 @@ import argparse
 import os
 import re
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
 INVOCATION_ORIGIN_ENV = "_BOOLEY_CLI_INVOCATION_ORIGIN"
-_selection: ContextVar[Path | None] = ContextVar("cli_project_selection", default=None)
-_transport: ContextVar[bool | None] = ContextVar("cli_transport", default=None)
 _DURATION = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", re.ASCII)
 
 
@@ -53,31 +48,28 @@ def parse_duration(value: str) -> Duration:
     return Duration(milliseconds)
 
 
-def transport_invocation() -> bool:
-    """Explicit parser metadata only; this grants no execution authority."""
-    scoped = _transport.get()
-    return scoped if scoped is not None else os.environ.get(INVOCATION_ORIGIN_ENV) == "transport"
+@dataclass(frozen=True)
+class CliInvocation:
+    """One CLI call's origin and outer Project selection, passed by its caller."""
 
+    project: Path | None = None
+    transport: bool = False
 
-@contextmanager
-def invocation_context(project: Path | None = None, *, transport: bool = False) -> Iterator[None]:
-    """Scope same-process invocation metadata and restore it even after failure."""
-    selection_token = _selection.set(project)
-    transport_token = _transport.set(transport)
-    try:
-        yield
-    finally:
-        _transport.reset(transport_token)
-        _selection.reset(selection_token)
+    @classmethod
+    def of(cls, endpoint) -> CliInvocation:
+        """The caller-supplied invocation, else the subprocess-boundary marker."""
+        return endpoint._cli_invocation or cls(
+            transport=os.environ.get(INVOCATION_ORIGIN_ENV) == "transport"
+        )
 
 
 def warn_alias(option: str, replacement: str) -> None:
-    if not transport_invocation():
-        print(
-            f"booley: {option} is deprecated; use {replacement} instead "
-            "(removal after one compatibility release)",
-            file=sys.stderr,
-        )
+    """Human parsers only: transport parsers never install alias actions."""
+    print(
+        f"booley: {option} is deprecated; use {replacement} instead "
+        "(removal after one compatibility release)",
+        file=sys.stderr,
+    )
 
 
 class SelectionAction(argparse.Action):
@@ -218,62 +210,7 @@ def normalize_endpoint_args(args: argparse.Namespace) -> None:
         vars(args).pop(key, None)
 
 
-def apply_project_selection(parser: argparse.ArgumentParser) -> None:
+def apply_project_selection(parser: argparse.ArgumentParser, project: Path | None) -> None:
     """Apply the outer invocation's explicit selection to a human parser."""
-    if _selection.get() is not None:
-        parser.set_defaults(work_dir=_selection.get(), _cli_seen_project=True)
-
-
-def extract_project_tail(
-    parser: argparse.ArgumentParser, tail: list[str]
-) -> tuple[list[str], list[ProjectSelection]]:
-    """Walk known option arities; never interpret opaque values or payloads."""
-    result: list[str] = []
-    selections: list[ProjectSelection] = []
-    index = 1 if tail and tail[0] == "--" else 0
-    if index:
-        result.append("--")
-    while index < len(tail):
-        token = tail[index]
-        option, equals, value = token.partition("=")
-        if token.startswith("-C") and len(token) > 2:
-            option, equals, value = "-C", "=", token[2:]
-        if option in {"--project", "-C", "--work-dir"}:
-            index += 1
-            if not equals:
-                if index >= len(tail) or tail[index].startswith("-"):
-                    parser.error(f"{option} requires PATH")
-                value = tail[index]
-                index += 1
-            if selections:
-                parser.error("multiple Project selectors are not supported")
-            selections.append(ProjectSelection(value, option == "--work-dir"))
-            if option == "--work-dir":
-                warn_alias(option, "--project")
-            continue
-        action = parser._option_string_actions.get(option)
-        if action is None or token == "--":
-            result.extend(tail[index:])
-            break
-        result.append(token)
-        index += 1
-        end = _option_value_end(action, tail, index, attached=bool(equals))
-        result.extend(tail[index:end])
-        index = end
-    return result, selections
-
-
-def _option_value_end(action, tail: list[str], index: int, *, attached: bool) -> int:
-    if attached or action.nargs == 0:
-        return index
-    if action.nargs is None or isinstance(action.nargs, int):
-        count = 1 if action.nargs is None else action.nargs
-        return min(index + count, len(tail))
-    if action.nargs in {"?", "*", "+"}:
-        end = index
-        while end < len(tail) and not tail[end].startswith("-"):
-            end += 1
-            if action.nargs == "?":
-                break
-        return end
-    return len(tail)
+    if project is not None:
+        parser.set_defaults(work_dir=project, _cli_seen_project=True)
