@@ -330,14 +330,16 @@ def test_implementation_envelope_storage_keeps_project_clean(versioned_project, 
     assert_clean(repo)
 
 
-def test_compiler_cache_preparation_keeps_project_clean(versioned_project):
-    from booley.flows.sim.compiler_cache import _prepare_directory, resolve_policy
-    from booley.runtime.compiler_cache import IssuedCacheIdentity
+def test_compiler_cache_preparation_keeps_project_clean(versioned_project, monkeypatch):
+    from booley.flows.sim.compiler_cache import execution_environment, resolve_policy
+    from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, COMPILER_CACHE_ROOT_ENV
 
     root, data, repo = versioned_project
-    policy = resolve_policy(root, issued=IssuedCacheIdentity(None, False), owner=data)
+    policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(data / COMPILER_CACHE_RELATIVE)})
+    monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: "/ccache")
+    environment = execution_environment(policy, policy.environment(), ambient={})
+    assert environment["OBJCACHE"] == "ccache"
     assert policy.root is not None
-    _prepare_directory(policy.root)
     assert policy.root.is_dir()
     assert_clean(repo)
 
