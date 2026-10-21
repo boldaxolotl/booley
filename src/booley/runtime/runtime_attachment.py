@@ -244,33 +244,13 @@ def _drive_execution(
 def _report_protocol_failure(result: ExecutionResult, project_root: Path | None = None) -> None:
     if result.terminal_cause not in {"protocol_mismatch", "protocol_unavailable"}:
         return
-    from booley.runtime import (
-        image_identity,
-        interactive_docker,
-        session_issuance,
-        session_runtime,
+    from booley.runtime import session_runtime
+
+    remedy = (
+        session_runtime.sandbox_remedy(project_root)
+        if project_root is not None
+        else session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
     )
-
-    remedy = "inspect the published image/wheel execution protocol on the host before rebuilding the Sandbox"
-    if project_root is not None:
-        try:
-            issued = session_issuance.load_issued_snapshot(project_root)
-            path = session_runtime.dc.devcontainer_path(project_root)
-            import json
-
-            spec = json.loads(path.read_text())
-            session_issuance.validate(project_root, spec, path)
-            stale = (
-                interactive_docker.compare_issued_build(issued.image).status
-                is image_identity.Status.MISMATCH
-            )
-            remedy = session_runtime.sandbox_remedy(project_root, runtime_only=not stale)
-            if not stale and result.terminal_cause == "protocol_unavailable":
-                remedy = (
-                    "verify/repair the published image/wheel execution protocol, then " + remedy
-                )
-        except (session_issuance.RuntimeSpecError, OSError, ValueError):
-            remedy = session_runtime.sandbox_remedy(project_root)
     logger.error("Sandbox execution protocol is unavailable or incompatible; %s", remedy)
 
 

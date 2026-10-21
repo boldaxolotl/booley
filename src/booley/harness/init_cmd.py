@@ -913,9 +913,7 @@ def _step_image_lifecycle(
 # ---------------------------------------------------------------------------
 
 
-def inspect_refreshable_runtime_image(
-    project_root: Path, *, verbose: bool = False
-) -> LifecycleResult:
+def inspect_refreshable_runtime_image(project_root: Path, *, verbose: bool = False) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     del verbose
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
@@ -925,32 +923,6 @@ def inspect_refreshable_runtime_image(
             "Rebuild/pull it explicitly, then on the host run `booley session down`, "
             "`booley init --seed`, and `booley session up`."
         )
-    stale = tuple(step for step in lifecycle_plan.steps if step.action is not PlanAction.REUSE)
-    docker = image_lifecycle._docker_adapter()
-    return LifecycleResult(
-        lifecycle_plan.selected_reference,
-        docker.image_id(lifecycle_plan.selected_reference),
-        ImageLifecycleStatus.STALE if stale else ImageLifecycleStatus.CURRENT,
-        diagnostics=tuple(step.reason for step in stale),
-        payload_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
-        wheel_source_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
-    )
-
-
-def refresh_runtime_image(
-    project_root: Path,
-    *,
-    verbose: bool = False,
-    inspection: LifecycleResult | None = None,
-) -> LifecycleResult:
-    """Converge the selected Sandbox Image without forcing compatible ancestors."""
-    del inspection
-    prepared = prepare_runtime_image(project_root, verbose=verbose)
-    try:
-        return commit_runtime_image(prepared)
-    except BaseException:
-        abort_runtime_image(prepared)
-        raise
 
 
 def prepare_runtime_image(
