@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import shlex
 import stat
 import subprocess
 import tempfile
-import zipfile
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,96 +51,19 @@ class _Locations:
 class _Adapter:
     name: str
     owner_marker: str
-    command: str
     target: Path
     body: str
     outcome: WriteOutcome
 
 
 @dataclass(frozen=True, slots=True)
-class _PathState:
-    """Recoverable state for one path touched by reconciliation."""
+class _Action:
+    """One pending reconciliation change; the planner emits them in apply order."""
 
-    kind: str
-    data: bytes | None = None
-    target: Path | str | None = None
-    mode: int | None = None
-
-
-class _ReconciliationTransaction:
-    """Restore the pre-init filesystem state if reconciliation is interrupted."""
-
-    def __init__(self) -> None:
-        self._states: dict[Path, _PathState] = {}
-
-    def watch(self, path: Path) -> None:
-        """Record *path* once before a mutation can touch it."""
-        if path in self._states:
-            return
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            self._states[path] = _PathState("missing")
-            return
-        if stat.S_ISLNK(info.st_mode):
-            self._states[path] = _PathState("symlink", target=path.readlink())
-        elif stat.S_ISREG(info.st_mode):
-            self._states[path] = _PathState("file", data=path.read_bytes(), mode=info.st_mode)
-        elif stat.S_ISDIR(info.st_mode):
-            self._states[path] = _PathState("directory", mode=info.st_mode)
-        else:
-            self._states[path] = _PathState("other", mode=info.st_mode)
-
-    def rollback(self) -> None:
-        """Restore watched paths deepest-first, retaining no partial success."""
-        for path, state in sorted(
-            self._states.items(), key=lambda item: len(item[0].parts), reverse=True
-        ):
-            _restore_path(path, state)
-
-
-def _remove_path(path: Path) -> None:
-    """Remove one path if it is now present, without following symlinks."""
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return
-    if stat.S_ISDIR(info.st_mode):
-        path.rmdir()
-    else:
-        path.unlink()
-
-
-def _restore_path(path: Path, state: _PathState) -> None:
-    """Restore one path state recorded by :class:`_ReconciliationTransaction`."""
-    if state.kind == "missing":
-        with suppress(FileNotFoundError, OSError):
-            _remove_path(path)
-        return
-    if state.kind == "other":
-        return
-    _remove_path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if state.kind == "directory":
-        path.mkdir()
-    elif state.kind == "symlink":
-        path.symlink_to(state.target)
-    elif state.kind == "file":
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=path.parent, prefix=f".{path.name}.", delete=False
-            ) as handle:
-                temporary = Path(handle.name)
-                handle.write(state.data or b"")
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary.chmod(stat.S_IMODE(state.mode or 0o644))
-            temporary.replace(path)
-            temporary = None
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+    kind: str  # publish, adapter, remove, rename, rmdir, or keep
+    path: Path
+    detail: str
+    adapter: _Adapter | None = None
 
 
 def _shell_bundle_resolution(project_root: Path, bundle_path: Path) -> str:
@@ -271,13 +190,11 @@ def _adapters(ctx: InitContext, locations: _Locations) -> list[_Adapter]:
         (
             "commit-msg",
             "commit_msg_hook.py",
-            "commit-msg",
             _build_commit_msg_hook_body(ctx.project_root, locations.bundle_path),
         ),
         (
             "pre-push",
             "pre_push_hook.py",
-            "pre-push",
             _build_pre_push_hook_body(ctx.project_root, locations.bundle_path),
         ),
     )
@@ -285,7 +202,6 @@ def _adapters(ctx: InitContext, locations: _Locations) -> list[_Adapter]:
         _Adapter(
             name,
             owner_marker,
-            command,
             locations.hooks_dir / name,
             body,
             guarded_write(
@@ -298,7 +214,7 @@ def _adapters(ctx: InitContext, locations: _Locations) -> list[_Adapter]:
                 executable=True,
             ),
         )
-        for name, owner_marker, command, body in specs
+        for name, owner_marker, body in specs
     ]
 
 
@@ -312,8 +228,6 @@ def _bundle_pending(path: Path, content: bytes) -> bool:
 
 def _publish_bundle(path: Path, content: bytes) -> None:
     """Publish a complete non-executable bundle atomically."""
-    if not _bundle_pending(path, content):
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -332,85 +246,9 @@ def _publish_bundle(path: Path, content: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _verify_adapters(adapters: list[_Adapter]) -> None:
-    """Verify each installed adapter invokes its bundle command."""
-    for adapter in adapters:
-        body = adapter.target.read_text(encoding="utf-8")
-        invocation = f'"$BUNDLE" {adapter.command} "$@"'
-        if BUNDLE_NAME not in body or invocation not in body:
-            raise RuntimeError(
-                f"installed {adapter.name} adapter does not invoke {BUNDLE_NAME} {adapter.command}"
-            )
-
-
-def _current_source_bytes() -> dict[str, bytes]:
-    """Read canonical sources for legacy-file recognition."""
-    root = _source_package_root()
-    return {name: _normalized_source(root / relative) for name, relative in _SOURCE_INVENTORY}
-
-
-def _previous_bundle_hashes(path: Path) -> dict[str, str]:
-    """Read source hashes from the previous bundle when available."""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            document = json.loads(archive.read("manifest.json"))
-        if not isinstance(document, dict):
-            return {}
-        values = document.get("source_sha256", {})
-        if not isinstance(values, dict):
-            return {}
-        return {name: value for name, value in values.items() if isinstance(value, str)}
-    except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile):
-        return {}
-
-
-def _legacy_matches(
-    path: Path, name: str, current: dict[str, bytes], previous: dict[str, str]
-) -> bool:
-    """Return whether a legacy source matches current or previous managed code."""
-    data = path.read_bytes()
-    if data == current[name]:
-        return True
-    normalized = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    if normalized == current[name]:
-        return True
-    return hashlib.sha256(normalized).hexdigest() == previous.get(name)
-
-
-def _backup_candidate(path: Path, data: bytes) -> Path:
-    """Allocate a digest-bearing backup without overwriting another file."""
-    digest = hashlib.sha256(data).hexdigest()[:12]
-    for index in range(1000):
-        suffix = "" if index == 0 else f"-{index}"
-        candidate = path.with_name(f"{path.name}.pre-booley.{digest}{suffix}")
-        if not candidate.exists():
-            return candidate
-        if candidate.is_file() and candidate.read_bytes() == data:
-            return candidate
-    raise OSError(f"could not allocate a collision-safe backup for {path}")
-
-
-def _publish_backup(path: Path, data: bytes, mode: int, *, target: Path | None = None) -> Path:
-    """Publish one legacy backup atomically."""
-    target = target or _backup_candidate(path, data)
-    if target.is_file() and target.read_bytes() == data:
-        return target
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=f".{target.name}.", delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.chmod(stat.S_IMODE(mode))
-        temporary.replace(target)
-        temporary = None
-        return target
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+def _canonical_source(name: str) -> bytes:
+    """Return Booley's LF-normalized copy of one retired hook file."""
+    return _normalized_source(_source_package_root() / dict(_SOURCE_INVENTORY)[name])
 
 
 def _managed_bytecode(cache_dir: Path) -> list[Path]:
@@ -425,108 +263,78 @@ def _managed_bytecode(cache_dir: Path) -> list[Path]:
     )
 
 
-def _legacy_detail(
-    legacy_dir: Path, current: dict[str, bytes], previous: dict[str, str]
-) -> list[str]:
-    """Describe legacy sources and bytecode that cleanup would remove."""
-    details: list[str] = []
-    for name in _LEGACY_MANAGED_HOOKS:
-        path = legacy_dir / name
-        if not path.exists():
-            continue
-        if not path.is_file():
-            details.append(f"preserve unrecognized legacy path {name}")
-        elif _legacy_matches(path, name, current, previous):
-            details.append(f"remove legacy {name}")
-        else:
-            details.append(
-                f"back up divergent {name} as {_backup_candidate(path, path.read_bytes()).name}, then remove it"
-            )
-    cache_dir = legacy_dir / "__pycache__"
-    bytecode = _managed_bytecode(cache_dir)
-    details.extend(f"remove managed bytecode {path.name}" for path in bytecode)
-    if bytecode and all(path in bytecode for path in cache_dir.iterdir()):
-        details.append("remove empty hooks/__pycache__")
-    return details
+def _legacy_action(path: Path) -> _Action | None:
+    """Decide what migration does with one retired hook file name."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    backup = path.with_name(f"{path.name}.pre-booley")
+    if not stat.S_ISREG(mode):
+        return _Action("keep", path, f"preserve unrecognized legacy path {path.name}")
+    data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if data == _canonical_source(path.name):
+        return _Action("remove", path, f"remove legacy {path.name}")
+    if not os.path.lexists(backup):
+        return _Action("rename", path, f"rename divergent {path.name} to {backup.name}")
+    return _Action("keep", path, f"keep divergent {path.name}: {backup.name} already exists")
 
 
-def _cleanup_legacy(
-    legacy_dir: Path,
-    current: dict[str, bytes],
-    previous: dict[str, str],
-    transaction: _ReconciliationTransaction,
-) -> list[str]:
-    """Remove only known legacy files after adapters are verified."""
-    errors: list[str] = []
-    for name in _LEGACY_MANAGED_HOOKS:
-        path = legacy_dir / name
-        if not path.exists():
-            continue
-        if not path.is_file():
-            warn(f"preserving unrecognized legacy path {path}")
-            continue
-        try:
-            transaction.watch(path)
-            data = path.read_bytes()
-            if not _legacy_matches(path, name, current, previous):
-                backup = _backup_candidate(path, data)
-                transaction.watch(backup)
-                _publish_backup(path, data, path.stat().st_mode, target=backup)
-                warn(f"backed up divergent legacy hook {name} to {backup.name}")
-            path.unlink()
-        except OSError as exc:
-            errors.append(f"could not remove legacy {name}: {exc}")
-    cache_dir = legacy_dir / "__pycache__"
-    transaction.watch(cache_dir)
-    for path in _managed_bytecode(cache_dir):
-        try:
-            transaction.watch(path)
-            path.unlink()
-        except OSError as exc:
-            errors.append(f"could not remove managed bytecode {path.name}: {exc}")
-    if cache_dir.is_dir():
-        with suppress(OSError):
-            cache_dir.rmdir()
-    return errors
-
-
-def _apply_adapters(adapters: list[_Adapter], transaction: _ReconciliationTransaction) -> None:
-    """Install adapters and reject unexpected ownership outcomes."""
-    for adapter in adapters:
-        transaction.watch(adapter.target)
-        transaction.watch(adapter.target.with_name(adapter.target.name + ".pre-booley"))
-        outcome = guarded_write(
-            adapter.target,
-            adapter.body,
-            owner_marker=adapter.owner_marker,
-            backup_suffix=".pre-booley",
-            newline="\n",
-            executable=True,
-        )
-        if outcome not in (WriteOutcome.WRITTEN, WriteOutcome.UNCHANGED, WriteOutcome.BACKED_UP):
-            raise RuntimeError(f"could not install {adapter.name} adapter: {outcome.value}")
-        if outcome is WriteOutcome.BACKED_UP:
-            warn(f"backed up existing {adapter.name} adapter to {adapter.name}.pre-booley")
-
-
-def _pending_detail(
-    bundle_path: Path,
-    bundle_content: bytes,
-    adapters: list[_Adapter],
-    legacy: list[str],
-) -> list[str]:
-    """Combine all planned mutations for check-only output."""
-    details = [f"publish {BUNDLE_NAME}"] if _bundle_pending(bundle_path, bundle_content) else []
-    updates = [adapter.name for adapter in adapters if adapter.outcome is WriteOutcome.WRITTEN]
-    if updates:
-        details.append("update " + ", ".join(updates))
-    details.extend(
-        f"back up existing {adapter.name} adapter"
-        for adapter in adapters
-        if adapter.outcome is WriteOutcome.BACKED_UP
+def _plan(ctx: InitContext, locations: _Locations, bundle: bytes) -> list[_Action]:
+    """Return every pending change in apply order: bundle, adapters, legacy files."""
+    actions = []
+    if _bundle_pending(locations.bundle_path, bundle):
+        actions.append(_Action("publish", locations.bundle_path, f"publish {BUNDLE_NAME}"))
+    for adapter in _adapters(ctx, locations):
+        if adapter.outcome is WriteOutcome.WRITTEN:
+            actions.append(_Action("adapter", adapter.target, f"update {adapter.name}", adapter))
+        elif adapter.outcome is WriteOutcome.BACKED_UP:
+            detail = f"back up existing {adapter.name} adapter"
+            actions.append(_Action("adapter", adapter.target, detail, adapter))
+    hooks = locations.booley_dir / "hooks"
+    legacy = (_legacy_action(hooks / name) for name in _LEGACY_MANAGED_HOOKS)
+    actions.extend(action for action in legacy if action is not None)
+    cache = hooks / "__pycache__"
+    bytecode = _managed_bytecode(cache)
+    actions.extend(
+        _Action("remove", path, f"remove managed bytecode {path.name}") for path in bytecode
     )
-    details.extend(legacy)
-    return details
+    if bytecode and set(cache.iterdir()) <= set(bytecode):
+        actions.append(_Action("rmdir", cache, "remove empty hooks/__pycache__"))
+    return actions
+
+
+def _write_adapter(adapter: _Adapter) -> None:
+    """Install one adapter and reject unexpected ownership outcomes."""
+    outcome = guarded_write(
+        adapter.target,
+        adapter.body,
+        owner_marker=adapter.owner_marker,
+        backup_suffix=".pre-booley",
+        newline="\n",
+        executable=True,
+    )
+    if outcome not in (WriteOutcome.WRITTEN, WriteOutcome.UNCHANGED, WriteOutcome.BACKED_UP):
+        raise RuntimeError(f"could not install {adapter.name} adapter: {outcome.value}")
+    if outcome is WriteOutcome.BACKED_UP:
+        warn(f"backed up existing {adapter.name} adapter to {adapter.name}.pre-booley")
+
+
+def _apply(action: _Action, bundle: bytes) -> None:
+    """Carry out one planned change; a rerun resumes after any failure."""
+    if action.kind == "publish":
+        _publish_bundle(action.path, bundle)
+    elif action.kind == "adapter" and action.adapter is not None:
+        _write_adapter(action.adapter)
+    elif action.kind == "remove":
+        action.path.unlink()
+    elif action.kind == "rmdir":
+        action.path.rmdir()
+    elif action.kind == "rename":
+        action.path.rename(action.path.with_name(f"{action.path.name}.pre-booley"))
+        warn(f"renamed divergent legacy hook {action.path.name} to {action.path.name}.pre-booley")
+    else:
+        warn(action.detail)
 
 
 def _tracking_git(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -591,38 +399,20 @@ def step_project_git_hooks(ctx: InitContext) -> None:
         return
     _report_bundle_tracking(ctx, locations)
     try:
-        bundle = build_project_git_hook_bundle()
-        current = _current_source_bytes()
-        previous = _previous_bundle_hashes(locations.bundle_path)
-        adapters = _adapters(ctx, locations)
-        details = _pending_detail(
-            locations.bundle_path,
-            bundle.content,
-            adapters,
-            _legacy_detail(locations.booley_dir / "hooks", current, previous),
-        )
-        if not details:
+        bundle = build_project_git_hook_bundle().content
+        actions = _plan(ctx, locations, bundle)
+        if not actions:
             skip("project Git-hook bundle and adapters are current")
             ctx.record("project_git_hooks", "skip", "current")
             return
         if ctx.check_only:
-            detail = "; ".join(details)
+            detail = "; ".join(action.detail for action in actions)
             warn(detail)
             ctx.record("project_git_hooks", "warn", detail)
             return
-        transaction = _ReconciliationTransaction()
-        transaction.watch(locations.bundle_path)
-        transaction.watch(locations.bundle_path.parent)
-        _publish_bundle(locations.bundle_path, bundle.content)
-        _apply_adapters(adapters, transaction)
-        _verify_adapters(adapters)
-        errors = _cleanup_legacy(locations.booley_dir / "hooks", current, previous, transaction)
-        if errors:
-            raise RuntimeError("; ".join(errors))
-    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
-        if "transaction" in locals():
-            with suppress(OSError):
-                transaction.rollback()
+        for action in actions:
+            _apply(action, bundle)
+    except (OSError, RuntimeError, ValueError) as exc:
         err(f"Project Git-hook reconciliation failed: {exc}")
         ctx.record("project_git_hooks", "err", str(exc))
         return
