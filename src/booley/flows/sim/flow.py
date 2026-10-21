@@ -190,12 +190,12 @@ from .campaign import (
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
-from .campaign.coordinator import CampaignPublicationError
+from .campaign.coordinator import CampaignPublicationError, CampaignPublicationFailure
 from .campaign.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
+    _endpoint_collection,
     _failure_test,
-    project_coverage_failure,
 )
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
@@ -1442,6 +1442,49 @@ class _CoverageTargetError(RuntimeError):
         self.detail = detail
 
 
+def _observed_failure_detail(
+    selector: str, observations: tuple[Mapping[str, object], ...], evaluation: str
+) -> dict[str, object]:
+    """Report the Simulation truth in `observations` with an infrastructure collection."""
+    simulation = simulation_status_from_observations(observations)
+    detail: dict[str, object] = {
+        "target": selector,
+        "passed": None if simulation == "not_run" else simulation == "pass",
+        "simulation": simulation,
+        "collection": "infrastructure_error",
+        "evaluation": evaluation,
+    }
+    if observations:
+        detail["tests"] = [_failure_test(item) for item in observations]
+    return detail
+
+
+def _publication_failure_detail(
+    failure: CampaignPublicationFailure, evaluation: str, report_invocation: Path | None
+) -> dict[str, object]:
+    """Project a publication failure from coordinator-held facts with one nested load."""
+    detail = _observed_failure_detail(failure.target_selector, failure.observations, evaluation)
+    if failure.nested_campaign is not None:
+        try:
+            campaign = load_coverage_campaign(failure.nested_campaign).campaign
+        except (OSError, ValueError):
+            pass  # No committed nested Campaign: keep infrastructure_error and the prepared policy.
+        else:
+            detail.update(
+                collection=_endpoint_collection(campaign.collection["status"]),
+                evaluation=campaign.evaluation["status"],
+                coverage_metrics=coverage_metrics(campaign),
+            )
+    if failure.coverage_reference is not None:
+        _attach_failure_reference(
+            detail,
+            failure.target_root / "coverage.json",
+            report_invocation,
+            str(failure.coverage_reference.document["simulation_campaign_id"]),
+        )
+    return detail
+
+
 def _coverage_failed_target(
     failed: str,
     error: Exception,
@@ -1452,34 +1495,11 @@ def _coverage_failed_target(
     """Use one failure precedence, retaining simulation truth without retrying retention."""
     if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
         detail = {str(key): _structured_json(value) for key, value in error.detail.items()}
-    elif (
-        isinstance(error, CampaignPublicationError)
-        and (published := project_coverage_failure(error.context)) is not None
-    ):
-        detail, has_reference = published
-        if has_reference:
-            _attach_failure_reference(
-                detail,
-                error.context.target_root / "coverage.json",
-                report_invocation,
-                error.context.campaign_id,
-            )
+    elif isinstance(error, CampaignPublicationError):
+        detail = _publication_failure_detail(error.failure, evaluation, report_invocation)
     else:
         observations = outcome.observations if outcome is not None else ()
-        if not observations and isinstance(error, CampaignPublicationError):
-            observations = cast(
-                tuple[Mapping[str, object], ...], error.context.result.document["observations"]
-            )
-        simulation = simulation_status_from_observations(observations)
-        detail = {
-            "target": failed,
-            "passed": None if simulation == "not_run" else simulation == "pass",
-            "simulation": simulation,
-            "collection": "infrastructure_error",
-            "evaluation": evaluation,
-        }
-        if observations:
-            detail["tests"] = [_failure_test(item) for item in observations]
+        detail = _observed_failure_detail(failed, observations, evaluation)
     detail.update(error=str(error), abort_remaining=True)
     return detail
 

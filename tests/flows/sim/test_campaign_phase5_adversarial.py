@@ -451,6 +451,7 @@ def _run_coverage_campaign(
     *,
     runtime_input: bool = False,
     pre_sim_commands: tuple[str, ...] = (),
+    publication_checkpoint=None,
 ):
     plan, target = _coverage_campaign_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
@@ -468,7 +469,9 @@ def _run_coverage_campaign(
         return native
 
     executor = CoverageAggregateExecutor(
-        plans={target.handle.identity: target}, execution_factory=execution_factory
+        plans={target.handle.identity: target},
+        execution_factory=execution_factory,
+        publication_checkpoint=publication_checkpoint,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -659,7 +662,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
             tmp_path, PreSimSpawnError(), pre_sim_commands=("missing-vector-generator",)
         )
 
-    assert raised.value.evaluation_status == "not_requested"
+    assert raised.value.detail["evaluation"] == "not_requested"
     nested = next(
         (tmp_path / "reports/1/targets/sim_0").glob(
             "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
@@ -681,6 +684,66 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert firing.document["test_names"] == ("reset",)
     assert firing.document["producer_invocation_id"] == 1
     assert firing.terminal is False
+
+
+def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
+    """A committed `incomplete` collection survives a later publication failure."""
+
+    class MissingInput(NativeExecution):
+        def run(self, request):
+            return SimulationRunResult(
+                "fail",
+                "$readmemh: Cannot open memory.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a design abort")
+
+    def fail_after_commit(boundary: str) -> None:
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-commit publication failure")
+
+    with pytest.raises(_CoverageAggregateError) as raised:
+        _run_coverage_campaign(tmp_path, MissingInput(), publication_checkpoint=fail_after_commit)
+
+    detail = raised.value.detail
+    assert detail["collection"] == "incomplete"
+    assert detail["evaluation"] == "not_requested"
+    assert detail["abort_remaining"] is True
+    assert detail["passed"] is False
+    assert detail["simulation"] == "aborted"
+    assert "coverage_campaign" not in detail
+
+
+@pytest.mark.parametrize(
+    ("coverage", "scans"), [(True, 3), (False, 2)], ids=["coverage", "ordinary"]
+)
+def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
+) -> None:
+    """Failure-detail facts reuse the coordinator's scans: 3 for coverage, 2 otherwise."""
+    from booley.flows.sim.campaign import coordinator
+
+    calls: list[None] = []
+    original = coordinator._scan_recovery
+
+    def counting_scan(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_scan_recovery", counting_scan)
+    if coverage:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+    else:
+        _run_cocotb(
+            tmp_path,
+            ("reset",),
+            (SimulationTestOutcome(name="reset", verdict="pass", passed=True),),
+        )
+
+    assert len(calls) == scans
 
 
 def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:

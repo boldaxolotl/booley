@@ -2044,9 +2044,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     def unreadable(*_args, **_kwargs):
         raise OSError("nested coverage evidence unreadable")
 
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.coverage_execution.load_coverage_campaign", unreadable
-    )
+    monkeypatch.setattr("booley.flows.sim.flow.load_coverage_campaign", unreadable)
     if resumed:
 
         def checkpoint(boundary):
