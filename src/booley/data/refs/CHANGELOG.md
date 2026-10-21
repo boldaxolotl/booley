@@ -9,6 +9,15 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
+  run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
+  that point into it; `booley cleanup preview --run-id <id>` lists its files.
+  `booley cleanup record` and the `--digest`, `--retention` and
+  `--cache-disposition` options are removed, and plan row 22 (build-cache
+  disposition) is gone. Setup cleanup removes nothing outside the run root, such
+  as Doctor scratch written elsewhere. Run roots created by older versions have
+  no marker and are refused; delete them by hand.
+
 - Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
   `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
   preparation (invalid `enabled` or `max_size` values still do). The cache root is

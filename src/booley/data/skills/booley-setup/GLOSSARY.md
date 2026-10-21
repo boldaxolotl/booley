@@ -88,7 +88,7 @@ the evidence that the replacement behaves correctly.
 ## Flow Cache
 Aliases: flow cache, Flow-cache
 A flow cache holds reusable build products owned by a Booley Flow, so later
-runs can avoid rebuilding unchanged work. Setup preserves it by default;
+runs can avoid rebuilding unchanged work. Setup cleanup never clears it;
 clearing it means paying the build cost again.
 
 ## Vendored-Core Quarantine

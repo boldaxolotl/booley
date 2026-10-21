@@ -541,7 +541,7 @@ def _setup_row_sections() -> dict[str, str]:
 def test_setup_plan_rows_have_plain_label_and_explanation():
     template = _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
     rows = _decision_rows(template)
-    assert set(rows) == {*(str(i) for i in range(1, 24)), "10a"}
+    assert set(rows) == {*(str(i) for i in range(1, 22)), "23", "10a"}
     for row in rows.values():
         assert len(row) == 9
         assert all(row[1:4]), f"missing label, explanation, or internal key: {row}"
