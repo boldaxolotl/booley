@@ -556,11 +556,12 @@ What counts as RTL:
 - Zero points means no native measurement records, including unsupported record
   classes. Zero hits, waivers, and point eligibility do not create this warning.
   It does not establish deadness or lack of instantiation.
-- Discovery uses the pinned producing Verilator build. Missing, ambiguous, or
-  unsafe source evidence produces an explicit discovery-incomplete advisory;
-  no missing-point accusations are made from partial observations. Possible
-  logical source mappings (`line directives or macro token construction) also
-  make discovery incomplete conservatively.
+- Candidates come from a lexical scan at Preflight: `verilogSource` and
+  `systemVerilogSource` inputs that are neither include files nor `tb`-tagged
+  and whose text, with comments removed, has a line starting with `module` or
+  `macromodule`. The scan does no preprocessing, so a module inside an `ifdef`
+  counts at face value. A file whose records Verilator remaps elsewhere
+  (`line directives) may still be reported.
 - Points are per instance: a module instantiated four times contributes four
   sets of points, and each instance must be exercised.
 

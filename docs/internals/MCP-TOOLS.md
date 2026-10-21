@@ -1025,7 +1025,7 @@ verified `source` excerpts, and cursor-paged `zero_point_sources` (sorted paths,
 measurement records, independent of hits, point eligibility and waivers. It is
 available in report-only mode, charges normal evidence byte budgets, and records
 returned source counts with empty point IDs. Overview and its minimal fallback
-retain discovery status, total source count, and a pagination hint. These findings
+retain the total source count and a pagination hint. These findings
 are advisory; they do not establish deadness or missing instantiation. Model-facing point records use deterministic short
 `point_ref` values instead of the Campaign's long opaque IDs. A `point_ref` becomes
 usable only after its exact point was successfully delivered within the response and

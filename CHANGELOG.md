@@ -9,6 +9,16 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Coverage finds RTL sources without coverage points with a lexical scan at
+  Preflight instead of a Verilator declaration dump. User `--dumpi-*` Verilator
+  options now pass through to coverage builds. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`
+  no longer appears, and `line directives or token joins no longer suppress
+  `COV_RTL_SOURCE_WITHOUT_POINTS`. The Analyst `zero_point_sources` view and
+  overview drop `discovery_status`, `comparison_status` and `unusable_findings`,
+  and the verdict card omits the source line when there are no gaps. Campaigns
+  from 0.3.0 still load. A coverage Simulation Campaign interrupted before the
+  upgrade cannot be resumed because its command model changed; collect it again.
+
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a
