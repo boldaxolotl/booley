@@ -128,7 +128,7 @@ class TestEvidencePaths:
 def _work(root: Path, run):
     handle = _handle(root, eda_tool="verilator")
     prepared = dataclasses.replace(_prepared(handle, cocotb=False), eda_tool="verilator")
-    identity = _adapter_identity(handle, prepared, ("stress",), "verilator", campaign_build=False)
+    identity = _adapter_identity(handle, prepared, ("stress",), "verilator")
     return prepared, prepare_simulation_work(
         handle,
         prepared,
@@ -203,9 +203,7 @@ class TestRunTimeInputsAreNotBuildInputs:
         with SimulationBuildSession(handle) as session:
             for run in runs:
                 prepared = _prepared(handle, cocotb=False)
-                identity = _adapter_identity(
-                    handle, prepared, ("stress",), "icarus", campaign_build=False
-                )
+                identity = _adapter_identity(handle, prepared, ("stress",), "icarus")
                 work = prepare_simulation_work(
                     handle,
                     prepared,
@@ -242,8 +240,8 @@ class TestRunTimeInputsAreNotBuildInputs:
         execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
         with patch.object(engine, "prepare_simulation_build") as prepare:
             prepare.return_value = _prepared(handle, cocotb=False)
-            with patch.object(execution, "_reset_build_root"):
-                execution._prepare_build(handle)
+            execution._build_session = MagicMock()
+            execution._prepare_build(handle)
         assert prepare.call_args.kwargs["environment"] == {"FLAVOR": "a"}
         assert "test_runs" not in prepare.call_args.kwargs
 

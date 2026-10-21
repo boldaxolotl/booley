@@ -38,20 +38,15 @@ from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
+from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
 @pytest.fixture()
-def _legacy_build_transport():
-    """Scope the legacy canned-process path to compatibility tests only."""
-    with patch.object(
-        SimulationExecution,
-        "_run_groups_with_session",
-        lambda self, handle, groups, **planned: self._run_planned_groups(
-            handle, groups, **planned
-        ),
-    ):
+def _leased_build_session():
+    """Run canned-process compatibility tests against a leased build session."""
+    with canned_build_session():
         yield
 
 
@@ -139,7 +134,7 @@ def _legacy_build_transport():
 )
 def test_public_simulation_precedence_table(
     tmp_path: Path,
-    _legacy_build_transport: None,
+    _leased_build_session: None,
     process: SubprocessResult,
     exit_code: int,
     verdict: str | None,
@@ -168,7 +163,7 @@ def test_public_simulation_precedence_table(
 
 def test_compatibility_projection_and_endpoint_detail_shape(
     tmp_path: Path,
-    _legacy_build_transport: None,
+    _leased_build_session: None,
 ) -> None:
     """Freeze the established projection and endpoint values, not only keys."""
     flow = _make_flow(tmp_path, config="lite")
@@ -369,7 +364,6 @@ class _SessionBoundaryExecution(SimulationExecution):
             "tb_demo",
             ("make", "-C", str(build_root)),
         )
-        self._fresh_generation = work_root
         return prepared, TraceMode.VCD_FIFO
 
     def _prepare_attempt(self, *args: Any, **kwargs: Any):
@@ -751,7 +745,7 @@ def test_campaign_scan_rejects_adapter_guard_for_foreign_target(tmp_path) -> Non
 
 @pytest.mark.parametrize("met", [True, False])
 def test_standalone_legacy_simulation_final_report_is_run_local(
-    tmp_path, _legacy_build_transport, met
+    tmp_path, _leased_build_session, met
 ):
     flow = _make_flow(tmp_path, config="lite")
     flow.args.state_file = None
