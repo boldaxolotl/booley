@@ -44,6 +44,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   reported finding is missing from the JSON or, when it carries a severity, rated
   lower there. A `ReportFindings` verdict (`CONFIRMED`/`PLAUSIBLE`) no longer
   counts as a severity.
+
+- When `booley init` retires the old hook files in the Booley Directory's `hooks/`,
+  a modified copy is now renamed to `<name>.pre-booley` (was
+  `<name>.pre-booley.<digest>`). If that name already exists, the file stays in
+  place with a warning, and a symlink or directory at a retired name is preserved
+  with a warning. A failed hook step no longer rolls back earlier changes; fix the
+  cause and rerun `booley init`, which finishes the reconciliation.
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a
