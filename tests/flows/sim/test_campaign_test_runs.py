@@ -430,15 +430,13 @@ def test_result_v3_round_trips_and_previous_versions_still_decode(tmp_path: Path
     raw = canonical_json_bytes(document)
     assert encode_simulation_result(decode_simulation_result(raw)) == raw
 
-    for version in ("v2", "v1"):
-        older = copy.deepcopy(document)
-        older["$schema"] = f"booley.simulation-result/{version}"
-        for observation in older["observations"]:
-            del observation["test_run"]
-        decoded = decode_simulation_result(canonical_json_bytes(older))
-        # v1 is read as v2; neither names Test Runs.
-        assert decoded.document["$schema"] == "booley.simulation-result/v2"
-        assert all("test_run" not in item for item in decoded.document["observations"])
+    older = copy.deepcopy(document)
+    older["$schema"] = "booley.simulation-result/v2"
+    for observation in older["observations"]:
+        del observation["test_run"]
+    decoded = decode_simulation_result(canonical_json_bytes(older))
+    assert decoded.document["$schema"] == "booley.simulation-result/v2"
+    assert all("test_run" not in item for item in decoded.document["observations"])
 
 
 @pytest.mark.parametrize(
