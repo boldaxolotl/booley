@@ -50,7 +50,7 @@ from .run_directory import (
     restore_run_directory,
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
-from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
+from .store import CampaignRecovery, CampaignStore, WorkItemRecovery, collect_pre_sim_firings
 from .test_run_binding import observation_test_runs
 
 
@@ -311,15 +311,6 @@ class SimulationCampaign:
         store = CampaignStore(validated.path.parent)
         recovery = store.scan_validated(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
-
-    @staticmethod
-    def reauthenticate_pre_sim_firings(firings: tuple[PreSimFiring, ...]) -> None:
-        """Retain reporting evidence only after fresh owner and sidecar validation."""
-        by_manifest: dict[Path, list[PreSimFiring]] = {}
-        for firing in firings:
-            by_manifest.setdefault(firing.manifest_path, []).append(firing)
-        for path, owned in by_manifest.items():
-            CampaignStore(path.parent).reauthenticate_pre_sim_firings(tuple(owned))
 
     @staticmethod
     def preflight(request: NewCampaignRunRequest) -> None:
@@ -939,7 +930,7 @@ def _outcome(
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
         _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
-        pre_sim_firings=store.collect_pre_sim_firings(),
+        pre_sim_firings=collect_pre_sim_firings(store.manifest_path),
     )
 
 

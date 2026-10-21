@@ -20,7 +20,7 @@ from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring
-from .store import CampaignRecovery, CampaignStore
+from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings, reread_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
 
@@ -67,21 +67,19 @@ def read_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
     return store.inspect_pre_sim_firings()
 
 
-def collect_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
-    """Follow the bounded prerequisite DAG and deduplicate by full firing identity."""
-    return _store_for_manifest(manifest_path).collect_pre_sim_firings()
+def read_invocation_pre_sim_firings(
+    invocation: Path, resumed_origin: Path | None = None
+) -> tuple[PreSimFiring, ...]:
+    """Inspect Campaigns published in this invocation, including unfinished work.
 
-
-def read_invocation_pre_sim_firings(invocation: Path) -> tuple[PreSimFiring, ...]:
-    """Inspect Campaigns published in this invocation, including unfinished work."""
+    A resumed origin Campaign is one more root of the same bounded collection.
+    """
     paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
     if len(paths) > 4000:
         raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
-    firings = {}
-    for path in paths:
-        for firing in collect_pre_sim_firings(path):
-            firings[firing.key] = firing
-    return tuple(firings.values())
+    if resumed_origin is not None:
+        paths.append(resumed_origin)
+    return collect_pre_sim_firings(*paths)
 
 
 def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWorkItemEvidence:
@@ -377,9 +375,11 @@ __all__ = [
     "SimulationCampaignWorkItemError",
     "authenticate_retained_campaign_inventory",
     "authenticate_work_item",
+    "collect_pre_sim_firings",
     "inspect_retained_campaign",
     "read_durable_results",
     "recover_retained_campaign_resources",
+    "reread_pre_sim_firings",
     "retained_campaign_lock",
     "started_campaign",
 ]
