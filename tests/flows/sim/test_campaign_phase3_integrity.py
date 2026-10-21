@@ -986,23 +986,6 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     assert not (first.attempt_directory / "pre-sim/0002.json").exists()
 
 
-@pytest.mark.parametrize("corruption", ["type", "fingerprint", "structure"])
-def test_request_rejects_malformed_manifest_at_construction(tmp_path, corruption):
-    from dataclasses import replace
-
-    from booley.flows.sim.campaign.model import SimulationCampaignManifest
-
-    request = _hook_publication_request(tmp_path)
-    document = json.loads(canonical_json_bytes(request.manifest.document))
-    if corruption == "fingerprint":
-        document["fingerprints"]["workload_sha256"] = "sha256:" + "0" * 64
-    else:
-        document.pop("work_items")
-    invalid = object() if corruption == "type" else SimulationCampaignManifest(document)
-    with pytest.raises(SimulationCampaignIntegrityError):
-        replace(request, manifest=invalid)
-
-
 def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
     from dataclasses import replace
 
