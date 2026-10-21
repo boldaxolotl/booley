@@ -127,7 +127,9 @@ def add_common_args(
     )
 
 
-def human_endpoint_parser(endpoint, *, durations: bool | None = None) -> argparse.ArgumentParser:
+def human_endpoint_parser(
+    endpoint, *, durations: bool | None = None, project: Path | None = None
+) -> argparse.ArgumentParser:
     """Build the parser a person sees: human controls, full command name, CLI wording.
 
     The extension's argument hook fills a fresh parser, so the cached transport
@@ -160,19 +162,20 @@ def human_endpoint_parser(endpoint, *, durations: bool | None = None) -> argpars
         durations = isinstance(endpoint, Specialist)
     if durations and timeout is not None and "--timeout" not in occupied:
         add_duration_option(parser, timeout.help)
-    apply_project_selection(parser)
+    apply_project_selection(parser, project)
     return present_command(parser, endpoint)
 
 
 def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments, filling ticket context from env vars."""
     endpoint._raw_argv = argv if argv is not None else sys.argv[1:]
-    from booley.flows.cli_selection import normalize_endpoint_args, transport_invocation
+    from booley.flows.cli_selection import CliInvocation, normalize_endpoint_args
 
-    if transport_invocation():
+    invocation = CliInvocation.of(endpoint)
+    if invocation.transport:
         parser = endpoint._parser
     else:
-        parser = human_endpoint_parser(endpoint)
+        parser = human_endpoint_parser(endpoint, project=invocation.project)
         _reject_unsupported_selector(parser, argv)
     endpoint._args = parser.parse_args(argv)
     normalize_endpoint_args(endpoint._args)
@@ -184,7 +187,7 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
             endpoint._args.steer = endpoint._args.steer[0]
     apply_environment(endpoint._args, endpoint.endpoint_kind)
     if (
-        not transport_invocation()
+        not invocation.transport
         and endpoint.endpoint_kind in {"flow", "specialist"}
         and not endpoint._acceptance_recorder.acceptance_identity()
     ):
