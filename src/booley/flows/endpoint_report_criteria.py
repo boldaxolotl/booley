@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from booley.criteria.state import CriterionChange
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import selector_names_match
-from booley.targets.domain import TARGET_AWARE_FLOWS, criterion_matches_target
+from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -79,30 +78,15 @@ def freeze(endpoint: EndpointState, simulation: PreparedReportSimulation | None 
     owner = getattr(endpoint, "flow", endpoint)
     if simulation is not None and not hasattr(simulation, "targets"):
         simulation = None
-    tokens = frozenset(endpoint._requested_targets())
-    ledger.targets = tokens
+    ledger.targets = frozenset(endpoint._requested_targets())
     try:
         handles, identities = _candidate_scope(owner, simulation)
         if identities is not None:
             ledger.targets = identities
-        elif tokens and "_run" not in owner.__dict__:
-            from booley.targets.catalog import TargetCatalog
-
-            handles = TargetCatalog.build(Path(endpoint.args.work_dir)).select_many(
-                ",".join(sorted(tokens)),
-                for_flow=endpoint.name if endpoint.name in TARGET_AWARE_FLOWS else None,
-            )
-            ledger.targets = frozenset(handle.identity for handle in handles)
         ledger.planned = frozenset(_planned_keys(endpoint, handles, simulation))
     except (FuseSocError, OSError, ValueError):
         # Reporting lookups must not replace the endpoint's own admission errors.
-        if endpoint.name not in TARGET_AWARE_FLOWS:
-            try:
-                ledger.planned = frozenset(_planned_keys(endpoint, (), simulation))
-            except (FuseSocError, OSError, ValueError):
-                ledger.known = False
-        else:
-            ledger.known = not endpoint.satisfies
+        ledger.known = False
 
 
 def _candidate_scope(owner, simulation):
@@ -120,11 +104,7 @@ def _candidate_scope(owner, simulation):
         handles = simulation.targets[: len(simulation.selected_targets)]
         return handles, frozenset(handle.identity for handle in handles)
     selection = getattr(owner, "_prepared_target_selection", None)
-    if (
-        selection is not None
-        and "_run" not in owner.__dict__
-        and selection.matches(owner.args.work_dir, owner.args.target)
-    ):
+    if selection is not None and selection.matches(owner.args.work_dir, owner.args.target):
         return selection.handles, frozenset(handle.identity for handle in selection.handles)
     return (), None
 
