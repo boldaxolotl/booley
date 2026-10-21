@@ -688,6 +688,37 @@ def test_custom_main_hook_failures_are_public_collector_errors(
     assert expected_code in result.outcome.report_text
 
 
+def test_publication_failure_reports_collector_error_as_infrastructure_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-commit publication failure maps a nested `collector_error` to the endpoint value."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    _configure_custom_main_coverage(tmp_path)
+    project_data = tmp_path / ".booley"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    def fail_after_summary(boundary: str) -> None:
+        if boundary == "after:summary_replace":
+            raise OSError("injected post-commit publication failure")
+
+    result = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _commands, _access: _CustomMainHookExecution(
+            [{"hook": "start", "sequence": 1, "success": True}], missing_raw=True
+        ),
+        campaign_publication_checkpoint=fail_after_summary,
+    ).execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        )
+    )
+
+    assert result.exit_code == 2
+    target = result.outcome.detail["targets"]["sim_0"]
+    assert target["collection"] == "infrastructure_error"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
 @pytest.mark.parametrize("relative", ["unreadable", ".booley/unreadable"])
 def test_unreadable_unrelated_directory_does_not_block_coverage(

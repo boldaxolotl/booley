@@ -1100,7 +1100,7 @@ publication failure, except for an observational error checkpoint.
 
 The Simulation Campaign coordinator builds this failed-Target detail from facts
 it already holds. Its publication error carries the Target root and selector,
-the committed result's observations, the nested Coverage Campaign path for a
+the result's observations, the nested Coverage Campaign path for a
 coverage workload, and the public Coverage Campaign reference only after its
 publication. The Flow loads that nested Campaign once for collection and
 evaluation, reporting `collector_error` as `infrastructure_error`, and does not

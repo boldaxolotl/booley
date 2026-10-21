@@ -74,7 +74,7 @@ class _CoverageAggregateError(RuntimeError):
 
     def __init__(self, message: str, detail: Mapping[str, object]) -> None:
         super().__init__(message)
-        self.detail = _validated_failure_detail(detail)
+        self.detail = _endpoint_failure_detail(detail)
 
 
 def _endpoint_collection(status: object) -> object:
@@ -82,7 +82,7 @@ def _endpoint_collection(status: object) -> object:
     return "infrastructure_error" if status == "collector_error" else status
 
 
-def _validated_failure_detail(detail: Mapping[str, object]) -> Mapping[str, object]:
+def _endpoint_failure_detail(detail: Mapping[str, object]) -> Mapping[str, object]:
     """Project committed Coverage facts into the endpoint failure vocabulary."""
     validated = {
         **detail,
