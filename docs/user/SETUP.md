@@ -295,7 +295,7 @@ Steps **5–7**:
 - **5 · Parity · optional.** Cross-check Booley against the native build system
   when the approved plan selects one.
 - **6 · Findings.** Report and triage findings from the setup run.
-- **7 · Cleanup.** Preview and apply bounded manifest-owned cleanup.
+- **7 · Cleanup.** Remove the setup run's scratch root (`minimal`), or keep it (`diagnostic`).
 
 Steps 2-4 run in-container without further approval gates, consuming the
 approved plan. A test

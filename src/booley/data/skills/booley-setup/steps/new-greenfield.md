@@ -98,6 +98,6 @@ The scaffold is a runnable counter starter. Record each extra request in SETUP-P
 After Doctor, run **Step 6 §2 (write the report), §3 (walk through it), and §5
 (close out)** per the shared **Delivered Flow results** contract in SKILL.md;
 triage and export keep Step 6's existing consent requirements. Then run **Step 7**
-for bounded cleanup using the run manifest and retained report evidence. The final
+for cleanup, removing the run's scratch root. The final
 summary reuses the report's evidence rows, including unverified checks and
 deviations.

@@ -304,7 +304,7 @@ def read_log(booley_dir: Path | None = None) -> FindingsLog:
             continue
         try:
             log.entries.append(Finding.from_dict(json.loads(line)))
-        except (json.JSONDecodeError, TypeError, ValueError) as e:
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
             log.corrupt_lines += 1
             logger.warning("%s:%d: skipping unparseable finding (%s)", path, lineno, e)
     return log

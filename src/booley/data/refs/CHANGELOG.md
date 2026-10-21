@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
+  run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
+  that point into it; `booley cleanup preview --run-id <id>` lists its files.
+  `booley cleanup record` and the `--digest`, `--retention` and
+  `--cache-disposition` options are removed, and plan row 22 (build-cache
+  disposition) is gone. Setup cleanup removes nothing outside the run root, such
+  as Doctor scratch written elsewhere. Run roots created by older versions have
+  no marker and are refused; delete them by hand.
 - When a Simulation Campaign's Pre-Sim evidence fails re-authentication, the report
   card no longer keeps the `Candidate:` and `Cycle Count baseline:` headings without
   their firing lines. The card and `sim.json` now come from one projection.
