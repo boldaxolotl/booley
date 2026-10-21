@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import gzip
-import hashlib
 import json
 from pathlib import Path
 
@@ -37,12 +36,6 @@ def corrupt_campaign_with_duplicate_negative_point(
     )
     compressed = gzip.compress(raw, mtime=0)
     points_path.write_bytes(compressed)
-    manifest["point_store"].update(
-        sha256="sha256:" + hashlib.sha256(compressed).hexdigest(),
-        bytes=len(compressed),
-        uncompressed_bytes=len(raw),
-        point_count=2,
-    )
     rollup_values = {
         "total_points": 2,
         "eligible_points": 2,

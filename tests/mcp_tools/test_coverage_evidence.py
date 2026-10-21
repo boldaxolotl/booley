@@ -477,7 +477,7 @@ def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(tmp_path
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
     monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
-    with pytest.raises(ValueError, match=r"COV_POINT_(FORMAT|INTEGRITY)"):
+    with pytest.raises(ValueError, match="COV_POINT_FORMAT"):
         coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
 

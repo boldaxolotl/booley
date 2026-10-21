@@ -7,8 +7,7 @@ import hashlib
 import io
 import json
 import os
-import re
-import stat
+import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,13 +52,10 @@ CAMPAIGN_SCHEMA_V5 = "booley.coverage-campaign/v5"
 POINT_STORE_CAMPAIGN_SCHEMAS = frozenset({CAMPAIGN_SCHEMA_V4, CAMPAIGN_SCHEMA_V5})
 POINT_STORE_SCHEMA_V1 = "booley.coverage-points/v1"
 POINT_STORE_NAME = "coverage-points.jsonl.gz"
-MAX_COMPRESSED_BYTES = 256 * 1024 * 1024
+#: The one resource ceiling on a point store: its decompressed size, on write and read.
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
-MAX_LINE_BYTES = 1024 * 1024
-MAX_POINTS = 1_000_000
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 _SHA256_PREFIX = "sha256:"
-_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SUMMARY_FIELDS = frozenset(
     {
         "$schema",
@@ -87,7 +83,7 @@ _SUMMARY_FIELDS = frozenset(
 
 @dataclass(frozen=True)
 class CoveragePointStoreReference:
-    """Integrity and resource limits for one compressed point store."""
+    """The point-store identity the writer recorded; readers do not re-check it."""
 
     path: str
     sha256: str
@@ -139,27 +135,6 @@ class CoverageCampaignStoreError(ValueError):
         super().__init__(f"{code}: {message}")
 
 
-class _DigestReader(io.RawIOBase):
-    def __init__(self, stream: io.BufferedReader) -> None:
-        self.stream = stream
-        self.digest = hashlib.sha256()
-        self.bytes_read = 0
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer: bytearray) -> int:
-        count = self.stream.readinto(buffer)
-        if count:
-            self.digest.update(memoryview(buffer)[:count])
-            self.bytes_read += count
-            if self.bytes_read > MAX_COMPRESSED_BYTES:
-                raise CoverageCampaignStoreError(
-                    "COV_POINT_LIMIT", "Compressed Coverage Point storage exceeds V2 limit"
-                )
-        return count
-
-
 def _canonical_line(value: object) -> bytes:
     return (
         json.dumps(
@@ -175,8 +150,6 @@ def _canonical_line(value: object) -> bytes:
 
 def _write_line(stream: gzip.GzipFile, value: object, total: int) -> int:
     line = _canonical_line(value)
-    if len(line) > MAX_LINE_BYTES:
-        raise CoverageCampaignStoreError("COV_POINT_LIMIT", "Coverage Point line exceeds V2 limit")
     total += len(line)
     if total > MAX_UNCOMPRESSED_BYTES:
         raise CoverageCampaignStoreError(
@@ -190,10 +163,6 @@ def _point_store_bytes(
     campaign: CoverageCampaign,
 ) -> tuple[bytes, CoveragePointStoreReference]:
     """Compress the point store in memory and describe it for the manifest."""
-    if len(campaign.points) > MAX_POINTS:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Coverage Point count exceeds V2 limit"
-        )
     buffer = io.BytesIO()
     uncompressed_bytes = 0
     with gzip.GzipFile(fileobj=buffer, mode="wb", filename="", mtime=0) as compressed:
@@ -208,10 +177,6 @@ def _point_store_bytes(
                 compressed, encode_coverage_point(point), uncompressed_bytes
             )
     data = buffer.getvalue()
-    if len(data) > MAX_COMPRESSED_BYTES:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Compressed Coverage Point storage exceeds V2 limit"
-        )
     return data, CoveragePointStoreReference(
         path=POINT_STORE_NAME,
         sha256=f"{_SHA256_PREFIX}{hashlib.sha256(data).hexdigest()}",
@@ -297,61 +262,15 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
 
 
 def _decode_reference(value: object) -> CoveragePointStoreReference:
+    """Decode the recorded identity; readers trust the published pair (ADR 0062)."""
     record = require_dict(value, field="point_store")
-    expected = {
-        "$schema",
-        "path",
-        "encoding",
-        "sha256",
-        "bytes",
-        "uncompressed_bytes",
-        "point_count",
-    }
-    if set(record) != expected:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_REFERENCE", "Malformed V2 Coverage Point storage reference"
-        )
-    if require_str(record, "$schema") != POINT_STORE_SCHEMA_V1:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_SCHEMA_UNSUPPORTED", "Unsupported Coverage Point storage schema"
-        )
-    if require_str(record, "path") != POINT_STORE_NAME:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_PATH", "Coverage Point storage path is not canonical"
-        )
-    if require_str(record, "encoding") != "jsonl+gzip":
-        raise CoverageCampaignStoreError(
-            "COV_POINT_ENCODING_UNSUPPORTED", "Unsupported Coverage Point storage encoding"
-        )
-    digest = require_str(record, "sha256")
-    if _SHA256_RE.fullmatch(digest) is None:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_REFERENCE", "Malformed Coverage Point storage digest"
-        )
-    reference = CoveragePointStoreReference(
+    return CoveragePointStoreReference(
         POINT_STORE_NAME,
-        digest,
-        require_int(record["bytes"], field="bytes"),
-        require_int(record["uncompressed_bytes"], field="uncompressed_bytes"),
-        require_int(record["point_count"], field="point_count"),
+        require_str(record, "sha256"),
+        require_int(record.get("bytes"), field="bytes"),
+        require_int(record.get("uncompressed_bytes"), field="uncompressed_bytes"),
+        require_int(record.get("point_count"), field="point_count"),
     )
-    _validate_reference_limits(reference)
-    return reference
-
-
-def _validate_reference_limits(reference: CoveragePointStoreReference) -> None:
-    if not 0 <= reference.bytes <= MAX_COMPRESSED_BYTES:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Compressed Coverage Point storage exceeds V2 limit"
-        )
-    if not 0 <= reference.uncompressed_bytes <= MAX_UNCOMPRESSED_BYTES:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Uncompressed Coverage Point storage exceeds V2 limit"
-        )
-    if not 0 <= reference.point_count <= MAX_POINTS:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Coverage Point count exceeds V2 limit"
-        )
 
 
 def _decode_source_rollups(value: object) -> tuple[CoverageSourceRollup, ...]:
@@ -561,23 +480,9 @@ def _open_regular(path: Path) -> int:
 
 
 def _read_manifest_bytes(path: Path) -> bytes:
-    """Read the manifest through a no-follow regular open, bounded and stable."""
-    descriptor = _open_regular(path)
-    try:
-        before = os.fstat(descriptor)
-        if before.st_size > MAX_MANIFEST_BYTES:
-            raise CoverageCampaignStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
-            )
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            data = stream.read(MAX_MANIFEST_BYTES + 1)
-        if not _same_file(before, os.fstat(descriptor)):
-            raise CoverageCampaignStoreError(
-                "COV_MANIFEST_INTEGRITY", "Coverage Campaign changed while reading"
-            )
-        return data
-    finally:
-        os.close(descriptor)
+    """Read at most one byte past the manifest ceiling through a no-follow regular open."""
+    with os.fdopen(_open_regular(path), "rb") as stream:
+        return stream.read(MAX_MANIFEST_BYTES + 1)
 
 
 def _canonical_campaign_path(path: Path) -> Path:
@@ -587,112 +492,36 @@ def _canonical_campaign_path(path: Path) -> Path:
         raise CoverageCampaignStoreError("COV_PATH_UNSAFE", str(exc)) from exc
 
 
-def _json_line(stream: gzip.GzipFile, total: int) -> tuple[dict[str, object] | None, int]:
-    line = stream.readline(MAX_LINE_BYTES + 1)
-    if not line:
-        return None, total
-    if len(line) > MAX_LINE_BYTES:
-        raise CoverageCampaignStoreError("COV_POINT_LIMIT", "Coverage Point line exceeds V2 limit")
-    total += len(line)
-    if total > MAX_UNCOMPRESSED_BYTES:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_LIMIT", "Uncompressed Coverage Point storage exceeds V2 limit"
-        )
+def _point_documents(path: Path) -> list[dict[str, object]]:
+    """Gunzip the point store once under the ceiling; return its rows after the header."""
     try:
-        document = dict(require_dict(json.loads(line)))
-        if line != _canonical_line(document):
-            raise CoverageCampaignStoreError(
-                "COV_POINT_CANONICAL", "Coverage Point JSON line is not canonical"
-            )
-        return document, total
-    except (json.JSONDecodeError, UnicodeError, BoundaryError) as exc:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_FORMAT", "Malformed Coverage Point JSON line"
-        ) from exc
-
-
-def _read_point_lines(
-    source: io.BufferedReader, summary: CoverageCampaignSummary
-) -> tuple[list[dict[str, object]], int, _DigestReader]:
-    documents: list[dict[str, object]] = []
-    total = 0
-    raw = _DigestReader(source)
-    buffered = io.BufferedReader(raw)
-    try:
-        with gzip.GzipFile(fileobj=buffered, mode="rb") as stream:
-            header, total = _json_line(stream, total)
-            if header != {
-                "$schema": POINT_STORE_SCHEMA_V1,
-                "campaign_id": summary.campaign_id,
-                "target_identity": summary.target.identity,
-            }:
-                raise CoverageCampaignStoreError(
-                    "COV_POINT_HEADER_MISMATCH", "Coverage Point storage header mismatch"
-                )
-            while True:
-                item, total = _json_line(stream, total)
-                if item is None:
-                    break
-                documents.append(item)
-                if len(documents) > MAX_POINTS:
+        with (
+            os.fdopen(_open_regular(path), "rb") as source,
+            gzip.GzipFile(fileobj=source, mode="rb") as stream,
+        ):
+            # Chunked: one read(ceiling + 1) would reserve the whole ceiling up front.
+            raw = bytearray()
+            while chunk := stream.read(1 << 20):
+                raw += chunk
+                if len(raw) > MAX_UNCOMPRESSED_BYTES:
                     raise CoverageCampaignStoreError(
-                        "COV_POINT_LIMIT", "Coverage Point count exceeds V2 limit"
+                        "COV_POINT_LIMIT", "Coverage Point storage exceeds its ceiling"
                     )
-    except (gzip.BadGzipFile, EOFError, OSError) as exc:
+    except (EOFError, OSError, zlib.error) as exc:
         raise CoverageCampaignStoreError(
             "COV_POINT_FORMAT", "Malformed gzip Coverage Point storage"
         ) from exc
-    while buffered.read(1024 * 1024):
-        pass
-    return documents, total, raw
-
-
-def _same_file(before: os.stat_result, after: os.stat_result) -> bool:
-    fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-    return all(getattr(before, field) == getattr(after, field) for field in fields)
-
-
-def _verify_point_read(
-    reference: CoveragePointStoreReference,
-    documents: list[dict[str, object]],
-    total: int,
-    raw: _DigestReader,
-) -> None:
-    digest = f"{_SHA256_PREFIX}{raw.digest.hexdigest()}"
-    if raw.bytes_read != reference.bytes or digest != reference.sha256:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_INTEGRITY", "Coverage Point storage integrity mismatch"
-        )
-    if total != reference.uncompressed_bytes:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_INTEGRITY", "Coverage Point storage decoded byte count mismatch"
-        )
-    if len(documents) != reference.point_count:
-        raise CoverageCampaignStoreError(
-            "COV_POINT_COUNT_MISMATCH", "Coverage Point storage count mismatch"
-        )
-
-
-def _point_documents(path: Path, summary: CoverageCampaignSummary) -> list[dict[str, object]]:
-    reference = summary.point_store
-    assert reference is not None
-    descriptor = _open_regular(path)
     try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_size != reference.bytes:
-            raise CoverageCampaignStoreError(
-                "COV_POINT_INTEGRITY", "Coverage Point storage byte count changed"
-            )
-        with os.fdopen(descriptor, "rb", closefd=False) as source:
-            documents, total, raw = _read_point_lines(source, summary)
-        if not _same_file(before, os.fstat(descriptor)):
-            raise CoverageCampaignStoreError(
-                "COV_POINT_INTEGRITY", "Coverage Point storage changed while reading"
-            )
-        _verify_point_read(reference, documents, total, raw)
-        return documents
-    finally:
-        os.close(descriptor)
+        header, *rows = (dict(require_dict(json.loads(line))) for line in raw.splitlines())
+    except (ValueError, BoundaryError) as exc:
+        raise CoverageCampaignStoreError(
+            "COV_POINT_FORMAT", "Malformed Coverage Point JSON line"
+        ) from exc
+    if header.get("$schema") != POINT_STORE_SCHEMA_V1:
+        raise CoverageCampaignStoreError(
+            "COV_POINT_FORMAT", "Coverage Point storage header is not point-store v1"
+        )
+    return rows
 
 
 def _load_current(
@@ -703,7 +532,7 @@ def _load_current(
 ) -> LoadedCoverageCampaign:
     summary = _summary(document, expected_target, manifest_sha256)
     points_path = path.parent / POINT_STORE_NAME
-    points = _point_documents(points_path, summary)
+    points = _point_documents(points_path)
     v1_document = dict(document)
     v1_document["$schema"] = CAMPAIGN_SCHEMA_V1
     del v1_document["point_store"]
