@@ -35,6 +35,8 @@ from booley.flows.test_runs import (
     parse_test_selector,
     parse_test_variants,
     rerun_command,
+    test_run_document,
+    test_run_from_document,
 )
 
 # Deterministic on every run and machine; no example database is written.
@@ -562,3 +564,18 @@ def test_rerun_command_is_accepted_by_the_real_sim_parser(
 def test_rerun_command_is_plain_text_for_ordinary_names() -> None:
     run = build_test_run("stress", variant="soak", seed=42)
     assert rerun_command("sim", run) == "booley flow sim --target sim --test=stress+soak@42"
+
+
+def test_run_from_document_recomputes_the_fingerprint_unless_told_to_trust_it() -> None:
+    stale = {
+        **test_run_document(build_test_run("stress", seed=7)),
+        "fingerprint": "sha256:" + "0" * 64,
+    }
+
+    with pytest.raises(TestRunNameError, match="disagrees"):
+        test_run_from_document(stale)
+    assert (
+        test_run_from_document(stale, trust_fingerprint=True).fingerprint == stale["fingerprint"]
+    )
+    with pytest.raises(TestRunNameError, match="sha256 digest"):
+        test_run_from_document({**stale, "fingerprint": "sha256:x"}, trust_fingerprint=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from booley.config.project_config import normalize_tests_toml
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
 from booley.flows.sim.campaign.test_run_report import (
+    _recorded_test_runs,
     campaign_test_run_rows,
     test_run_report_lines,
 )
@@ -216,3 +218,12 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
         ("found_a@9", "pass"),
         ("found_b@9", "fail"),
     ]
+
+
+def test_a_hand_edited_test_run_fingerprint_reads_as_no_recorded_runs(tmp_path: Path):
+    outcome = _outcome(tmp_path, (build_test_run("reset"),), (True,))
+    document = json.loads(outcome.manifest_path.read_text())
+    document["work_items"][0]["test_runs"][0]["fingerprint"] = "sha256:" + "0" * 64
+    outcome.manifest_path.write_text(json.dumps(document))
+
+    assert _recorded_test_runs(outcome.manifest_path) == {}
