@@ -754,9 +754,8 @@ python -m booley.flows.sim.campaign_retention \
   `--include-dependents` to remove them together.
 - If reports live outside the standard Booley Directory locations, `--full` may ask
   for `--project-data "$PROJECT_DATA"`.
-- Pruning refuses runs that are still active. `--full` also refuses unrecognized files
-  outside a finished attempt's build and snapshot trees; `--native-target` removes the
-  Target's whole `native/` directory.
+- Pruning refuses runs that are still active. `--full` also refuses files the run
+  did not produce; `--native-target` removes the Target's whole `native/` directory.
   An interrupted cleanup is safe to retry with the same arguments.
 
 ## `lint`
