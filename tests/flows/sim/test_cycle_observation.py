@@ -95,10 +95,11 @@ def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
 
-    units, errors = flow._plan_cycle_count_baseline_units(
-        [_TARGET_SELECTOR],
-        {_TARGET_SELECTOR: ["coremark"]},
-    )
+    with flow.context.publication_resources:
+        units, errors = flow._plan_cycle_count_baseline_units(
+            [_TARGET_SELECTOR],
+            {_TARGET_SELECTOR: ["coremark"]},
+        )
 
     assert units == [baseline]
     assert errors == [
@@ -377,7 +378,8 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
+    with flow.context.publication_resources:
+        result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
     assert result["sim_core"].passed is True
     assert flow.args.work_dir == current
@@ -425,7 +427,8 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
+    with flow.context.publication_resources:
+        result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
     assert set(result) == {identity}
     assert result[identity].target_identity == identity
@@ -458,7 +461,8 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
+    with flow.context.publication_resources:
+        result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
     assert isinstance(result, EndpointOutcome)
     assert result.exit_code == EXIT_ERROR
@@ -489,7 +493,10 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    result = flow._run_cycle_count_baselines([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
+    with flow.context.publication_resources:
+        result = flow._run_cycle_count_baselines(
+            [_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]}
+        )
 
     assert isinstance(result, EndpointOutcome)
     assert result.exit_code == EXIT_ERROR
@@ -650,11 +657,14 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
         return [_plan_unit(role, identity=handle.identity, revision=revision)], []
 
     monkeypatch.setattr(flow, "_plan_simulation_targets", preview)
-    units, errors = flow._plan_cycle_count_baseline_units(["sim_core"], {"sim_core": ["coremark"]})
-    assert errors == []
-    assert units[0].target_identity == handle.identity
-    assert units[0].revision == revision
-    assert flow.args.work_dir == root
+    with flow.context.publication_resources:
+        units, errors = flow._plan_cycle_count_baseline_units(
+            ["sim_core"], {"sim_core": ["coremark"]}
+        )
+        assert errors == []
+        assert units[0].target_identity == handle.identity
+        assert units[0].revision == revision
+        assert flow.args.work_dir == root
     assert roots and all(not path.exists() for path in roots)
 
 
@@ -684,8 +694,65 @@ def test_cycle_baseline_execution_materializes_project_topologies(tmp_path, monk
         return TargetResult(target=target, passed=True, tests=[])
 
     monkeypatch.setattr(flow, "_run_target", run)
-    results = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
-    assert list(results) == [handle.identity]
-    assert results[handle.identity].target_identity == handle.identity
-    assert flow.args.work_dir == root
+    with flow.context.publication_resources:
+        results = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
+        assert list(results) == [handle.identity]
+        assert results[handle.identity].target_identity == handle.identity
+        assert flow.args.work_dir == root
     assert roots and all(not path.exists() for path in roots)
+
+
+@pytest.mark.parametrize("execution", ["legacy", "campaign"])
+def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeypatch, execution):
+    """Every baseline consumer of one ``sim`` run reuses one checkout (#1959).
+
+    Campaign authorization keeps its checkout open until publication ends, so
+    planning and execution used to open a second worktree for the same
+    revision at the same path, and ``git worktree add`` refused it.
+    """
+    from tests.flows.test_baseline_worktree import _project_topology_checkout
+
+    root, revision = _project_topology_checkout(tmp_path, monkeypatch, "standalone")
+    flow, _key = _criterion_flow(relative=True)
+    flow._args.work_dir = root
+    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
+    flow._target_handles = {"sim_core": handle}
+    _pin_baseline(flow, revision)
+    tests = {"sim_core": ["coremark"]}
+    roots: list[Path] = []
+
+    def plan(targets, _tests, *, role, revision, selections):
+        roots.append(Path(flow.args.work_dir))
+        return [_plan_unit(role, identity=handle.identity, revision=revision)], []
+
+    def run(target, _top, _tests, _unused, *, plan_role):
+        roots.append(Path(flow.args.work_dir))
+        return TargetResult(target=target, passed=True, tests=[])
+
+    def request(_target, _identity, _ref, _runs, _tests, worktree, _invocation, _admission):
+        roots.append(worktree)
+        return object(), {"coremark@1": {"revision": revision}}
+
+    monkeypatch.setattr(flow, "_plan_simulation_targets", plan)
+    monkeypatch.setattr(flow, "_run_target", run)
+    monkeypatch.setattr(flow, "_planned_baseline_request", request)
+    with flow.context.publication_resources:
+        authorized = flow._campaign_authorization_baselines(revision, ["sim_core"])
+        units, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
+        assert errors == []
+        flow._flow_plan = FlowPlan("sim", "simulate", tuple(units))
+        if execution == "legacy":
+            assert list(flow._run_cycle_count_baselines(["sim_core"], tests)) == [handle.identity]
+        else:
+            requests, _ = flow._plan_campaign_baselines(
+                tmp_path / "inv", None, ["sim_core"], tests
+            )
+            assert len(requests) == 1
+        assert [item.identity for item in authorized] == [handle.identity]
+        assert [item.project_root for item in authorized] == roots[:1]
+        assert len(roots) == 2
+        assert len(set(roots)) == 1
+        assert roots[0].is_dir()
+        assert flow.args.work_dir == root
+    assert not roots[0].exists()
+    assert not list((root / ".booley").glob(".baseline-wt-*"))

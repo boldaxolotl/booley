@@ -2948,22 +2948,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         | EndpointOutcome
     ):
         if self.args.resume_from is not None:
-            roots: dict[str, Path] = {}
 
             def revision_root(target: Mapping[str, str]) -> Path:
                 if target["role"] == "candidate":
                     return Path(self.args.work_dir)
-                revision = target["revision"]
-                if revision not in roots:
-                    resources = self.context.publication_resources
-                    roots[revision] = resources.enter_context(
-                        baseline_worktree(
-                            Path(self.args.work_dir),
-                            revision,
-                            paired_project=self._paired_project_baseline,
-                        )
-                    )
-                return roots[revision]
+                return self._shared_baseline_worktree(target["revision"])
 
             resume = validate_resume_manifest(
                 self.args.resume_from,
@@ -2989,15 +2978,33 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Resolve Criterion baselines from their historical checkout."""
         if revision is None or not selectors:
             return ()
-        root = self.context.publication_resources.enter_context(
-            baseline_worktree(
-                Path(self.args.work_dir),
-                revision,
-                paired_project=self._paired_project_baseline,
-            )
-        )
-        catalog = TargetCatalog.build(root)
+        catalog = TargetCatalog.build(self._shared_baseline_worktree(revision))
         return tuple(catalog.select(selector, for_flow="sim") for selector in selectors)
+
+    def _shared_baseline_worktree(self, revision: str) -> Path:
+        """This invocation's one checkout of *revision*, open until publication ends.
+
+        Campaign authorization, Cycle Count planning, campaign preview and
+        execution all need the baseline revision. The scratch path depends
+        only on the process and revision, so a second opening while the first
+        is held fails in ``git worktree add`` (#1959); they share this one.
+        Consumers run in that order and only execution writes (build output),
+        so sharing never shows a consumer another's changes. Call from the
+        candidate checkout: ``self.args.work_dir`` is the Project Root.
+        """
+        worktrees = self.context.baseline_worktrees
+        if revision not in worktrees:
+            resources = self.context.publication_resources
+            worktrees[revision] = resources.enter_context(
+                baseline_worktree(
+                    Path(self.args.work_dir),
+                    revision,
+                    paired_project=self._paired_project_baseline,
+                )
+            )
+            # Unwinds before the worktree is removed: no entry outlives its checkout.
+            resources.callback(worktrees.pop, revision)
+        return worktrees[revision]
 
     satisfies: ClassVar[list[str]] = [
         "elab_pass",
@@ -3386,14 +3393,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         baseline_tests = self._cycle_baseline_test_names(test_names_map)
         links = self._baseline_links(targets, test_names_map)
         try:
-            with (
-                baseline_worktree(
-                    Path(self.args.work_dir),
-                    baseline_ref,
-                    paired_project=self._paired_project_baseline,
-                ) as worktree,
-                self._baseline_checkout(worktree, links, baseline_ref) as baseline,
-            ):
+            worktree = self._shared_baseline_worktree(baseline_ref)
+            with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
                 planned = [target for target in baseline_targets if baseline.runs_of(target)]
                 units, errors = self._plan_simulation_targets(
                     planned,
@@ -4929,13 +4930,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         links = self._baseline_links(targets, test_names_map)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
-        worktree = self.context.publication_resources.enter_context(
-            baseline_worktree(
-                Path(self.args.work_dir),
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            )
-        )
+        worktree = self._shared_baseline_worktree(baseline_ref)
         requests: list[NewCampaignRunRequest] = []
         with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
             for target in (item for item in baseline_targets if baseline.runs_of(item)):
@@ -5125,14 +5120,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         links = self._baseline_links(targets, test_names_map)
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
         previews: list[dict[str, object]] = []
-        with (
-            baseline_worktree(
-                Path(self.args.work_dir),
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as worktree,
-            self._baseline_checkout(worktree, links, baseline_ref) as baseline,
-        ):
+        worktree = self._shared_baseline_worktree(baseline_ref)
+        with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
             for target in (item for item in baseline_targets if baseline.runs_of(item)):
                 preview, by_run = self._preview_one_campaign_baseline(
                     campaign,
@@ -6015,7 +6004,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> dict[str, TargetResult] | EndpointOutcome:
-        """Run each relative Cycle Count Target once in a throwaway baseline tree."""
+        """Run each relative Cycle Count Target once in the baseline checkout."""
         del targets  # Selection is frozen in the FlowPlan before execution.
         baseline_ref, baseline_targets, error = self._planned_cycle_baseline_selection()
         if error is not None:
@@ -6029,41 +6018,37 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         }
         results: dict[str, TargetResult] = {}
         try:
-            with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as worktree:
-                self.args.work_dir = worktree
-                try:
-                    for target in baseline_targets:
-                        baseline_handle = self._target_handle(target)
-                        expected_identity = expected_identities[target]
-                        if baseline_handle.identity != expected_identity:
-                            raise BaselineWorktreeError(
-                                f"Cycle Count baseline selector {target!r} resolves to "
-                                f"{baseline_handle.identity!r}, expected {expected_identity!r}"
-                            )
-                        with attempt_scope(
+            worktree = self._shared_baseline_worktree(baseline_ref)
+            self.args.work_dir = worktree
+            try:
+                for target in baseline_targets:
+                    baseline_handle = self._target_handle(target)
+                    expected_identity = expected_identities[target]
+                    if baseline_handle.identity != expected_identity:
+                        raise BaselineWorktreeError(
+                            f"Cycle Count baseline selector {target!r} resolves to "
+                            f"{baseline_handle.identity!r}, expected {expected_identity!r}"
+                        )
+                    with attempt_scope(
+                        target,
+                        identity=baseline_handle.identity,
+                        role="baseline",
+                        revision=baseline_ref,
+                        ephemeral_root=worktree,
+                        tests=tuple(baseline_tests.get(target, ())),
+                    ):
+                        result = self._run_target(
                             target,
-                            identity=baseline_handle.identity,
-                            role="baseline",
-                            revision=baseline_ref,
-                            ephemeral_root=worktree,
-                            tests=tuple(baseline_tests.get(target, ())),
-                        ):
-                            result = self._run_target(
-                                target,
-                                self._tb_top_for_target(target),
-                                baseline_tests,
-                                [],
-                                plan_role="baseline",
-                            )
-                        result.target_identity = baseline_handle.identity
-                        results[result.target_identity] = result
-                        self._attach_workload_snapshots(result)
-                finally:
-                    self.args.work_dir = project_root
+                            self._tb_top_for_target(target),
+                            baseline_tests,
+                            [],
+                            plan_role="baseline",
+                        )
+                    result.target_identity = baseline_handle.identity
+                    results[result.target_identity] = result
+                    self._attach_workload_snapshots(result)
+            finally:
+                self.args.work_dir = project_root
         except (
             MissingExecutableError,
             SimulationBuildInfrastructureError,

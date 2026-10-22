@@ -323,7 +323,7 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     assert "started_at_epoch=$(date +%s)" in start["run"]
     assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
-    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 600
+    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 750
     assert '--budget-seconds "${budget}"' in canary["run"]
     assert steps.index(canary) > next(
         index
