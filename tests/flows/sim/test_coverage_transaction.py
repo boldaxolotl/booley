@@ -576,7 +576,7 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
         assert document["evaluation"]["status"] == "blocked"
         assert document["collection"]["status"] == "complete"
         flow = SimulateFlow()
-        flow.context._args = SimRequest(work_dir=root)
+        flow._args = SimRequest(work_dir=root)
         assert "--no-waivers" in flow._coverage_result([outcome]).report_text
         results[gated] = [
             (item["code"], item["pointer"], item["message"])
@@ -967,7 +967,7 @@ def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
     session = CoverageEvidenceSession(loaded.campaign, None)
     assert session.query({"view": "zero_point_sources"})["paths"] == ["rtl/unused.sv"]
     flow = SimulateFlow()
-    flow.context._args = SimRequest(work_dir=tmp_path / "gap")
+    flow._args = SimRequest(work_dir=tmp_path / "gap")
     card = flow._coverage_result([outcome]).report_text
     assert "RTL sources without coverage points: 1" in card and "rtl/unused.sv" in card
     # The finding is advisory: exit code, Criterion and verdict match a project without the gap.
@@ -1048,7 +1048,7 @@ def test_v030_campaign_with_declaration_evidence_loads_without_gap_claim(tmp_pat
         == []
     )
     flow = SimulateFlow()
-    flow.context._args = SimRequest(work_dir=tmp_path)
+    flow._args = SimRequest(work_dir=tmp_path)
     assert "RTL source" not in flow._coverage_result([outcome]).report_text
 
 

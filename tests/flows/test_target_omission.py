@@ -213,7 +213,7 @@ def test_omitted_target_selects_and_announces_only_eligible(entry, name, project
     ids=[f"{entry}-{name}-{label}" for entry, name in CASES for label in ("zero", "many")],
 )
 def test_omitted_target_rejects_cardinality(entry, name, count, project, executed, monkeypatch):
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.endpoint_state import EndpointState
 
     admitted, started = [], []
 
@@ -221,7 +221,7 @@ def test_omitted_target_rejects_cardinality(entry, name, count, project, execute
         admitted.append(True)
         return None, None
 
-    monkeypatch.setattr(FlowSession, "_acquire_job_slot", acquire_slot)
+    monkeypatch.setattr(EndpointState, "_acquire_job_slot", acquire_slot)
     monkeypatch.setattr(
         "booley.flows.endpoint_session._write_display_event", lambda *args: started.append(args)
     )
@@ -361,7 +361,7 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     flow = LintFlow()
     argv = ["--work-dir", str(project)] + (["--quiet"] if quiet else [])
     result = flow.execute_cli(argv)
-    flow.context._publish_console_report(result.outcome)
+    flow._publish_console_report(result.outcome)
     captured = capsys.readouterr()
     notice = "lint: --target omitted; selected Target chosen."
     assert captured.err.count(notice) == 1
@@ -373,12 +373,12 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
 def test_selection_notice_survives_preparation_failure(
     failure, project, executed, monkeypatch, capsys
 ):
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.endpoint_state import EndpointState
 
     write_targets(project, "sim")
     if failure == "binding":
         monkeypatch.setattr(
-            FlowSession,
+            EndpointState,
             "_criterion_binding_gate",
             lambda self: EndpointOutcome(exit_code=2, report_text="binding refused"),
         )
@@ -396,7 +396,7 @@ def test_selection_notice_survives_preparation_failure(
             lambda self: EndpointOutcome(exit_code=2, report_text="coverage refused"),
         )
     monkeypatch.setattr(
-        FlowSession, "_acquire_job_slot", lambda self: pytest.fail("admitted refusal")
+        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted refusal")
     )
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()

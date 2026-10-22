@@ -374,7 +374,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
                 self.state.criteria,
                 "fpga_impl_ok_",
                 handles,
-                basis=self._flow_acceptance if self._flow_acceptance.basis_bound else None,
+                basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
                 flow="fpga",
             )
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
@@ -633,7 +633,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="fpga",
-            basis_bound=self._flow_acceptance.basis_bound,
+            basis_bound=self.flow_acceptance.basis_bound,
         )
 
     def _prepare_fpga_command(

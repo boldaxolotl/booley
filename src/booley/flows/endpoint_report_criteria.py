@@ -57,11 +57,10 @@ def freeze(endpoint: EndpointState, simulation: Any = None) -> None:
     if ledger.frozen:
         return
     ledger.frozen = True
-    owner = getattr(endpoint, "flow", endpoint)
     ledger.targets = frozenset(endpoint._requested_targets())
     try:
         if simulation is not None and hasattr(simulation, "targets"):
-            workloads, coverage = owner.report_candidate_workloads(simulation)
+            workloads, coverage = endpoint.report_candidate_workloads(simulation)
             ledger.targets = frozenset(workload.handle.identity for workload in workloads)
             families = {"sim_pass", "cycle_count"} | ({"coverage"} if coverage else set())
             ledger.planned = frozenset(
@@ -71,8 +70,10 @@ def freeze(endpoint: EndpointState, simulation: Any = None) -> None:
             )
             return
         handles: tuple[TargetHandle, ...] = ()
-        selection = getattr(owner, "_prepared_target_selection", None)
-        if selection is not None and selection.matches(owner.args.work_dir, owner.args.target):
+        selection = getattr(endpoint, "_prepared_target_selection", None)
+        if selection is not None and selection.matches(
+            endpoint.args.work_dir, endpoint.args.target
+        ):
             handles = selection.handles
             ledger.targets = frozenset(handle.identity for handle in handles)
         ledger.planned = frozenset(_planned_keys(endpoint, handles))
@@ -113,9 +114,8 @@ def _families(endpoint: EndpointState) -> set[str]:
 
 
 def _planned_keys(endpoint: EndpointState, handles: tuple[TargetHandle, ...]) -> set[str]:
-    owner = getattr(endpoint, "flow", endpoint)
     if endpoint.name == "reviewer":
-        return {owner._criterion_key()}
+        return {endpoint._criterion_key()}
     families = _families(endpoint)
     keys: set[str] = set()
     if "elaborate_standalone" in families and (
@@ -157,8 +157,7 @@ def _named_keys(endpoint, name: str, families: set[str], conventional: set[str])
 
 
 def _conventional_families(endpoint: EndpointState) -> set[str]:
-    owner = getattr(endpoint, "flow", endpoint)
-    if "_run" in owner.__dict__:
+    if "_run" in endpoint.__dict__:
         return set()
     families = {"synth": {"synthesis_ok"}, "fpga": {"fpga_impl_ok"}, "lint": {"lint_clean"}}
     if endpoint.name != "sim":

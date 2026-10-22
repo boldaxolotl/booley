@@ -516,7 +516,7 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     request = replace(request, pre_sim_firing_published=flow._record_pre_sim_firing)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
     _publish_real_hook_series(request, handle, commands, 40)
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     reads = _observe_pre_sim_projection(monkeypatch)
     result = flow._attach_published_pre_sim(
         EndpointOutcome(exit_code=2, report_text="interrupted coverage")

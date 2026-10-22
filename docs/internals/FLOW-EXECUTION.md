@@ -29,14 +29,14 @@ location are environment-derived preparation fields, excluded from constructors.
 
 - `FlowMechanics` supplies subprocess execution, timeout/cancellation cleanup,
   artifact age checks and the Flow pre-state gate.
-- `BuiltinFlow` composes a fresh `FlowSession` per invocation. Its narrow service
-  delegates expose prepared inputs, Criteria state/updates, report-directory
-  reservation, EDA-tool identity and progress. Its CLI convenience methods keep
-  existing commands and module entry points callable without inheriting the
-  legacy endpoint facade.
-- `FlowSession` binds concrete execution, job-class and display-label callbacks
-  to `EndpointState`. The latter owns per-invocation state and delegates to the
-  separate acceptance, admission, reporting and invocation modules.
+- `BuiltinFlow` inherits `FlowMechanics` and `EndpointState` and is the single
+  owner of its invocation state. Each entry point (construction, `execute`,
+  `execute_cli`, `parse_args`) starts an invocation that reinitializes every per-invocation
+  field plus the Flow's own extras (publication resources, terminal progress,
+  Simulation outcomes). Its CLI convenience methods keep existing commands and
+  module entry points callable without inheriting the legacy endpoint facade.
+- `EndpointState` owns per-invocation state and delegates to the separate
+  acceptance, admission, reporting and invocation modules.
 - `builtin_cli` builds a parser from common definitions and the concrete Flow's
   argument adapter. It translates CLI input to the same typed request. Concrete
   implementations supply their adapter; common modules never select a Flow.

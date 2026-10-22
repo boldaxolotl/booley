@@ -2840,7 +2840,7 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, target)
         ),
     ):
         result = flow._run()
-    path = flow.context.write_report(result)
+    path = flow.write_report(result)
     report = json.loads(path.read_bytes())
     expected = (
         {"eda_tool": "Verilator"}

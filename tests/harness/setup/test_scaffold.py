@@ -885,7 +885,7 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     )
     flow.read_state()
     result = flow._run()
-    path = write_report(flow.context, result)
+    path = write_report(flow, result)
     report = json.loads(path.read_text())
     assert report["passed"] is True
     assert report["detail"]["synth"]["synth_mode"] == "logical", (

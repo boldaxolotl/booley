@@ -2,7 +2,7 @@
 
 Resolved Test Runs (drawn seeds included), the baseline runs and the Goals'
 frozen Test Runs belong to one request. They restart wherever an invocation starts: a
-new session, a newly parsed request, and the preparation of an execution.
+new invocation, a newly parsed request, and the preparation of an execution.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from dataclasses import replace
 
 import pytest
 
+from booley.flows import endpoint_session
 from booley.flows.execution_persistence import StandaloneFlowExecution
-from booley.flows.flow_session import FlowSession
 from booley.flows.sim.test_run_invocation import TestRunInvocation
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.sim.test_flow_test_run_resolution import _MAP, _flow
@@ -64,7 +64,7 @@ def test_random_seeds_are_drawn_again_for_the_next_invocation(tmp_path, monkeypa
     assert flow._test_runs.resolved == {(str(tmp_path), "sim"): second}
 
 
-@pytest.mark.parametrize("boundary", ["new_session", "prepare_execution"])
+@pytest.mark.parametrize("boundary", ["invocation_start", "prepare_execution"])
 def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch, boundary):
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
     _names(flow)
@@ -72,12 +72,11 @@ def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch
     stale = flow._test_runs
     request = replace(flow.args, test=("stress",))
 
-    if boundary == "new_session":
-        flow.context = FlowSession(flow, StandaloneFlowExecution())
-        flow.context._args = request
+    if boundary == "invocation_start":
+        flow._start_invocation(StandaloneFlowExecution(), request)
     else:
-        flow.context._args = request
-        flow.context.reset_report_metadata()
+        flow._args = request
+        endpoint_session.prepare_execution(flow)
 
     assert flow._test_runs is not stale
     assert flow._test_runs == TestRunInvocation()
@@ -113,8 +112,8 @@ def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_pa
 def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
     flow = _flow(tmp_path, monkeypatch)
     flow._record_eda_tool("sim", "verilator")
-    assert flow.context._eda_tool == "verilator"
+    assert flow._eda_tool == "verilator"
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim"])
-    assert flow.context._eda_tool is None
-    assert flow.context._eda_tools == {"sim": None}
+    assert flow._eda_tool is None
+    assert flow._eda_tools == {"sim": None}
     assert flow._target_eda_tools == {"sim": None}

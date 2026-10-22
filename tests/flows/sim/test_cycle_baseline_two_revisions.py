@@ -115,7 +115,7 @@ def _run(
         patch("booley.flows.sim.flow.baseline_worktree", worktree),
         patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
         patch.object(flow, "_execute", side_effect=execute),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         result = flow._run()
     return result, launched, flow.state.criteria[key]

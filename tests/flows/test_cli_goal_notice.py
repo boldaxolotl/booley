@@ -86,7 +86,7 @@ def test_unbound_cli_report_omits_goal_headline(goal_mode, monkeypatch):
     )
     result = flow.execute_cli(["-C", str(goal_mode.worktree), "--target", "top", "--quiet"])
     assert result.exit_code == 0
-    report = assert_paired_headline(flow.context.args.report_dir, "lint", None)
+    report = assert_paired_headline(flow.args.report_dir, "lint", None)
     assert report["detail"]["warnings"] == 2
 
     completion = next(event for event in events if event["type"] == "endpoint_end")
@@ -214,7 +214,7 @@ def test_bound_mcp_flow_keeps_goal_evidence(goal_mode, monkeypatch):
     flow = LintFlow()
 
     def run():
-        flow.context.set_criterion("lint_clean_top", True)
+        flow.set_criterion("lint_clean_top", True)
         return EndpointOutcome(detail={"warnings": 0})
 
     monkeypatch.setattr(flow, "_run", run)
@@ -225,7 +225,7 @@ def test_bound_mcp_flow_keeps_goal_evidence(goal_mode, monkeypatch):
     assert result.exit_code == 0, result.outcome.report_text
     assert result.outcome.criterion_key == "lint_clean_top"
     assert result.outcome.criterion_met is True
-    assert_paired_headline(flow.context.args.report_dir, "lint", ("lint_clean_top", True))
+    assert_paired_headline(flow.args.report_dir, "lint", ("lint_clean_top", True))
 
 
 @pytest.mark.timeout(120)

@@ -165,7 +165,7 @@ class TestStandaloneSweep:
         flow._record_eda_tool("sim_dut", "icarus")
         commands = _stub_probes(monkeypatch, flow)
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.passed
@@ -298,7 +298,7 @@ class TestStandaloneSweep:
             },
         )
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert not outcome.passed
@@ -332,7 +332,7 @@ class TestStandaloneSweep:
         flow._record_eda_tool("sim_dut", "icarus")
         commands = _stub_probes(monkeypatch, flow)
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.passed
@@ -368,7 +368,7 @@ class TestStandaloneSweep:
         flow._record_eda_tool("sim_dut", "icarus")
         _stub_probes(monkeypatch, flow, {"alu": probe} if probe else None)
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.eda_tool_failed
@@ -390,7 +390,7 @@ class TestStandaloneSweep:
             {"alu": SubprocessResult(returncode=1, stderr="rtl/alu.sv:1: syntax error\n")},
         )
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.eda_tool_failed
@@ -428,7 +428,7 @@ class TestStandaloneSweep:
             },
         )
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert [item["module"] for item in outcome.detail["failures"]] == ["broken"]
@@ -535,10 +535,10 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
         returncode=0 if met else 1, stderr="syntax error" if not met else ""
     )
     _stub_probes(monkeypatch, flow, {"alu": process})
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         outcome = flow._run_standalone_check(["sim_dut"])
     result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
-    final_report_omits_headline(flow.context, result)
+    final_report_omits_headline(flow, result)
     assert flow.state.criteria["elaborate_standalone"].met is met
     assert flow.state._file_path is None
 
@@ -552,10 +552,10 @@ def test_standalone_frontend_identity_is_scalar(tmp_path, monkeypatch):
     _stub_sources(monkeypatch, ["rtl/top.sv"])
     flow = _make_flow(tmp_path, config='[flows.sim]\nstandalone_frontend = "iverilog"\n')
     _stub_probes(monkeypatch, flow)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         outcome = flow._run_standalone_check(["sim_dut"])
     assert outcome.passed
-    path = flow.context.write_report(EndpointOutcome())
+    path = flow.write_report(EndpointOutcome())
     report = json.loads(path.read_bytes())
     assert report.get("eda_tool") == "iverilog"
     assert "eda_tools" not in report

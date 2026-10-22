@@ -1,7 +1,8 @@
 """Per-invocation execution state and shared endpoint services.
 
-Parsing, acceptance, admission and publication have separate owners. Structured Flow sessions and legacy adapters use the same recording and
-publication operations; this module does not construct parsers.
+Parsing, acceptance, admission and publication have separate owners. Built-in
+Flows and legacy adapters use the same recording and publication operations;
+this module does not construct parsers.
 """
 
 from __future__ import annotations

@@ -518,7 +518,7 @@ def test_cli_flags_do_not_change_shared_schema(flow_type):
 
 @pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "transport", "dry-run"])
 def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode):
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.base import BuiltinFlow
 
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
@@ -533,11 +533,11 @@ def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode
         args.append("--dry-run")
     observed = []
 
-    def execute(session):
+    def execute(flow):
         observed.append(current_progress())
         return ExecutionResult(0, EndpointOutcome())
 
-    with patch.object(FlowSession, "execute_prepared", execute):
+    with patch.object(BuiltinFlow, "execute_prepared", execute):
         execute_cli(
             LintFlow(),
             args,
@@ -836,15 +836,15 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
 
 
 def test_sim_verbose_keeps_resume_semantics_with_quiet():
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.base import BuiltinFlow
 
     seen = []
 
-    def execute(session):
-        seen.append((session.args.verbose, current_progress()))
+    def execute(flow):
+        seen.append((flow.args.verbose, current_progress()))
         return ExecutionResult(0, EndpointOutcome())
 
-    with patch.object(FlowSession, "execute_prepared", execute):
+    with patch.object(BuiltinFlow, "execute_prepared", execute):
         execute_cli(SimulateFlow(), ["--target", "demo", "--verbose", "--quiet"])
     assert seen == [(True, None)]
 
@@ -933,12 +933,12 @@ def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
 def test_agent_console_and_display_bytes_match_existing_transport(
     tmp_path, monkeypatch, capsys, mode
 ):
+    from booley.flows.base import BuiltinFlow
     from booley.flows.endpoint_events import (
         _endpoint_progress_event,
         _serialize_display_event,
         _write_display_event,
     )
-    from booley.flows.flow_session import FlowSession
 
     def write_event(event):
         with path.open("a", encoding="utf-8") as stream:
@@ -963,16 +963,16 @@ def test_agent_console_and_display_bytes_match_existing_transport(
     expected_events = path.read_bytes()
     path.unlink()
 
-    def execute(session):
-        assert session.terminal_progress is None
+    def execute(flow):
+        assert flow.terminal_progress is None
         assert current_progress() is None
-        session.emit_progress("checking")
-        session.emit_completion("done")
+        flow.emit_progress("checking")
+        flow.emit_completion("done")
         print("verdict unchanged")
         return ExecutionResult(7, EndpointOutcome())
 
     adapter = FixtureRecorder(identity={"generation": "d" * 32}) if mode == "ticket" else None
-    with patch.object(FlowSession, "execute_prepared", execute):
+    with patch.object(BuiltinFlow, "execute_prepared", execute):
         result = execute_cli(LintFlow(), ["--target", "demo"], adapter=adapter)
     captured = capsys.readouterr()
     assert captured.out == "verdict unchanged\n"

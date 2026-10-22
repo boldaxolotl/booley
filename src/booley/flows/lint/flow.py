@@ -1036,7 +1036,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         if err is not None:
             return err
         targets = self._get_targets()
-        self.context.set_report_targets([target.selector for target in targets])
+        self.set_report_targets([target.selector for target in targets])
         if not targets:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
