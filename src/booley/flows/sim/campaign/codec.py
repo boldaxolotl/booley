@@ -1288,8 +1288,14 @@ def _validate_disclosures(value: object, schema: str) -> None:
 
 
 def _validate_prerequisites(value: object) -> None:
+    """Validate prerequisite links: unique by work item, consistent per campaign.
+
+    Several relative Cycle Count Goals of one Target link several work items
+    of the same baseline campaign, so a campaign may appear more than once.
+    """
     prerequisites = _exact_list(value, "prerequisites", MAX_WORK_ITEMS)
-    identities: list[tuple[object, object, object]] = []
+    identities: list[tuple[object, object]] = []
+    campaigns: dict[object, tuple[object, object]] = {}
     for index, item in enumerate(prerequisites):
         prerequisite = _exact_object(
             item,
@@ -1323,9 +1329,12 @@ def _validate_prerequisites(value: object) -> None:
             )
         if manifest["owner"] != prerequisite["campaign_id"]:
             raise SimulationCampaignIntegrityError("prerequisite manifest owner disagrees")
-        identities.append(
-            (prerequisite["campaign_id"], target["project_identity"], target["revision"])
-        )
+        campaign = (manifest, target)
+        if campaigns.setdefault(prerequisite["campaign_id"], campaign) != campaign:
+            raise SimulationCampaignIntegrityError(
+                "prerequisites of the same campaign must name the same manifest and Target"
+            )
+        identities.append((prerequisite["campaign_id"], prerequisite["work_item_id"]))
     if len(set(identities)) != len(identities):
         raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
 

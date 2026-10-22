@@ -29,6 +29,11 @@ class FlowSession(EndpointState):
         execution_adapter = execution_adapter or StandaloneFlowExecution()
         self.terminal_progress: TerminalProgress | None = None
         self.publication_resources = ExitStack()
+        # Baseline worktrees held open in ``publication_resources``, by revision.
+        # One invocation materializes each revision once and every consumer
+        # shares it: a second ``git worktree add`` at the same scratch path
+        # fails while the first is still open (#1959).
+        self.baseline_worktrees: dict[str, Path] = {}
         self.flow = flow
         self._automatic_target_notice = ""
         self._automatic_target_notice_published = False

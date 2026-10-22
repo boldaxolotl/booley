@@ -357,8 +357,14 @@ class FlowMechanics:
         """Return working directory for subprocess."""
         return self.args.work_dir
 
-    def _execute_local(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
-        """Run locally and reap the whole process tree on timeout or interruption."""
+    def _execute_local(
+        self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+    ) -> SubprocessResult:
+        """Run locally and reap the whole process tree on timeout or interruption.
+
+        *cwd* defaults to :meth:`_get_cwd`; a caller running another checkout
+        (a Cycle Count baseline) names that checkout.
+        """
         import sys as _sys
 
         # python3 is not on PATH on Windows; use the running interpreter.
@@ -366,7 +372,7 @@ class FlowMechanics:
             cmd = [_sys.executable, *cmd[1:]]
 
         timeout = self._get_timeout() if timeout is None else timeout
-        cwd = self._get_cwd()
+        cwd = self._get_cwd() if cwd is None else cwd
         env = {**os.environ, **self._extra_subprocess_env()}
         try:
             cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
@@ -404,15 +410,17 @@ class FlowMechanics:
             cmd, proc, scope, memory_monitor, oom_before, start, timeout
         )
 
-    def _execute(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
+    def _execute(
+        self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+    ) -> SubprocessResult:
         """Run a subprocess locally (inside the Sandbox, ADR 0028)."""
         logger.info(
             "Running: %s (timeout=%ds, cwd=%s)",
             " ".join(cmd),
             self._get_timeout() if timeout is None else timeout,
-            self._get_cwd(),
+            self._get_cwd() if cwd is None else cwd,
         )
-        return self._execute_local(cmd, timeout=timeout)
+        return self._execute_local(cmd, timeout=timeout, cwd=cwd)
 
     def _extra_subprocess_env(self) -> dict[str, str]:
         """Return environment overrides for subprocess-backed EDA tools."""
@@ -456,10 +464,17 @@ class FlowMechanics:
         cmd: list[str],
         *,
         timeout: int | None = None,
+        cwd: Path | None = None,
     ) -> SubprocessResult:
-        """Run a boundary command locally inside the Sandbox."""
+        """Run a boundary command locally inside the Sandbox, in *cwd* when given."""
         dispatched = time.time()
-        result = self._execute(cmd) if timeout is None else self._execute(cmd, timeout=timeout)
+        # Pass only what was given: test doubles of _execute take just the command.
+        options: dict[str, Any] = {}
+        if timeout is not None:
+            options["timeout"] = timeout
+        if cwd is not None:
+            options["cwd"] = cwd
+        result = self._execute(cmd, **options)
         result.dispatched_unix = dispatched
         return result
 
