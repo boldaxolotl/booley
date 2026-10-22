@@ -477,9 +477,9 @@ innermost first, on terminal and resume cleanup. It stops at the template root
 (the path before the first placeholder), at any directory it did not create, and
 at any directory still holding other content, such as a sibling attempt's. The
 template root and its missing ancestors are created without a marker and kept,
-and directories left by earlier versions carry no marker and stay. A literal
-directory requires a pre-existing directory and is protected by a collision lock, so Campaign work sharing it runs one at a
-time. Unknown placeholders, formatting conversions/specifiers, and unmatched
+and any directory without a marker stays. A literal directory requires a
+pre-existing directory and is protected by a collision lock, so Campaign work
+sharing it runs one at a time. Unknown placeholders, formatting conversions/specifiers, and unmatched
 braces are rejected.
 
 `[flows.sim].pre_sim_build_access` selects the Pre-Sim Commands contract:

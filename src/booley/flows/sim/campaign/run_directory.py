@@ -255,10 +255,15 @@ def _held_path_lock(lock_path: Path, *, discard: bool) -> Iterator[None]:
     try:
         yield
     finally:
-        if discard and sys.platform != "win32":
-            lock_path.unlink(missing_ok=True)
-        release_file_lock(lock)
-        lock.close()
+        try:
+            if discard and sys.platform != "win32":
+                # A failed unlink only leaves a lock file; it must not mask the body's
+                # error or keep the lock held.
+                with suppress(OSError):
+                    lock_path.unlink()
+        finally:
+            release_file_lock(lock)
+            lock.close()
         if discard and sys.platform == "win32":
             # A waiter may still hold the file open; it then needs it, so keep it.
             with suppress(PermissionError, FileNotFoundError):
