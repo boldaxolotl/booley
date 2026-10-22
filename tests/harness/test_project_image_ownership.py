@@ -1,6 +1,7 @@
 """Project image transactions may only mutate their own descendants."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,15 +184,11 @@ def test_other_project_compatible_artifact_is_reused_without_shared_retag(tmp_pa
 def test_manual_final_scratch_cannot_claim_parent_with_labels(tmp_path, monkeypatch):
     from booley.harness import image_lifecycle as harness
 
-    parent = {"RootFS": {"Layers": ["base", "wheel"]}}
-    child = {"RootFS": {"Layers": []}}
-    monkeypatch.setattr(
-        harness.project_image,
-        "inspect_layout_image",
-        lambda ref: parent if ref == "parent" else child,
-    )
+    layers = {"parent": ("base", "wheel"), "child": ()}
+    docker = SimpleNamespace(image_layers=lambda ref: layers[ref])
+    adapter = harness._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
     with pytest.raises(lifecycle.ImageLifecycleError, match="does not descend"):
-        harness._IncrementalBuildAdapter._verify_manual_ancestry("child", "parent")
+        adapter._verify_manual_ancestry("child", "parent")
 
 
 def test_never_initialized_project_check_does_not_create_files(tmp_path, monkeypatch):
