@@ -166,3 +166,75 @@ class TestReplaceFile:
             closer.join(timeout=5)
             reader.close()
         assert destination.read_text() == "new"
+
+
+class _FlakyOpen:
+    """Stand-in for Path.open that fails the first reads of one path."""
+
+    def __init__(self, target: Path, failures: list[OSError]) -> None:
+        self.target = target
+        self.failures = failures
+        self.calls = 0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_open = Path.open
+
+        # A plain function (not this instance) so Path binds it as a method.
+        def flaky_open(path: Path, *args: object, **kwargs: object):
+            if path == self.target:
+                self.calls += 1
+                if self.failures:
+                    raise self.failures.pop(0)
+            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "open", flaky_open)
+
+
+class TestReadFileBytes:
+    def test_retries_transient_windows_sharing_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.runtime.filesystem_utils import read_file_bytes
+
+        path = tmp_path / "record.json"
+        path.write_bytes(b"payload")
+        flaky = _FlakyOpen(
+            path,
+            [
+                _windows_permission_error(5),
+                _windows_permission_error(32),
+                _windows_permission_error(5),
+            ],
+        )
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        assert read_file_bytes(path, sleep=delays.append) == b"payload"
+        assert flaky.calls == 4
+        assert len(delays) == 3
+
+    def test_gives_up_after_bounded_retries_and_keeps_missing_and_posix_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.runtime.filesystem_utils import read_file_bytes
+
+        path = tmp_path / "record.json"
+        path.write_bytes(b"payload")
+        flaky = _FlakyOpen(path, [_windows_permission_error(32)] * 100)
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        with pytest.raises(PermissionError):
+            read_file_bytes(path, sleep=delays.append)
+        assert flaky.calls == len(delays) + 1
+        assert sum(delays) < 2.0
+
+        posix = _FlakyOpen(path, [PermissionError(13, "Permission denied")])
+        posix.install(monkeypatch)
+        delays.clear()
+        with pytest.raises(PermissionError):
+            read_file_bytes(path, sleep=delays.append)
+        assert posix.calls == 1
+        assert delays == []
+
+        with pytest.raises(FileNotFoundError):
+            read_file_bytes(tmp_path / "missing.json", sleep=delays.append)
+        assert delays == []
