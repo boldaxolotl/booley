@@ -17,6 +17,7 @@ from booley.config.agent import (
     KNOWN_ROLES,
     MODEL_TIERS,
     BackendConfigError,
+    RetiredRoleError,
     parse_auth,
     parse_provider,
     parse_role_models,
@@ -76,6 +77,9 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     findings = _unknown_model_key_findings(models, MODEL_TIERS)
     try:
         role_models = parse_role_models(models)
+    except RetiredRoleError as exc:
+        findings.append(fail_finding(str(exc), f"delete the {exc.role} line from [models.roles]"))
+        return ConfigTableAudit(tuple(findings))
     except BackendConfigError as exc:
         findings.append(fail_finding(str(exc), f"use one of: {', '.join(sorted(KNOWN_ROLES))}"))
         return ConfigTableAudit(tuple(findings))

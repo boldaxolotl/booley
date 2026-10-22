@@ -22,3 +22,12 @@ def test_config_reference_documents_known_booley_toml_table(table: str) -> None:
 
     table_reference = rf"\[{re.escape(table)}(?:\.[^\]\n]+)?\]"
     assert re.search(table_reference, reference), f"booley.toml [{table}] missing from CONFIG.md"
+
+
+def test_config_reference_lists_pinnable_roles_exactly() -> None:
+    from booley.config.agent import KNOWN_ROLES
+
+    reference = " ".join(CONFIG_REFERENCE.read_text(encoding="utf-8").split())
+    sentence = re.search(r"Specialist roles are (.+?)\.", reference)
+    assert sentence, "CONFIG.md must say 'Specialist roles are ...' for [models.roles]"
+    assert set(re.findall(r"`([a-z_]+)`", sentence.group(1))) == KNOWN_ROLES
