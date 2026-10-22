@@ -50,7 +50,7 @@ POINT_STORE_NAME = "coverage-points.jsonl.gz"
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 _SHA256_PREFIX = "sha256:"
-_SUMMARY_FIELDS = frozenset(
+_MANIFEST_FIELDS = frozenset(
     {
         "$schema",
         "campaign_id",
@@ -73,6 +73,7 @@ _SUMMARY_FIELDS = frozenset(
         "evaluation",
     }
 )
+#: Manifest keys the codec does not read; the store consumes or republishes them.
 _STORE_FIELDS = frozenset({"point_store", "source_rollups", "scoring"})
 
 
@@ -343,7 +344,7 @@ def _load_manifest(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
             )
-        if set(document) != _SUMMARY_FIELDS:
+        if set(document) != _MANIFEST_FIELDS:
             raise CoverageCampaignStoreError(
                 "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Campaign manifest"
             )
@@ -374,7 +375,7 @@ def _load_manifest(
 def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V4/V5 Campaign and accept no point evidence before validation."""
+    """Deep-load one V4/V5 Campaign; the codec validates it once, after the points are read."""
     path = _canonical_campaign_path(path)
     try:
         return _load_manifest(path, _read_manifest_bytes(path), expected_target)
