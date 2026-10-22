@@ -17,7 +17,6 @@ document: Booley product datasheet
     <section aria-labelledby="description" class="desc">
       <h2 class="sec" id="description"><span class="n">1</span>Description</h2>
       <p>Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
-      <p>You design; it does the grunt work. <a href="#limitations">Section 4</a> lists what Booley does not do; read it before you start.</p>
     </section>
 
     <div class="order" aria-labelledby="order-h">

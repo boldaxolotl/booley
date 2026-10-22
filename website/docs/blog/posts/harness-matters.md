@@ -56,7 +56,7 @@ In the scenario the bug report describes, firmware checks the contents of the pr
 The agent's task was to find and fix the cause in the RTL, then add a test that fails before the fix and passes afterward.
 
 <details open markdown>
-<summary>The bug report and exact RTL fault</summary>
+<summary>The bug report</summary>
 <div class="details__body" markdown>
 
 The agent received an issue-style report describing this behavior:
@@ -65,14 +65,14 @@ The agent received an issue-style report describing this behavior:
 >
 > Find and fix the RTL root cause. Add a test that reproduces the problem and passes after the fix.
 
-DCCM is the processor's tightly coupled data memory. To save power, `el2_lsu` ANDs the R-stage `lsu_addr_r`, `end_addr_r`, and `store_data_r` with `lsu_busreq_r` before they reach `el2_lsu_bus_intf`, so a DCCM store in R appears there with address and data both 0. Without `& lsu_busreq_r`, the forwarding check `ld_addr_rhit_*` reduces to "is the M-stage load address 0?" for any valid non-bus store in R. A word load from ROM address 0 directly behind a DCCM store gets a full forwarding hit (unless the region is marked as having side effects), skips the bus read, and returns the zeroed store data: `0x0` instead of the ROM word. The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
+DCCM is the processor's tightly coupled data memory. The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
 
 </div>
 </details>
 
 ## Why reproducing it was harder than finding it
 
-The processor uses *store-to-load forwarding*: a read can take its value directly from a recent write to the same address instead of waiting for memory. To save power, it also blanks the address and data of a write that goes to its on-chip data memory, setting both to zero. The forwarding check was missing its "this write goes out on the bus" condition, so it compared each read against that blanked address of zero. A read from ROM address 0, issued right after an on-chip write, "matched", skipped the real ROM read, and got the blanked value: zero.
+The processor uses *store-to-load forwarding*: a read can take its value directly from a recent write to the same address instead of waiting for memory. To save power, it also blanks the address and data of a write that goes to its on-chip data memory (DCCM), setting both to zero. The forwarding check was missing its "this write goes out on the bus" condition, so it compared each read against that blanked address of zero. A read from ROM address 0, issued right after an on-chip write, "matched", skipped the real ROM read, and got the blanked value: zero.
 
 In both setups, the agent usually identified the faulty line within five minutes. It then had to write a test that failed on the original design and passed after the fix. That would demonstrate the fault and help catch it if it returned later.
 
