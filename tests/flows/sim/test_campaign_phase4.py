@@ -92,8 +92,15 @@ def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext
 
 
 def test_cancelled_campaign_stops_before_publication() -> None:
-    request = SimpleNamespace(admission=SimpleNamespace(cancellation=lambda: True))
-    with pytest.raises(SimulationCampaignCancellationError, match="cancelled"):
+    request = SimpleNamespace(
+        admission=SimpleNamespace(
+            cancellation=lambda: True,
+            cancellation_cause=lambda: "Job Slot token missing: heavy/entry.json",
+        )
+    )
+    with pytest.raises(
+        SimulationCampaignCancellationError, match="cancelled: Job Slot token missing"
+    ):
         SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
 
 

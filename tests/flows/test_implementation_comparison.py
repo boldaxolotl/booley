@@ -314,6 +314,24 @@ def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
     assert (baseline, full_sha, error) == ("sealed-base", "a" * 40, None)
 
 
+def test_unresolvable_pinned_baseline_ref_is_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _basis_project(tmp_path, schema=5)
+    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
+    criteria = {
+        "synthesis_ok_area": SimpleNamespace(
+            params={"target": candidate.identity, "_baseline_ref": "sealed-base"}
+        )
+    }
+    monkeypatch.setattr("booley.flows.baseline_worktree.git_full_sha", lambda _ref, _root: None)
+
+    assert resolve_ticket_baseline(
+        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
+    ) == ("sealed-base", None, "synth: pinned baseline ref cannot be resolved to a commit")
+
+
 def test_multiple_synth_parameters_can_share_one_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -463,7 +481,7 @@ def test_basis_rejects_resumed_state_that_disagrees_with_record(
     params = {} if baseline is None else {BASELINE_TARGET_PARAM: baseline}
     criteria = {"synthesis_ok_synth_after": SimpleNamespace(params=params)}
 
-    with pytest.raises(ImplementationComparisonError, match="does not match the Ticket baseline"):
+    with pytest.raises(ImplementationComparisonError, match="does not match the frozen baseline"):
         target_pairs_for_candidates(
             criteria,
             "synthesis_ok_",

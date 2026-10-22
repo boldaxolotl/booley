@@ -200,6 +200,7 @@ def test_review_proof_carries_binding_stamps_and_labels_unverified_text() -> Non
     ):
         assert value in proof
     assert "- Proposal count: `3`" in proof
+    assert "through a Goal Change Proposal" in proof
     assert "## Analyst argument (unverified)" in proof
     assert "## Cited evidence (unverified)" in proof
     assert "````text\nUses ``` fences\nand `ticks`.\n````" in proof

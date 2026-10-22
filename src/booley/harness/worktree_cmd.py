@@ -2,8 +2,8 @@
 
 The command wraps the packaged ``worktree_create.sh`` with its default
 ``refuse`` policy, so an existing destination (possibly an active worktree
-holding someone's work) is never deleted. The worktree lands where Ticket
-setup puts its worktrees, ``.booley/worktrees/<name>``, on a detached
+holding someone's work) is never deleted. The worktree lands at
+``.booley/worktrees/<name>``, on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
@@ -38,7 +38,7 @@ from booley.runtime.project_worktree_pairing import (
 # CLI boundary gives an argparse error before any process starts.
 _WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# Matches the Ticket setup budget for the same script.
+# Bounds the script so a wedged Git call cannot hang the CLI.
 _CREATE_TIMEOUT_S = 300
 
 

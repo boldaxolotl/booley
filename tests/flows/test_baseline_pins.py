@@ -140,7 +140,7 @@ def test_cycle_count_relative_criterion_without_base_sha_raises(tmp_path: Path) 
 
     assert str(caught.value) == (
         "Simulation criterion 'cycle_count_core' requires a baseline-relative "
-        "threshold, but the ticket has no base_sha"
+        "threshold, but the Goal Mode has no base_sha"
     )
     assert BASELINE_REF_PARAM not in params["cycle_count_core"]
 
@@ -219,7 +219,7 @@ def test_absent_candidate_target_defers_without_pinning(
     assert params == {key: {"target": "future"}}
     assert baseline_checkouts == []
     assert (
-        "Synthesis Target 'future' is not authored at ticket intake; deferring validation"
+        "Synthesis Target 'future' is not authored at Goal entry; deferring validation"
         in caplog.messages
     )
 
@@ -237,7 +237,7 @@ def test_relative_recipe_with_missing_baseline_target_raises(
 
     assert str(caught.value) == (
         f"Synthesis criterion {key!r} requires baseline metrics, but "
-        "Target 'future' does not exist at ticket intake"
+        "Target 'future' does not exist at Goal entry"
     )
     # ``from None``: the catalog miss is hidden behind the actionable message.
     assert caught.value.__cause__ is None
@@ -254,7 +254,7 @@ def test_relative_recipe_with_missing_baseline_target_raises(
             "",
             {"target": "present", "area_increase_at_most": 1},
             "Synthesis criterion 'synthesis_ok_x' requires a baseline-relative "
-            "threshold, but the ticket has no base_sha",
+            "threshold, but the Goal Mode has no base_sha",
         ),
         (
             _SHA,
@@ -262,6 +262,7 @@ def test_relative_recipe_with_missing_baseline_target_raises(
             "Synthesis criterion 'synthesis_ok_x' has invalid baseline Target metadata",
         ),
     ],
+    ids=["no-target", "missing-base-sha", "invalid-baseline-target"],
 )
 def test_invalid_recipe_metadata_raises_before_any_checkout(
     tmp_path: Path,

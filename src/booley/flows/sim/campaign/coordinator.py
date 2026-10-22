@@ -402,7 +402,8 @@ class SimulationCampaign:
     @staticmethod
     def _raise_if_cancelled(request: CampaignRunRequest) -> None:
         if request.admission.cancellation():
-            raise SimulationCampaignCancellationError("Simulation Campaign cancelled")
+            cause = request.admission.cancellation_cause() or "cancellation requested"
+            raise SimulationCampaignCancellationError(f"Simulation Campaign cancelled: {cause}")
 
     def _publish_coverage_reference(
         self,
@@ -709,11 +710,7 @@ class SimulationCampaign:
             )
         except PreSimScopeStoppedError as signal:
             raise HeavyCapacityError(str(signal)) from signal
-        scope = current_supervised_execution()
-        if scope is not None and scope.cancelled():
-            raise HeavyCapacityError(
-                f"child execution cancelled before result publication: {scope.execution_id}"
-            )
+        raise_if_cancelled_before_publication()
         try:
             self._publish_scheduled_result(store, attempt, work_item_id, result)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -772,6 +769,15 @@ class SimulationCampaign:
             self._publication_checkpoint("before:simulation_result")
             store.publish_result(work_item_id, result)
             self._publication_checkpoint("after:simulation_result")
+
+
+def raise_if_cancelled_before_publication() -> None:
+    """Refuse to publish a result produced under a cancelled supervised scope."""
+    scope = current_supervised_execution()
+    if scope is not None and scope.cancelled():
+        raise HeavyCapacityError(
+            f"execution cancelled before result publication: {scope.describe_cancellation()}"
+        )
 
 
 def _invocation_number(directory: Path) -> int:

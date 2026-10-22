@@ -84,11 +84,16 @@ class SupervisedProcessSet:
         )
 
 
+def no_cancellation_cause() -> str | None:
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class SupervisedExecutionScope:
     execution_id: ExecutionId | None
     project_data: Path
     cancelled: Callable[[], bool]
+    cancellation_cause: Callable[[], str | None] = no_cancellation_cause
     processes: SupervisedProcessSet = field(init=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -97,6 +102,13 @@ class SupervisedExecutionScope:
             "processes",
             SupervisedProcessSet(self.execution_id, self.project_data, self.cancelled),
         )
+
+    def describe_cancellation(self) -> str:
+        """Name the lane and the recorded cause of this scope's cancellation."""
+        lane = (
+            "outer lane" if self.execution_id is None else f"child execution {self.execution_id}"
+        )
+        return f"{lane}: {self.cancellation_cause() or 'cancellation requested'}"
 
 
 _SCOPE: ContextVar[SupervisedExecutionScope | None] = ContextVar(

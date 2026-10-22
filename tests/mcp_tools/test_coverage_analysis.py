@@ -401,4 +401,6 @@ def test_unreachable_needs_zero_hits_but_no_model_proof_reference(hits, expected
     rtl = {point.identity.source: "sha256:" + "a" * 64}
     item = {"reason": "unreachable", "evidence": "Tied off", "proof_reference": ""}
 
-    assert _candidate_screen(item, point, rtl, object())[0] == expected
+    screening, reason = _candidate_screen(item, point, rtl, object())
+    assert screening == expected
+    assert ("Goal Change Proposal" in reason) == (expected == "ready_for_human_review")

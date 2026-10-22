@@ -748,7 +748,11 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
     from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
 
     capacity = SimpleNamespace(
-        managed=False, shutdown_requested=False, outer_permit=nullcontext, slot_store=None
+        managed=False,
+        shutdown_requested=False,
+        outer_permit=nullcontext,
+        slot_store=None,
+        cancellation_cause=lambda: None,
     )
     registry = SimpleNamespace(project_data=tmp_path, recover_unretired=lambda _: None)
     flow = SimulateFlow()

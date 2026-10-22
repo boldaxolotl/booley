@@ -84,6 +84,39 @@ def root(tmp_path: Path) -> Path:
     return tmp_path / "slots"
 
 
+def windows_sharing_error() -> PermissionError:
+    """The error Windows raises when a handle without FILE_SHARE_DELETE races a replace."""
+    exc = PermissionError(13, "The process cannot access the file")
+    exc.winerror = 32  # type: ignore[attr-defined]  # POSIX lacks the field
+    return exc
+
+
+class BackoffClock:
+    """Accumulates the sleeps a store requests so a fault can end after N seconds."""
+
+    def __init__(self) -> None:
+        self.elapsed = 0.0
+
+    def sleep(self, seconds: float) -> None:
+        self.elapsed += seconds
+
+
+def deny_until(
+    monkeypatch, method: str, target: Path, clock: BackoffClock, seconds: float
+) -> None:
+    """Make ``Path.<method>`` on *target* raise a Windows sharing error until the
+    store has backed off for *seconds*."""
+    original = getattr(Path, method)
+
+    def flaky(path, *args, **kwargs):
+        denied = path == target or (args and args[0] == target)
+        if denied and clock.elapsed < seconds:
+            raise windows_sharing_error()
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, flaky)
+
+
 def make_store(root: Path, world: FakeWorld, caps: SlotCaps | None = None) -> SlotStore:
     return SlotStore(
         root,
@@ -180,7 +213,7 @@ class TestSingleProcess:
             nonlocal attempts
             if target == token.path and attempts < 2:
                 attempts += 1
-                raise PermissionError("file is temporarily in use")
+                raise windows_sharing_error()
             attempts += 1
             return original_replace(path, target)
 
@@ -219,17 +252,17 @@ class TestSingleProcess:
         store = make_store(root, world)
         token = store.submit(CLASS_HEAVY, pid=100)
         assert store.refresh(token).state == HOLDING
-        original_read_text = Path.read_text
+        original_open = Path.open
         denials = 0
 
-        def flaky_read_text(path, *args, **kwargs):
+        def flaky_open(path, *args, **kwargs):
             nonlocal denials
             if path == token.path and denials < 2:
                 denials += 1
-                raise PermissionError("file is temporarily in use")
-            return original_read_text(path, *args, **kwargs)
+                raise windows_sharing_error()
+            return original_open(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+        monkeypatch.setattr(Path, "open", flaky_open)
 
         assert store.token_absent(token) is False
         assert denials == 2
@@ -240,18 +273,118 @@ class TestSingleProcess:
         store = make_store(root, world)
         token = store.submit(CLASS_HEAVY, pid=100)
         assert store.refresh(token).state == HOLDING
-        original_read_text = Path.read_text
+        original_open = Path.open
 
-        def locked_read_text(path, *args, **kwargs):
+        def locked_open(path, *args, **kwargs):
             if path == token.path:
-                raise PermissionError("file is held by a scanner")
-            return original_read_text(path, *args, **kwargs)
+                raise windows_sharing_error()
+            return original_open(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", locked_read_text)
+        monkeypatch.setattr(Path, "open", locked_open)
 
         assert store.token_absent(token) is False
+        monkeypatch.setattr(Path, "open", original_open)
         store.release(token)
         assert store.token_absent(token) is True
+
+    def test_renew_survives_windows_read_sharing_error_within_budget(
+        self, root, world, monkeypatch
+    ):
+        # Longer than the old private 0.2 s loop, inside the shared helper's budget (#1905).
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        clock = BackoffClock()
+        store._sleep = clock.sleep
+        deny_until(monkeypatch, "open", token.path, clock, seconds=0.5)
+
+        assert store.renew(token) is True
+        assert not token.lease_health.lost.is_set()
+        assert store.token_absent(token) is False
+
+    def test_renew_survives_windows_rewrite_sharing_error_within_budget(
+        self, root, world, monkeypatch
+    ):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        clock = BackoffClock()
+        store._sleep = clock.sleep
+        deny_until(monkeypatch, "replace", token.path, clock, seconds=0.5)
+
+        assert store.renew(token) is True
+        assert not token.lease_health.lost.is_set()
+        assert store.snapshot(CLASS_HEAVY)[0][0].lease_generation == 1
+
+    @staticmethod
+    def _lock_reads(monkeypatch, target: Path) -> None:
+        """Make *target* permanently unreadable (a scanner holds it)."""
+        original_open = Path.open
+
+        def locked_open(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError(13, "held by a scanner")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", locked_open)
+
+    def test_unreadable_entry_is_not_treated_as_a_live_lease(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        token.execution_id = "a" * 32  # recovery only claims execution-bound entries
+        self._lock_reads(monkeypatch, token.path)
+
+        assert store.renew(token) is False  # unreadable past the budget: lease lost
+        assert token.lease_health.lost.is_set()
+        assert store._begin_execution_recovery(token, request_cancel=False) is False
+        store.release(token)  # still our own entry to release
+        assert not token.path.exists()
+
+    def test_unreadable_waiter_is_not_withdrawn(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        waiter = store.submit(CLASS_HEAVY, pid=100)
+        self._lock_reads(monkeypatch, waiter.path)
+
+        assert store.cancel_waiter_token(waiter) is False
+        assert waiter.path.exists()
+
+    def test_renew_fails_when_rewrite_stays_denied(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        clock = BackoffClock()
+        store._sleep = clock.sleep
+        deny_until(monkeypatch, "replace", token.path, clock, seconds=1000.0)
+
+        assert store.renew(token) is False
+        assert token.lease_health.lost.is_set()
+
+    def test_unreadable_old_waiter_is_not_reaped(self, root, world, monkeypatch):
+        # Unreadable is not missing: a live owner's entry survives the junk rule,
+        # a dead owner's does not (#1905).
+        spawn(world, 100)
+        store = make_store(root, world)
+        waiter = store.submit(CLASS_HEAVY, pid=100)
+        world.clock = waiter.path.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        original_open = Path.open
+
+        def locked_open(path, *args, **kwargs):
+            if path == waiter.path:
+                raise PermissionError(13, "held by a scanner")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", locked_open)
+
+        assert store.reap(CLASS_HEAVY) == []
+        assert waiter.path.exists()
+        del world.alive[100]
+        assert store.reap(CLASS_HEAVY) == [waiter.path.name]
 
     def test_renew_does_not_resurrect_a_deleted_holder(self, root, world, monkeypatch):
         spawn(world, 100)
