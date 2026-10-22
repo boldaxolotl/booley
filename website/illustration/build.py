@@ -35,7 +35,7 @@ def scale_css(css: str) -> str:
 
 
 # ---------------------------------------------------------------- waveform
-# Same story as Listing 1: fifo_top pops (rd_en) while the consumer stalls
+# Same story as session 1 in the figure: fifo_top pops (rd_en) while the consumer stalls
 # (i_ready = 0) at cycle 214, so beat 05 is dropped from o_data.
 W, H = 780, 196
 NAME_X, VAL_X, X0, X1 = 12, 156, 168, 770

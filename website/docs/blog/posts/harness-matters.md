@@ -1,8 +1,9 @@
 ---
 title: "Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools"
 description: >-
-  The same agent, the same Caliptra bug, with and without Booley. Both fixed
-  it every time; with Booley the agent finished in 21 minutes instead of 56.
+  The same agent, the same Caliptra bug, with only a shell and with Booley,
+  an open-source agent harness for chip design. Both fixed it every time; with
+  Booley the agent finished in 21 minutes instead of 56.
 date: 2026-10-16
 slug: harness-matters
 draft: false
@@ -32,7 +33,7 @@ downloads:
 
 <section class="abstract" aria-labelledby="abs">
       <div class="abstract__h" id="abs">Abstract</div>
-      <p>I gave the same agent the same hardware bug, with and without Booley. Both setups produced a fix and a reproducing test in every trial. With Booley, the agent finished in 21 minutes on average; without it, 56 minutes. Most of the difference came from the work around the fix: building a test that exposed the bug, inspecting what happened inside the processor, and getting results back promptly.</p>
+      <p>I gave the same AI agent the same hardware bug twice: once with only a shell, and once with Booley, an open-source agent harness for chip design. Both setups produced a fix and a reproducing test in every trial. With Booley, the agent finished in 21 minutes on average; without it, 56 minutes. Most of the difference came from the work around the fix: building a test that exposed the bug, inspecting what happened inside the processor, and getting results back promptly.</p>
     </section>
 
 <!-- more -->
