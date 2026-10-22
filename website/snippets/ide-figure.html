@@ -129,16 +129,23 @@
             <span>⎇ fifo-bp</span>
           </div>
         </div>
-        <span class="co" style="left:33.4%;top:5.7%" aria-hidden="true">1</span>
-        <span class="co" style="left:96.3%;top:5.7%" aria-hidden="true">2</span>
-        <span class="co" style="left:96.3%;top:65.9%" aria-hidden="true">3</span>
-        <span class="co co--down" style="left:2.1%;top:93.3%" aria-hidden="true">4</span>
+        <!-- 1-3 sit on the right edge of session 1, beside the rows they mark -->
+        <span class="co" style="left:38.1%;top:14.5%" aria-hidden="true">1</span>
+        <span class="co" style="left:38.1%;top:30.1%" aria-hidden="true">2</span>
+        <span class="co" style="left:38.1%;top:42.8%" aria-hidden="true">3</span>
+        <span class="co" style="left:33.4%;top:51.5%" aria-hidden="true">4</span>
+        <span class="co" style="left:96.3%;top:5.7%" aria-hidden="true">5</span>
+        <span class="co" style="left:96.3%;top:65.9%" aria-hidden="true">6</span>
+        <span class="co co--down" style="left:2.1%;top:93.3%" aria-hidden="true">7</span>
       </div>
       <dl class="legend">
-        <div><dt>1<span> Agent sessions</span></dt><dd class="lt">Parallel agent sessions</dd><dd>Claude Code and Codex on separate tasks; one works toward Goals in Goal Mode.</dd></div>
-        <div><dt>2<span> Booley Dashboard</span></dt><dd class="lt">Booley Dashboard</dd><dd>Every session’s activity, Goal progress, running Jobs, and Sandbox health.</dd></div>
-        <div><dt>3<span> Waveform viewer</span></dt><dd class="lt">Waveform viewer</dd><dd>The <code>sim</code> Flow’s trace, cursor on the dropped beat at cycle 214.</dd></div>
-        <div><dt>4<span> Sandbox</span></dt><dd class="lt">Sandbox</dd><dd>Status bar: the window runs in the Booley Dev Container.</dd></div>
+        <div><dt>1<span> Plain-language request</span></dt><dd class="lt">Plain-language request</dd><dd>Describe the problem in your own words. No commands, no scripts.</dd></div>
+        <div><dt>2<span> Answered from the trace</span></dt><dd class="lt">Answered from the trace</dd><dd><code>bwave</code> queries the recorded waveform instead of guessing from RTL.</dd></div>
+        <div><dt>3<span> Typed results, not raw logs</span></dt><dd class="lt">Typed results, not raw logs</dd><dd>Each Flow returns PASS or FAIL plus metrics, so the fix is checked, not claimed.</dd></div>
+        <div><dt>4<span> Parallel Goal Mode session</span></dt><dd class="lt">Parallel Goal Mode session</dd><dd>Codex works on a separate task toward Goals that Booley checks itself.</dd></div>
+        <div><dt>5<span> Booley Dashboard</span></dt><dd class="lt">Booley Dashboard</dd><dd>Every session’s activity, Goal progress, running Jobs, and Sandbox health.</dd></div>
+        <div><dt>6<span> Waveform viewer</span></dt><dd class="lt">Waveform viewer</dd><dd>The <code>sim</code> Flow’s trace, cursor on the dropped beat at cycle 214.</dd></div>
+        <div><dt>7<span> Sandbox</span></dt><dd class="lt">Sandbox</dd><dd>Status bar: the window runs in the Booley Dev Container.</dd></div>
       </dl>
   </div>
   <figcaption id="fig1cap"><b>Figure 1.</b> Booley in VS Code (illustration).</figcaption>
