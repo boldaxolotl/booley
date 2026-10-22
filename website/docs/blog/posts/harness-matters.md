@@ -1,9 +1,11 @@
 ---
-title: "Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools"
+title: "Why AI agents struggle with RTL debugging, and what helps"
 description: >-
-  The same agent, the same Caliptra bug, with only a shell and with Booley,
-  an open-source agent harness for chip design. Both fixed it every time; with
-  Booley the agent finished in 21 minutes instead of 56.
+  A case study on Caliptra, a large open-source system on chip: an AI agent
+  found a processor bug within minutes, then spent most of an hour reproducing
+  it. Invisible internal signals and long-running simulations explain much of
+  that time. Tools aimed at them, plus a repeatable build, cut the mean time to
+  a verified fix from 56 minutes to 21.
 date: 2026-10-16
 slug: harness-matters
 draft: false
@@ -12,9 +14,9 @@ number: AN-001
 # Exhibits listed under the contents sidebar (id within this page, label).
 exhibits:
   - [f1, "Figure 1. Time per bug fix"]
-  - [f2, "Figure 2. Seeing inside the design, b3"]
-  - [f3, "Figure 3. Build setup, b1"]
-  - [f4, "Figure 4. Sleeping on finished jobs, b10"]
+  - [f2, "Figure 2. Invisible internal state, b3"]
+  - [f3, "Figure 3. Waiting on long jobs, b10"]
+  - [f4, "Figure 4. Fragile build state, b1"]
   - [t1, "Table 1. Test conditions"]
   - [t2, "Table 2. Pinned versions"]
   - [l1, "Listing 1. B-Wave search"]
@@ -33,24 +35,28 @@ downloads:
 
 <section class="abstract" aria-labelledby="abs">
       <div class="abstract__h" id="abs">Abstract</div>
-      <p>I gave the same AI agent the same hardware bug twice: once with only a shell, and once with Booley, an open-source agent harness for chip design. Both setups produced a fix and a reproducing test in every trial. With Booley, the agent finished in 21 minutes on average; without it, 56 minutes. Most of the difference came from the work around the fix: building a test that exposed the bug, inspecting what happened inside the processor, and getting results back promptly.</p>
+      <p>I asked an AI coding agent to fix a bug in the <span class="term" tabindex="0">RISC-V<span class="term__tip" role="tooltip">An open instruction set architecture. Many open-source processor cores implement it.</span></span> processor inside <span class="term" tabindex="0">Caliptra<span class="term__tip" role="tooltip">A large open-source system on chip from CHIPS Alliance. It is a hardware root of trust: a security block with its own RISC-V processor and firmware.</span></span>. It usually found the faulty line of <span class="term" tabindex="0">RTL<span class="term__tip" role="tooltip">Register-transfer level: the code that describes a chip’s hardware, usually written in Verilog or SystemVerilog. A simulator runs it; synthesis tools turn it into gates.</span></span> within five minutes. Proving the fix took much longer, because the agent first had to make the bug show up in simulation. Over ten trials, two hardware-specific problems took most of that time: the internal signals that explain a failure are invisible unless the simulation records them, and simulations run long enough that the agent has to guess when they finish. A third problem, a build that depends on settings the agent's shell doesn't keep, isn't specific to hardware but is common in RTL projects. With tools aimed at all three, the same agent's mean time to a verified fix fell from 56 minutes to 21.</p>
     </section>
 
 <!-- more -->
 
-Modern AI agents are very good at reasoning about code and finding bugs, including in hardware designs. But even smart models need good tools to work efficiently.
+Coding agents are built mostly for software work. Their working loop assumes that a test runs in seconds, that a failure prints a useful message, and that a command is cheap to rerun. Hardware design breaks all three. Chips are described in <span class="term" tabindex="0">RTL<span class="term__tip" role="tooltip">Register-transfer level: the code that describes a chip’s hardware, usually written in Verilog or SystemVerilog. A simulator runs it; synthesis tools turn it into gates.</span></span> code and tested in a simulator. A simulation of a large design takes minutes to compile and run, so every rerun is expensive, and the state that explains a failure lives in internal signals that nobody printed.
 
-I use AI agents in my chip-design work daily, and I'm building [Booley](https://github.com/boldaxolotl/booley), an open-source development environment for AI-assisted chip design, targeting both FPGAs and custom chips (ASICs). The environment and interfaces around an agent are often called its *harness*. For hardware development, they let the agent build the design, run simulations, inspect internal signals, and act on the results. I wrote Booley and ran this experiment myself, so weigh the results with that in mind.
+Current models reason well about RTL. This note looks at what happens when that reasoning meets a real hardware debug loop. It asks where the agent's time goes, which of that time comes from hardware work rather than from agent setups in general, and what the agent's <span class="term" tabindex="0">harness<span class="term__tip" role="tooltip">The environment around an AI agent: the tools it can call, how its commands run, and the instructions it gets.</span></span> can do about it.
 
-## A real bug in a real processor
+The scope is debugging: finding a bug, reproducing it, and proving the fix. Other RTL tasks, such as writing new design code or building verification environments, run into different problems. Later notes will cover those.
 
-I wanted to test how the harness affects an agent's ability to fix hardware bugs, so I started with bug-fixing tasks from a subset of [CVDP](https://github.com/NVlabs/cvdp_benchmark), NVIDIA's benchmark of hardware design and verification problems. Those tasks were too easy: the agents I tested solved them with or without good tools, and they finished so quickly that there was no room for a difference to show. I needed harder problems.
+To answer it, I ran the same agent on the same bug in two setups: a plain shell, and [Booley](https://github.com/boldaxolotl/booley), an open-source agent harness for FPGA and ASIC work. I build Booley and ran this experiment myself, so weigh the comparison with that in mind. The problems described below, though, come from the plain-shell runs and apply to any agent setup for RTL.
 
-So I looked for the largest, high-quality open-source hardware description, or RTL, codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware. There I wanted a bug that an agent couldn't fix just by reading the code: one that also needed simulation and debugging.
+## The case: a forwarding bug in a RISC-V core
+
+I wanted a bug where the environment, not the model's reasoning, would limit the agent. I started with bug-fixing tasks from a subset of [CVDP](https://github.com/NVlabs/cvdp_benchmark), NVIDIA's benchmark of hardware design and verification problems. Those tasks were too small for this question: agents solved them quickly with any tooling, so the environment never had a chance to matter. I needed a design where reproducing a bug takes real simulation work.
+
+So I looked for the largest high-quality open-source RTL codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware.
 
 I settled on a historical bug in VeeR EL2, the RISC-V processor inside Caliptra, and reintroduced it by reverting an upstream fix from the [VeeR EL2 1.4 release](https://github.com/chipsalliance/Cores-VeeR-EL2/commit/fb3354352be70781450ea70963c44d4b8f88ae9b).
 
-In the scenario the bug report describes, firmware checks the contents of the processor's read-only program memory, or ROM, during startup. Under a particular sequence of reads and writes, that check fails even though the stored program is correct: the word at ROM address 0 reads back as zero.
+In the scenario the bug report describes, firmware checks the contents of the processor's <span class="term" tabindex="0">ROM<span class="term__tip" role="tooltip">Read-only memory. Here it holds the processor’s boot program.</span></span> during startup. Under a particular sequence of reads and writes, that check fails even though the stored program is correct: the word at ROM address 0 reads back as zero.
 
 The agent's task was to find and fix the cause in the RTL, then add a test that fails before the fix and passes afterward.
 
@@ -60,11 +66,11 @@ The agent's task was to find and fix the cause in the RTL, then add a test that 
 
 The agent received an issue-style report describing this behavior:
 
-> Early in boot, the firmware recomputes a digest over its own ROM image and compares it with a constant fixed at build time. Normally the check passes. In one case the digest comes out wrong, even though the ROM is unchanged and the constant is correct. No fault, no exception, no ECC event, fully deterministic. The trigger is a coding pattern: the failing routine reads ROM word by word and, in the same tight loop, writes partial results to a scratch buffer in DCCM. Keep the accumulator in registers, or move the buffer out of DCCM, and the digest is correct. Only the first word of the ROM input looks corrupted.
+> Early in boot, the firmware recomputes a digest over its own ROM image and compares it with a constant fixed at build time. Normally the check passes. In one case the digest comes out wrong, even though the ROM is unchanged and the constant is correct. No fault, no exception, no ECC event, fully deterministic. The trigger is a coding pattern: the failing routine reads ROM word by word and, in the same tight loop, writes partial results to a scratch buffer in <span class="term" tabindex="0">DCCM<span class="term__tip" role="tooltip">Data closely coupled memory: the processor’s fast on-chip data memory, reached without going over the system bus.</span></span>. Keep the accumulator in registers, or move the buffer out of DCCM, and the digest is correct. Only the first word of the ROM input looks corrupted.
 >
 > Find and fix the RTL root cause. Add a test that reproduces the problem and passes after the fix.
 
-DCCM is the processor's tightly coupled data memory. The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
+The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
 
 </div>
 </details>
@@ -82,13 +88,16 @@ Two details made that test difficult to write:
 
 Most of the work went into building a test, simulating it, inspecting what happened, and adjusting it until it failed for the right reason.
 
-This is where hardware differs from software. A software test usually runs in seconds and prints what went wrong. A simulation of a design like Caliptra takes minutes to build and run, depends on a fragile build setup, and shows nothing about internal signals unless you record them or add prints and rebuild.
+Finding the bug took reading, and current models read code well. Reproducing it took repeated experiments: build, simulate, look at the result, change the test. Hardware and software differ most in that loop, so the rest of this note measures it.
 
-## What I compared
+## Method
 
-I ran ten trials with **Claude Code alone**, using a shell and Caliptra's existing Makefiles and test scripts, and ten with **Claude Code plus Booley**. Both used Claude Code as the agent environment.
+I ran ten trials in each of two setups, with the same agent, model, prompt, and container:
 
-The Booley project was configured before the trials. The timings cover debugging, excluding the initial work of adapting Caliptra to Booley. The Booley setup's `AGENTS.md` (also linked as `CLAUDE.md`) explains how to use Booley's tools and has two lines describing the repository; it contains no build commands, environment variables, or debugging hints.
+- **Claude Code alone:** a shell plus Caliptra's existing Makefiles and test scripts. This is the default when you point an agent at an RTL repository.
+- **Claude Code plus Booley:** the same agent with a harness designed for RTL work, configured for Caliptra before the trials. The timings cover debugging only, not the one-time work of adapting Caliptra to Booley.
+
+ The Booley setup's `AGENTS.md` (also linked as `CLAUDE.md`) explains how to use Booley's tools and has two lines describing the repository; it contains no build commands, environment variables, or debugging hints.
 
 <details markdown>
 <summary>Experiment settings and versions</summary>
@@ -110,15 +119,15 @@ The Booley project was configured before the trials. The timings cover debugging
 </div>
 </details>
 
-Booley supplied the simulation interface, waveform queries, and build configuration:
+The harness changed three things, each aimed at one of the problems described below:
 
-- A single simulation command builds and runs a simulation, then reports its result. It works the same way in every project, so the agent doesn't have to learn each project's shell commands. Booley calls this the `sim` Flow.
-- A waveform query tool lets the agent search a waveform (a recording of how internal signals change during a simulation) and read signal values at particular cycles. Both setups could record waveforms; only Booley had a tool to query them. Reading the compressed FST format takes a dedicated library, and a quick Python script is too slow on a dump this size. The tool is called B-Wave.
-- [FuseSoC](https://github.com/olofk/fusesoc), the open-source build tool Booley uses, organizes the source files, simulator settings, and firmware build steps. The Caliptra setup described these in FuseSoC core files (one description file per component) and a test list.
+- **Waveform queries.** Both setups could record a <span class="term" tabindex="0">waveform<span class="term__tip" role="tooltip">A recording of how internal signals change, cycle by cycle, during a simulation.</span></span>; only the Booley setup had a tool, B-Wave, to search it and read signal values at particular cycles.
+- **One blocking simulation command.** Booley's `sim` Flow builds and runs a simulation, then returns its result when the job ends. It works the same way in every project, so the agent doesn't have to learn each project's shell commands.
+- **Build configuration in files.** [FuseSoC](https://github.com/olofk/fusesoc), the open-source build tool Booley uses, described the source files, simulator settings, dependency paths, and firmware build steps in <span class="term" tabindex="0">core files<span class="term__tip" role="tooltip">FuseSoC description files, one per component, listing its source files, dependencies, and build settings.</span></span> and a test list.
 
-## The result: 21 minutes versus 56
+## Where the time went
 
-Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively. Cost was similar too: at Sonnet 5.5 API prices, an average trial cost $1.98 with Booley and $2.33 without.
+Both setups produced an accepted fix and a reproducing test in all ten trials, so the comparison is about time. Mean completion time was **55.8 minutes with Claude Code alone** and **21.3 minutes with Booley** (Figure 1); the medians were 53.3 and 21.4 minutes. Average cost per trial at Sonnet 5.5 API prices was $2.33 and $1.98.
 
 <figure id="f1" aria-labelledby="f1cap">
       <div class="frame">
@@ -172,9 +181,11 @@ Both setups completed the task in all ten trials. Mean completion time was **21.
       <figcaption id="f1cap"><b>Figure 1.</b> Mean time per bug fix, split by activity. Ten paired Caliptra bug-fix trials, all accepted. Segment values in minutes. Each minute counts in one category only; a wait after a job had finished counts as waiting even when it followed a hung simulation.</figcaption>
     </figure>
 
-The chart separates builds and simulations, signal observation, simulations that hung, waits after jobs had finished, and other work. The three sources of delay below recurred across the trials. I examined them in the run histories; I didn't run separate experiments to isolate each feature's contribution.
+In the plain-shell runs, only about a third of the time went into building and simulating. The rest went to observing internal signals, sleeping on jobs that had already finished, and recovering from broken builds. Each recurred across the trials. The first two follow from how hardware is simulated; the third is a general agent problem that showed up here too. I identified them from the run histories; I didn't run separate experiments to isolate the contribution of each fix.
 
-## Seeing why a test keeps passing
+## Problem 1: internal state is invisible by default
+
+When a software test fails, it usually prints what went wrong, and a debugger can stop the program anywhere. In RTL simulation, the state that explains a failure is spread across thousands of internal signals, and none of them are visible unless the testbench records a waveform or prints them. Adding a print means editing the design or testbench and recompiling. Caliptra simulates with Verilator, which compiles the design into a C++ program, so each recompile and rerun takes several minutes.
 
 <figure id="f2" aria-labelledby="f2cap">
       <div class="frame tl" style="--grid:22.2222%">
@@ -241,9 +252,13 @@ The chart separates builds and simulations, signal observation, simulations that
       <figcaption id="f2cap"><b>Figure 2.</b> Seeing inside the design, trial pair b3. Claude Code alone added <code>$display</code> prints, rebuilt, reran and searched the output seven times; with Booley the agent recorded a waveform once and queried it 16 times.</figcaption>
     </figure>
 
-When a test passes despite a suspected bug, you need to see what happened inside the design. In pair b3 (Figure 2), Claude Code alone added debug prints with `$display` (Verilog's `printf`), rebuilt the simulator, reran the test, and searched the output. Caliptra simulates with Verilator, which compiles the design into a C++ program, so every new print meant a recompile and a rerun that took several minutes. The agent repeated that loop seven times, spending 37.8 minutes on signal observation.
+This matters most when a test passes despite a suspected bug, which happened repeatedly here, and the agent needs to see why the bug didn't fire.
 
-With Booley, the agent built once with waveform recording enabled and asked B-Wave 16 questions about the recorded signals. That work took 9.8 minutes.
+**What the agent did with only a shell.** It debugged the simulator the way it would debug a software program: with prints. In pair b3 (Figure 2), it added <span class="term" tabindex="0"><code>$display</code><span class="term__tip" role="tooltip">Verilog’s print statement, similar to printf in C.</span></span> statements, rebuilt the simulator, reran the test, and searched the output. Every new question meant another recompile. It repeated that loop seven times and spent 37.8 minutes on signal observation.
+
+Recording a waveform was an option in this setup too, but a recording only helps if the agent can read it. Caliptra's waveforms are in FST, a compressed binary format that takes a dedicated library to parse, and a quick Python script is too slow on a dump this size.
+
+**What worked: record once, then query.** With Booley, the agent built once with waveform recording enabled and asked B-Wave 16 questions about the recorded signals. That work took 9.8 minutes.
 
 In trial b1, the agent searched the waveform to find whether the faulty address comparison ever fired. Listing 1 shows equivalent command lines, with output trimmed.
 
@@ -277,9 +292,79 @@ The agent could ask follow-up questions of the same recording without rebuilding
 
 *The b3 chart's final segment (Figure 2), roughly 47 to 85 minutes, is a sequence of final tests. That time isn't counted as signal observation.*
 
-## Making the build repeatable
+In hardware debugging, a new question about the design should be answerable from an existing recording. A tool that searches a recorded waveform by signal name and reads values at a given cycle gives an agent roughly what a debugger gives it in software.
+
+## Problem 2: simulations are long, and the agent guesses how long
+
+Agents' habits come from commands that finish in seconds. In hardware, minutes are normal: compiling a design like Caliptra for simulation and running a firmware test takes several, and synthesis or a full regression can take hours. So the agent runs the job in the background and has to decide when to check on it. If it guesses, it either checks too early or sleeps long after the job has finished.
 
 <figure id="f3" aria-labelledby="f3cap">
+      <div class="frame tl" style="--grid:15.3846%">
+        <div class="tl__row">
+          <p class="tl__lab"><b>Claude Code alone</b>, trial b10 <span class="tl__tot">60 min</span></p>
+          <div class="tl__track" role="img" aria-label="Claude Code alone, trial b10: 60 min in total. Sleeping after the job already finished: 30.7 min. Segments in minutes: other work 0.0&ndash;4.0; build and simulation 4.0&ndash;4.4; sleeping on a finished job 4.4&ndash;13.4; other work 13.4&ndash;13.5; build and simulation 13.5&ndash;17.7; sleeping on a finished job 17.7&ndash;23.2; build and simulation 23.2&ndash;24.7; sleeping on a finished job 24.7&ndash;33.2; other work 33.2&ndash;34.4; build and simulation 34.4&ndash;34.8; other work 34.8&ndash;34.9; build and simulation 34.9&ndash;43.8; sleeping on a finished job 43.8&ndash;51.5; build and simulation 51.5&ndash;56.1; other work 56.1&ndash;60.0.">
+            <i class="s else" style="left:0.00%;width:6.15%"></i>
+            <i class="s build" style="left:6.15%;width:0.62%"></i>
+            <i class="s sleep" style="left:6.77%;width:13.85%"></i>
+            <i class="s else" style="left:20.62%;width:0.15%"></i>
+            <i class="s build" style="left:20.77%;width:6.46%"></i>
+            <i class="s sleep" style="left:27.23%;width:8.46%"></i>
+            <i class="s build" style="left:35.69%;width:2.31%"></i>
+            <i class="s sleep" style="left:38.00%;width:13.08%"></i>
+            <i class="s else" style="left:51.08%;width:1.85%"></i>
+            <i class="s build" style="left:52.92%;width:0.62%"></i>
+            <i class="s else" style="left:53.54%;width:0.15%"></i>
+            <i class="s build" style="left:53.69%;width:13.69%"></i>
+            <i class="s sleep" style="left:67.38%;width:11.85%"></i>
+            <i class="s build" style="left:79.23%;width:7.08%"></i>
+            <i class="s else" style="left:86.31%;width:6.00%"></i>
+          </div>
+          <p class="tl__note">Sleeping after the job already finished: 30.7 min</p>
+        </div>
+        <div class="tl__row">
+          <p class="tl__lab"><b>With Booley</b>, trial b10 <span class="tl__tot">13 min</span></p>
+          <div class="tl__track" role="img" aria-label="With Booley, trial b10: 13 min in total. Sleeping after the job already finished: 0.0 min. Segments in minutes: other work 0.0&ndash;2.0; build and simulation 2.0&ndash;5.2; other work 5.2&ndash;5.7; build and simulation 5.7&ndash;6.6; other work 6.6&ndash;6.8; build and simulation 6.8&ndash;12.8.">
+            <i class="s else" style="left:0.00%;width:3.08%"></i>
+            <i class="s build" style="left:3.08%;width:4.92%"></i>
+            <i class="s else" style="left:8.00%;width:0.77%"></i>
+            <i class="s build" style="left:8.77%;width:1.38%"></i>
+            <i class="s else" style="left:10.15%;width:0.31%"></i>
+            <i class="s build" style="left:10.46%;width:9.23%"></i>
+          </div>
+          <p class="tl__note">Sleeping after the job already finished: 0.0 min</p>
+        </div>
+        <div class="tl__axis" aria-hidden="true">
+          <span style="left:0.00%">0</span>
+          <span style="left:15.38%">10</span>
+          <span style="left:30.77%">20</span>
+          <span style="left:46.15%">30</span>
+          <span style="left:61.54%">40</span>
+          <span style="left:76.92%">50</span>
+          <span style="left:92.31%">60</span>
+        </div>
+        <p class="tl__axh">Minutes since the agent started</p>
+        <ul class="tl__key">
+          <li><i class="sw sleep"></i>Sleeping after the job already finished</li>
+          <li><i class="sw build"></i>Build and simulation</li>
+          <li><i class="sw else"></i>Everything else (reading, reasoning, editing)</li>
+        </ul>
+      </div>
+      <figcaption id="f3cap"><b>Figure 3.</b> Waiting on jobs that are already done, trial pair b10. Claude Code alone polled with fixed <code>sleep</code> calls; Booley returned each result when the job ended.</figcaption>
+    </figure>
+
+**What the agent did with only a shell.** In several runs, it started work in the background and used a fixed sleep before checking the result. In b10 (Figure 3), a build started at 4.3 minutes and failed one second later. The failure was hidden: the command ended with `; tail`, so it reported exit code 0. Seconds later the agent requested `sleep 540`, a nine-minute wait, and didn't check the result until 13.4 minutes.
+
+It made similar waits four times in that run, spending 30.7 of its 60 minutes asleep after jobs had finished.
+
+**What worked: return when the job ends.** Booley's simulation command waits for the job and returns the result. For long jobs it returns a run ID instead, and the agent calls a poll tool (`booley_poll`) that returns as soon as the job ends, so there is no fixed sleep to guess.
+
+The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound. The sleeping is an agent habit. Hardware makes it expensive because the jobs are long, so the guessed waits are long too. There is a cheap partial fix: one line in `CLAUDE.md` telling the agent to wait for the process instead of sleeping would likely recover much of this time. Hiding exit codes behind pipes, as in `; tail`, makes it worse, because a failed build looks like a running one.
+
+## Not hardware-specific: the build is fragile, and the shell forgets
+
+This problem isn't specific to hardware. Any project whose build depends on undocumented environment variables trips agents up the same way, and RTL projects often have such builds. Caliptra's simulation needs the simulator, toolchain paths, and a firmware image compiled by a separate cross-compiler and loaded into the simulated memory, and its Makefiles locate these through environment variables. An engineer sets them once in a terminal and forgets about them. An agent works through a series of separate shell calls, and state set in one call doesn't necessarily survive to the next. When a step fails, the next one often runs anyway: a simulation without its firmware doesn't crash; it runs until it times out.
+
+<figure id="f4" aria-labelledby="f4cap">
       <div class="frame tl" style="--grid:12.5000%">
         <div class="tl__row">
           <p class="tl__lab"><b>Claude Code alone</b>, trial b1 <span class="tl__tot">74 min</span></p>
@@ -346,100 +431,39 @@ The agent could ask follow-up questions of the same recording without rebuilding
           <li><i class="sw else"></i>Everything else (reading, reasoning, editing)</li>
         </ul>
       </div>
-      <figcaption id="f3cap"><b>Figure 3.</b> Getting the build to work at all, trial pair b1. Claude Code alone rediscovered the build environment variables, then lost them between shell calls three times; the Booley run spent no time on setup.</figcaption>
+      <figcaption id="f4cap"><b>Figure 4.</b> Getting the build to work at all, trial pair b1. Claude Code alone rediscovered the build environment variables, then lost them between shell calls three times; the Booley run spent no time on setup.</figcaption>
     </figure>
 
-Caliptra's simulation Makefiles need environment variables that point to dependencies. All ten runs with Claude Code alone hit missing configuration; most recovered within a few minutes.
+**What the agent did with only a shell.** All ten plain-shell runs hit missing build configuration; most recovered within a few minutes. In b1 (Figure 4), the agent worked out which variables to set and exported them in a shell call. Those values didn't carry over to later calls in this run. The firmware build then failed to produce `program.hex`, and the simulation started without a program. It waited until its timeout. This happened three times before the agent put the configuration in a single `run.sh` script.
 
-In b1 (Figure 3), the agent worked out which variables to set and exported them in a shell call. Those values didn't carry over to later calls in this run. The firmware build then failed to produce `program.hex`, and the simulation started without a program. It waited until its timeout. This happened three times before the agent put the configuration in a single `run.sh` script.
+The run spent 30 minutes dealing with setup. Sleeps after jobs had already finished, including two minutes after the first hung simulation was killed, are counted separately (Figure 4), as in Figure 1.
 
-The run spent 30 minutes dealing with setup. Sleeps after jobs had already finished, including two minutes after the first hung simulation was killed, are counted separately (Figure 3), as in Figure 1.
-
-The Booley project's FuseSoC core files already held the dependency paths, so the agent didn't have to rediscover the Makefile variables. Each simulation invocation supplied its build configuration and firmware build step, without relying on exports from a previous shell call. If the firmware build failed, Booley stopped the run and reported the build error before starting a simulation without its program.
+**What worked: configuration in files, prerequisites checked.** The Booley project's FuseSoC core files already held the dependency paths, so the agent didn't have to rediscover the Makefile variables. Each simulation invocation supplied its build configuration and firmware build step, without relying on exports from a previous shell call. If the firmware build failed, Booley stopped the run and reported the build error before starting a simulation without its program.
 
 The Booley run in pair b1 spent no time repairing setup. Across all ten pairs, the average setup saving was **3.6 minutes**; b1 was the unusually costly case. Configuring the project once avoided repeating that work during debugging.
 
-## Getting the result when the job finishes
+Build configuration should live in files that every run reads, and each simulation run should carry its whole configuration and stop at the first failed prerequisite. A checked-in script that the agent's instructions point to gets part of the way there. The plain-shell agent in b1 arrived at exactly that, a `run.sh`, after 30 minutes.
 
-<figure id="f4" aria-labelledby="f4cap">
-      <div class="frame tl" style="--grid:15.3846%">
-        <div class="tl__row">
-          <p class="tl__lab"><b>Claude Code alone</b>, trial b10 <span class="tl__tot">60 min</span></p>
-          <div class="tl__track" role="img" aria-label="Claude Code alone, trial b10: 60 min in total. Sleeping after the job already finished: 30.7 min. Segments in minutes: other work 0.0&ndash;4.0; build and simulation 4.0&ndash;4.4; sleeping on a finished job 4.4&ndash;13.4; other work 13.4&ndash;13.5; build and simulation 13.5&ndash;17.7; sleeping on a finished job 17.7&ndash;23.2; build and simulation 23.2&ndash;24.7; sleeping on a finished job 24.7&ndash;33.2; other work 33.2&ndash;34.4; build and simulation 34.4&ndash;34.8; other work 34.8&ndash;34.9; build and simulation 34.9&ndash;43.8; sleeping on a finished job 43.8&ndash;51.5; build and simulation 51.5&ndash;56.1; other work 56.1&ndash;60.0.">
-            <i class="s else" style="left:0.00%;width:6.15%"></i>
-            <i class="s build" style="left:6.15%;width:0.62%"></i>
-            <i class="s sleep" style="left:6.77%;width:13.85%"></i>
-            <i class="s else" style="left:20.62%;width:0.15%"></i>
-            <i class="s build" style="left:20.77%;width:6.46%"></i>
-            <i class="s sleep" style="left:27.23%;width:8.46%"></i>
-            <i class="s build" style="left:35.69%;width:2.31%"></i>
-            <i class="s sleep" style="left:38.00%;width:13.08%"></i>
-            <i class="s else" style="left:51.08%;width:1.85%"></i>
-            <i class="s build" style="left:52.92%;width:0.62%"></i>
-            <i class="s else" style="left:53.54%;width:0.15%"></i>
-            <i class="s build" style="left:53.69%;width:13.69%"></i>
-            <i class="s sleep" style="left:67.38%;width:11.85%"></i>
-            <i class="s build" style="left:79.23%;width:7.08%"></i>
-            <i class="s else" style="left:86.31%;width:6.00%"></i>
-          </div>
-          <p class="tl__note">Sleeping after the job already finished: 30.7 min</p>
-        </div>
-        <div class="tl__row">
-          <p class="tl__lab"><b>With Booley</b>, trial b10 <span class="tl__tot">13 min</span></p>
-          <div class="tl__track" role="img" aria-label="With Booley, trial b10: 13 min in total. Sleeping after the job already finished: 0.0 min. Segments in minutes: other work 0.0&ndash;2.0; build and simulation 2.0&ndash;5.2; other work 5.2&ndash;5.7; build and simulation 5.7&ndash;6.6; other work 6.6&ndash;6.8; build and simulation 6.8&ndash;12.8.">
-            <i class="s else" style="left:0.00%;width:3.08%"></i>
-            <i class="s build" style="left:3.08%;width:4.92%"></i>
-            <i class="s else" style="left:8.00%;width:0.77%"></i>
-            <i class="s build" style="left:8.77%;width:1.38%"></i>
-            <i class="s else" style="left:10.15%;width:0.31%"></i>
-            <i class="s build" style="left:10.46%;width:9.23%"></i>
-          </div>
-          <p class="tl__note">Sleeping after the job already finished: 0.0 min</p>
-        </div>
-        <div class="tl__axis" aria-hidden="true">
-          <span style="left:0.00%">0</span>
-          <span style="left:15.38%">10</span>
-          <span style="left:30.77%">20</span>
-          <span style="left:46.15%">30</span>
-          <span style="left:61.54%">40</span>
-          <span style="left:76.92%">50</span>
-          <span style="left:92.31%">60</span>
-        </div>
-        <p class="tl__axh">Minutes since the agent started</p>
-        <ul class="tl__key">
-          <li><i class="sw sleep"></i>Sleeping after the job already finished</li>
-          <li><i class="sw build"></i>Build and simulation</li>
-          <li><i class="sw else"></i>Everything else (reading, reasoning, editing)</li>
-        </ul>
-      </div>
-      <figcaption id="f4cap"><b>Figure 4.</b> Waiting on jobs that are already done, trial pair b10. Claude Code alone polled with fixed <code>sleep</code> calls; Booley returned each result when the job ended.</figcaption>
-    </figure>
+## What the tools didn't change
 
-The agent also needs to know when a build finishes. In several runs with Claude Code alone, it started work in the background and used a fixed sleep before checking the result. In b10 (Figure 4), a build started at 4.3 minutes and failed one second later. The failure was hidden: the command ended with `; tail`, so it reported exit code 0. Seconds later the agent requested `sleep 540`, a nine-minute wait, and didn't check the result until 13.4 minutes.
+Both setups still had to work out how to make the bug appear: noticing that the test template's side-effect setting disabled forwarding, and moving the test loop into ICCM to get the store and the load back to back in the pipeline. That is reasoning about microarchitecture, and the harness didn't do it for the agent. It changed the cost of each experiment the agent ran on the way there, and that was enough to cut the total time by more than half.
 
-It made similar waits four times in that run, spending 30.7 of its 60 minutes asleep after jobs had finished.
+## Lessons for agent setups on RTL
 
-Booley's simulation command waits for the job and returns the result. For long jobs it returns a run ID instead, and the agent calls a poll tool (`booley_poll`) that returns as soon as the job ends, so there is no fixed sleep to guess.
+This is a case study, not a benchmark: one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other models or other debugging tasks, or tell us which fix would help most on its own. They also say little about design or verification work, which have their own problems and will get their own notes.
 
-The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound. This is mostly an agent habit rather than a hardware problem: one line in `CLAUDE.md` telling the agent to wait for the process instead of sleeping would likely recover much of this time.
+Still, the plain-shell runs show where a general-purpose agent loses time on an RTL project, and none of it was spent finding the bug. The lessons below don't depend on a particular tool. The first two are about hardware. The third applies to any agent setup, but RTL projects need it often:
 
-## What this experiment shows
+1. **Make internal state queryable.** Record waveforms on demand and give the agent a way to search them, so a new question about the design doesn't need a rebuild. This was the largest hardware-specific gap.
+2. **Return results when jobs finish.** Use a blocking call or a poll that returns on completion, and don't let a pipeline hide a failed exit code.
+3. **Keep build configuration in files.** Each simulation should be self-contained and should fail fast when a prerequisite, such as the firmware image, is missing.
+4. **Plan for reproduction.** On this bug, the model found the faulty line quickly; the time went into building a test that made the bug visible. Tooling and time budgets should target that loop.
 
-This is a case study, not a benchmark: one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other tasks or models, or tell us which capability would help most on its own.
+Booley implements all three tooling fixes, but a project can apply them with any waveform library, build system, and job runner.
 
-Still, the trials show concrete inefficiencies that appear when a general-purpose agent like Claude Code works on an RTL project with only a shell. Finding the bug wasn't the bottleneck: in both setups the agent usually found the faulty line within five minutes. The time went into the work around the fix. Without Booley, the agent:
+## Reproducing this study
 
-- added debug prints and rebuilt the simulator for each new question about the design's internal signals;
-- lost build settings between shell calls and had to rediscover them, and in one run started three simulations without a program;
-- slept for fixed intervals on jobs that had already finished.
-
-These costs come from the environment, not from the difficulty of the bug: slow simulations, fragile builds, and internal signals that are invisible by default. A harness built for that workflow, with waveform queries, a repeatable build, and results that arrive when the job finishes, let the same agent fix the same bug in 21 minutes instead of 56.
-
-## Try it on a design
-
-Start with the smaller [PicoRV32 demo](../../demos.md#picorv32). The processor project is already configured for Booley: give the agent a change to make, then inspect its work.
-
-For the design used here, see the [Caliptra project](https://github.com/boldaxolotl/booley-prj-caliptra). Its README explains the setup. The [reproduction details below](#reproduce) contain the recorded versions, original prompt, and patches.
+The [Caliptra project](https://github.com/boldaxolotl/booley-prj-caliptra) used here is public; its README explains the setup. The [reproduction details below](#reproduce) list the recorded versions, the original prompt, and the patches. To try the same workflow on a smaller design, the [PicoRV32 demo](../../demos.md#picorv32) comes preconfigured.
 
 <details id="reproduce" markdown>
 <summary>How to reproduce (spoilers)</summary>

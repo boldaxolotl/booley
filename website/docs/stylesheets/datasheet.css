@@ -291,3 +291,20 @@ sup.fn a { text-decoration: none; padding: 0 1px; }
 @media (max-width: 600px) {
   td.lnk a { white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* ---- Term tooltips ----
+   <span class="term" tabindex="0">RTL<span class="term__tip" role="tooltip">...</span></span>
+   The explanation stays hidden until the reader hovers the word or focuses it
+   (keyboard, or a tap on touch screens). Used in posts and the home page. */
+.term { position: relative; cursor: help; text-decoration: underline dotted var(--mask); text-decoration-thickness: 1.5px; text-underline-offset: 0.18em; }
+.term:focus { outline: none; }
+.term:focus-visible { outline: 2px solid var(--mask); outline-offset: 2px; border-radius: 2px; }
+.term__tip { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 20;
+  width: max-content; max-width: 21rem; padding: 8px 11px;
+  background: var(--ink); color: var(--paper); border-radius: 3px; box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  font: 400 14.5px/1.45 var(--sans); font-style: normal; font-weight: 400; letter-spacing: 0; text-align: left; hyphens: manual; white-space: normal; }
+.term:hover .term__tip, .term:focus .term__tip { display: block; }
+/* narrow screens: pin the tip to the bottom of the viewport so it never runs off the edge */
+@media (max-width: 860px) {
+  .term__tip { position: fixed; left: 12px; right: 12px; top: auto; bottom: 12px; width: auto; max-width: none; font-size: 15px; }
+}

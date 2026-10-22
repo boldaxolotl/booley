@@ -128,7 +128,7 @@ def _sample(campaign_path: Path, point_count: int) -> dict[str, object]:
     evidence = json.loads(stdout)
     evidence_peak_rss = max(evidence_peak_rss, int(evidence["evidence_process_max_rss_kib"]))
     analyzer_peak_rss = max(analyzer_peak_rss, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    assert analyzer.summary.campaign_id == evidence["campaign_id"]
+    assert analyzer.campaign.campaign_id == evidence["campaign_id"]
     return {
         **evidence,
         "analyzer_load_seconds": analyzer_load_seconds,
