@@ -5965,7 +5965,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return (
                 ref,
                 selected,
-                "sim: Cycle Count ticket baseline ref cannot be resolved to a commit",
+                "sim: Cycle Count pinned baseline ref cannot be resolved to a commit",
             )
         return resolved, selected, None
 

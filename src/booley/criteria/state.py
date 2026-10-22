@@ -696,7 +696,7 @@ class DevelopmentState:
 
         if self.strict_criteria:
             logger.error(
-                "Rejecting undeclared criterion %r for basis-bound Ticket %r",
+                "Rejecting undeclared criterion %r for Goal Mode %r",
                 key,
                 self.slug,
             )

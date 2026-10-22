@@ -229,7 +229,7 @@ def render_review_proof(candidate: WaiverCandidate, stamps: ApprovalStamps) -> b
         "",
         f"This is the `{REVIEW_PROOF_KIND}` proof for Approved Waiver "
         f"{_inline_code(waiver_id)} in {_inline_code(waiver_file_path(candidate.proposal.source))}.",
-        "Booley wrote it when a human accepted the Waiver Candidate at Ticket review",
+        "Booley wrote it when a human accepted the Waiver Candidate through a Goal Change Proposal",
         "(ADR 0066). The human approval below is the authority for this waiver.",
         "",
         "## Binding",

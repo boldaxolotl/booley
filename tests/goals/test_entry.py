@@ -479,7 +479,7 @@ def test_pin_errors_name_the_goal_mode_not_a_ticket(layout: SimpleNamespace) -> 
     ctx = SimpleNamespace(work_dir=layout.worktree, base_sha="", recipe_freeze_root=layout.main)
     params = {"cycle_count_x": {"cycle_count_reduce_at_least": 5}}
     with pytest.raises(BaselinePinError) as caught:
-        pin_cycle_count_baselines(ctx, params, wording=entry_module.GOAL_PIN_WORDING)
+        pin_cycle_count_baselines(ctx, params)
 
     assert "the Goal Mode has no base_sha" in str(caught.value)
     assert "ticket" not in str(caught.value)
