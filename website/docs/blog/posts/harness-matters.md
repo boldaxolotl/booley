@@ -1,5 +1,5 @@
 ---
-title: Why AI agents need good tools for hardware debugging
+title: "Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools"
 description: >-
   The same agent, the same Caliptra bug, with and without Booley. Both fixed
   it every time; with Booley the agent finished in 21 minutes instead of 56.
@@ -39,15 +39,13 @@ downloads:
 
 Modern AI agents are very good at reasoning about code and finding bugs, including in hardware designs. But even smart models need good tools to work efficiently.
 
-I use AI agents in my chip-design work daily, and I'm building [Booley](https://github.com/boldaxolotl/booley), an open-source development environment for AI-assisted chip design, targeting both FPGAs and custom chips (ASICs). The environment and interfaces around an agent are often called its *harness*. For hardware development, they let the agent build the design, run simulations, inspect internal signals, and act on the results.
+I use AI agents in my chip-design work daily, and I'm building [Booley](https://github.com/boldaxolotl/booley), an open-source development environment for AI-assisted chip design, targeting both FPGAs and custom chips (ASICs). The environment and interfaces around an agent are often called its *harness*. For hardware development, they let the agent build the design, run simulations, inspect internal signals, and act on the results. I wrote Booley and ran this experiment myself, so weigh the results with that in mind.
 
 ## A real bug in a real processor
 
 I wanted to test how the harness affects an agent's ability to fix hardware bugs, so I started with bug-fixing tasks from a subset of [CVDP](https://github.com/NVlabs/cvdp_benchmark), NVIDIA's benchmark of hardware design and verification problems. Those tasks were too easy: the agents I tested solved them with or without good tools, and they finished so quickly that there was no room for a difference to show. I needed harder problems.
 
-So I looked for the largest, high-quality open-source hardware description, or RTL, codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware.
-
-Even in Caliptra, finding a suitable bug took longer than I expected. I screened about 16 candidates, including historical fixes reverted back into the code and still-open issues. An agent identified each bug by reading the code, usually within a few minutes. I wanted a task that also required simulation and debugging, and that took Claude Code without Booley 30 minutes or more. A slow baseline doesn't make Booley any faster on the same bug; it only leaves room for a difference to show if there is one.
+So I looked for the largest, high-quality open-source hardware description, or RTL, codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware. There I wanted a bug that an agent couldn't fix just by reading the code: one that also needed simulation and debugging.
 
 I settled on a historical bug in VeeR EL2, the RISC-V processor inside Caliptra, and reintroduced it by reverting an upstream fix from the [VeeR EL2 1.4 release](https://github.com/chipsalliance/Cores-VeeR-EL2/commit/fb3354352be70781450ea70963c44d4b8f88ae9b).
 
@@ -56,7 +54,7 @@ In the scenario the bug report describes, firmware checks the contents of the pr
 The agent's task was to find and fix the cause in the RTL, then add a test that fails before the fix and passes afterward.
 
 <details open markdown>
-<summary>The bug report and exact RTL fault</summary>
+<summary>The bug report</summary>
 <div class="details__body" markdown>
 
 The agent received an issue-style report describing this behavior:
@@ -65,14 +63,14 @@ The agent received an issue-style report describing this behavior:
 >
 > Find and fix the RTL root cause. Add a test that reproduces the problem and passes after the fix.
 
-DCCM is the processor's tightly coupled data memory. To save power, `el2_lsu` ANDs the R-stage `lsu_addr_r`, `end_addr_r`, and `store_data_r` with `lsu_busreq_r` before they reach `el2_lsu_bus_intf`, so a DCCM store in R appears there with address and data both 0. Without `& lsu_busreq_r`, the forwarding check `ld_addr_rhit_*` reduces to "is the M-stage load address 0?" for any valid non-bus store in R. A word load from ROM address 0 directly behind a DCCM store gets a full forwarding hit (unless the region is marked as having side effects), skips the bus read, and returns the zeroed store data: `0x0` instead of the ROM word. The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
+DCCM is the processor's tightly coupled data memory. The upstream [release notes](https://github.com/chipsalliance/Cores-VeeR-EL2/blob/fb3354352be70781450ea70963c44d4b8f88ae9b/release-notes.md) describe the fix as "Store data collision with DCCM DMA error when address is 0x0".
 
 </div>
 </details>
 
 ## Why reproducing it was harder than finding it
 
-The processor uses *store-to-load forwarding*: a read can take its value directly from a recent write to the same address instead of waiting for memory. To save power, it also blanks the address and data of a write that goes to its on-chip data memory, setting both to zero. The forwarding check was missing its "this write goes out on the bus" condition, so it compared each read against that blanked address of zero. A read from ROM address 0, issued right after an on-chip write, "matched", skipped the real ROM read, and got the blanked value: zero.
+The processor uses *store-to-load forwarding*: a read can take its value directly from a recent write to the same address instead of waiting for memory. To save power, it also blanks the address and data of a write that goes to its on-chip data memory (DCCM), setting both to zero. The forwarding check was missing its "this write goes out on the bus" condition, so it compared each read against that blanked address of zero. A read from ROM address 0, issued right after an on-chip write, "matched", skipped the real ROM read, and got the blanked value: zero.
 
 In both setups, the agent usually identified the faulty line within five minutes. It then had to write a test that failed on the original design and passed after the fix. That would demonstrate the fault and help catch it if it returned later.
 
@@ -113,13 +111,13 @@ The Booley project was configured before the trials. The timings cover debugging
 
 Booley supplied the simulation interface, waveform queries, and build configuration:
 
-- The `sim` Flow builds and runs a simulation, then reports its result. Its interface stays the same across projects, so the agent doesn't have to learn each project's shell commands.
-- B-Wave lets the agent query waveforms: recordings of how internal signals change during a simulation. The agent can search a recording and read signal values at particular cycles.
+- A single simulation command builds and runs a simulation, then reports its result. It works the same way in every project, so the agent doesn't have to learn each project's shell commands. Booley calls this the `sim` Flow.
+- A waveform query tool lets the agent search a waveform (a recording of how internal signals change during a simulation) and read signal values at particular cycles. Both setups could record waveforms; only Booley had a tool to query them. Reading the compressed FST format takes a dedicated library, and a quick Python script is too slow on a dump this size. The tool is called B-Wave.
 - [FuseSoC](https://github.com/olofk/fusesoc), the open-source build tool Booley uses, organizes the source files, simulator settings, and firmware build steps. The Caliptra setup described these in FuseSoC core files (one description file per component) and a test list.
 
 ## The result: 21 minutes versus 56
 
-Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively.
+Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively. Cost was similar too: at Sonnet 5.5 API prices, an average trial cost $1.98 with Booley and $2.33 without.
 
 <figure id="f1" aria-labelledby="f1cap">
       <div class="frame">
@@ -170,10 +168,10 @@ Both setups completed the task in all ten trials. Mean completion time was **21.
           </g>
         </svg>
       </div>
-      <figcaption id="f1cap"><b>Figure 1.</b> Mean time per bug fix, split by activity. Ten paired Caliptra bug-fix trials, all accepted. Segment values in minutes.</figcaption>
+      <figcaption id="f1cap"><b>Figure 1.</b> Mean time per bug fix, split by activity. Ten paired Caliptra bug-fix trials, all accepted. Segment values in minutes. Each minute counts in one category only; a wait after a job had finished counts as waiting even when it followed a hung simulation.</figcaption>
     </figure>
 
-The chart separates builds and simulations, signal observation, simulations that hung, waits after jobs had finished, and other work. Each minute counts in one category only; a wait after a job had finished counts as waiting even when it followed a hung simulation. The three sources of delay below recurred across the trials. I examined them in the run histories; I didn't run separate experiments to isolate each feature's contribution.
+The chart separates builds and simulations, signal observation, simulations that hung, waits after jobs had finished, and other work. The three sources of delay below recurred across the trials. I examined them in the run histories; I didn't run separate experiments to isolate each feature's contribution.
 
 ## Seeing why a test keeps passing
 
@@ -420,13 +418,13 @@ The agent also needs to know when a build finishes. In several runs with Claude 
 
 It made similar waits four times in that run, spending 30.7 of its 60 minutes asleep after jobs had finished.
 
-Booley's simulation interface waits for completion and returns the result. In the release used here, a job lasting more than four minutes returned a run ID. The agent could then call `booley_poll`, which waited again and returned when the job ended, without an arbitrary sleep.
+Booley's simulation command waits for the job and returns the result. For long jobs it returns a run ID instead, and the agent calls a poll tool (`booley_poll`) that returns as soon as the job ends, so there is no fixed sleep to guess.
 
-The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound.
+The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound. This is mostly an agent habit rather than a hardware problem: one line in `CLAUDE.md` telling the agent to wait for the process instead of sleeping would likely recover much of this time.
 
 ## What this experiment shows
 
-This is a case study, not a benchmark: one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other tasks or models, or tell us which capability would help most on its own. I also wrote Booley and ran the experiment myself.
+This is a case study, not a benchmark: one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other tasks or models, or tell us which capability would help most on its own.
 
 Still, the trials show concrete inefficiencies that appear when a general-purpose agent like Claude Code works on an RTL project with only a shell. Finding the bug wasn't the bottleneck: in both setups the agent usually found the faulty line within five minutes. The time went into the work around the fix. Without Booley, the agent:
 
@@ -455,7 +453,7 @@ These are the inputs used in the experiment. Prepare the bug before starting the
             <tr><th scope="row">Caliptra</th><td><code>e379800c5467379386f96a9a51a539bd662b608a</code> in <a href="https://github.com/chipsalliance/caliptra-rtl">chipsalliance/caliptra-rtl</a>.</td></tr>
             <tr><th scope="row">Adams Bridge</th><td>At <code>submodules/adams-bridge</code>: <code>2f15ffb1a2e9bd99652fa04d434a48ffcdc23f42</code> in <a href="https://github.com/chipsalliance/adams-bridge">chipsalliance/adams-bridge</a>.</td></tr>
             <tr><th scope="row">Booley</th><td>Published package <code>booley-rtl==0.3.0</code>, source commit <code>f9ec6d5602f3fcf47f48b678a3ba821fb82c859c</code> in <a href="https://github.com/boldaxolotl/booley">boldaxolotl/booley</a>.</td></tr>
-            <tr><th scope="row">Booley Caliptra project</th><td>Recorded commit <code>e9dd79e7a31067c438d821b7e54efe397f019015</code>, mounted at <code>.booley_project</code>. This historical commit is absent from the current public <a href="https://github.com/boldaxolotl/booley-prj-caliptra">booley-prj-caliptra</a> history. Recreating the exact Booley environment requires the archived project snapshot; using the current public project is a different setup.</td></tr>
+            <tr><th scope="row">Booley Caliptra project</th><td>Tag <a href="https://github.com/boldaxolotl/booley-prj-caliptra/tree/an-001-trial"><code>an-001-trial</code></a> (commit <code>e4b4a20beead7d858f8585d29c8c4619bdfc253b</code>) in <a href="https://github.com/boldaxolotl/booley-prj-caliptra">boldaxolotl/booley-prj-caliptra</a>, mounted at <code>.booley_project</code>. It holds the exact project files used in the trials. The trials recorded them as commit <code>e9dd79e7</code>, which was lost when the project history was squashed for publication.</td></tr>
             <tr><th scope="row">Agent</th><td>Claude Code <code>2.1.289</code>, model ID <code>claude-sonnet-5-5</code>, effort <code>medium</code>.</td></tr>
             <tr><th scope="row">Per trial</th><td>8 CPUs, 10 GB RAM, a 4,096-process limit, and a 5,400-second time limit. Network access was restricted to the model API; web search, web fetching, and subagents were disabled.</td></tr>
           </tbody>
