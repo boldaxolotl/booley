@@ -14,6 +14,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.criteria.presentation import CriterionPresentation
 from booley.goals.model import GoalFamily, GoalSpec
 from booley.harness import upgrade_review
+from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
@@ -22,6 +23,17 @@ from booley.runtime import health
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
+
+
+@pytest.fixture(autouse=True)
+def _generous_first_read_budget(monkeypatch):
+    """Let a slow CI worker finish the first read before any key press (#2023).
+
+    Under load the 1 s budget can lapse, so the app starts empty and stale
+    and keyboard tests act on rows that are not there yet. Tests of the
+    budget itself patch it again.
+    """
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
 
 
 @pytest.mark.asyncio
@@ -732,8 +744,6 @@ def test_overview_summarizes_session_and_standalone_running_jobs():
 
 
 def test_recent_results_are_newest_first_and_bounded(monkeypatch):
-    from booley.harness.dashboard import app as dashboard_app
-
     monkeypatch.setattr(dashboard_app, "RECENT_JOBS", 2)
     jobs = tuple(
         JobView(
