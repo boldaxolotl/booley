@@ -52,6 +52,19 @@ def job_roots(*, container_root: Callable[[], Path | None] | None = None) -> tup
     return tuple(dict.fromkeys(root for root in roots if root is not None))
 
 
+def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | None:
+    """Read a record for a by-id lookup; a record unreadable after retries counts as not found.
+
+    Terminal, cancel and reconcile writes resolve their root through this
+    lookup, so a held record must not block them.
+    """
+    try:
+        return jobrec.read_record(run_id, root=root)
+    except OSError as exc:
+        logger.warning("Job record %s unreadable under %s: %s", run_id, root, exc)
+        return None
+
+
 def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> LocatedJob | None:
     """Find a unique run across roots; refuse even legacy collisions."""
     search_roots: list[Path | None] = list(job_roots() if roots is None else roots)
@@ -60,7 +73,7 @@ def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> Locate
     found = [
         LocatedJob(rec, root)
         for root in search_roots
-        if (rec := jobrec.read_record(run_id, root=root)) is not None
+        if (rec := read_record_or_none(run_id, root)) is not None
     ]
     if len(found) > 1:
         raise jobrec.JobRecordError(f"Ambiguous run_id {run_id!r}: present in multiple job roots")

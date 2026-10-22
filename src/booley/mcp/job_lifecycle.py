@@ -28,7 +28,13 @@ from booley.mcp.endpoint_process import (
     _run_subprocess,
     write_synthetic_endpoint_end,
 )
-from booley.mcp.job_results import _KNOWN_JOB_ROOTS, JobRepository, LocatedJob, job_binding
+from booley.mcp.job_results import (
+    _KNOWN_JOB_ROOTS,
+    JobRepository,
+    LocatedJob,
+    job_binding,
+    read_record_or_none,
+)
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
@@ -128,7 +134,7 @@ class JobLifecycle:
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
         """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
         if run_id in self._job_roots:
-            return jobrec.read_record(run_id, root=self._job_roots[run_id])
+            return read_record_or_none(run_id, self._job_roots[run_id])
         return self._repository.record(run_id)
 
     def _next_run_id(self, endpoint: str) -> str:

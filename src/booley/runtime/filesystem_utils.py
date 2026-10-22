@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 
 # Windows refuses to rename onto a file that another handle holds open without
 # FILE_SHARE_DELETE, which is how Python's open() opens files. A reader polling
-# a protocol file therefore makes a concurrent atomic replace fail transiently.
-_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32})  # ACCESS_DENIED, SHARING_VIOLATION
-_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.25, 0.25)
+# a protocol file therefore makes a concurrent atomic replace fail transiently,
+# and the replace in flight makes a concurrent read fail the same way.
+_WINDOWS_TRANSIENT_SHARING_ERRORS = frozenset({5, 32})  # ACCESS_DENIED, SHARING_VIOLATION
+_SHARING_RETRY_DELAYS_SECONDS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.25, 0.25)
 
 
-def _is_transient_windows_replace_error(exc: PermissionError) -> bool:
-    return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
+def _is_transient_windows_sharing_error(exc: PermissionError) -> bool:
+    return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_SHARING_ERRORS
 
 
 def replace_file(
@@ -37,17 +38,46 @@ def replace_file(
     of about 1.1 s in total; every other error, and the last transient one,
     propagates unchanged. POSIX renames never hit this path.
     """
-    for delay in _REPLACE_RETRY_DELAYS_SECONDS:
+    for delay in _SHARING_RETRY_DELAYS_SECONDS:
         try:
             source.replace(destination)
         except PermissionError as exc:
-            if not _is_transient_windows_replace_error(exc):
+            if not _is_transient_windows_sharing_error(exc):
                 raise
             logger.debug("Retrying replace of %s after %s", destination, exc)
             sleep(delay)
         else:
             return
     source.replace(destination)
+
+
+def read_file_bytes(
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bytes:
+    """Read ``path``, tolerating a concurrent atomic replace on Windows.
+
+    Counterpart of :func:`replace_file`: retries only the transient Windows
+    sharing errors with the same bounded backoff (about 1.1 s in total). The
+    last transient error, ``FileNotFoundError`` and every other ``OSError``
+    propagate unchanged, so an unreadable file is never reported as absent.
+    POSIX reads never hit the retry path.
+    """
+    for delay in _SHARING_RETRY_DELAYS_SECONDS:
+        try:
+            return _read_all(path)
+        except PermissionError as exc:
+            if not _is_transient_windows_sharing_error(exc):
+                raise
+            logger.debug("Retrying read of %s after %s", path, exc)
+            sleep(delay)
+    return _read_all(path)
+
+
+def _read_all(path: Path) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read()
 
 
 def _strip_windows_reparse_points(root: Path) -> None:
