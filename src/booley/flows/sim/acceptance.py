@@ -806,7 +806,6 @@ def _bound_baseline(
     """
     if not has_relative_threshold(dict(params)):
         return None, "not_required"
-    selector = _baseline_selector(params)
     revision = params.get(BASELINE_REF_PARAM)
     for item in prerequisites:
         target = item.get("target")
@@ -818,7 +817,7 @@ def _bound_baseline(
         bound = (
             item.get("role") == "cycle_count_baseline"
             and target.get("role") == "cycle_count_baseline"
-            and target.get("selector") == selector
+            and _names_baseline_target(params, target)
             and (revision is None or target.get("revision") == revision)
             and cycle.get("test") == test
             and _same_test_run(cycle, current)
@@ -857,9 +856,20 @@ def _name_baseline_refusal(detail: dict[str, object], refusal: str | None) -> No
         detail["reason"] = refusal
 
 
-def _baseline_selector(params: Mapping[str, object]) -> object:
-    """The baseline Target a Cycle Count Criterion compares against."""
-    return params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
+def _names_baseline_target(params: Mapping[str, object], target: Mapping[str, object]) -> bool:
+    """Whether *target* is the baseline Target a Cycle Count Criterion compares against.
+
+    An explicit baseline Target names its selector. Otherwise the baseline is
+    the Criterion's own Target, which a Goal names only in ``target`` (as a
+    selector or an identity) and a Criterion may also pin by selector.
+    """
+    if BASELINE_TARGET_PARAM in params:
+        return target.get("selector") == params[BASELINE_TARGET_PARAM]
+    return criterion_matches_target(
+        params,
+        identity=f"{target.get('vlnv')}#{target.get('name')}",
+        selector=str(target.get("selector")),
+    )
 
 
 def _cycle_threshold_checks(

@@ -60,6 +60,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   candidate checkout, so the baseline build failed (`No such file or
   directory`) and the relative Cycle Count Goal reported "Cycle Count
   prerequisite has no cycle observation".
+- A relative Cycle Count Goal (for example `cycle_count_increase_at_most: "10%"`)
+  can now be met in Goal Mode. Its baseline observation used to stay
+  `mismatched`, so the Goal stayed unmet with "baseline Cycle Count evidence is
+  unavailable or invalid" even when the baseline ran: acceptance found the
+  baseline Target only through Criterion fields that Goal entry does not write.
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a
