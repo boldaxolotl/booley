@@ -1,5 +1,5 @@
 ---
-title: Why AI agents need good tools for hardware debugging
+title: "Same agent, same CPU bug: 56 minutes with a shell, 21 with the right tools"
 description: >-
   The same agent, the same Caliptra bug, with and without Booley. Both fixed
   it every time; with Booley the agent finished in 21 minutes instead of 56.
@@ -39,15 +39,13 @@ downloads:
 
 Modern AI agents are very good at reasoning about code and finding bugs, including in hardware designs. But even smart models need good tools to work efficiently.
 
-I use AI agents in my chip-design work daily, and I'm building [Booley](https://github.com/boldaxolotl/booley), an open-source development environment for AI-assisted chip design, targeting both FPGAs and custom chips (ASICs). The environment and interfaces around an agent are often called its *harness*. For hardware development, they let the agent build the design, run simulations, inspect internal signals, and act on the results.
+I use AI agents in my chip-design work daily, and I'm building [Booley](https://github.com/boldaxolotl/booley), an open-source development environment for AI-assisted chip design, targeting both FPGAs and custom chips (ASICs). The environment and interfaces around an agent are often called its *harness*. For hardware development, they let the agent build the design, run simulations, inspect internal signals, and act on the results. I wrote Booley and ran this experiment myself, so weigh the results with that in mind.
 
 ## A real bug in a real processor
 
 I wanted to test how the harness affects an agent's ability to fix hardware bugs, so I started with bug-fixing tasks from a subset of [CVDP](https://github.com/NVlabs/cvdp_benchmark), NVIDIA's benchmark of hardware design and verification problems. Those tasks were too easy: the agents I tested solved them with or without good tools, and they finished so quickly that there was no room for a difference to show. I needed harder problems.
 
-So I looked for the largest, high-quality open-source hardware description, or RTL, codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware.
-
-Even in Caliptra, finding a suitable bug took longer than I expected. I screened about 16 candidates, including historical fixes reverted back into the code and still-open issues. An agent identified each bug by reading the code, usually within a few minutes. I wanted a task that also required simulation and debugging, and that took Claude Code without Booley 30 minutes or more. A slow baseline doesn't make Booley any faster on the same bug; it only leaves room for a difference to show if there is one.
+So I looked for the largest, high-quality open-source hardware description, or RTL, codebase I could find. I chose [Caliptra](https://github.com/chipsalliance/caliptra-rtl), a hardware root of trust: a security subsystem with its own processor and firmware. There I wanted a bug that an agent couldn't fix just by reading the code: one that also needed simulation and debugging.
 
 I settled on a historical bug in VeeR EL2, the RISC-V processor inside Caliptra, and reintroduced it by reverting an upstream fix from the [VeeR EL2 1.4 release](https://github.com/chipsalliance/Cores-VeeR-EL2/commit/fb3354352be70781450ea70963c44d4b8f88ae9b).
 
@@ -113,13 +111,13 @@ The Booley project was configured before the trials. The timings cover debugging
 
 Booley supplied the simulation interface, waveform queries, and build configuration:
 
-- The `sim` Flow builds and runs a simulation, then reports its result. Its interface stays the same across projects, so the agent doesn't have to learn each project's shell commands.
-- B-Wave lets the agent query waveforms: recordings of how internal signals change during a simulation. The agent can search a recording and read signal values at particular cycles.
+- A single simulation command builds and runs a simulation, then reports its result. It works the same way in every project, so the agent doesn't have to learn each project's shell commands. Booley calls this the `sim` Flow.
+- A waveform query tool lets the agent search a waveform (a recording of how internal signals change during a simulation) and read signal values at particular cycles. Both setups could record waveforms; only Booley had a tool to query them. Reading the compressed FST format takes a dedicated library, and a quick Python script is too slow on a dump this size. The tool is called B-Wave.
 - [FuseSoC](https://github.com/olofk/fusesoc), the open-source build tool Booley uses, organizes the source files, simulator settings, and firmware build steps. The Caliptra setup described these in FuseSoC core files (one description file per component) and a test list.
 
 ## The result: 21 minutes versus 56
 
-Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively.
+Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively. Token use was similar: a median of 5.8 million input tokens per trial with Booley and 6.4 million without, about 98% of them cache reads.
 
 <figure id="f1" aria-labelledby="f1cap">
       <div class="frame">
@@ -170,10 +168,10 @@ Both setups completed the task in all ten trials. Mean completion time was **21.
           </g>
         </svg>
       </div>
-      <figcaption id="f1cap"><b>Figure 1.</b> Mean time per bug fix, split by activity. Ten paired Caliptra bug-fix trials, all accepted. Segment values in minutes.</figcaption>
+      <figcaption id="f1cap"><b>Figure 1.</b> Mean time per bug fix, split by activity. Ten paired Caliptra bug-fix trials, all accepted. Segment values in minutes. Each minute counts in one category only; a wait after a job had finished counts as waiting even when it followed a hung simulation.</figcaption>
     </figure>
 
-The chart separates builds and simulations, signal observation, simulations that hung, waits after jobs had finished, and other work. Each minute counts in one category only; a wait after a job had finished counts as waiting even when it followed a hung simulation. The three sources of delay below recurred across the trials. I examined them in the run histories; I didn't run separate experiments to isolate each feature's contribution.
+The chart separates builds and simulations, signal observation, simulations that hung, waits after jobs had finished, and other work. The three sources of delay below recurred across the trials. I examined them in the run histories; I didn't run separate experiments to isolate each feature's contribution.
 
 ## Seeing why a test keeps passing
 
@@ -420,13 +418,13 @@ The agent also needs to know when a build finishes. In several runs with Claude 
 
 It made similar waits four times in that run, spending 30.7 of its 60 minutes asleep after jobs had finished.
 
-Booley's simulation interface waits for completion and returns the result. In the release used here, a job lasting more than four minutes returned a run ID. The agent could then call `booley_poll`, which waited again and returned when the job ended, without an arbitrary sleep.
+Booley's simulation command waits for the job and returns the result. For long jobs it returns a run ID instead, and the agent calls a poll tool (`booley_poll`) that returns as soon as the job ends, so there is no fixed sleep to guess.
 
-The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound.
+The Booley run in pair b10 took 13 minutes in total. Across all ten pairs, it spent **11.2 minutes less on average** waiting on finished jobs. These waits affected six pairs. I counted only waits where I could establish that the job had finished, so the estimate is a lower bound. This is mostly an agent habit rather than a hardware problem: one line in `CLAUDE.md` telling the agent to wait for the process instead of sleeping would likely recover much of this time.
 
 ## What this experiment shows
 
-This is a case study, not a benchmark: one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other tasks or models, or tell us which capability would help most on its own. I also wrote Booley and ran the experiment myself.
+This is a case study, not a benchmark: one bug, one design, one model, and ten trials per setup. I chose a bug that needed substantial simulation work and used an already configured Booley project. These results don't establish the same speedup for other tasks or models, or tell us which capability would help most on its own.
 
 Still, the trials show concrete inefficiencies that appear when a general-purpose agent like Claude Code works on an RTL project with only a shell. Finding the bug wasn't the bottleneck: in both setups the agent usually found the faulty line within five minutes. The time went into the work around the fix. Without Booley, the agent:
 
