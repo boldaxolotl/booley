@@ -13,6 +13,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   stage or drop them, and one test starting a command no longer clears another test's
   recent output. Records and transcript labels now carry `lane=<tests>/<attempt>`
   while tests run at once; a single test at a time prints as before.
+- `[models.roles]` accepts only the Specialist roles `reviewer`, `mutation_tester`
+  and `coverage_analyst`. The `developer`, `recovery` and `triage_report` pins
+  no longer change any model (nothing reads them); such a pin now fails
+  `booley doctor`, and commands that load agent settings refuse it until you delete
+  the line (`booley shell` warns and falls back to Sandbox defaults, including the
+  default image).
 - On Windows, a Simulation Campaign no longer stops with "child execution cancelled
   before result publication" when a Job Slot token read or lease renewal races a
   concurrent rewrite. Token reads and rewrites use the same bounded sharing-error

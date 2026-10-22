@@ -1,7 +1,7 @@
 """Wrapper around agent backends with token tracking and dispatch.
 
 Public API:
-  - call_agent()           — dispatch by model string (backward compat) or step_name
+  - call_agent()           — dispatch to the configured backend
   - extract_json()         — JSON extraction from agent prose (shared utility)
 
 The actual SDK interaction lives in the backend modules (agent_backend.py).
@@ -15,7 +15,6 @@ import re
 import sys
 from typing import Any
 
-from booley.config.settings import STEP_TIERS
 from booley.core.models import AgentCallParams, AgentResult
 
 from .agent_config import get_backend_config
@@ -39,26 +38,18 @@ def announce_agent_dispatch(params: AgentCallParams) -> None:
 async def call_agent(
     params: AgentCallParams,
     *,
-    step_name: str | None = None,
     on_event: Any = None,
 ) -> AgentResult:
     """Call an agent via the configured backend.
 
-    Routes through BackendConfig: if step_name is provided, resolves
-    tier -> model. Otherwise uses the active backend with the
-    provided model string (backward compatibility).
+    Routes through BackendConfig: uses the active backend with the
+    caller-provided model.
 
     The backend runs the agent CLI/SDK as a plain subprocess — Booley is
     container-only (ADR 0028), so specialists already execute inside the
     Sandbox and the old per-call DockerSandboxBackend wrap is gone.
     """
     cfg = get_backend_config()
-
-    if step_name is not None and step_name in STEP_TIERS:
-        tier = STEP_TIERS[step_name]
-        params.model = cfg.settings.model_for_tier(tier)
-        if params.reasoning_effort is None:
-            params.reasoning_effort = cfg.settings.effort_for_tier(tier)
 
     announce_agent_dispatch(params)
     return await cfg.active_backend.call(params, on_event=on_event)

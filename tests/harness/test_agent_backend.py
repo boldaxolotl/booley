@@ -15,8 +15,6 @@ import pytest
 from booley.config.agent import _PROVIDER_TIER_MODELS, AgentSettings
 from booley.config.settings import (
     _DEFAULT_TIER_MODELS,
-    MODEL_MAP,
-    STEP_TIERS,
     BackendConfigError,
 )
 from booley.runtime.agent_backend import (
@@ -212,44 +210,17 @@ class TestRuntimeBackendConfig:
 
 
 # ===========================================================================
-# STEP_TIERS
-# ===========================================================================
-
-
-class TestStepTiers:
-    def test_all_tiers_valid(self):
-        valid_tiers = {"heavy", "standard", "light"}
-        for step, tier in STEP_TIERS.items():
-            assert tier in valid_tiers, f"STEP_TIERS[{step!r}] = {tier!r} invalid"
-
-    def test_has_required_tiers(self):
-        tiers_used = set(STEP_TIERS.values())
-        assert "heavy" in tiers_used
-        assert "light" in tiers_used
-
-    def test_recovery_is_light(self):
-        assert STEP_TIERS["recovery"] == "light"
-
-    def test_developer_is_heavy(self):
-        assert STEP_TIERS["developer"] == "heavy"
-
-
-# ===========================================================================
 # load_backend_config (reads [agent] from harness config)
 # ===========================================================================
 
 
 class TestLoadBackendConfig:
     def setup_method(self):
-        # Save and reset global state before each test
-        self._saved_model_map = dict(MODEL_MAP)
+        # Reset global state before each test
         set_backend_config(None)
 
     def teardown_method(self):
         set_backend_config(None)
-        # Restore MODEL_MAP to avoid poisoning other tests
-        MODEL_MAP.clear()
-        MODEL_MAP.update(self._saved_model_map)
 
     def test_missing_file_uses_defaults(self, tmp_path):
         """No toml → default (claude) provider, never a silent codex."""
