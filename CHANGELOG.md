@@ -10,10 +10,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 ## Unreleased
 
 - `[models.roles]` accepts only the Specialist roles `reviewer`, `mutation_tester`
-  and `coverage_analyst`. A `developer`, `recovery` or `triage_report` pin never
-  changed any model; it now fails `booley doctor`, and commands that load agent
-  settings refuse it until you delete the line (`booley shell` warns and falls back
-  to Sandbox defaults, including the default image).
+  and `coverage_analyst`. The `developer`, `recovery` and `triage_report` pins
+  no longer change any model (nothing reads them); such a pin now fails
+  `booley doctor`, and commands that load agent settings refuse it until you delete
+  the line (`booley shell` warns and falls back to Sandbox defaults, including the
+  default image).
 - `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
   run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
   that point into it; `booley cleanup preview --run-id <id>` lists its files.
