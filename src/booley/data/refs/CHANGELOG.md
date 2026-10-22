@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- On Windows, a simulation baseline Job's request and Job record are now read and
+  written through the short sharing errors a concurrent replace causes, so a baseline
+  no longer reports "interrupted or unavailable" because a read raced a write. A Job
+  record that stays unreadable is reported with its cause instead of as absent, and
+  the Job record is written before the baseline is published as `pending`.
 - `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
   run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
   that point into it; `booley cleanup preview --run-id <id>` lists its files.

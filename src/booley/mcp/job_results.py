@@ -56,7 +56,8 @@ def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | No
     """Read a record for a by-id lookup; a record unreadable after retries counts as not found.
 
     Terminal, cancel and reconcile writes resolve their root through this
-    lookup, so a held record must not block them.
+    lookup, so a held record must not make it raise. Best effort: a Job whose
+    root cannot be resolved because its record is held still skips that write.
     """
     try:
         return jobrec.read_record(run_id, root=root)
