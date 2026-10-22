@@ -8,13 +8,9 @@ from pruning those registrations.
 
 from __future__ import annotations
 
-import hashlib
-import io
-import json
 import os
 import shlex
 import subprocess
-import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -56,9 +52,6 @@ from booley.harness.setup.project_git_hook_reconcile import (
     _LEGACY_MANAGED_HOOKS,
     _build_commit_msg_hook_body,
     _build_pre_push_hook_body,
-    _current_source_bytes,
-    _previous_bundle_hashes,
-    _ReconciliationTransaction,
     _shell_bundle_resolution,
     step_project_git_hooks,
 )
@@ -486,119 +479,6 @@ class TestProjectCommitMsgHookVendoring:
         assert "remove" in result.stderr.lower()
         assert "retry" in result.stderr.lower()
 
-    def test_check_only_reports_current_installation_without_mutation(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        _git_init(tmp_path)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        reset_cache()
-        step_project_git_hooks(_ctx(tmp_path))
-        before = {
-            path: (path.read_bytes(), path.stat().st_mode)
-            for path in (tmp_path / ".booley" / ".managed").iterdir()
-        }
-        before.update(
-            {
-                path: (path.read_bytes(), path.stat().st_mode)
-                for path in (
-                    tmp_path / ".git" / "hooks" / "commit-msg",
-                    tmp_path / ".git" / "hooks" / "pre-push",
-                )
-            }
-        )
-
-        ctx = _ctx(tmp_path, check_only=True)
-        step_project_git_hooks(ctx)
-
-        assert ctx.results[-1].status == "skip"
-        assert ctx.results[-1].detail == "current"
-        assert {path: (path.read_bytes(), path.stat().st_mode) for path in before} == before
-
-    def test_check_only_reports_missing_vendored_script_without_creating_it(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        _git_init(tmp_path)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        reset_cache()
-        step_project_git_hooks(_ctx(tmp_path))
-        missing = tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz"
-        missing.unlink()
-
-        ctx = _ctx(tmp_path, check_only=True)
-        step_project_git_hooks(ctx)
-
-        assert ctx.results[-1].status == "warn"
-        assert "project-git-hooks.pyz" in ctx.results[-1].detail
-        assert not missing.exists()
-
-    def test_check_only_reports_stale_helper_without_overwriting_it(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        _git_init(tmp_path)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        reset_cache()
-        step_project_git_hooks(_ctx(tmp_path))
-        helper = tmp_path / ".booley" / "hooks" / "boundary.py"
-        helper.parent.mkdir(parents=True, exist_ok=True)
-        helper.write_text("stale helper\n", encoding="utf-8")
-
-        ctx = _ctx(tmp_path, check_only=True)
-        step_project_git_hooks(ctx)
-
-        assert ctx.results[-1].status == "warn"
-        assert "boundary.py" in ctx.results[-1].detail
-        assert helper.read_text(encoding="utf-8") == "stale helper\n"
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
-    def test_check_only_reports_non_executable_delegator_without_chmod(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        _git_init(tmp_path)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        reset_cache()
-        step_project_git_hooks(_ctx(tmp_path))
-        hook = tmp_path / ".git" / "hooks" / "pre-push"
-        hook.chmod(0o644)
-
-        ctx = _ctx(tmp_path, check_only=True)
-        step_project_git_hooks(ctx)
-
-        assert ctx.results[-1].status == "warn"
-        assert "pre-push" in ctx.results[-1].detail
-        assert hook.stat().st_mode & 0o111 == 0
-
-    def test_check_only_previews_foreign_hook_backup_without_writing(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        _git_init(tmp_path)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        reset_cache()
-        hook = tmp_path / ".git" / "hooks" / "pre-push"
-        hook.write_text("#!/bin/sh\necho foreign\n", encoding="utf-8")
-
-        ctx = _ctx(tmp_path, check_only=True)
-        step_project_git_hooks(ctx)
-
-        assert ctx.results[-1].status == "warn"
-        assert "back up existing pre-push adapter" in ctx.results[-1].detail
-        assert hook.read_text(encoding="utf-8") == "#!/bin/sh\necho foreign\n"
-        assert not hook.with_name("pre-push.pre-booley").exists()
-
 
 class TestInstalledPrePushGuard:
     def test_launcher_derives_booley_dir_when_environment_is_absent(
@@ -669,6 +549,25 @@ class TestInstalledPrePushGuard:
         assert not refs.stdout.strip()
 
 
+def _legacy_source(name: str) -> bytes:
+    """Return Booley's canonical bytes for one retired hook file name."""
+    from booley.harness.setup.project_git_hook_bundle import (
+        _SOURCE_INVENTORY,
+        _normalized_source,
+        _source_package_root,
+    )
+
+    return _normalized_source(_source_package_root() / dict(_SOURCE_INVENTORY)[name])
+
+
+def _tree_snapshot(root: Path) -> dict[Path, tuple[bytes | None, int]]:
+    """Capture bytes and modes of every path below *root* without following links."""
+    return {
+        path: (path.read_bytes() if path.is_file() else None, path.lstat().st_mode)
+        for path in sorted(root.rglob("*"))
+    }
+
+
 class TestProjectGitHookMigration:
     @pytest.fixture(autouse=True)
     def booley_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -680,42 +579,38 @@ class TestProjectGitHookMigration:
         yield
         reset_cache()
 
-    def test_reconciliation_transaction_restores_files_directories_and_missing_paths(
-        self, tmp_path: Path
-    ) -> None:
-        existing = tmp_path / "existing.txt"
-        existing.write_bytes(b"before")
-        directory = tmp_path / "directory"
-        directory.mkdir()
-        missing = tmp_path / "missing.txt"
-        transaction = _ReconciliationTransaction()
-        transaction.watch(existing)
-        transaction.watch(directory)
-        transaction.watch(missing)
-        transaction.watch(existing)
+    @staticmethod
+    def _seed(root: Path, files: dict[str, bytes]) -> Path:
+        """Install hooks once, then write *files* into the Booley Directory's hooks/."""
+        _git_init(root)
+        step_project_git_hooks(_ctx(root))
+        hooks = root / ".booley" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        for name, data in files.items():
+            (hooks / name).write_bytes(data)
+        return hooks
 
-        existing.write_bytes(b"after")
-        directory.rmdir()
-        missing.write_bytes(b"created during reconciliation")
-        transaction.rollback()
+    def test_check_only_reports_current_installation_without_mutation(self, tmp_path: Path):
+        self._seed(tmp_path, {})
+        before = _tree_snapshot(tmp_path)
 
-        assert existing.read_bytes() == b"before"
-        assert directory.is_dir()
-        assert not missing.exists()
+        ctx = _ctx(tmp_path, check_only=True)
+        step_project_git_hooks(ctx)
 
-    @pytest.mark.skipif(os.name == "nt", reason="symlink privileges are unavailable on CI")
-    def test_reconciliation_transaction_restores_symlinks(self, tmp_path: Path) -> None:
-        target = tmp_path / "target"
-        target.write_text("target", encoding="utf-8")
-        link = tmp_path / "link"
-        link.symlink_to(target)
-        transaction = _ReconciliationTransaction()
-        transaction.watch(link)
-        link.unlink()
-        transaction.rollback()
+        assert (ctx.results[-1].status, ctx.results[-1].detail) == ("skip", "current")
+        assert _tree_snapshot(tmp_path) == before
 
-        assert link.is_symlink()
-        assert link.resolve() == target
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
+    def test_check_only_reports_non_executable_delegator_without_chmod(self, tmp_path: Path):
+        self._seed(tmp_path, {})
+        hook = tmp_path / ".git" / "hooks" / "pre-push"
+        hook.chmod(0o644)
+
+        ctx = _ctx(tmp_path, check_only=True)
+        step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].detail == "update pre-push"
+        assert hook.stat().st_mode & 0o111 == 0
 
     def test_non_git_project_skips_project_hook_reconciliation(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path)
@@ -739,16 +634,6 @@ class TestProjectGitHookMigration:
         assert ctx.results[-1].status == "skip"
         assert "timed out" in ctx.results[-1].detail
 
-    def test_previous_bundle_hashes_ignore_non_mapping_hashes(self, tmp_path: Path) -> None:
-        bundle = tmp_path / "bundle.pyz"
-        with zipfile.ZipFile(bundle, "w") as archive:
-            archive.writestr(
-                "manifest.json",
-                json.dumps({"schema": 1, "source_sha256": ["not", "a", "mapping"]}),
-            )
-
-        assert _previous_bundle_hashes(bundle) == {}
-
     def test_shell_bundle_resolution_supports_external_bundle(self, tmp_path: Path) -> None:
         result = _shell_bundle_resolution(
             tmp_path / "project", tmp_path / "managed" / "bundle.pyz"
@@ -757,216 +642,215 @@ class TestProjectGitHookMigration:
         bundle = tmp_path / "managed" / "bundle.pyz"
         assert result == f"BUNDLE={shlex.quote(str(bundle))}\n"
 
-    def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
-        from booley.runtime.booley_dir import resolve_booley_dir
+    def test_check_only_lists_every_pending_action_without_writing(self, tmp_path: Path) -> None:
+        hooks = self._seed(
+            tmp_path, {"boundary.py": _legacy_source("boundary.py"), "run_command.py": b"edit\n"}
+        )
+        (hooks / "__pycache__").mkdir()
+        (hooks / "__pycache__" / "boundary.cpython-314.pyc").write_bytes(b"managed")
+        (tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
+        commit_msg = tmp_path / ".git" / "hooks" / "commit-msg"
+        commit_msg.write_bytes(commit_msg.read_bytes() + b"# older revision\n")
+        (commit_msg.parent / "pre-push").write_bytes(b"#!/bin/sh\necho foreign\n")
+        before = _tree_snapshot(tmp_path)
 
-        _git_init(tmp_path)
-        hooks = resolve_booley_dir(tmp_path) / "hooks"
-        hooks.mkdir(parents=True, exist_ok=True)
-        for name, data in _current_source_bytes().items():
-            (hooks / name).write_bytes(data.replace(b"\n", b"\r\n"))
+        ctx = _ctx(tmp_path, check_only=True)
+        step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].detail.split("; ") == [
+            "publish project-git-hooks.pyz",
+            "update commit-msg",
+            "back up existing pre-push adapter",
+            "remove legacy boundary.py",
+            "rename divergent run_command.py to run_command.py.pre-booley",
+            "remove managed bytecode boundary.cpython-314.pyc",
+            "remove empty hooks/__pycache__",
+        ]
+        assert _tree_snapshot(tmp_path) == before
+
+    def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
+        hooks = self._seed(
+            tmp_path,
+            {name: _legacy_source(name).replace(b"\n", b"\r\n") for name in _LEGACY_MANAGED_HOOKS},
+        )
+        (hooks / "__pycache__").mkdir()
+        (hooks / "__pycache__" / "boundary.cpython-314.pyc").write_bytes(b"managed")
 
         step_project_git_hooks(_ctx(tmp_path))
 
-        assert not list(hooks.glob("*.pre-booley.*"))
+        assert not list(hooks.glob("*.pre-booley*"))
         assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
-        new_members = set(_current_source_bytes()) - set(_LEGACY_MANAGED_HOOKS)
-        assert new_members
-        assert all((hooks / name).is_file() for name in new_members)
-
-    def test_malformed_bundle_manifest_is_recovered(self, tmp_path: Path) -> None:
-        from booley.runtime.booley_dir import resolve_booley_dir
-
-        _git_init(tmp_path)
-        bundle = resolve_booley_dir(tmp_path) / ".managed" / "project-git-hooks.pyz"
-        bundle.parent.mkdir(parents=True, exist_ok=True)
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("manifest.json", json.dumps([]))
-        bundle.write_bytes(buffer.getvalue())
-
-        ctx = _ctx(tmp_path)
-        step_project_git_hooks(ctx)
-
-        assert ctx.results[-1].status == "ok"
-        assert bundle.is_file()
-
-    def test_reconciliation_rolls_back_on_adapter_failure(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.harness.setup import project_git_hook_reconcile as reconcile
-        from booley.runtime.booley_dir import resolve_booley_dir
-
-        _git_init(tmp_path)
-
-        def fail_after_bundle(_adapters, _transaction):
-            raise OSError("simulated adapter failure")
-
-        monkeypatch.setattr(reconcile, "_apply_adapters", fail_after_bundle)
-        ctx = _ctx(tmp_path)
-        step_project_git_hooks(ctx)
-
-        booley_dir = resolve_booley_dir(tmp_path)
-        assert ctx.results[-1].status == "err"
-        assert not (booley_dir / ".managed" / "project-git-hooks.pyz").exists()
-        assert not (tmp_path / ".git" / "hooks" / "commit-msg").exists()
+        assert not (hooks / "__pycache__").exists()
 
     def test_legacy_sources_and_managed_bytecode_are_removed(self, tmp_path: Path) -> None:
-        from booley.runtime.booley_dir import resolve_booley_dir
+        from booley.harness.setup.project_git_hook_bundle import _SOURCE_INVENTORY
 
-        _git_init(tmp_path)
-        step_project_git_hooks(_ctx(tmp_path))
-        booley_dir = resolve_booley_dir(tmp_path)
-        hooks = booley_dir / "hooks"
-        hooks.mkdir(parents=True, exist_ok=True)
-        for name, data in _current_source_bytes().items():
-            (hooks / name).write_bytes(data)
-        (hooks / "post-setup.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        sources = {name: _legacy_source(name) for name, _relative in _SOURCE_INVENTORY}
+        hooks = self._seed(tmp_path, {**sources, "post-setup.sh": b"#!/bin/sh\n"})
         cache = hooks / "__pycache__"
         cache.mkdir()
         (cache / "boundary.cpython-314.pyc").write_bytes(b"managed")
         (cache / "booley_commit_policy.cpython-314.pyc").write_bytes(b"foreign")
-        (cache / "project.cpython-314.pyc").write_bytes(b"project-owned")
 
         step_project_git_hooks(_ctx(tmp_path))
 
         assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
-        new_members = set(_current_source_bytes()) - set(_LEGACY_MANAGED_HOOKS)
-        assert all((hooks / name).is_file() for name in new_members)
+        assert all((hooks / name).is_file() for name in set(sources) - set(_LEGACY_MANAGED_HOOKS))
         assert (hooks / "post-setup.sh").is_file()
         assert not (cache / "boundary.cpython-314.pyc").exists()
         assert (cache / "booley_commit_policy.cpython-314.pyc").is_file()
-        assert (cache / "project.cpython-314.pyc").is_file()
 
-    def test_divergent_legacy_source_gets_collision_safe_backup(self, tmp_path: Path) -> None:
-        from booley.runtime.booley_dir import resolve_booley_dir
-
-        _git_init(tmp_path)
-        step_project_git_hooks(_ctx(tmp_path))
-        hooks = resolve_booley_dir(tmp_path) / "hooks"
-        hooks.mkdir(parents=True, exist_ok=True)
-        legacy = hooks / "boundary.py"
-        data = b"locally modified\n"
-        legacy.write_bytes(data)
-        digest = hashlib.sha256(data).hexdigest()[:12]
-        occupied = hooks / f"boundary.py.pre-booley.{digest}"
-        occupied.write_bytes(b"different backup\n")
+    def test_divergent_legacy_source_is_renamed_to_pre_booley(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        hooks = self._seed(tmp_path, {"boundary.py": b"locally modified\n"})
 
         step_project_git_hooks(_ctx(tmp_path))
 
-        assert not legacy.exists()
-        assert occupied.read_bytes() == b"different backup\n"
-        assert (hooks / f"boundary.py.pre-booley.{digest}-1").read_bytes() == data
+        assert not (hooks / "boundary.py").exists()
+        assert (hooks / "boundary.py.pre-booley").read_bytes() == b"locally modified\n"
+        assert "boundary.py to boundary.py.pre-booley" in capsys.readouterr().out
 
+    def test_divergent_legacy_source_is_kept_when_backup_name_is_taken(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        files = {"boundary.py": b"locally modified\n", "boundary.py.pre-booley": b"older\n"}
+        hooks = self._seed(tmp_path, files)
 
-class TestCommitMsgHookBody:
-    """F-7: a bare `exec python3` breaks every commit on stock Windows — the
-    Microsoft Store PATH alias resolves as python3 but exits non-zero with a
-    Store nag, and winget's Python ships python.exe with no python3.exe."""
+        step_project_git_hooks(_ctx(tmp_path))
 
-    def test_body_probes_interpreters_instead_of_bare_python3(self, tmp_path: Path):
-        body = _build_commit_msg_hook_body(
-            tmp_path,
-            tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz",
+        assert {name: (hooks / name).read_bytes() for name in files} == files
+        assert "keep divergent boundary.py" in capsys.readouterr().out
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink privileges are unavailable on CI")
+    def test_non_regular_legacy_paths_are_preserved(self, tmp_path: Path, capsys) -> None:
+        hooks = self._seed(tmp_path, {})
+        (tmp_path / "boundary-copy.py").write_bytes(_legacy_source("boundary.py"))
+        (hooks / "boundary.py").symlink_to(tmp_path / "boundary-copy.py")
+        (hooks / "checkout_role.py").mkdir()
+        (hooks / "run_command.py").symlink_to(tmp_path / "missing.py")
+
+        step_project_git_hooks(_ctx(tmp_path))
+
+        assert (hooks / "boundary.py").is_symlink()
+        assert (hooks / "checkout_role.py").is_dir()
+        assert (hooks / "run_command.py").is_symlink()
+        out = capsys.readouterr().out
+        for name in ("boundary.py", "checkout_role.py", "run_command.py"):
+            assert f"unrecognized legacy path {name}" in out
+
+    def test_adapter_write_failure_keeps_hooks_working_and_rerun_converges(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.harness.setup import project_git_hook_reconcile as reconcile
+
+        _run_git(tmp_path, "init", "-q", "--bare", str(tmp_path / ".booley" / "origin.git"))
+        hooks = self._seed(
+            tmp_path, {name: _legacy_source(name) for name in _LEGACY_MANAGED_HOOKS}
         )
-        assert body.startswith("#!/bin/sh\n")
-        assert "exec python3 " not in body
-        # The ladder must RUN each candidate (-c '') — `command -v` alone
-        # cannot tell the Store alias from a real interpreter.
-        assert "for cand in python3 python" in body
-        assert "-c ''" in body
-        assert "py -3" in body
-        # Repo-relative delegation is preserved.
-        assert '"$ROOT/.booley/.managed/project-git-hooks.pyz"' in body
-        assert 'exec $PY -I -S "$BUNDLE" commit-msg "$@"' in body
+        (tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
+        pre_push = tmp_path / ".git" / "hooks" / "pre-push"
+        pre_push.write_bytes(pre_push.read_bytes() + b"# older revision\n")
+        real_write = reconcile.guarded_write
+
+        def fail_pre_push(target: Path, *args: Any, **kwargs: Any) -> Any:
+            if target.name == "pre-push" and not kwargs.get("dry_run"):
+                raise OSError("simulated adapter write failure")
+            return real_write(target, *args, **kwargs)
+
+        monkeypatch.setattr(reconcile, "guarded_write", fail_pre_push)
+        failed = _ctx(tmp_path)
+        step_project_git_hooks(failed)
+
+        assert failed.results[-1].status == "err"
+        assert all((hooks / name).is_file() for name in _LEGACY_MANAGED_HOOKS)
+        (tmp_path / ".gitignore").write_text(".booley/\n", encoding="utf-8")
+        _run_git(tmp_path, "add", ".gitignore")
+        commit = _run_git(
+            tmp_path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "chore: ignore"
+        )
+        push = _run_git(
+            tmp_path, "push", str(tmp_path / ".booley" / "origin.git"), "HEAD:main", check=False
+        )
+        assert "bundle not found" not in commit.stderr + push.stderr
+        assert push.returncode == 0, push.stderr
+
+        monkeypatch.setattr(reconcile, "guarded_write", real_write)
+        step_project_git_hooks(_ctx(tmp_path))
+        check = _ctx(tmp_path, check_only=True)
+        step_project_git_hooks(check)
+        assert check.results[-1].detail == "current"
+        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
+
+
+def _bundle_repo(root: Path) -> Path:
+    """A repository with a bare origin, the managed bundle, and both adapters."""
+    from booley.harness.setup.project_git_hook_bundle import (
+        BUNDLE_NAME,
+        build_project_git_hook_bundle,
+    )
+
+    main = root / "main"
+    _run_git(root, "init", "-q", "-b", "main", str(main))
+    _run_git(root, "init", "-q", "--bare", str(root / "origin"))
+    _run_git(main, "remote", "add", "origin", str(root / "origin"))
+    for key, val in (("user.email", "t@example.com"), ("user.name", "T")):
+        _run_git(main, "config", key, val)
+    bundle = main / ".booley" / ".managed" / BUNDLE_NAME
+    bundle.parent.mkdir(parents=True)
+    bundle.write_bytes(build_project_git_hook_bundle().content)
+    for name, build in (
+        ("commit-msg", _build_commit_msg_hook_body),
+        ("pre-push", _build_pre_push_hook_body),
+    ):
+        hook = main / ".git" / "hooks" / name
+        hook.write_text(build(main, bundle), encoding="utf-8", newline="\n")
+        hook.chmod(0o755)
+    (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
+    _run_git(main, "add", ".gitignore")
+    _run_git(main, "commit", "-qm", "init")
+    return main
+
+
+def _commit(repo: Path, msg: str) -> subprocess.CompletedProcess[str]:
+    (repo / f"{msg}.txt").write_text("x", encoding="utf-8")
+    _run_git(repo, "add", "-A")
+    return _run_git(repo, "commit", "-m", msg, check=False)
 
 
 class TestHookInSecondaryWorktree:
     """A user-made secondary worktree resolves the main checkout's bundle."""
 
-    @staticmethod
-    def _install(main: Path) -> None:
-        """A git repo with the generated bundle and commit-msg adapter."""
-        from booley.harness.setup.project_git_hook_bundle import (
-            BUNDLE_NAME,
-            build_project_git_hook_bundle,
-        )
-
-        subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
-        for key, val in (("user.email", "t@example.com"), ("user.name", "T")):
-            subprocess.run(["git", "-C", str(main), "config", key, val], check=True)
-        managed = main / ".booley" / ".managed"
-        managed.mkdir(parents=True)
-        managed.joinpath(BUNDLE_NAME).write_bytes(build_project_git_hook_bundle().content)
-        (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
-        hook = main / ".git" / "hooks" / "commit-msg"
-        hook.write_text(
-            _build_commit_msg_hook_body(main, managed / BUNDLE_NAME),
-            encoding="utf-8",
-            newline="\n",
-        )
-        hook.chmod(0o755)
-        subprocess.run(["git", "-C", str(main), "add", ".gitignore"], check=True)
-        subprocess.run(["git", "-C", str(main), "commit", "-qm", "init"], check=True)
-
-    @staticmethod
-    def _commit(repo: Path, msg: str) -> subprocess.CompletedProcess:
-        (repo / f"{msg}.txt").write_text("x", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-        return subprocess.run(
-            ["git", "-C", str(repo), "commit", "-m", msg],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
     def test_commit_succeeds_in_a_secondary_worktree(self, tmp_path: Path):
-        main = tmp_path / "main"
-        self._install(main)
+        main = _bundle_repo(tmp_path)
         wt = tmp_path / "wt"
-        subprocess.run(
-            ["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "side"],
-            check=True,
-        )
+        _run_git(main, "worktree", "add", "-q", str(wt), "-b", "side")
 
-        result = self._commit(wt, "from-worktree")
+        result = _commit(wt, "from-worktree")
 
         assert result.returncode == 0, result.stderr
         # It did not merely skip: the bundle was found via the shared git dir.
-        assert (
-            "from-worktree"
-            in subprocess.run(
-                ["git", "-C", str(wt), "log", "-1", "--format=%s"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
+        assert "bundle not found" not in result.stderr
+        assert _run_git(wt, "log", "-1", "--format=%s").stdout.strip() == "from-worktree"
 
     def test_missing_script_skips_instead_of_blocking_the_commit(self, tmp_path: Path):
-        main = tmp_path / "main"
-        self._install(main)
+        main = _bundle_repo(tmp_path)
         (main / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
 
-        result = self._commit(main, "no-script")
+        result = _commit(main, "no-script")
 
         assert result.returncode == 0, result.stderr
         assert "project-git-hooks.pyz" in result.stderr
 
     def test_main_worktree_still_runs_the_hook(self, tmp_path: Path):
-        main = tmp_path / "main"
-        self._install(main)
+        main = _bundle_repo(tmp_path)
 
-        assert self._commit(main, "from-main").returncode == 0
-        assert (
-            "from-main"
-            in subprocess.run(
-                ["git", "-C", str(main), "log", "-1", "--format=%s"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
+        result = _commit(main, "from-main")
+
+        assert result.returncode == 0, result.stderr
+        assert "bundle not found" not in result.stderr
+        assert _run_git(main, "log", "-1", "--format=%s").stdout.strip() == "from-main"
 
 
 class TestPrePushFailsClosed:
@@ -980,84 +864,44 @@ class TestPrePushFailsClosed:
     both checks with one stderr line.
     """
 
-    @staticmethod
-    def _repo(root: Path) -> Path:
-        """Repo with a bare origin, the pre-push delegator, and the bundle."""
-        from booley.harness.setup.project_git_hook_bundle import (
-            BUNDLE_NAME,
-            build_project_git_hook_bundle,
-        )
-
-        main = root / "main"
-        subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
-        for key, val in (("user.email", "t@example.com"), ("user.name", "T")):
-            subprocess.run(["git", "-C", str(main), "config", key, val], check=True)
-        subprocess.run(["git", "init", "-q", "--bare", str(root / "origin")], check=True)
-        subprocess.run(
-            ["git", "-C", str(main), "remote", "add", "origin", str(root / "origin")],
-            check=True,
-        )
-
-        managed = main / ".booley" / ".managed"
-        managed.mkdir(parents=True)
-        managed.joinpath(BUNDLE_NAME).write_bytes(build_project_git_hook_bundle().content)
-        (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
-        hook = main / ".git" / "hooks" / "pre-push"
-        hook.write_text(
-            _build_pre_push_hook_body(main, managed / BUNDLE_NAME),
-            encoding="utf-8",
-            newline="\n",
-        )
-        hook.chmod(0o755)
-        subprocess.run(["git", "-C", str(main), "add", ".gitignore"], check=True)
-        subprocess.run(["git", "-C", str(main), "commit", "-qm", "init"], check=True)
-        return main
-
-    @staticmethod
-    def _push(main: Path) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["git", "-C", str(main), "push", "-u", "origin", "main"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
     def test_push_succeeds_while_the_guard_is_installed(self, tmp_path: Path):
-        main = self._repo(tmp_path)
+        main = _bundle_repo(tmp_path)
 
-        result = self._push(main)
+        result = _run_git(main, "push", "-u", "origin", "main", check=False)
 
         assert result.returncode == 0, result.stderr
 
     def test_missing_pre_push_script_blocks_the_push(self, tmp_path: Path):
-        main = self._repo(tmp_path)
+        main = _bundle_repo(tmp_path)
         (main / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
 
-        result = self._push(main)
+        result = _run_git(main, "push", "-u", "origin", "main", check=False)
 
         assert result.returncode != 0, "fail-open leak guard: push went through"
         assert "REFUSED" in result.stderr
         assert "booley init" in result.stderr
         # And nothing reached the remote.
-        listed = subprocess.run(
-            ["git", "-C", str(tmp_path / "origin"), "for-each-ref", "--format=%(refname)"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assert not listed.stdout.strip()
+        assert not _run_git(tmp_path / "origin", "for-each-ref").stdout.strip()
 
     def test_only_pre_push_fails_closed(self, tmp_path: Path):
-        """The two bodies are built by one helper — pin the divergence."""
+        """The two bodies are built by one helper — pin the divergence.
 
+        F-7: a bare `exec python3` breaks every commit on stock Windows (the
+        Store alias exits non-zero), so each candidate interpreter is RUN in
+        the isolated mode used for the real invocation.
+        """
         bundle = tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz"
         commit_msg = _build_commit_msg_hook_body(tmp_path, bundle)
         pre_push = _build_pre_push_hook_body(tmp_path, bundle)
 
-        assert "    exit 0\n" in commit_msg
+        assert commit_msg.startswith("#!/bin/sh\n")
         assert "    exit 0\n" in commit_msg.split("bundle not found")[1]
         assert "    exit 1\n" in pre_push.split("bundle not found")[1]
+        assert "for cand in python3 python" in commit_msg
         assert "-I -S -c ''" in commit_msg
+        assert "py -3" in commit_msg
+        assert '"$ROOT/.booley/.managed/project-git-hooks.pyz"' in commit_msg
+        assert 'exec $PY -I -S "$BUNDLE" commit-msg "$@"' in commit_msg
         # Both still resolve through the shared git dir (F-42 stays fixed).
         for body in (commit_msg, pre_push):
             assert "git rev-parse --path-format=absolute --git-common-dir" in body
