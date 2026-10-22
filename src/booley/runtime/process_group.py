@@ -34,11 +34,6 @@ def new_group_kwargs(*, is_windows: bool | None = None) -> dict[str, Any]:
     return _platform(is_windows).new_group_kwargs()
 
 
-def is_process_group_alive(group: ProcessGroup, *, is_windows: bool | None = None) -> bool:
-    """Return whether any process in an owned group is still alive."""
-    return _platform(is_windows).alive(group)
-
-
 def _taskkill(pid: int, *, force: bool) -> None:
     command = ["taskkill"]
     if force:
@@ -199,7 +194,7 @@ class _WindowsProcessGroups:
     @staticmethod
     def alive(group: ProcessGroup) -> bool:
         # Windows has no safe stdlib probe for every member of a process tree.
-        # Keep cleanup conservative even when the recorded leader has exited.
+        # Keep termination conservative even when the recorded leader has exited.
         del group
         return True
 
