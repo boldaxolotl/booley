@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import gzip
-import hashlib
 import json
 import os
 from dataclasses import replace
@@ -25,7 +24,6 @@ from booley.flows.sim.coverage_campaign import (
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V4,
     CAMPAIGN_SCHEMA_V5,
-    MAX_COMPRESSED_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
     load_coverage_campaign_bytes,
@@ -78,14 +76,10 @@ def test_nested_coverage_exact_and_over_limit_preserve_authoritative_hook_sideca
     campaign = replace(campaign, runs=runs)
     measured = publish_coverage_campaign(attempt / "measured", campaign)
     if boundary == "manifest":
-        limit = measured.campaign.stat().st_size
-        constant = "MAX_MANIFEST_BYTES"
+        limit, constant = measured.campaign.stat().st_size, "MAX_MANIFEST_BYTES"
     else:
-        limit = max(
-            len(line)
-            for line in gzip.decompress(measured.points.read_bytes()).splitlines(keepends=True)
-        )
-        constant = "MAX_LINE_BYTES"
+        limit = len(gzip.decompress(measured.points.read_bytes()))
+        constant = "MAX_UNCOMPRESSED_BYTES"
     monkeypatch.setattr(store, constant, limit)
     exact = publish_coverage_campaign(attempt / "exact", campaign)
     assert exact.campaign.is_file()
@@ -111,18 +105,6 @@ def _invalid_campaign():
             }
         ),
     )
-
-
-def _rewrite_point_store(paths, data: bytes) -> None:
-    compressed = gzip.compress(data, mtime=0)
-    paths.points.write_bytes(compressed)
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["point_store"].update(
-        sha256=f"sha256:{hashlib.sha256(compressed).hexdigest()}",
-        bytes=len(compressed),
-        uncompressed_bytes=len(data),
-    )
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _point_id(identity: dict[str, object]) -> str:
@@ -498,25 +480,25 @@ def test_publish_never_replaces_existing_manifest(tmp_path: Path) -> None:
     assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
-def test_deep_reader_rejects_tampered_point_storage(tmp_path: Path) -> None:
+def test_deep_reader_rejects_truncated_point_storage(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
-    stored = bytearray(paths.points.read_bytes())
-    stored[-1] ^= 1
-    paths.points.write_bytes(stored)
+    paths.points.write_bytes(paths.points.read_bytes()[:-8])
 
     with pytest.raises(CoverageCampaignStoreError) as error:
         load_coverage_campaign(paths.campaign, TARGET)
-    assert error.value.code in {"COV_POINT_FORMAT", "COV_POINT_INTEGRITY"}
+    assert error.value.code == "COV_POINT_FORMAT"
 
 
-def test_summary_rejects_resource_metadata_above_format_limit(tmp_path: Path) -> None:
+def test_deep_reader_stops_at_the_uncompressed_ceiling(tmp_path: Path, monkeypatch) -> None:
+    import booley.flows.sim.coverage_campaign_store as store
+
     paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["point_store"]["bytes"] = MAX_COMPRESSED_BYTES + 1
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-    paths.points.unlink()
+    ceiling = json.loads(paths.campaign.read_bytes())["point_store"]["uncompressed_bytes"]
+    monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", ceiling)
+    load_coverage_campaign(paths.campaign, TARGET)
+    paths.points.write_bytes(gzip.compress(b" " * (ceiling + 1), mtime=0))
 
-    with pytest.raises(CoverageCampaignStoreError, match="exceeds V2 limit") as error:
+    with pytest.raises(CoverageCampaignStoreError) as error:
         load_coverage_campaign(paths.campaign, TARGET)
     assert error.value.code == "COV_POINT_LIMIT"
 
@@ -531,19 +513,6 @@ def test_deep_reader_rejects_linked_point_storage(tmp_path: Path) -> None:
     with pytest.raises(CoverageCampaignStoreError) as error:
         load_coverage_campaign(paths.campaign, TARGET)
     assert error.value.code == "COV_PATH_UNSAFE"
-
-
-def test_deep_reader_rejects_noncanonical_jsonl(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    lines = gzip.decompress(paths.points.read_bytes()).splitlines(keepends=True)
-    point = json.loads(lines[1])
-    lines[1] = json.dumps(point, separators=(", ", ": ")).encode() + b"\n"
-    _rewrite_point_store(paths, b"".join(lines))
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_POINT_CANONICAL"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows symlink setup requires host privileges")

@@ -873,6 +873,11 @@ class SlotStore:
                         gate.rmdir()
                 elif attempt + 1 < _ENTRY_IO_ATTEMPTS:
                     self._sleep(_ENTRY_IO_RETRY_SECONDS)
+            except PermissionError:
+                # Windows denies mkdir while the previous gate's rmdir is
+                # still pending; failing here would mark a live lease lost.
+                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
             except OSError:
                 break
             else:
@@ -955,14 +960,34 @@ class SlotStore:
             return "holder unknown (it released while we looked)"
         return "; ".join(_describe_holder(tok, self._now()) for tok in holders)
 
+    def _read_entry(self, path: Path) -> str | None:
+        """Read an entry, retrying transient Windows sharing violations.
+
+        A reader that races a rewrite's replace on Windows gets
+        PermissionError. Treating that as "entry absent" made a live lease
+        look cancelled and aborted its whole run (#2024).
+        """
+        for attempt in range(_ENTRY_IO_ATTEMPTS):
+            try:
+                return path.read_text(encoding="utf-8")
+            except PermissionError:
+                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
+            except (OSError, ValueError):  # ValueError: undecodable bytes
+                return None
+        return None
+
     def _load_token(self, path: Path) -> SlotToken | None:
         parsed = _parse_entry_name(path.name)
         if parsed is None:
             return None
         _state, priority, seq, pid, n = parsed
+        text = self._read_entry(path)
+        if text is None:
+            return None
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, ValueError):
+            payload = json.loads(text)
+        except ValueError:
             return None
         if not isinstance(payload, dict) or not isinstance(payload.get("argv", []), list):
             return None
@@ -1038,7 +1063,11 @@ class SlotStore:
     def token_absent(self, token: SlotToken) -> bool:
         """Prove the exact lease ID is absent from its Job class."""
         holders, waiters = self.snapshot(token.job_class)
-        return all(candidate.lease_id != token.lease_id for candidate in (*holders, *waiters))
+        if any(candidate.lease_id == token.lease_id for candidate in (*holders, *waiters)):
+            return False
+        # An entry that survived reaping but stayed unreadable through every
+        # retry (e.g. a Windows scanner holding it) is not proof of absence.
+        return not token.path.exists()
 
     def state_for_pid(self, pid: int) -> TokenState | None:
         """Admission state of the entry owned by *pid*, or None when absent.

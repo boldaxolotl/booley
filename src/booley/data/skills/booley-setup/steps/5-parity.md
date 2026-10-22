@@ -95,9 +95,8 @@ prior flow, what matched, and what could not be compared.
 A mismatch here is a **finding, not a gate**: surface it, but setup already
 completed at Step 4. The user decides whether a divergence blocks their use.
 
-Register parity captures and temporary comparison conversions in the current
-setup manifest as they are created. Preserve the approved golden and the
-`PARITY-REPORT.md`; remove only exact current-run duplicate or scratch paths.
+Write parity captures and temporary comparison conversions beneath the run's
+scratch root. The approved golden and the `PARITY-REPORT.md` stay outside it.
 The shared Flow cache remains reusable and is never claimed as run-owned merely
 because parity touched it.
 

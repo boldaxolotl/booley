@@ -2,9 +2,10 @@
 
 A Coverage Campaign remains one immutable, lossless record, but its V2 persistence separates the
 small `coverage.json` manifest from required `coverage-points.jsonl.gz` point evidence. The manifest
-is published last as the crash-durable commit marker and binds the point store by exact path, schema,
-byte counts, point count, and SHA-256; the manifest carries the summaries, and every reader
-deep-loads and validates the complete pair.
+is published last as the crash-durable commit marker and records the point store's exact path, schema,
+byte counts, point count, and SHA-256 as its identity; the manifest carries the summaries, and every
+reader deep-loads the complete pair. Readers trust the published pair: they check the header schema,
+the gzip and JSON format, and the uncompressed ceiling, then validate every point.
 
 ---
 status: accepted
@@ -26,7 +27,9 @@ status: accepted
 ## Consequences
 
 Readers accept only the V4 and V5 storage schemas; any other schema fails with a recollect hint.
-V2 format-wide resource limits apply equally to publication and reading. Persistence schema belongs
+One uncompressed point-store ceiling applies on write and read, plus the manifest ceiling. The writer no
+longer caps the point count, so a Campaign over the Analyst session's 1M-point ceiling publishes and is
+refused at analysis. Persistence schema belongs
 to the codecs and loaded envelope rather than the in-memory Coverage Campaign domain value. The split does not itself reduce
 the Coverage Analyst model payload. ADR 0063 separately binds analysis to budgeted evidence views
 and records the retrieval scope so omitted points remain explicit.

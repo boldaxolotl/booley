@@ -936,7 +936,7 @@ replace its `detail` with an empty object. Select evidence through the numbered
 Call the `coverage_analyst` Specialist from your Developer Agent session with
 `campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
 Target names, `latest`, the point-store path, waveforms, and flat
-`coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
+`coverage_report.json` are not Analyst inputs. A missing, malformed, or invalid
 point store makes a Campaign unusable for analysis. Recollect unsupported
 Campaigns with the current Booley version. A missing or incomplete
 matching `simulation.json` means that Target is

@@ -15,22 +15,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
 from booley.eda.provisioning.policies.vivado import wrapper_path
 
 
-def test_build_requirements_returns_the_leased_value_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expected = requirements.SessionBuildRequirements((), (), None, None)
-
-    @contextmanager
-    def leased(*_args, **_kwargs):
-        yield SimpleNamespace(build=expected)
-
-    monkeypatch.setattr(requirements, "lease_build_requirements", leased)
-
-    assert requirements.build_requirements(tmp_path, vivado_enabled=True) is expected
-
-
-def test_build_lease_translates_authority_failure(
+def test_lease_translates_authority_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -51,39 +36,41 @@ def test_build_lease_translates_authority_failure(
 
     with (
         pytest.raises(requirements.SessionRequirementsError, match="grant unavailable"),
-        requirements.lease_build_requirements(project, vivado_enabled=True),
+        requirements.lease_requirements(project, vivado_enabled=True),
     ):
         pass
 
 
-def test_requested_host_installation_translates_config_failure(
+def test_lease_opens_authority_for_prior_eda_when_flow_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    profile = SimpleNamespace(name="site", lmgrd_port=27000)
+    opened: list[bool] = []
     monkeypatch.setattr(
         requirements,
         "load_eda_config",
-        lambda _project: (_ for _ in ()).throw(EdaConfigError("invalid EDA config")),
+        lambda _project: {"vivado": EdaConfig("vivado", "host")},
     )
-
-    with pytest.raises(requirements.SessionRequirementsError, match="invalid EDA config"):
-        requirements.requested_host_installation(tmp_path, vivado_enabled=True)
-
-
-def test_requested_host_installation_translates_authority_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = EdaConfig("vivado", "host")
-    monkeypatch.setattr(requirements, "load_eda_config", lambda _project: {"vivado": config})
     monkeypatch.setattr(
-        authority,
-        "resolve_installation",
-        lambda _project: (_ for _ in ()).throw(authority.AuthorityError("grant missing")),
+        requirements, "resources_for_session", lambda _p: SimpleNamespace(private_network="net")
     )
 
-    with pytest.raises(requirements.SessionRequirementsError, match="grant missing"):
-        requirements.requested_host_installation(tmp_path, vivado_enabled=True)
+    @contextmanager
+    def spy(_project, host_provisioning):
+        opened.append(host_provisioning)
+        yield None, profile
+
+    monkeypatch.setattr(authority, "resolve_for_issuance", spy)
+
+    with requirements.lease_requirements(project, vivado_enabled=False) as idle:
+        assert idle.license_profile is None
+    assert opened == []
+    with requirements.lease_requirements(project, vivado_enabled=False, prior_eda=True) as prior:
+        assert prior.license_profile is profile
+    assert opened == [False]
 
 
 def test_requested_license_translates_config_failure(
@@ -117,25 +104,6 @@ def test_requested_license_returns_optional_active_profile(
     monkeypatch.setattr(requirements, "_optional_license", lambda _project: profile)
 
     assert requirements.requested_license(project, vivado_enabled=True) is profile
-
-
-def test_session_resolution_translates_config_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        requirements,
-        "load_eda_config",
-        lambda _project: (_ for _ in ()).throw(EdaConfigError("invalid EDA config")),
-    )
-
-    with pytest.raises(requirements.SessionRequirementsError, match="invalid EDA config"):
-        requirements.resolve_for_session(
-            tmp_path,
-            vivado_enabled=True,
-            license_marker=False,
-            include_relay_identity=False,
-        )
 
 
 @pytest.mark.parametrize(

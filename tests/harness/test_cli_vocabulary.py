@@ -148,7 +148,7 @@ def test_recursive_command_inventory():
     # New nested routes require an explicit ownership/compatibility decision.
     nested = {
         "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
-        "cleanup": {"prepare", "record", "preview", "apply"},
+        "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
         "worktree": {"new"},
         "feedback": {"add", "friction", "say", "win", "triage", "filed"}
@@ -182,7 +182,7 @@ def test_detached_endpoint_inventory():
         ["session", "status", "--project=../b"],
         ["-C../b", "session", "status"],
         ["-C", "../b"],
-        ["cleanup", "preview", "-C", "../b"],
+        ["cleanup", "preview", "--run-id", "r", "-C", "../b"],
         ["feedback", "list", "-C", "../b"],
         ["upgrade", "status", "-C", "../b"],
         ["session", "down", "--project-root", "../b"],
@@ -421,7 +421,11 @@ def dispatch(argv, monkeypatch):
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []
     monkeypatch.setitem(cli._EARLY_COMMANDS, route, lambda args, root: captured.append(root) or 0)
-    nested = {"cleanup": ["preview"], "upgrade": ["status"], "auth": ["--status"]}.get(route, [])
+    nested = {
+        "cleanup": ["preview", "--run-id", "r"],
+        "upgrade": ["status"],
+        "auth": ["--status"],
+    }.get(route, [])
     assert dispatch([route, *nested, "-C", "../b/rtl"], monkeypatch) == 0
     assert captured == [projects[1]]
 

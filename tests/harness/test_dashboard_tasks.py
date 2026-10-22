@@ -322,8 +322,7 @@ def test_spec_builder_pure_automatic_tasks_setting(tmp_path):
     assert list(tmp_path.iterdir()) == before
 
 
-@pytest.mark.parametrize("requirements", [None, SimpleNamespace()])
-def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, requirements):
+def test_issuance_success_path_reconciles_dashboard_tasks(project, monkeypatch):
     prepared = session_issuance.PreparedSessionSpec(
         {"image": "sha256:fixture"},
         "digest",
@@ -338,8 +337,8 @@ def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, 
         assert project.file.exists() == tasks.enabled(project.data)
         return SimpleNamespace()
 
-    monkeypatch.setattr(session_issuance, "_issue_document", issued)
     monkeypatch.setattr(session_issuance, "_issue_document_with_requirements", issued)
+    requirements = SimpleNamespace()
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
     assert project.file.exists()
     (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
@@ -365,6 +364,7 @@ def test_issuance_failure_after_task_publication_restores_previous_files(
     before = {path: path.read_bytes() if path.exists() else None for path in paths}
     monkeypatch.setattr(session_issuance, "_current_keeper_id", lambda _: None)
     monkeypatch.setattr(session_issuance, "_restore_keeper", lambda *_: None)
+    monkeypatch.setattr(session_issuance, "authorized_project_data_source", lambda _: project.data)
 
     def fail(*_args):
         assert project.file.exists()
@@ -373,9 +373,9 @@ def test_issuance_failure_after_task_publication_restores_previous_files(
         )
         raise session_issuance.RuntimeSpecError("fixture issuance failure")
 
-    monkeypatch.setattr(session_issuance, "_issue_document", fail)
+    monkeypatch.setattr(session_issuance, "_issue_document_with_requirements", fail)
     with pytest.raises(session_issuance.RuntimeSpecError, match="fixture issuance failure"):
-        session_issuance._persist_prepared(project.root, prepared)
+        session_issuance._persist_prepared(project.root, prepared, requirements=SimpleNamespace())
     assert {path: path.read_bytes() if path.exists() else None for path in paths} == before
 
 

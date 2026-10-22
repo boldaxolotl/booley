@@ -17,7 +17,6 @@ document: Booley product datasheet
     <section aria-labelledby="description" class="desc">
       <h2 class="sec" id="description"><span class="n">1</span>Description</h2>
       <p>Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
-      <p>You design; it does the grunt work. <a href="#limitations">Section 4</a> lists what Booley does not do; read it before you start.</p>
     </section>
 
     <div class="order" aria-labelledby="order-h">
@@ -380,7 +379,7 @@ document: Booley product datasheet
   <article class="an">
     <div class="an__txt">
       <p class="an__id">AN-001</p>
-      <h3 class="an__t"><a href="blog/harness-matters/">Why AI agents need good tools for hardware debugging</a></h3>
+      <h3 class="an__t"><a href="blog/harness-matters/">Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools</a></h3>
       <p>The same agent, the same Caliptra bug, with and without Booley. Both fixed it every time. Most of the difference came from the work around the fix: building a test that exposed the bug and seeing what happened inside the processor.</p>
       <p class="an__meta">boldaxolotl, 16 October 2026. <a href="blog/harness-matters/">Read the application note</a></p>
     </div>

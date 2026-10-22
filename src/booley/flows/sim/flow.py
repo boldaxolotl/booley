@@ -78,7 +78,6 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
-    CoverageRun,
     FrozenJson,
     coverage_mapping_document,
 )
@@ -190,12 +189,12 @@ from .campaign import (
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
-from .campaign.coordinator import CampaignPublicationError
+from .campaign.coordinator import CampaignPublicationError, CampaignPublicationFailure
 from .campaign.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
+    _endpoint_collection,
     _failure_test,
-    project_coverage_failure,
 )
 from .campaign.flow_planning import (
     plan_coarse_simulation_campaign,
@@ -705,16 +704,8 @@ def _campaign_report_blocks(
         if getattr(outcome, "coverage_reference", None) is not None:
             suffix.extend(_waiver_block_hint_lines(campaign))
             suffix.extend(source_gap_report_lines(campaign))
-            if not hasattr(outcome, "pre_sim_firings"):
-                suffix.extend(_coverage_pre_sim_lines(selector, campaign))
         blocks.append((report_lines, suffix))
     return blocks
-
-
-def _coverage_run_label(campaign: CoverageCampaign, run: CoverageRun) -> str:
-    """Name a run by its Test, or by its Test Run when the Test ran more than once."""
-    several = sum(other.test == run.test for other in campaign.runs) > 1
-    return run.test_run if several else run.test
 
 
 def _effective_default_seed(
@@ -739,20 +730,6 @@ def _coverage_test_run_lines(
     return informative_test_run_lines(selector, typed, default_seed=default_seed)
 
 
-def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[str]:
-    lines: list[str] = []
-    for run in campaign.runs:
-        evidence = run.attributes.get("pre_sim")
-        if not isinstance(evidence, Mapping):
-            continue
-        lines.append(
-            _pre_sim_report_line(
-                selector, _coverage_run_label(campaign, run), coverage_mapping_document(evidence)
-            )
-        )
-    return lines
-
-
 def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> EndpointOutcome:
     present = Counter(result.report_text.splitlines())
     missing = []
@@ -764,6 +741,15 @@ def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> E
     if missing:
         result.report_text += "\n" + "\n".join(missing)
     return result
+
+
+_PRE_SIM_ROLE_LABELS = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
+_PRE_SIM_ROLE_HEADINGS = frozenset(f"{label}:" for label in _PRE_SIM_ROLE_LABELS.values())
+
+
+def _is_pre_sim_card_line(line: str) -> bool:
+    """Whether *line* belongs to the card's Pre-Sim block (firing line or role heading)."""
+    return line.startswith("pre_run_commands ") or line in _PRE_SIM_ROLE_HEADINGS
 
 
 def _pre_sim_integrity_failure(
@@ -778,9 +764,7 @@ def _pre_sim_integrity_failure(
         }
         result.detail["pre_sim_unauthenticated_references"] = references
         result.report_text = "\n".join(
-            line
-            for line in result.report_text.splitlines()
-            if not line.startswith("pre_run_commands ")
+            line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
     result.detail["campaign_integrity_error"] = str(error)
     line = f"Simulation Campaign integrity failure: {error}"
@@ -801,27 +785,50 @@ def _campaign_hook_inputs(outcomes, invocation):
     return firings, keys
 
 
-def _campaign_pre_sim_details(firings, current_keys, invocation: Path | None) -> dict[str, object]:
+def _pre_sim_lines(firings, current_keys) -> tuple[list[str], list[str]]:
+    """Render each current firing once: ``(flat, card)``.
+
+    *flat* keeps firing order (sim.json); *card* groups the same lines by role, with
+    role headings only when several roles are current.
+    """
     from .execution.pre_sim_reporting import pre_sim_report_line
 
+    groups: dict[str, list[str]] = {}
+    flat: list[str] = []
+    for key, firing in firings.items():
+        if key in current_keys:
+            document = firing.document
+            line = pre_sim_report_line(document["target"]["selector"], document)
+            flat.append(line)
+            groups.setdefault(document["role"], []).append(line)
+    card = [
+        line
+        for role, lines in groups.items()
+        for line in ([_PRE_SIM_ROLE_LABELS[role] + ":"] if len(groups) > 1 else []) + lines
+    ]
+    return flat, card
+
+
+def _pre_sim_projection(
+    firings, current_keys, invocation: Path | None
+) -> tuple[dict[str, object], list[str]]:
+    """The sim.json Pre-Sim detail and the matching card lines, from one pass."""
+    lines, card = _pre_sim_lines(firings, current_keys)
     manifest_refs = {}
-    lines = []
     preview = []
     preview_full = False
     roles: dict[str, dict[str, object]] = {}
     for firing in firings.values():
-        document = firing.document
-        current = firing.key in current_keys
-        if current:
-            lines.append(pre_sim_report_line(document["target"]["selector"], document))
-        _register_pre_sim_role(roles, manifest_refs, firing, invocation, current)
+        _register_pre_sim_role(
+            roles, manifest_refs, firing, invocation, firing.key in current_keys
+        )
         if not preview_full and len(preview) < 32:
             record = _pre_sim_preview_record(firing, invocation)
             if len(json.dumps([*preview, record]).encode("utf-8")) <= 16384:
                 preview.append(record)
             else:
                 preview_full = True
-    return {
+    detail = {
         "pre_sim_lines": lines,
         "pre_sim_runs": preview,
         "pre_sim_total": len(firings),
@@ -830,6 +837,7 @@ def _campaign_pre_sim_details(firings, current_keys, invocation: Path | None) ->
         "pre_sim_preview_truncated": len(preview) != len(firings),
         "pre_sim_roles": roles,
     }
+    return detail, card
 
 
 def _register_pre_sim_role(roles, manifest_refs, firing, invocation, current) -> None:
@@ -878,24 +886,6 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         ),
     )
     return record
-
-
-def _campaign_pre_sim_report_lines(firings, current_keys) -> list[str]:
-    from .execution.pre_sim_reporting import pre_sim_report_line
-
-    groups: dict[str, list[str]] = {}
-    for key, firing in firings.items():
-        if key in current_keys:
-            document = firing.document
-            groups.setdefault(document["role"], []).append(
-                pre_sim_report_line(document["target"]["selector"], document)
-            )
-    labels = {"candidate": "Candidate", "cycle_count_baseline": "Cycle Count baseline"}
-    return [
-        line
-        for role, lines in groups.items()
-        for line in ([labels[role] + ":"] if len(groups) > 1 else []) + lines
-    ]
 
 
 def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
@@ -1468,6 +1458,49 @@ class _CoverageTargetError(RuntimeError):
         self.detail = detail
 
 
+def _observed_failure_detail(
+    selector: str, observations: tuple[Mapping[str, object], ...], evaluation: str
+) -> dict[str, object]:
+    """Report the Simulation truth in `observations` with an infrastructure collection."""
+    simulation = simulation_status_from_observations(observations)
+    detail: dict[str, object] = {
+        "target": selector,
+        "passed": None if simulation == "not_run" else simulation == "pass",
+        "simulation": simulation,
+        "collection": "infrastructure_error",
+        "evaluation": evaluation,
+    }
+    if observations:
+        detail["tests"] = [_failure_test(item) for item in observations]
+    return detail
+
+
+def _publication_failure_detail(
+    failure: CampaignPublicationFailure, evaluation: str, report_invocation: Path | None
+) -> dict[str, object]:
+    """Project a publication failure from coordinator-held facts with one nested load."""
+    detail = _observed_failure_detail(failure.target_selector, failure.observations, evaluation)
+    if failure.nested_campaign is not None:
+        try:
+            campaign = load_coverage_campaign(failure.nested_campaign).campaign
+        except (OSError, ValueError):
+            pass  # No committed nested Campaign: keep infrastructure_error and the prepared policy.
+        else:
+            detail.update(
+                collection=_endpoint_collection(campaign.collection["status"]),
+                evaluation=campaign.evaluation["status"],
+                coverage_metrics=coverage_metrics(campaign),
+            )
+    if failure.coverage_reference is not None:
+        _attach_failure_reference(
+            detail,
+            failure.target_root / "coverage.json",
+            report_invocation,
+            str(failure.coverage_reference.document["simulation_campaign_id"]),
+        )
+    return detail
+
+
 def _coverage_failed_target(
     failed: str,
     error: Exception,
@@ -1478,34 +1511,11 @@ def _coverage_failed_target(
     """Use one failure precedence, retaining simulation truth without retrying retention."""
     if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
         detail = {str(key): _structured_json(value) for key, value in error.detail.items()}
-    elif (
-        isinstance(error, CampaignPublicationError)
-        and (published := project_coverage_failure(error.context)) is not None
-    ):
-        detail, has_reference = published
-        if has_reference:
-            _attach_failure_reference(
-                detail,
-                error.context.target_root / "coverage.json",
-                report_invocation,
-                error.context.campaign_id,
-            )
+    elif isinstance(error, CampaignPublicationError):
+        detail = _publication_failure_detail(error.failure, evaluation, report_invocation)
     else:
         observations = outcome.observations if outcome is not None else ()
-        if not observations and isinstance(error, CampaignPublicationError):
-            observations = cast(
-                tuple[Mapping[str, object], ...], error.context.result.document["observations"]
-            )
-        simulation = simulation_status_from_observations(observations)
-        detail = {
-            "target": failed,
-            "passed": None if simulation == "not_run" else simulation == "pass",
-            "simulation": simulation,
-            "collection": "infrastructure_error",
-            "evaluation": evaluation,
-        }
-        if observations:
-            detail["tests"] = [_failure_test(item) for item in observations]
+        detail = _observed_failure_detail(failed, observations, evaluation)
     detail.update(error=str(error), abort_remaining=True)
     return detail
 
@@ -2892,14 +2902,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return result
         firings = {firing.key: firing for firing in firings}
         keys = frozenset(getattr(self, "_current_published_pre_sim_keys", ()))
-        result.detail.update(_campaign_pre_sim_details(firings, keys, invocation))
+        detail, card = _pre_sim_projection(firings, keys, invocation)
+        result.detail.update(detail)
         result.report_text = "\n".join(
-            line
-            for line in result.report_text.splitlines()
-            if not line.startswith("pre_run_commands ")
-            and line not in {"Candidate:", "Cycle Count baseline:"}
+            line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
-        return _append_missing_report_lines(result, _campaign_pre_sim_report_lines(firings, keys))
+        return _append_missing_report_lines(result, card)
 
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
@@ -2940,22 +2948,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         | EndpointOutcome
     ):
         if self.args.resume_from is not None:
-            roots: dict[str, Path] = {}
 
             def revision_root(target: Mapping[str, str]) -> Path:
                 if target["role"] == "candidate":
                     return Path(self.args.work_dir)
-                revision = target["revision"]
-                if revision not in roots:
-                    resources = self.context.publication_resources
-                    roots[revision] = resources.enter_context(
-                        baseline_worktree(
-                            Path(self.args.work_dir),
-                            revision,
-                            paired_project=self._paired_project_baseline,
-                        )
-                    )
-                return roots[revision]
+                return self._shared_baseline_worktree(target["revision"])
 
             resume = validate_resume_manifest(
                 self.args.resume_from,
@@ -2981,15 +2978,33 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Resolve Criterion baselines from their historical checkout."""
         if revision is None or not selectors:
             return ()
-        root = self.context.publication_resources.enter_context(
-            baseline_worktree(
-                Path(self.args.work_dir),
-                revision,
-                paired_project=self._paired_project_baseline,
-            )
-        )
-        catalog = TargetCatalog.build(root)
+        catalog = TargetCatalog.build(self._shared_baseline_worktree(revision))
         return tuple(catalog.select(selector, for_flow="sim") for selector in selectors)
+
+    def _shared_baseline_worktree(self, revision: str) -> Path:
+        """This invocation's one checkout of *revision*, open until publication ends.
+
+        Campaign authorization, Cycle Count planning, campaign preview and
+        execution all need the baseline revision. The scratch path depends
+        only on the process and revision, so a second opening while the first
+        is held fails in ``git worktree add`` (#1959); they share this one.
+        Consumers run in that order and only execution writes (build output),
+        so sharing never shows a consumer another's changes. Call from the
+        candidate checkout: ``self.args.work_dir`` is the Project Root.
+        """
+        worktrees = self.context.baseline_worktrees
+        if revision not in worktrees:
+            resources = self.context.publication_resources
+            worktrees[revision] = resources.enter_context(
+                baseline_worktree(
+                    Path(self.args.work_dir),
+                    revision,
+                    paired_project=self._paired_project_baseline,
+                )
+            )
+            # Unwinds before the worktree is removed: no entry outlives its checkout.
+            resources.callback(worktrees.pop, revision)
+        return worktrees[revision]
 
     satisfies: ClassVar[list[str]] = [
         "elab_pass",
@@ -3378,14 +3393,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         baseline_tests = self._cycle_baseline_test_names(test_names_map)
         links = self._baseline_links(targets, test_names_map)
         try:
-            with (
-                baseline_worktree(
-                    Path(self.args.work_dir),
-                    baseline_ref,
-                    paired_project=self._paired_project_baseline,
-                ) as worktree,
-                self._baseline_checkout(worktree, links, baseline_ref) as baseline,
-            ):
+            worktree = self._shared_baseline_worktree(baseline_ref)
+            with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
                 planned = [target for target in baseline_targets if baseline.runs_of(target)]
                 units, errors = self._plan_simulation_targets(
                     planned,
@@ -4921,13 +4930,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         links = self._baseline_links(targets, test_names_map)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
-        worktree = self.context.publication_resources.enter_context(
-            baseline_worktree(
-                Path(self.args.work_dir),
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            )
-        )
+        worktree = self._shared_baseline_worktree(baseline_ref)
         requests: list[NewCampaignRunRequest] = []
         with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
             for target in (item for item in baseline_targets if baseline.runs_of(item)):
@@ -5117,14 +5120,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         links = self._baseline_links(targets, test_names_map)
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
         previews: list[dict[str, object]] = []
-        with (
-            baseline_worktree(
-                Path(self.args.work_dir),
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as worktree,
-            self._baseline_checkout(worktree, links, baseline_ref) as baseline,
-        ):
+        worktree = self._shared_baseline_worktree(baseline_ref)
+        with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
             for target in (item for item in baseline_targets if baseline.runs_of(item)):
                 preview, by_run = self._preview_one_campaign_baseline(
                     campaign,
@@ -5307,13 +5304,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         detail: dict[str, object] = {"campaigns": campaigns}
         firings, current_keys = _campaign_hook_inputs(outcomes, invocation)
-        detail.update(_campaign_pre_sim_details(firings, current_keys, invocation))
-        hook_lines = _campaign_pre_sim_report_lines(firings, current_keys)
+        pre_sim_detail, hook_lines = _pre_sim_projection(firings, current_keys, invocation)
+        detail.update(pre_sim_detail)
         detail.update(_campaign_build_infrastructure_detail(outcomes))
         keys = frozenset(getattr(self, "_current_published_pre_sim_keys", current_keys))
-        budget_lines = (
-            _campaign_pre_sim_report_lines(firings, keys) if keys.issubset(firings) else None
-        )
+        budget_lines: list[str] | None = None
+        if keys.issubset(firings):
+            _, budget_lines = _pre_sim_lines(firings, keys)
         lines = _campaign_report_lines(outcomes, coverage_campaigns, budget_lines, **report)
         lines.extend(hook_lines)
         if coverage_targets:
@@ -6007,7 +6004,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> dict[str, TargetResult] | EndpointOutcome:
-        """Run each relative Cycle Count Target once in a throwaway baseline tree."""
+        """Run each relative Cycle Count Target once in the baseline checkout."""
         del targets  # Selection is frozen in the FlowPlan before execution.
         baseline_ref, baseline_targets, error = self._planned_cycle_baseline_selection()
         if error is not None:
@@ -6021,41 +6018,37 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         }
         results: dict[str, TargetResult] = {}
         try:
-            with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as worktree:
-                self.args.work_dir = worktree
-                try:
-                    for target in baseline_targets:
-                        baseline_handle = self._target_handle(target)
-                        expected_identity = expected_identities[target]
-                        if baseline_handle.identity != expected_identity:
-                            raise BaselineWorktreeError(
-                                f"Cycle Count baseline selector {target!r} resolves to "
-                                f"{baseline_handle.identity!r}, expected {expected_identity!r}"
-                            )
-                        with attempt_scope(
+            worktree = self._shared_baseline_worktree(baseline_ref)
+            self.args.work_dir = worktree
+            try:
+                for target in baseline_targets:
+                    baseline_handle = self._target_handle(target)
+                    expected_identity = expected_identities[target]
+                    if baseline_handle.identity != expected_identity:
+                        raise BaselineWorktreeError(
+                            f"Cycle Count baseline selector {target!r} resolves to "
+                            f"{baseline_handle.identity!r}, expected {expected_identity!r}"
+                        )
+                    with attempt_scope(
+                        target,
+                        identity=baseline_handle.identity,
+                        role="baseline",
+                        revision=baseline_ref,
+                        ephemeral_root=worktree,
+                        tests=tuple(baseline_tests.get(target, ())),
+                    ):
+                        result = self._run_target(
                             target,
-                            identity=baseline_handle.identity,
-                            role="baseline",
-                            revision=baseline_ref,
-                            ephemeral_root=worktree,
-                            tests=tuple(baseline_tests.get(target, ())),
-                        ):
-                            result = self._run_target(
-                                target,
-                                self._tb_top_for_target(target),
-                                baseline_tests,
-                                [],
-                                plan_role="baseline",
-                            )
-                        result.target_identity = baseline_handle.identity
-                        results[result.target_identity] = result
-                        self._attach_workload_snapshots(result)
-                finally:
-                    self.args.work_dir = project_root
+                            self._tb_top_for_target(target),
+                            baseline_tests,
+                            [],
+                            plan_role="baseline",
+                        )
+                    result.target_identity = baseline_handle.identity
+                    results[result.target_identity] = result
+                    self._attach_workload_snapshots(result)
+            finally:
+                self.args.work_dir = project_root
         except (
             MissingExecutableError,
             SimulationBuildInfrastructureError,

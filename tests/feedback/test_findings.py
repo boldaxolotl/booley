@@ -79,6 +79,16 @@ def test_read_log_of_missing_file_is_empty_not_an_error(booley_dir):
     assert log.corrupt_lines == 0
 
 
+def test_non_object_json_line_is_a_corrupt_line_not_a_crash(booley_dir):
+    append(Finding(title="good one"), booley_dir)
+    with log_path(booley_dir).open("a", encoding="utf-8") as fh:
+        fh.write("[1, 2]\n")
+
+    log = read_log(booley_dir)
+    assert [e.title for e in log.entries] == ["good one"]
+    assert log.corrupt_lines == 1
+
+
 def test_corrupt_line_costs_one_finding_not_the_log(booley_dir):
     append(Finding(title="good one"), booley_dir)
     with log_path(booley_dir).open("a", encoding="utf-8") as fh:
@@ -235,6 +245,21 @@ def _publication_barrier(connection, publish):
     return paused_publish
 
 
+def _run_publication_worker(directory, connection, operation):
+    """Pause a materializing writer just before it publishes the rewritten log."""
+    from booley.feedback import materialize
+
+    materialize._rewrite_attachments_only = _publication_barrier(
+        connection, materialize._rewrite_attachments_only
+    )
+    if operation == "cleanup_apply":
+        from booley.harness.setup import run_root_cleanup
+
+        run_root_cleanup.apply(directory.parent, "race")
+    else:
+        materialize.materialize_attachments(directory, [directory / "capture.log"])
+
+
 def _paused_feedback_writer(directory, connection, operation, attempted):
     import argparse
 
@@ -256,7 +281,7 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
         log = original(*args, **kwargs)
         if attempted is not None:
             attempted.set()
-        if first and operation != "materialize":
+        if first and operation not in ("materialize", "cleanup_apply"):
             first = False
             connection.send("read")
             assert connection.poll(60), "parent did not release writer"
@@ -278,10 +303,7 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
         args = parser.parse_args(command)
         assert cli._cmd_triage(args, directory) == 0
     else:
-        materialize._rewrite_attachments_only = _publication_barrier(
-            connection, materialize._rewrite_attachments_only
-        )
-        materialize.materialize_attachments(directory, [directory / "capture.log"])
+        _run_publication_worker(directory, connection, operation)
     connection.send("done")
 
 

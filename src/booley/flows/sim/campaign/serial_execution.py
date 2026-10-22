@@ -7,6 +7,7 @@ and captures the engine-authorized private image as attempt-owned evidence.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import stat
@@ -485,10 +486,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request.policy,
             trace=cast(bool, workload["trace"]),
         )
+        # Build and launch commands name paths relative to the campaign's own
+        # checkout (a Cycle Count baseline's is not the invocation's), so they run there.
         execution = (
             self._execution_factory(options)
             if self._execution_factory
-            else (SimulationExecution(invoke=self._invoke, options=options))
+            else SimulationExecution(
+                invoke=functools.partial(self._invoke, cwd=request.project_root),
+                options=options,
+            )
         )
         return _GroupInputs(
             handle,

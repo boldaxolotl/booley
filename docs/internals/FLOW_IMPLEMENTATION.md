@@ -1048,7 +1048,7 @@ without inline Coverage Points. The
 [Flow reports reference](FLOW_REPORTS.md#coverage-campaign-files) defines
 scoring and retained diagnostic evidence. Source rollups cover line, branch,
 expression, and toggle with overall eligibility and waiver policy;
-they never aggregate by instance hierarchy. The manifest integrity-binds the
+they never aggregate by instance hierarchy. The manifest records the identity of the
 compressed JSON Lines point store. Manifest readers validate the current Campaign manifest at the
 resolved nested path; the Target reference is a separate schema. The Coverage
 Analyst requires the canonical Target-level reference and matching completed
@@ -1071,7 +1071,8 @@ exact completed Target Campaign without publishing policy evidence.
 
 The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
-Deep readers validate its path, schema, byte counts, point count, digest, every
+Deep readers open the canonical store without following links, gunzip it once under the
+uncompressed ceiling, check the header schema, then validate every
 point, scoring/collection state, valid rollups, and evaluation before accepting
 point-dependent evidence. Summary readers validate rollup ordering and arithmetic,
 reconcile valid overall/source rollups, and require empty invalid rollups. Criteria
@@ -1097,6 +1098,17 @@ the durable collection and evaluation truths as well as the simulation verdict;
 they do not turn a committed evaluation into `blocked`. Report paths are usable
 only when their publication succeeded. No later stage runs after an earlier
 publication failure, except for an observational error checkpoint.
+
+The Simulation Campaign coordinator builds this failed-Target detail from facts
+it already holds. Its publication error carries the Target root and selector,
+the result's observations, the nested Coverage Campaign path for a
+coverage workload, and the public Coverage Campaign reference only after its
+publication. The Flow loads that nested Campaign once for collection and
+evaluation, reporting `collector_error` as `infrastructure_error`, and does not
+re-hash attempt evidence, re-check the Target identity, or re-authenticate the
+reference. As the one exception to retaining committed truths, when that nested
+Campaign cannot be loaded, the detail reports `infrastructure_error` and the
+prepared evaluation.
 
 If retaining a completed coverage outcome fails while resolving its public
 reference, fresh and resumed runs keep `simulation`, `passed`, and tests from
@@ -1209,7 +1221,7 @@ rewritten by retention, and a Campaign lock never recreates a renamed Campaign r
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its integrity-linked point store, rejects collector-error or incompatible
+its point store, rejects collector-error or incompatible
 collection before provider invocation, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native

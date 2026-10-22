@@ -586,7 +586,7 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.flow import _campaign_pre_sim_details
+    from booley.flows.sim.flow import _pre_sim_projection
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
@@ -610,7 +610,7 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     assert len(canonical_json_bytes(reference)) < 1024
     firings = read_pre_sim_firings(store.manifest_path)
     assert firings[0].document["test_names"] == names
-    detail = _campaign_pre_sim_details(
+    detail, _card = _pre_sim_projection(
         {f.key: f for f in firings}, frozenset(f.key for f in firings), invocation
     )
     assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16 * 1024
