@@ -1561,7 +1561,7 @@ def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
     """Return the resolved project environment for one Simulation Target."""
     sections = load_test_configuration_field(handle.project_root, "env")
-    environment = dict(lookup_target_section(sections, handle.selector) or {})
+    environment = dict(lookup_target_section(sections, handle.identity) or {})
     return {str(name): str(value) for name, value in environment.items()}
 
 
@@ -1590,6 +1590,7 @@ def target_test_plan(
     return load_target_test_plan(
         handle.project_root,
         handle.selector,
+        identity=handle.identity,
         adapter=adapter,
         target_plusargs=plusarg_parameter_names(parameters),
     )

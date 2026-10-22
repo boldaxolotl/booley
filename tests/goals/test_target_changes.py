@@ -11,6 +11,7 @@ from booley.targets.goal_diff import semantic_target_changes
 from tests.goals.conftest import TOP_CORE, enter_goals, git
 from tests.goals.test_finish import environment, request
 from tests.goals.test_status import publish
+from tests.target_test_support import write_two_core_sim_project
 
 
 def test_runtime_target_declarations_and_qualified_test_lookup(tmp_path):
@@ -38,6 +39,16 @@ def test_runtime_target_declarations_and_qualified_test_lookup(tmp_path):
         ("::top:0#top", "removed"),
         ("::top:0#other", "added"),
     }
+
+
+def test_evidence_digest_uses_each_cores_own_section(tmp_path):
+    write_two_core_sim_project(
+        tmp_path,
+        '["vendor:a:x#sim"]\ntests = ["a_test"]\n["vendor:b:y#sim"]\ntests = ["b_test"]\n',
+    )
+    surfaces = resolved_surfaces(tmp_path)
+    assert surfaces["vendor:a:x:1.0#sim"]["tests"]["tests"] == ["a_test"]
+    assert surfaces["vendor:b:y:1.0#sim"]["tests"]["tests"] == ["b_test"]
 
 
 @pytest.mark.parametrize("before,after", [(1, 1.0), (1, True), (1.0, True)])

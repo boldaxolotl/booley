@@ -1757,7 +1757,7 @@ and how a Test Run is seeded.
 [test_lists]                          # optional shared, reusable lists
 smoke = ["reset", "basic"]
 
-[sim]                                 # keyed by .core target name
+[sim]                                 # keyed by .core Target name
 tests  = ["reset", "basic", "stress"]
 select = "+test_id={index}"           # one option token; {index} (0-based) or {name}
 skip   = ["stress"]                   # known-hangs to exclude from a full run
@@ -1769,6 +1769,16 @@ test_list = "smoke"                   # reference a shared list instead
 tests  = ["hello.elf", "coremark.elf"]
 select = "--meminit=ram,{name}"       # getopt argument, not a plusarg
 ```
+
+**Section keys.** A section key is a bare Target name (`sim`) or a qualified
+selector (`vlnv-suffix#name`, for example `["acme:uart:rx#sim"]`; quote it
+because of the colons). The qualifier matches the way `--target` does: any
+trailing segments of `vendor:library:name`, and a version is ignored. A Target
+uses the qualified key that names its core and otherwise the bare key with its
+name, whatever the order of the keys in the file. A section comes from one key
+only: a Target never reads another core's qualified section. Two keys naming
+one Target make the Simulation Flow refuse the run and `booley doctor` fail,
+naming both keys; a key that names no Target also fails `booley doctor`.
 
 A Target section holds only these keys. Any other key fails to load, and
 `booley doctor` names it:

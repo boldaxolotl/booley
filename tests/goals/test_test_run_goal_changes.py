@@ -184,7 +184,9 @@ def test_a_seeded_goal_cannot_be_added_to_an_unseeded_target(
     monkeypatch.setattr(
         loading,
         "load_checkout_target_test_plan",
-        lambda work_dir, target: loading.load_target_test_plan(work_dir, target, adapter="icarus"),
+        lambda work_dir, target: loading.load_target_test_plan(
+            work_dir, target, identity=target, adapter="icarus"
+        ),
     )
     view = create_proposal(
         env,

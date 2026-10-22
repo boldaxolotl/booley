@@ -81,7 +81,9 @@ def fake_target_identity(_work_dir: Path | str, target: str) -> str:
 def fake_test_plan(work_dir: Path | str, target: str) -> TargetTestPlan:
     """The Test Run plan of a known Target: its ``tests.toml`` section on Verilator."""
     name = fake_target_identity(work_dir, target).rpartition("#")[2]
-    return target_test_plan_loading.load_target_test_plan(work_dir, name, adapter="verilator")
+    return target_test_plan_loading.load_target_test_plan(
+        work_dir, name, identity=name, adapter="verilator"
+    )
 
 
 class FakeCatalog:

@@ -67,7 +67,7 @@ def _write_target(root: Path) -> None:
 def test_real_coverage_merges_two_variants_and_two_seeds_of_one_test(tmp_path: Path) -> None:
     _write_target(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
-    plan = load_target_test_plan(tmp_path, "sim", adapter="verilator")
+    plan = load_target_test_plan(tmp_path, "sim", identity="sim", adapter="verilator")
     runs = (plan.run("smoke"), plan.run("smoke", "deep"), plan.run("smoke", "deep", MAX_SEED))
 
     result = collect_target_coverage(

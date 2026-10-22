@@ -12,10 +12,11 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import SimulateFlow, _resolve_sim_campaign_work_units
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import UnseededTargetError, build_test_run, test_run_document
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from tests.target_test_support import write_two_core_sim_project
 
 _TESTS = {
     "sim": {
@@ -474,3 +475,18 @@ def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, mon
         report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [other]}}}
     )
     assert flow._with_diagnostic_test_run_note(plain).report_text == "sim: ran"
+
+
+def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path):
+    write_two_core_sim_project(
+        tmp_path, '["y#sim"]\ntests = ["one"]\n["vendor:b:y#sim"]\ntests = ["two"]\n'
+    )
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "y#sim"])
+
+    refusal = flow._validate_test_plans(["y#sim"])
+
+    assert refusal is not None and refusal.exit_code == EXIT_ERROR
+    assert "[vendor:b:y#sim] and [y#sim]" in refusal.report_text
+    # The watchdog sizing preflight must not raise: the child Flow reports the refusal.
+    assert _resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1

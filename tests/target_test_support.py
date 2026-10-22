@@ -136,3 +136,22 @@ def install_lenient_target_catalog(
         )
 
     monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", setup_handle)
+
+
+def write_two_core_sim_project(root: Path, tests_toml: str) -> None:
+    """Write a Project of two cores, ``vendor:a:x:1.0`` and ``vendor:b:y:1.0``.
+
+    Both declare a ``sim`` Target, so their ``tests.toml`` sections can collide.
+    """
+    (root / ".booley").mkdir(exist_ok=True)
+    (root / ".booley" / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    (root / ".booley" / "tests.toml").write_text(tests_toml, encoding="utf-8")
+    for vendor, name in (("a", "x"), ("b", "y")):
+        (root / f"{name}.v").write_text(f"module {name}; endmodule\n", encoding="utf-8")
+        (root / f"{name}.core").write_text(
+            f"CAPI=2:\nname: vendor:{vendor}:{name}:1.0\n"
+            f"filesets:\n  rtl: {{files: [{name}.v], file_type: verilogSource}}\n"
+            f"targets:\n  sim:\n    filesets: [rtl]\n    toplevel: {name}\n"
+            "    flow: sim\n    flow_options: {tool: verilator}\n",
+            encoding="utf-8",
+        )
