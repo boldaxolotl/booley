@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Templated `[flows.sim].run_cwd` cleanup now also removes the empty parent directories
+  Booley created to reach the attempt directory, stopping at the template root and at any
+  directory it did not create, and templated attempt run-lock files are no longer left in
+  `.runtime/simulation-run-locks/`. Directories and lock files left by earlier runs stay.
 - On Windows, a simulation baseline Job's request and Job record are now read and
   written through the short sharing errors a concurrent replace causes, so a baseline
   no longer reports "interrupted or unavailable" because a read raced a write. A Job
