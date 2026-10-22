@@ -70,8 +70,8 @@ _ALLOWED_TEXT_FILES = frozenset(
 def _help_docstring_ids(tree: ast.Module, source: str) -> set[int]:
     """Return ids of docstring nodes that are NOT user-visible (the ones to skip)."""
     skipped: set[int] = set()
-    # argparse renders the module docstring as ``--help`` when it is the description.
-    shows_module_doc = "description=__doc__" in source
+    # argparse renders the module docstring in ``--help`` as description or epilog.
+    shows_module_doc = re.search(r"\b(?:description|epilog)\s*=\s*__doc__", source) is not None
     for node in ast.walk(tree):
         if not isinstance(
             node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef

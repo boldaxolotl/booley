@@ -8,9 +8,9 @@ implementation Target, relative or absolute (from the baseline checkout for
 relative Criteria, from the candidate checkout otherwise), so later evidence
 can prove it measured the same recipe.
 
-This module owns that policy independently of who calls it. Goal entry uses
-it today; any other entry point that knows a checkout, a baseline revision, and
-a scratch directory can reuse it by satisfying :class:`PinContext`.
+This module owns that policy independently of the entry code. Goal entry is its
+only caller; its errors name the Goal Mode and Goal entry. The caller supplies a
+checkout, a baseline revision, and a scratch directory through :class:`PinContext`.
 
 Flow-specific recipe normalization is injected as a :data:`SnapshotBuilder`:
 this Flow-neutral module may not select a concrete Flow implementation
@@ -18,11 +18,10 @@ this Flow-neutral module may not select a concrete Flow implementation
 FPGA snapshot function.
 
 Collaborators (Target catalog, FuseSoC registry, baseline worktrees, evidence
-fields) are imported inside the functions, as they were when this logic lived
-in Goal entry. ``baseline_worktree`` is bound by name at call time, so a
-patched ``booley.flows.baseline_worktree.baseline_worktree`` stays effective;
-the deferred imports also keep importing this module from entry from loading
-any module entry did not already load at import time.
+fields) are imported inside the functions. ``baseline_worktree`` is bound by
+name at call time, so a patched ``booley.flows.baseline_worktree.baseline_worktree``
+stays effective; the deferred imports also keep importing this module from
+Goal entry from loading any module entry did not already load at import time.
 """
 
 from __future__ import annotations
@@ -252,8 +251,8 @@ def _baseline_recipe_root(
         return
     from booley.flows.baseline_worktree import BaselineWorktreeError, baseline_worktree
 
-    # The policy is passed only when the caller chose one, so the default call
-    # stays the default policy.
+    # Pass the policy only when the caller chose one; otherwise baseline_worktree
+    # applies its own default.
     policy = {} if paired_project is None else {"paired_project": paired_project}
     try:
         with baseline_worktree(Path(ctx.work_dir), ctx.base_sha, **policy) as root:
