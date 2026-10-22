@@ -27,6 +27,7 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.shared_infra import load_job_budget_config
+from booley.runtime.supervised_execution import no_cancellation_cause
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -38,10 +39,6 @@ logger = logging.getLogger(__name__)
 
 class AdmissionIdentityError(ValueError):
     """The enclosing runtime execution identity is malformed or inconsistent."""
-
-
-def _no_cancellation_cause() -> str | None:
-    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +53,7 @@ class AdmissionContext:
     execution_id: ExecutionId | None
     timeout_seconds: float | None
     cancellation: Callable[[], bool]
-    cancellation_cause: Callable[[], str | None] = _no_cancellation_cause
+    cancellation_cause: Callable[[], str | None] = no_cancellation_cause
     parent_execution_id: ExecutionId = field(init=False)
 
     def __post_init__(self) -> None:
@@ -166,7 +163,7 @@ def _admission_cancellation_cause(
 ) -> Callable[[], str | None]:
     """Name why the borrowed outer claim was withdrawn or lost, else ``None``."""
     if store is None or not isinstance(token, job_slots.SlotToken):
-        return _no_cancellation_cause
+        return no_cancellation_cause
     slot = f"{token.job_class}/{token.path.name}"
 
     def cause() -> str | None:

@@ -84,7 +84,7 @@ class SupervisedProcessSet:
         )
 
 
-def _no_cancellation_cause() -> str | None:
+def no_cancellation_cause() -> str | None:
     return None
 
 
@@ -93,7 +93,7 @@ class SupervisedExecutionScope:
     execution_id: ExecutionId | None
     project_data: Path
     cancelled: Callable[[], bool]
-    cancellation_cause: Callable[[], str | None] = _no_cancellation_cause
+    cancellation_cause: Callable[[], str | None] = no_cancellation_cause
     processes: SupervisedProcessSet = field(init=False, compare=False)
 
     def __post_init__(self) -> None:
