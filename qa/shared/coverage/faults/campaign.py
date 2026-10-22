@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
+#: Booley's uncompressed point-store ceiling (coverage_campaign_store.MAX_UNCOMPRESSED_BYTES).
+POINT_CEILING_BYTES = 512 * 1024 * 1024
 
 
 def canonical(value: object) -> bytes:
@@ -19,35 +21,19 @@ def canonical(value: object) -> bytes:
     )
 
 
-def rewrite_points(path: Path, document: dict, records: list[dict]) -> None:
-    raw = b"".join(canonical(row) for row in records)
-    compressed = gzip.compress(raw, mtime=0)
-    path.write_bytes(compressed)
-    document["point_store"].update(
-        bytes=len(compressed),
-        uncompressed_bytes=len(raw),
-        point_count=len(records) - 1,
-        sha256="sha256:" + hashlib.sha256(compressed).hexdigest(),
-    )
-
-
-def corrupt_points(mode: str, path: Path, document: dict) -> None:
+def corrupt_points(mode: str, path: Path) -> None:
+    """Booley trusts the recorded point-store identity, so the manifest stays as published."""
     if mode == "missing-points":
         path.unlink()
-    elif mode == "changed-points":
-        path.write_bytes(path.read_bytes() + b"changed")
     elif mode == "truncated-gzip":
-        data = path.read_bytes()[:-8]
-        path.write_bytes(data)
-        document["point_store"].update(
-            bytes=len(data), sha256="sha256:" + hashlib.sha256(data).hexdigest()
-        )
+        path.write_bytes(path.read_bytes()[:-8])
     elif mode == "trailing-data":
-        data = path.read_bytes() + b"not a gzip member"
-        path.write_bytes(data)
-        document["point_store"].update(
-            bytes=len(data), sha256="sha256:" + hashlib.sha256(data).hexdigest()
-        )
+        path.write_bytes(path.read_bytes() + b"not a gzip member")
+    elif mode == "resource-ceiling":
+        # Decompresses one byte past the ceiling; the reader must stop there.
+        with gzip.GzipFile(path, "wb", compresslevel=1, mtime=0) as stream:
+            for start in range(0, POINT_CEILING_BYTES + 1, 1 << 20):
+                stream.write(b" " * min(1 << 20, POINT_CEILING_BYTES + 1 - start))
     else:
         records = [json.loads(line) for line in gzip.decompress(path.read_bytes()).splitlines()]
         if mode == "duplicate-point":
@@ -56,7 +42,7 @@ def corrupt_points(mode: str, path: Path, document: dict) -> None:
             records[-1]["hits_by_run"] = {"wrong-run": -1}
         else:
             raise ValueError("unknown point fault")
-        rewrite_points(path, document, records)
+        path.write_bytes(gzip.compress(b"".join(canonical(row) for row in records), mtime=0))
 
 
 def regular_owned(path: Path, owned: Path) -> None:
@@ -106,13 +92,13 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
     points = path.parent / "coverage-points.jsonl.gz"
     if mode in {
         "missing-points",
-        "changed-points",
         "truncated-gzip",
         "trailing-data",
         "duplicate-point",
         "invalid-final-record",
+        "resource-ceiling",
     }:
-        corrupt_points(mode, points, document)
+        corrupt_points(mode, points)
     elif mode in {"v1", "v2", "v3"}:
         # The schema gate rejects an unsupported version before any decode.
         document["$schema"] = "booley.coverage-campaign/" + mode
@@ -123,20 +109,7 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
 
 
 def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None:
-    fields = {
-        "point-count": "point_count",
-        "compressed-size": "bytes",
-        "uncompressed-size": "uncompressed_bytes",
-    }
-    if mode in fields:
-        document["point_store"][fields[mode]] += 1
-    elif mode == "point-digest":
-        document["point_store"]["sha256"] = "sha256:" + "0" * 64
-    elif mode in {"unsafe-relative-path", "absolute-path"}:
-        document["point_store"]["path"] = (
-            "../outside.gz" if mode.startswith("unsafe") else str(owned / "outside.gz")
-        )
-    elif mode == "symlink":
+    if mode == "symlink":
         points = path.parent / "coverage-points.jsonl.gz"
         outside = owned / "outside.gz"
         with outside.open("xb") as stream:
@@ -156,8 +129,6 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
         document["evaluation"]["status"] = (
             "pass" if document["evaluation"]["status"] != "pass" else "fail"
         )
-    elif mode == "resource-ceiling":
-        document["point_store"]["point_count"] = 1_000_001
     else:
         raise ValueError(f"unknown Campaign fault: {mode}")
 
