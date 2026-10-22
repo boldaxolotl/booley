@@ -239,7 +239,7 @@ class TerminalProgress:
         self._command_lock = threading.Lock()
         self._active_commands = 0
         self._execution_role: str | None = None
-        # Concurrent lanes, in open order; closed lanes stay until their lines are flushed.
+        # Concurrent lanes, in open order; closed lanes stay until the final drain flushes them.
         self._lanes: list[_Lane] = []
         # Per pipe source: the lane and production-time label of its latest chunk,
         # and a stage set by an in-band ``BOOLEY_STAGE:`` marker.
@@ -570,13 +570,12 @@ class TerminalProgress:
                 lane.pending.clear()
             else:
                 self._flush_lane(lane)
-        self._prune_lanes()
+        # Only now can nothing more arrive for a closed lane: queued samples and
+        # unterminated last lines are attributed to it until the final drain.
+        self._lanes = []
 
     def _open_lanes(self) -> list[_Lane]:
         return [lane for lane in self._lanes if not lane.closed]
-
-    def _prune_lanes(self) -> None:
-        self._lanes = [lane for lane in self._lanes if not (lane.closed and not lane.pending)]
 
     def _open_lane(self, label: str) -> _Lane:
         with self.lock:
@@ -640,7 +639,6 @@ class TerminalProgress:
                     self._flush_lane(lane)
             self.new_lines.clear()
             self.last_record = now
-        self._prune_lanes()
 
     def _lane_rows(self, lanes: list[_Lane], now: float) -> list[str]:
         """One header row per open lane, followed by its share of recent output."""

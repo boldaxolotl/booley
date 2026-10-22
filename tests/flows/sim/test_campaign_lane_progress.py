@@ -25,7 +25,7 @@ from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
-from booley.flows.terminal_progress import TerminalProgress, announce_unit
+from booley.flows.terminal_progress import TerminalProgress, announce_unit, progress_lane
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
@@ -258,3 +258,21 @@ def test_one_lane_command_start_keeps_other_lane_tail(
     lane_rows = [index for index, row in enumerate(rows) if f"lane={labels['beta']} " in row]
     assert lane_rows, f"no row for beta's lane in frame: {rows}"
     assert rows[lane_rows[0] + 1 : lane_rows[0] + 2] == ["beta tail line"]
+
+
+def test_closed_lane_output_is_not_dropped_before_the_final_drain(tmp_path: Path) -> None:
+    now = [0.0]
+    sink = TerminalProgress("sim", "sim_demo", tmp_path, stream=Screen(), clock=lambda: now[0])
+    with sink.installed():
+        with progress_lane("alpha/1"):
+            # More queued chunks than one poll consumes, plus an unterminated last line.
+            for index in range(600):
+                sink.observe("stdout:1", f"alpha line {index}\n".encode())
+            sink.observe("stdout:1", b"alpha last, no newline")
+        with progress_lane("beta/2"):
+            now[0] += 6  # the heartbeat fires while alpha's lane is already closed
+            sink._poll()
+            sink._drain_end()
+    text = "\n".join(_records(sink))
+    assert "alpha line 599" in text
+    assert "alpha last, no newline" in text
