@@ -59,7 +59,7 @@ def preflight_worktree_moves(
         interrupted = not move.source.exists() and move.destination.is_dir()
         inspected = move.destination if interrupted else move.source
         _validate_source(inspected)
-        _validate_same_filesystem(inspected, move.destination)
+        _require_one_filesystem(inspected, move.destination)
         if (move.destination.exists() or move.destination.is_symlink()) and (
             (move.repository, move.destination) not in sources
             and move.destination not in allowed
@@ -173,7 +173,7 @@ def _validate_source(source: Path) -> None:
     _validate_submodule_layout(source, source)
 
 
-def _validate_same_filesystem(source: Path, destination: Path) -> None:
+def _require_one_filesystem(source: Path, destination: Path) -> None:
     existing_parent = _nearest_existing_parent(destination.parent)
     if source.stat().st_dev != existing_parent.stat().st_dev:
         raise WorktreeRelocationError(
