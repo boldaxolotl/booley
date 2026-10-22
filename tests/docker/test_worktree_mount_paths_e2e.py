@@ -124,7 +124,7 @@ def test_external_directory_layout_uses_actual_guarded_builder(
         built = adapter.prepare(node, candidate_reference=output, parent_reference=parent_id)
         assert built == output
         child = project_image.inspect_layout_image(output)
-        project_image.verify_layout_image(parent, child)
+        project_image.verify_layout_parent_identity(child["Id"], parent_id)
         assert child["Config"]["Labels"][lifecycle.LABEL_WHEEL_SHA256] == "a" * 64
         _assert_layout_logical_selection(output, parent_id, root)
         result = _external_container(
@@ -232,7 +232,9 @@ def _layout_fixture_node(root: Path, parent_id: str, parent: dict):
         wheel_source_fingerprint="fixture-source",
         logical_selection_fingerprint=labels[lifecycle.LABEL_LOGICAL_SELECTION_FINGERPRINT],
     )
-    return lifecycle._layout_node(root, upstream, parent_id)
+    from booley.runtime import project_image
+
+    return lifecycle._layout_node(project_image.layout_topology(root), upstream, parent_id)
 
 
 def _assert_layout_logical_selection(output: str, parent_id: str, root: Path) -> None:

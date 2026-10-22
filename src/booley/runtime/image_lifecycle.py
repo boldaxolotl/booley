@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 import tomllib
@@ -265,6 +264,7 @@ class LifecyclePlan:
     input_snapshot: InputSnapshot
     project_root: Path
     acquisition_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY
+    layout_topology: project_image.LayoutTopology | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,23 +398,6 @@ def _candidate_reference_is_transactional(reference: str) -> bool:
     return local_reference.startswith("booley-lifecycle-") and local_reference.endswith(
         ":candidate"
     )
-
-
-def _active_layout_parent(reference: str) -> bool:
-    match = re.fullmatch(
-        r"(?:127\.0\.0\.1:1/)?booley-lifecycle-(\d+)-[0-9a-f]{32}-layout(?:-parent)?:candidate",
-        reference,
-    )
-    if match is None:
-        return False
-    if os.name != "posix":
-        return True
-    try:
-        from booley.runtime.pid import is_pid_alive
-
-        return is_pid_alive(int(match.group(1)))
-    except (ValueError, OverflowError):
-        return True
 
 
 def _discard_orphaned_candidates(docker: DockerPort, project: Path | None = None) -> None:
@@ -1150,8 +1133,7 @@ def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
             or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent
         ):
             return Diagnostic("parent-changed", "recorded immutable parent differs")
-        layers = docker.image_layers(expected_parent)
-        if not layers or docker.image_layers(node.reference)[: len(layers)] != layers:
+        if not descends_from(docker, expected_parent, node.reference):
             return Diagnostic(
                 "parent-changed", "filesystem layers do not descend from the verified parent"
             )
@@ -1175,8 +1157,9 @@ def plan(
     steps = _plan_steps(nodes, resolved_docker, intent)
     parent_source = steps[-1].source_reference or nodes[-1].reference
     parent_id = resolved_docker.image_id(parent_source)
-    if _external_data_layout(root) and parent_id and _layout_alias_capable(parent_id):
-        layout = _layout_node(root, nodes[-1], parent_id)
+    topology = project_image.layout_topology(root)
+    if topology and parent_id and _layout_alias_capable(parent_id):
+        layout = _layout_node(topology, nodes[-1], parent_id)
         nodes = (*nodes, layout)
         selected = layout.reference
         layout_steps = _plan_steps(
@@ -1193,7 +1176,9 @@ def plan(
         )
         for ref, inputs, recipe, parent in snapshot.identities
     )
-    return LifecyclePlan(nodes, steps, selected, InputSnapshot(identities), root, artifact_policy)
+    return LifecyclePlan(
+        nodes, steps, selected, InputSnapshot(identities), root, artifact_policy, topology
+    )
 
 
 def _planned_nodes(root, selected, resolved_docker, artifact_policy):
@@ -1331,12 +1316,14 @@ def _verify_prepared_image(
         raise ImageLifecycleError(
             f"prepared candidate {reference!r} has invalid provenance: " + ", ".join(mismatched)
         )
-    if parent_artifact is not None and node.parent is not None:
-        layers = docker.image_layers(parent_artifact)
-        if not layers or docker.image_layers(reference)[: len(layers)] != layers:
-            raise ImageLifecycleError(
-                f"prepared candidate {reference!r} does not descend from its verified immutable parent"
-            )
+    if (
+        parent_artifact is not None
+        and node.parent is not None
+        and not descends_from(docker, parent_artifact, reference)
+    ):
+        raise ImageLifecycleError(
+            f"prepared candidate {reference!r} does not descend from its verified immutable parent"
+        )
     wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
     if (
         node.role
@@ -2466,29 +2453,23 @@ def _layout_alias_capable(image_id: str) -> bool:
         raise ImageLifecycleError(str(exc)) from exc
 
 
-def _external_data_layout(root: Path) -> bool:
-    from booley.runtime.booley_dir import resolve_booley_dir
-
-    try:
-        selected = resolve_booley_dir(root)
-        return selected.resolve() != (root / ".booley").resolve() and not selected.is_relative_to(
-            root
-        )
-    except (FileNotFoundError, ValueError):
-        return False
+def descends_from(docker: DockerPort, parent: str | None, child: str) -> bool:
+    """Whether the child's filesystem layers extend the parent's non-empty layers."""
+    layers = docker.image_layers(parent) if parent else []
+    return bool(layers) and docker.image_layers(child)[: len(layers)] == layers
 
 
-def _layout_node(root: Path, parent: ImageNode, parent_id: str) -> ImageNode:
-    recipe = docker_data_dir() / "Dockerfile.project-data-layout"
-    recipe_hash = resolve_recipe_fingerprint((recipe,))
-    reference, identity = project_image.layout_identity(root, parent_id, recipe_hash)
+def _layout_node(
+    topology: project_image.LayoutTopology, parent: ImageNode, parent_id: str
+) -> ImageNode:
+    reference, identity = topology.identity(parent_id)
     node = _graph_node(
         reference=reference,
         role=ImageRole.PROJECT_DATA_LAYOUT,
-        recipe=recipe,
+        recipe=topology.recipe,
         effective_inputs=identity,
         parent=parent,
-        recipe_fingerprint=recipe_hash,
+        recipe_fingerprint=topology.recipe_fingerprint,
         policy=ArtifactPolicy.LOCAL_ONLY,
         wheel_source_fingerprint=parent.wheel_source_fingerprint,
     )
@@ -2513,15 +2494,14 @@ def _prepare_layout_child(
     upstream = tuple(
         node for node in original.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
     )
-    if not _external_data_layout(original.project_root) or not _layout_alias_capable(
-        parent_image.image_id
-    ):
+    topology = original.layout_topology
+    if topology is None or not _layout_alias_capable(parent_image.image_id):
         steps = tuple(
             step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT
         )
         updated = _prepared_layout_plan(original, upstream, steps)
         return updated, None, (), None
-    node = _layout_node(original.project_root, upstream[-1], parent_image.image_id)
+    node = _layout_node(topology, upstream[-1], parent_image.image_id)
     reason = _planned_reason(node, docker, parent_invalid=False)
     action = PlanAction.BUILD if reason else PlanAction.REUSE
     assert node.role is ImageRole.PROJECT_DATA_LAYOUT
@@ -2570,9 +2550,7 @@ def _validate_layout_preparation(
         node for node in prepared.plan.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
     )
     now = tuple(node for node in current.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT)
-    if _snapshot(before) != _snapshot(now) or not _external_data_layout(
-        prepared.plan.project_root
-    ):
+    if _snapshot(before) != _snapshot(now) or current.layout_topology is None:
         raise ImageLifecycleError(
             "upstream image or Booley Directory topology inputs changed during layout preparation"
         )
@@ -2583,7 +2561,7 @@ def _validate_layout_preparation(
             "Booley Directory layout immutable prepared parent was substituted"
         )
     if has_layout:
-        expected = _layout_node(prepared.plan.project_root, before[-1], parent.image_id)
+        expected = _layout_node(current.layout_topology, before[-1], parent.image_id)
         if _snapshot((expected,)) != _snapshot((prepared.plan.nodes[-1],)):
             raise ImageLifecycleError(
                 "Booley Directory layout recipe or parent identity changed during preparation"

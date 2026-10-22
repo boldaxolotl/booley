@@ -328,27 +328,21 @@ def _logical_metadata(
 
 def _layout_parent_id(metadata: ImageMetadata, project_root: Path) -> str | None:
     from booley.runtime import project_image
-    from booley.runtime.image_provenance import resolve_recipe_fingerprint
-    from booley.runtime.paths import docker_data_dir
 
+    topology = project_image.layout_topology(project_root)
     labels = metadata.labels
-    scope = labels.get(project_image.LABEL_LAYOUT_REFERENCE, "")
-    inputs = labels.get(LABEL_EFFECTIVE_INPUTS, "")
-    recipe = resolve_recipe_fingerprint((docker_data_dir() / "Dockerfile.project-data-layout",))
     parent_id = labels.get(LABEL_PARENT_ARTIFACT, "")
     if (
-        labels.get(LABEL_SCHEMA) != PROVENANCE_SCHEMA
+        topology is None
+        or labels.get(LABEL_SCHEMA) != PROVENANCE_SCHEMA
         or labels.get(LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_LOCAL_IMAGE_ID
-        or labels.get(LABEL_RECIPE_FINGERPRINT) != recipe
-        or _SHA256_HEX.fullmatch(inputs) is None
-        or not scope.endswith(inputs[:16])
+        or labels.get(LABEL_RECIPE_FINGERPRINT) != topology.recipe_fingerprint
         or re.fullmatch(r"sha256:[0-9a-f]{64}", parent_id) is None
         or re.fullmatch(r"sha256:[0-9a-f]{64}", metadata.image_id) is None
     ):
         return None
-    expected_reference, expected_inputs = project_image.layout_identity(
-        project_root, parent_id, recipe
-    )
-    if scope != expected_reference or inputs != expected_inputs:
+    scope = labels.get(project_image.LABEL_LAYOUT_REFERENCE, "")
+    inputs = labels.get(LABEL_EFFECTIVE_INPUTS, "")
+    if (scope, inputs) != topology.identity(parent_id):
         return None
     return parent_id
