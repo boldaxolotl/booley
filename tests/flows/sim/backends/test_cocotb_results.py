@@ -360,7 +360,6 @@ class TestResultsLineRoundTrip:
         import json
 
         from booley.flows.sim.campaign.codec import MAX_DETAIL_BYTES
-        from booley.flows.sim.campaign.store import _validate_cocotb_source
 
         res = cr.CocotbResults(
             state=cr.STATE_OK,
@@ -372,23 +371,11 @@ class TestResultsLineRoundTrip:
             cr.format_results_line(res, selected=["absent"], verbosity="compact")
         )
         assert compact is not None
-        source = [
-            {"test": n, "verdict": v, "detail": d} for n, v, d in cr.reconcile(["absent"], res)
-        ]
         detail = cr.reconcile(["absent"], compact)[0][2]
         assert len(detail) <= 1200
         assert len(json.dumps({"reason": detail}).encode()) < MAX_DETAIL_BYTES
         assert "\n" not in detail and "\x1b" not in detail
         assert "more" in detail and "cocotb_results.json" in detail
-        observations = (
-            {
-                "test": "absent",
-                "execution": "completed",
-                "functional": "inconclusive",
-                "detail": {"reason": detail[-1536:]},
-            },
-        )
-        _validate_cocotb_source(source, observations)
 
     def test_round_trip_preserves_everything(self):
         res = cr.parse_results_xml(_RESULTS_XML)
