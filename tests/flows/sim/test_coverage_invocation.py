@@ -150,6 +150,13 @@ def test_custom_main_hook_errors_are_atomic_preflight_errors(tmp_path, hooks, re
     assert any("HOOK" in item.code for item in result.findings)
 
 
+def test_suite_reads_the_qualified_section_of_its_core(tmp_path: Path) -> None:
+    context = replace(project(tmp_path), test_names={"acme:demo:counter#sim_0": ("reset", "wrap")})
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert prepared.plan is not None
+    assert prepared.plan.targets[0].selected_tests == ("reset", "wrap")
+
+
 def test_unfiltered_suite_applies_configured_skips(tmp_path: Path) -> None:
     context = replace(project(tmp_path), skipped_tests={"sim_0": ("wrap",)})
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)

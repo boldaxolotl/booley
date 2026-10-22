@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
+from booley.config.project_config import lookup_target_section
 from booley.flows.test_runs import TestRun
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
@@ -118,9 +119,7 @@ def _suite(
     context: CoverageProjectContext,
     runs: tuple[TestRun, ...] | None = None,
 ):
-    declared = tuple(
-        context.test_names.get(handle.selector, context.test_names.get(handle.name, ()))
-    )
+    declared = tuple(lookup_target_section(context.test_names, handle.identity) or ())
     matched = [
         (key, policy)
         for key, policy in context.criteria.items()
@@ -130,9 +129,7 @@ def _suite(
         raise ValueError("Target binds more than one Coverage Criterion")
     key, criterion = matched[0] if matched else ("", None)
     required = criterion.tests if criterion and criterion.tests is not None else declared
-    skipped = set(
-        context.skipped_tests.get(handle.selector, context.skipped_tests.get(handle.name, ()))
-    )
+    skipped = set(lookup_target_section(context.skipped_tests, handle.identity) or ())
     # Selection never consults the Coverage Criterion: its test list is required
     # evidence, compared with what ran by evaluate_coverage_campaign (suite mismatch).
     if runs is not None:

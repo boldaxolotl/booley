@@ -55,12 +55,16 @@ def load_target_test_plan(
     work_dir: Path | str,
     target: str,
     *,
+    identity: str,
     adapter: str,
     target_plusargs: Collection[str] = (),
 ) -> TargetTestPlan:
-    """Read ``tests.toml`` of the checkout at *work_dir* and build *target*'s plan."""
+    """Read ``tests.toml`` of the checkout at *work_dir* and build *target*'s plan.
+
+    *identity* (``vlnv#name``) picks the Target's section; *target* is its display name.
+    """
     sections = load_test_configuration(work_dir)
-    section = lookup_target_section(sections, target)
+    section = lookup_target_section(sections, identity)
     return build_target_test_plan(
         target, section, adapter=adapter, target_plusargs=target_plusargs
     )
@@ -91,6 +95,7 @@ def load_checkout_target_test_plan(work_dir: Path | str, target: str) -> TargetT
     return load_target_test_plan(
         handle.project_root,
         handle.selector,
+        identity=handle.identity,
         adapter=simulation_adapter_kind(inspection.eda_tool, inspection.flow_options),
         target_plusargs=plusarg_parameter_names(inspection.parameters),
     )

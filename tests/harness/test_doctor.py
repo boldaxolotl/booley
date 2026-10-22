@@ -1611,6 +1611,11 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
     booley_dir = _write_project(tmp_path)
     (booley_dir / "tests.toml").write_text(tests_toml_text, encoding="utf-8")
+    (tmp_path / "c910.core").write_text(
+        "CAPI=2:\nname: acme:ip:c910:0\ntargets:\n  sim_core:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
     return doctor.ProjectAudit(
         project_root=tmp_path,
         booley_dir=booley_dir,
@@ -9201,3 +9206,35 @@ def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
     )
     assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
     assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
+
+
+def test_cocotb_select_check_reads_the_qualified_section(tmp_path):
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "tests.toml").write_text(
+        '["unit#sim_fast"]\nselect = "+t={name}"\n', encoding="utf-8"
+    )
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        booley_dir=booley_dir,
+        booley_toml={},
+        configs_toml={},
+        first_target="sim_fast",
+    )
+    ref = fusesoc_registry.TargetRef(
+        name="sim_fast",
+        vlnv="::unit:0",
+        core_file=tmp_path / "unit.core",
+        eda_tool="verilator",
+        flow="sim",
+        cocotb_module="tb",
+    )
+    failures: list[str] = []
+    doctor._check_cocotb_targets(
+        project,
+        {"sim_fast": ref},
+        lambda _message: None,
+        lambda *_args, **_kwargs: None,
+        lambda _message: None,
+        lambda message, _fix="": failures.append(message),
+    )
+    assert any("`select` plusarg template" in message for message in failures)

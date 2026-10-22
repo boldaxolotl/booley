@@ -150,6 +150,11 @@ from booley.targets.domain import (
     flow_can_drive,
 )
 from booley.targets.flow_names import config_section
+from booley.targets.selection import (
+    TargetSectionConflictError,
+    section_key_names,
+    target_section_key,
+)
 
 if TYPE_CHECKING:
     from booley.harness import developer_probe
@@ -5709,7 +5714,10 @@ def _check_cocotb_targets(
     sections = _load_tests_toml_normalized(project)
     for name, ref in sorted(cocotb_refs.items()):
         module = ref.cocotb_module or ""
-        section = sections.get(name, {})
+        try:
+            section = lookup_target_section(sections, f"{ref.vlnv}#{ref.name}") or {}
+        except TargetSectionConflictError:
+            continue  # the section-key audit reports the duplicate keys
         if "select" in section:
             _fail(
                 f"cocotb Target '{name}' declares a tests.toml `select` plusarg template",
@@ -5951,9 +5959,13 @@ def _audit_test_run_plans(
             if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
         ]
         try:
+            section = lookup_target_section(sections, handle.identity)
+        except TargetSectionConflictError:
+            continue  # the section-key audit reports the duplicate keys once
+        try:
             plan = build_target_test_plan(
                 handle.selector,
-                lookup_target_section(sections, handle.selector),
+                section,
                 adapter=adapter,
                 target_plusargs=plusargs,
             )
@@ -5985,13 +5997,12 @@ def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
 
 
 def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail) -> None:
-    """Check every tests.toml section names a Target that actually exists.
+    """Check every tests.toml section key names one Target, and no Target has two.
 
-    A section keyed to a Target no one declares is dead config that looks
-    live: the lookup misses, no selector reaches the binary, and the
-    testbench runs its *default* test to a green PASS. That is the same
-    silent-uninitialized-run failure the qualifier-tolerant lookup fixes, so
-    validation has to agree with execution about which keys resolve.
+    A key naming no Target is dead config that looks live: the lookup misses,
+    no selector reaches the binary, and the testbench runs its *default* test
+    to a green PASS. Two keys naming one Target make the choice of section
+    ambiguous. Both use the lookup rule the Simulation Flow uses.
     """
     try:
         handles = TargetCatalog.build(project.project_root).list()
@@ -5999,16 +6010,20 @@ def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail
         return  # enumeration failure is already reported by the structural audit
     if not handles:
         return
-    known = {handle.name for handle in handles} | {handle.identity for handle in handles}
-    bare_known = {name.rsplit("#", 1)[-1] for name in known}
     for key in sections:
-        if key in known or key.rsplit("#", 1)[-1] in bare_known:
-            continue
-        _fail(
-            f"tests.toml section [{key}] names no declared .core Target",
-            "fix the section key (a dead key runs the testbench's default "
-            "test and reports a false PASS)",
-        )
+        if not any(
+            section_key_names(key, handle.identity) or key == handle.name for handle in handles
+        ):
+            _fail(
+                f"tests.toml section [{key}] names no declared .core Target",
+                "fix the section key (a dead key runs the testbench's default "
+                "test and reports a false PASS)",
+            )
+    for handle in handles:
+        try:
+            target_section_key(sections, handle.identity)
+        except TargetSectionConflictError as exc:
+            _fail(str(exc), "keep one tests.toml section per Target")
 
 
 def _report_core_resolve(
@@ -7318,9 +7333,11 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
                 sections = normalize_tests_toml(tomllib.load(f))
         except (OSError, ValueError, tomllib.TOMLDecodeError):
             sections = {}  # _audit_tests_toml already reported the breakage
-        # Targets may arrive VLNV-qualified ("vlnv#name"); tests.toml keys are
-        # bare Target names.
-        section = sections.get(target) or sections.get(target.rsplit("#", 1)[-1])
+        try:
+            identity = TargetCatalog.build(project.project_root).select(target).identity
+            section = lookup_target_section(sections, identity)
+        except (FuseSocError, TargetSectionConflictError):
+            section = None  # reported by the resolve and section-key audits
         if isinstance(section, dict):
             tests = section.get("tests")
             if isinstance(tests, list) and tests:

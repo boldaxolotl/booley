@@ -66,7 +66,7 @@ def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _runs(tmp_path: Path, *selectors: str) -> tuple[TestRun, ...]:
-    plan = load_target_test_plan(tmp_path, "sim_0", adapter="verilator")
+    plan = load_target_test_plan(tmp_path, "sim_0", identity="sim_0", adapter="verilator")
     return plan.resolve(selectors, draw=_fixed_draw)
 
 
@@ -390,9 +390,9 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
         + " --coverage"
     )
     # The named command resolves to exactly the frozen Test Runs: nothing is drawn.
-    replayed = load_target_test_plan(tmp_path, "sim_0", adapter="verilator").resolve(
-        names, draw=lambda *_args, **_kwargs: pytest.fail("a seed was drawn again")
-    )
+    replayed = load_target_test_plan(
+        tmp_path, "sim_0", identity="sim_0", adapter="verilator"
+    ).resolve(names, draw=lambda *_args, **_kwargs: pytest.fail("a seed was drawn again"))
     assert json.dumps([test_run_document(run) for run in replayed], sort_keys=True) == (
         json.dumps(_recorded_runs(manifest), sort_keys=True)
     )

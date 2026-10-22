@@ -172,7 +172,8 @@ from quiet attributable session presence; quiet does not prove abandonment.
   fact, not as a problem. A `tests.toml` entry that the Target cannot apply
   fails: a Test Variant argument that overrides a plusarg the Target
   declares, arguments or a `seed` template on a Cocotb Target, or
-  `default_seed` on an unseeded Target. See
+  `default_seed` on an unseeded Target. A section key that names no Target,
+  or two keys that name one Target, also fail and name the key or keys. See
   [Tests (`tests.toml`)](CONFIG.md#tests-teststoml).
 - `tickets.leftover-board`: nonempty `tickets/board`, `tickets/state`,
   `tickets/logs`, `tickets/locks`, or `tickets/waiver-candidates` is reported
