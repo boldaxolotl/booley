@@ -21,6 +21,7 @@ from booley.runtime.execution_records import (
     atomic_write_json,
     execution_paths,
     read_json,
+    read_slot_entry,
     request_cancellation,
 )
 from booley.runtime.execution_recovery import recover_execution
@@ -447,6 +448,10 @@ class ChildExecutionRegistry:
         if len(matches) > 1:
             raise SimulationCampaignIntegrityError("duplicate child slot claims")
         if not matches:
+            if not slot_store.execution_token_absent(CLASS_HEAVY, execution_id):
+                raise SimulationCampaignIntegrityError(
+                    "child slot claim is unreadable; token absence cannot be proven"
+                )
             return None
         token = matches[0]
         slot_store.release(token)
@@ -460,16 +465,20 @@ class ChildExecutionRegistry:
             return
         from booley.runtime.job_slots import CLASS_HEAVY
 
-        holders, waiters = slot_store.snapshot(CLASS_HEAVY)
-        if any(token.execution_id == execution_id for token in (*holders, *waiters)):
+        if not slot_store.execution_token_absent(CLASS_HEAVY, execution_id):
             raise SimulationCampaignIntegrityError(
-                "child retirement claims token absence while its slot claim remains"
+                "child retirement claims token absence while its slot claim remains or is unreadable"
             )
 
     def _assert_no_unmanaged_token(self, execution_id: ExecutionId) -> None:
         slots = self._project_data / "runtime" / "jobs" / "slots"
         for path in slots.glob("*/*.json"):
-            payload = read_json(path)
+            try:
+                payload = read_slot_entry(path)
+            except OSError as exc:
+                raise SimulationCampaignIntegrityError(
+                    "child token presence cannot be reconciled: slot entry unreadable"
+                ) from exc
             if payload is not None and payload.get("execution_id") == execution_id:
                 raise SimulationCampaignIntegrityError(
                     "child token presence cannot be reconciled without managed admission"

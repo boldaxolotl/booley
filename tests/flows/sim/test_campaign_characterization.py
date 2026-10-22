@@ -715,34 +715,6 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
     assert result.document["observations"][0]["detail"]["termination"] == "sim_time_stall"
 
 
-def test_campaign_scan_rejects_adapter_guard_for_foreign_target(tmp_path) -> None:
-    import hashlib
-
-    from booley.flows.sim.campaign.codec import (
-        SimulationCampaignIntegrityError,
-        canonical_json_bytes,
-    )
-
-    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
-    (result_path,) = store.root.glob("work-items/*/result.json")
-    document = json.loads(result_path.read_bytes())
-    (attempt,) = result_path.parent.glob("attempts/*")
-    reference = next(
-        item for item in document["evidence"] if item["kind"] == "simulation_adapter_result"
-    )
-    source_path = attempt / reference["path"]
-    source = json.loads(source_path.read_bytes())
-    source["target_identity"] = "foreign#sim"
-    raw = json.dumps(source, separators=(",", ":")).encode()
-    source_path.write_bytes(raw)
-    reference["bytes"] = len(raw)
-    reference["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
-    result_path.write_bytes(canonical_json_bytes(document))
-    with pytest.raises(SimulationCampaignIntegrityError, match="Target disagrees"):
-        store.scan()
-
-
 @pytest.mark.parametrize("met", [True, False])
 def test_standalone_legacy_simulation_final_report_is_run_local(
     tmp_path, _leased_build_session, met
@@ -764,3 +736,16 @@ def test_standalone_legacy_simulation_final_report_is_run_local(
     assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None
+
+
+def test_campaign_scan_takes_a_published_infrastructure_verdict_as_published(tmp_path) -> None:
+    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    published = store.scan().items[0].result
+    assert published is not None
+    for reference in published.document["evidence"]:
+        if reference["kind"] == "simulation_adapter_result":
+            (attempt,) = (store.root / "work-items").glob("*/attempts/*")
+            (attempt / reference["path"]).unlink()
+
+    assert store.scan().items[0].result == published

@@ -57,7 +57,6 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows.baseline_pins import (
     BaselinePinError,
-    PinWording,
     SnapshotBuilder,
     freeze_recipe_family,
     pin_cycle_count_baselines,
@@ -113,8 +112,6 @@ from booley.targets.domain import FuseSocError, UnknownTargetError
 
 GOAL_BRANCH_PREFIX = "goal/"
 DEFAULT_GOALSET = "default"
-# How pinning errors name a Goal Mode (they name a Ticket on the Ticket path).
-GOAL_PIN_WORDING = PinWording(work_item="the Goal Mode", entry_point="Goal entry")
 # Per-Target Goal families whose thresholds may compare against a baseline Target.
 _BASELINE_FAMILIES = frozenset({GoalFamily.SYNTH, GoalFamily.FPGA, GoalFamily.CYCLE_COUNT})
 
@@ -704,7 +701,7 @@ def pin_goal_baselines(
     )
     expanded = dict.fromkeys(params, True)
     try:
-        pin_cycle_count_baselines(ctx, params, wording=GOAL_PIN_WORDING)
+        pin_cycle_count_baselines(ctx, params)
         for family in env.recipe_families:
             freeze_recipe_family(
                 ctx,
@@ -713,7 +710,6 @@ def pin_goal_baselines(
                 prefix=family.prefix,
                 flow_label=family.flow_label,
                 snapshot_builder=family.snapshot_builder,
-                wording=GOAL_PIN_WORDING,
                 paired_project=paired,
             )
     except BaselinePinError as exc:

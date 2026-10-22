@@ -17,6 +17,17 @@ Packaged release history starts at 0.2.7. For older changes, see
   and `booley doctor` fails them and any key that names no Target. A stale
   qualified key, for example after a core rename, no longer falls back to the
   bare section: Doctor fails it as dead. Keep one key per Target.
+- On Windows, a Simulation Campaign no longer stops with "child execution cancelled
+  before result publication" when a Job Slot token read or lease renewal races a
+  concurrent rewrite. Token reads and rewrites use the same bounded sharing-error
+  retry as other protocol files, and a token that stays unreadable is never treated
+  as absent. A campaign cancellation now names its cause (stop requested, lease lost,
+  or token missing) and the slot or lane.
+- On Windows, a simulation baseline Job's request and Job record are now read and
+  written through the short sharing errors a concurrent replace causes, so a baseline
+  no longer reports "interrupted or unavailable" because a read raced a write. A Job
+  record that stays unreadable is reported with its cause instead of as absent, and
+  the Job record is written before the baseline is published as `pending`.
 - `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
   run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
   that point into it; `booley cleanup preview --run-id <id>` lists its files.

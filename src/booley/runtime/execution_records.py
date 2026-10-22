@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.runtime.booley_dir import resolve_booley_dir
-from booley.runtime.filesystem_utils import replace_file
+from booley.runtime.filesystem_utils import read_file_bytes, replace_file
 from booley.runtime.pid import RUNNING, ProcessIdentity, ProcessObservation, observe_process
 from booley.runtime.process_tree import has_ancestor
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -146,6 +146,25 @@ def read_json(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def read_slot_entry(
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any] | None:
+    """Read one Job Slot entry, keeping "missing" apart from "unreadable".
+
+    Returns the payload, or ``None`` when the file is missing or its content is
+    corrupt (not UTF-8, not JSON, not an object). Any other ``OSError``,
+    including a Windows sharing error that outlasted the shared retry budget,
+    propagates so the caller can fail closed instead of reading "no token".
+    """
+    try:
+        payload = json.loads(read_file_bytes(path, sleep=sleep).decode("utf-8"))
+    except (FileNotFoundError, ValueError):  # ValueError: bad UTF-8 or bad JSON
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -311,11 +330,15 @@ def force_cancellation_requested(paths: ExecutionPaths) -> bool:
     return paths.force.exists()
 
 
-def _referenced_execution_ids(booley_dir: Path) -> set[str]:
+def _referenced_execution_ids(booley_dir: Path) -> set[str] | None:
+    """Execution IDs pinned by live claims, or ``None`` when a slot entry is unreadable."""
     references: set[str] = set()
     slots = booley_dir / "runtime" / "jobs" / "slots"
     for path in slots.glob("*/*.json"):
-        payload = read_json(path)
+        try:
+            payload = read_slot_entry(path)
+        except OSError:
+            return None
         execution_id = payload.get("execution_id") if payload is not None else None
         try:
             references.add(ExecutionId(execution_id))
@@ -572,7 +595,13 @@ def _fsync_registry_directories(project_root: Path) -> None:
 def _require_child_token_absent(booley_dir: Path, execution_id: ExecutionId) -> None:
     slots = booley_dir / "runtime" / "jobs" / "slots"
     for path in slots.glob("*/*.json"):
-        payload = read_json(path)
+        try:
+            payload = read_slot_entry(path)
+        except OSError as exc:
+            raise ValueError(
+                "cannot prove retired campaign child owns no Job Slot token: "
+                f"{path.name} unreadable"
+            ) from exc
         if payload is not None and payload.get("execution_id") == execution_id:
             raise ValueError("retired campaign child still owns a Job Slot token")
 
@@ -678,6 +707,8 @@ def gc_terminal_executions(
     if not executions.is_dir():
         return []
     referenced = _referenced_execution_ids(booley_dir)
+    if referenced is None:
+        return []  # a pin may hide in the unreadable entry: remove nothing this pass
     cutoff = (time.time() if now is None else now) - retention_seconds
     removed: list[str] = []
     for root in executions.iterdir():

@@ -24,6 +24,7 @@ import hashlib
 import logging
 import re
 import subprocess
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -597,18 +598,48 @@ def project_data_alias_capable(image_id: str) -> bool:
     return result.stdout.strip() == "canonical-alias"
 
 
-def layout_identity(root: Path, parent_id: str, recipe_hash: str) -> tuple[str, str]:
-    """Resolve the exact Project, data topology, immutable parent and recipe key."""
-    from booley.runtime.booley_dir import resolve_booley_dir
+@dataclass(frozen=True, slots=True)
+class LayoutTopology:
+    """Resolved external Booley Directory inputs for one Project's layout derivative."""
 
-    root = root.resolve()
-    data = resolve_booley_dir(root).resolve()
+    project_root: Path
+    booley_dir: Path
+    recipe: Path
+    recipe_fingerprint: str
+
+    def identity(self, parent_id: str) -> tuple[str, str]:
+        """Return the layout tag and effective-inputs hash for one immutable parent."""
+        identity = hashlib.sha256(
+            f"{self.project_root}|external-directory|{self.booley_dir}|{parent_id}"
+            f"|{self.recipe_fingerprint}".encode()
+        ).hexdigest()
+        return f"{project_layout_prefix(self.project_root)}{identity[:16]}", identity
+
+
+def layout_recipe() -> Path:
+    """Return the one trusted layout recipe path (resolved at call time)."""
+    from booley.runtime.paths import docker_data_dir
+
+    return docker_data_dir() / "Dockerfile.project-data-layout"
+
+
+def layout_topology(project_root: Path) -> LayoutTopology | None:
+    """Derive the layout inputs once; ``None`` unless the Booley Directory is external."""
+    from booley.runtime.booley_dir import resolve_booley_dir
+    from booley.runtime.image_provenance import resolve_recipe_fingerprint
+
+    root = project_root.resolve()
+    try:
+        selected = resolve_booley_dir(root)
+    except (FileNotFoundError, ValueError):
+        return None
+    data = selected.resolve()
+    if data == (root / ".booley").resolve() or selected.is_relative_to(root):
+        return None
     if data.is_relative_to(root):
-        raise ValueError("Booley Directory layout derivative requires external directory topology")
-    identity = hashlib.sha256(
-        f"{root}|external-directory|{data}|{parent_id}|{recipe_hash}".encode()
-    ).hexdigest()
-    return f"{project_layout_prefix(root)}{identity[:16]}", identity
+        return None
+    recipe = layout_recipe()
+    return LayoutTopology(root, data, recipe, resolve_recipe_fingerprint((recipe,)))
 
 
 def inspect_layout_image(image: str, *, executable: str = "docker") -> dict:
@@ -762,13 +793,11 @@ def _image_history(image_id: str, executable: str) -> list[str]:
 
 
 def _verify_layout_history(parent_id: str, image_id: str, executable: str) -> None:
-    from booley.runtime.paths import docker_data_dir
-
     before, after = _image_history(parent_id, executable), _image_history(image_id, executable)
     if not before or len(after) <= len(before) or after[-len(before) :] != before:
         raise RuntimeError("Booley Directory layout build history has a substituted parent")
     try:
-        recipe = (docker_data_dir() / "Dockerfile.project-data-layout").read_text()
+        recipe = layout_recipe().read_text()
         run = recipe.split("RUN ", 1)[1].split("\nUSER ", 1)[0].replace("\\\n", " ")
     except (OSError, IndexError, UnicodeError) as exc:
         raise RuntimeError(

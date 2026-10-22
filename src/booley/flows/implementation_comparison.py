@@ -188,7 +188,7 @@ def _binding_for_candidate(
         for binding in matches[1:]
     ):
         raise ImplementationComparisonError(
-            f"Ticket baseline has conflicting {flow}/{criterion} bindings for "
+            f"Frozen baseline has conflicting {flow}/{criterion} bindings for "
             f"candidate Target {candidate.selector!r}"
         )
     return matches[0]
@@ -207,7 +207,7 @@ def _basis_plan(
     if state_baseline.identity != binding.baseline:
         raise ImplementationComparisonError(
             f"{flow.upper()}:{state_pair.candidate} baseline Target metadata does not "
-            "match the Ticket baseline"
+            "match the frozen baseline"
         )
     if not binding.baseline_selector.strip() or not binding.candidate_selector.strip():
         raise ImplementationComparisonError(
@@ -302,7 +302,7 @@ def target_pair_plans_for_candidates(
         if basis is not None:
             if project_root is None or not flow:
                 raise ImplementationComparisonError(
-                    "Ticket baseline comparison requires Project Root and flow"
+                    "Frozen baseline comparison requires Project Root and flow"
                 )
             plan = _basis_plan(
                 basis,

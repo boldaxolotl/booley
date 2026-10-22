@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from booley.harness import booley as cli
+from tests.harness.booley_dir_support import select_booley_dir
 
 
 def test_goal_surface_matches_catalogs():
@@ -28,11 +29,11 @@ def test_goal_status_flags_are_mutually_exclusive(capsys):
     assert "not allowed with argument" in capsys.readouterr().err
 
 
-def test_goal_abandon_refuses_without_occupying_record(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
+def test_goal_abandon_refuses_without_occupying_record(request, tmp_path, monkeypatch, capsys):
+    select_booley_dir(request, monkeypatch, tmp_path)
     args = cli._build_parser().parse_args(["goal", "abandon"])
     assert cli._EARLY_COMMANDS["goal"](args, tmp_path) == 2
-    assert "Goal" in capsys.readouterr().err
+    assert capsys.readouterr().err == "ERROR: abandon must run inside a Goal worktree\n"
 
 
 @pytest.mark.parametrize("command", ["run", "board"])
