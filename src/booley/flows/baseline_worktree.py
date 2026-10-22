@@ -106,10 +106,10 @@ def resolve_ticket_baseline(
     actual_sha = git_full_sha(selected, project_root)
     expected_sha = git_full_sha(expected, project_root)
     if actual_sha is None or expected_sha is None:
-        return selected, None, f"{flow_name}: ticket baseline ref cannot be resolved to a commit"
+        return selected, None, f"{flow_name}: pinned baseline ref cannot be resolved to a commit"
     if actual_sha != expected_sha:
         error = (
-            f"{flow_name}: baseline-relative ticket criteria require the pinned "
+            f"{flow_name}: baseline-relative criteria require the pinned "
             f"base_sha {expected_sha}; got {actual_sha}"
         )
         return selected, None, error
@@ -222,7 +222,7 @@ def _install_paired_project_baseline(
             raise BaselineWorktreeError(f"{policy.mode.value} Paired Checkout is unavailable")
         return None
     if policy.mode is PairedBaselineMode.ABSENT:
-        raise BaselineWorktreeError("unexpected Paired Checkout in Ticket execution")
+        raise BaselineWorktreeError("unexpected Paired Checkout: the baseline policy expects none")
     base_sha = policy.sha if policy.pinned else _paired_project_base_sha(repository.worktree)
     destination = wt_dir / ".booley"
     source = repository.worktree.resolve()

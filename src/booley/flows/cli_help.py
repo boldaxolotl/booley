@@ -98,7 +98,7 @@ EXPERT_GUIDANCE = (
 )
 BASELINE_HELP = HelpOption(
     "baseline",
-    "When omitted, use the pinned Ticket baseline for relative criteria; "
+    "When omitted, use the baseline pinned at Goal entry for relative criteria; "
     "otherwise run without baseline comparison.",
 )
 PPA_HELP = HelpOption(

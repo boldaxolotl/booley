@@ -73,7 +73,7 @@ def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
 # The one remedy sentence shared by the run-time error and the Doctor WARN fix column.
 LITERAL_RUN_CWD_REMEDY: Final[str] = (
     "Booley never creates a literal [flows.sim].run_cwd. Create it and commit a "
-    "placeholder file so it exists in every checkout and Ticket worktree (for "
+    "placeholder file so it exists in every checkout and worktree (for "
     "example: mkdir -p <dir> && touch <dir>/.gitkeep, then git add -f the "
     ".gitkeep in the repository that contains it and commit). Or, if the "
     "directory only receives per-run outputs, add an {attempt} placeholder (for "

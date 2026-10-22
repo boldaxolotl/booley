@@ -1,4 +1,4 @@
-"""Validate Sandbox Git environment and apply explicit Ticket identities."""
+"""Validate Sandbox Git environment and apply explicit worktree identities."""
 
 from __future__ import annotations
 
@@ -178,7 +178,7 @@ def apply_git_identity(checkout: Path, identity: GitIdentity) -> None:
 
 
 def main() -> None:
-    """Apply identity only when explicitly requested for a Ticket workspace."""
+    """Apply identity only when explicitly requested for a worktree."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ticket", action="store_true", required=True)
     parser.parse_args()
