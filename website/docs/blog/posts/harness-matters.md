@@ -117,7 +117,7 @@ Booley supplied the simulation interface, waveform queries, and build configurat
 
 ## The result: 21 minutes versus 56
 
-Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively. Token use was similar: a median of 5.8 million input tokens per trial with Booley and 6.4 million without, about 98% of them cache reads.
+Both setups completed the task in all ten trials. Mean completion time was **21.3 minutes with Booley** and **55.8 minutes with Claude Code alone** (Figure 1). The medians were 21.4 and 53.3 minutes respectively. Cost was similar too: at Sonnet 5.5 API prices, an average trial cost $1.98 with Booley and $2.33 without.
 
 <figure id="f1" aria-labelledby="f1cap">
       <div class="frame">
