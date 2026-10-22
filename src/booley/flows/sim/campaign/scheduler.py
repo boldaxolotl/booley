@@ -19,7 +19,7 @@ from booley.runtime.supervised_execution import (
     supervised_execution_scope,
 )
 
-from .capacity import HeavyCapacity, HeavyCapacityError
+from .capacity import ChildHeavyPermit, HeavyCapacity, HeavyCapacityError
 from .child_protocol import ChildExecutionRegistry
 
 
@@ -147,8 +147,8 @@ class BoundedCampaignScheduler:
                 self._run_item(item, outer)
             except BaseException as exc:  # noqa: BLE001 -- ferry worker failures to owner
                 self._errors.put(exc)
+                self._capacity.cancel_waiters(_worker_failure_cause(exc))
                 self._stop.set()
-                self._capacity.cancel_waiters()
                 return
             finally:
                 ready.task_done()
@@ -160,8 +160,8 @@ class BoundedCampaignScheduler:
             self._run_item(first, True)
         except BaseException as exc:  # noqa: BLE001 -- ferry worker failures to owner
             self._errors.put(exc)
+            self._capacity.cancel_waiters(_worker_failure_cause(exc))
             self._stop.set()
-            self._capacity.cancel_waiters()
         finally:
             ready.task_done()
         if not self._stop.is_set():
@@ -176,6 +176,7 @@ class BoundedCampaignScheduler:
                     None,
                     self._registry.project_data,
                     lambda: self._stop.is_set() or self._capacity.shutdown_requested,
+                    self._capacity.cancellation_cause,
                 )
                 with supervised_execution_scope(scope):
                     self._execute(attempt, None, None)
@@ -238,6 +239,7 @@ class BoundedCampaignScheduler:
                 child_id,
                 self._registry.project_data,
                 lambda: permit.lease_health.lost.is_set() or self._capacity.shutdown_requested,
+                lambda: self._child_cancellation_cause(permit),
             )
             try:
                 with supervised_execution_scope(scope):
@@ -257,8 +259,17 @@ class BoundedCampaignScheduler:
         if state.token is not None and not self._capacity.token_absent(state.token):
             raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
 
+    def _child_cancellation_cause(self, permit: ChildHeavyPermit) -> str | None:
+        if permit.lease_health.lost.is_set():
+            return f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
+        return self._capacity.cancellation_cause()
+
     def _capacity_parent_id(self) -> ExecutionId:
         return self._capacity.parent_execution_id
+
+
+def _worker_failure_cause(exc: BaseException) -> str:
+    return f"campaign stop requested after a work item failed ({type(exc).__name__})"
 
 
 __all__ = ["BoundedCampaignScheduler", "CampaignSchedulingError", "ScheduledAttempt"]

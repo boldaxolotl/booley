@@ -316,3 +316,41 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
     assert not execution_paths(unreferenced, booley_dir=tmp_path).root.exists()
     assert execution_paths(referenced, booley_dir=tmp_path).root.exists()
     assert running_paths.root.exists()
+
+
+def _unreadable_slot(tmp_path: Path, monkeypatch, execution_id: str) -> Path:
+    """A slot entry that exists but cannot be opened (Windows scanner, sharing error)."""
+    slot = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "holder.json"
+    slot.parent.mkdir(parents=True)
+    slot.write_text(json.dumps({"execution_id": execution_id}), encoding="utf-8")
+    original_open = Path.open
+
+    def locked_open(path, *args, **kwargs):
+        if path == slot:
+            raise PermissionError(13, "held by a scanner")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", locked_open)
+    return slot
+
+
+def test_gc_keeps_records_pinned_by_unreadable_slot_entry(tmp_path: Path, monkeypatch) -> None:
+    # An unreadable entry may pin any record, so the pass removes nothing (#1905).
+    pinned = "a" * 32
+    _old_terminal(tmp_path, pinned)
+    _unreadable_slot(tmp_path, monkeypatch, pinned)
+
+    assert gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10) == []
+    assert execution_paths(pinned, booley_dir=tmp_path).root.exists()
+
+
+def test_child_release_refuses_unreadable_slot_entry(tmp_path: Path, monkeypatch) -> None:
+    from booley.runtime.execution_records import _require_child_token_absent
+
+    child = ExecutionId("b" * 32)
+    slot = _unreadable_slot(tmp_path, monkeypatch, child)
+    with pytest.raises(ValueError, match=r"cannot prove .* unreadable"):
+        _require_child_token_absent(tmp_path, child)
+    monkeypatch.undo()
+    slot.unlink()  # missing is absent
+    _require_child_token_absent(tmp_path, child)
