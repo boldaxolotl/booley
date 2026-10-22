@@ -307,8 +307,8 @@ def _project_runtime(projection: _Projection) -> None:
     )
     projection.explain(("runtime_inputs",), lines)
     for position, (before, after) in enumerate(zip(old, new, strict=False)):
-        # The codec binds each declaration ID to its declaration, so an ID that
-        # changed at an unchanged destination only follows that declaration.
+        # An ID that changed at an unchanged destination only follows its
+        # declaration, so it is derived, not a separate change.
         if before["destination"] == after["destination"]:
             projection.resolved[("runtime_inputs", str(position))] = _DERIVED
 

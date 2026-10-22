@@ -1,4 +1,4 @@
-"""CLI adapter coverage for manifest-owned cleanup."""
+"""CLI adapter coverage for marker-guarded run-root cleanup."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from booley.harness.setup import cleanup_cli
-from booley.harness.setup.cleanup import prepare_run, preview_cleanup
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -26,85 +25,38 @@ def _parse(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespa
     return args
 
 
-def test_cleanup_cli_runs_prepare_record_preview_and_apply(
+def test_cleanup_cli_runs_prepare_preview_and_apply(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project = tmp_path / ".booley"
-    project.mkdir()
+    (tmp_path / ".booley").mkdir()
     parser = _parser()
 
     args = _parse(parser, ["cleanup", "prepare", "--run-id", "cli", "--json"])
     assert cleanup_cli.run(args, tmp_path) == 0
-    assert "scratch_root" in json.loads(capsys.readouterr().out)
-
-    capture = project / "tmp" / "setup" / "cli" / "capture.log"
+    prepared = json.loads(capsys.readouterr().out)
+    assert prepared["status"] == "prepared"
+    capture = Path(prepared["run_root"]) / "capture.log"
     capture.write_text("capture\n", encoding="utf-8")
-    args = _parse(
-        parser,
-        [
-            "cleanup",
-            "record",
-            str(capture),
-            "--run-id",
-            "cli",
-            "--producer",
-            "doctor",
-            "--class",
-            "capture",
-            "--job-record",
-            "job.json",
-        ],
-    )
-    assert cleanup_cli.run(args, tmp_path) == 0
-    assert "capture.log" in capsys.readouterr().out
 
-    plan = preview_cleanup(tmp_path, run_id="cli")
     args = _parse(parser, ["cleanup", "preview", "--run-id", "cli", "--json"])
     assert cleanup_cli.run(args, tmp_path) == 0
-    assert json.loads(capsys.readouterr().out)["digest"] == plan.digest
+    assert "capture.log" in {row["path"] for row in json.loads(capsys.readouterr().out)["files"]}
 
-    args = _parse(
-        parser,
-        [
-            "cleanup",
-            "apply",
-            "--run-id",
-            "cli",
-            "--digest",
-            plan.digest,
-            "--json",
-        ],
-    )
+    args = _parse(parser, ["cleanup", "apply", "--run-id", "cli"])
     assert cleanup_cli.run(args, tmp_path) == 0
-    assert json.loads(capsys.readouterr().out)["unresolved"] == []
+    assert capsys.readouterr().out.startswith("removed: ")
+    assert not capture.parent.exists()
 
 
-def test_cleanup_cli_reports_stale_digest(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    (tmp_path / ".booley").mkdir()
-    prepare_run(tmp_path, "cli-stale")
-    args = _parse(
-        _parser(),
-        [
-            "cleanup",
-            "apply",
-            "--run-id",
-            "cli-stale",
-            "--digest",
-            "stale",
-        ],
-    )
-
-    assert cleanup_cli.run(args, tmp_path) == 2
-    assert "stale" in capsys.readouterr().err
-
-
-def test_cleanup_cli_rejects_unknown_operation(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    (tmp_path / ".booley").mkdir()
-    args = argparse.Namespace(cleanup_command="unknown", project_root="")
-
-    assert cleanup_cli.run(args, tmp_path) == 2
-    assert "operation is required" in capsys.readouterr().err
+def test_cleanup_cli_rejects_removed_operation_and_options() -> None:
+    for argv in (
+        ["cleanup", "record", "x", "--run-id", "r", "--producer", "p", "--class", "c"],
+        ["cleanup", "apply", "--run-id", "r", "--digest", "d"],
+        ["cleanup", "preview", "--run-id", "r", "--retention", "minimal"],
+        ["cleanup", "preview", "--run-id", "r", "--cache-disposition", "preserve"],
+        ["cleanup", "preview"],
+        ["cleanup", "apply"],
+    ):
+        with pytest.raises(SystemExit) as raised:
+            _parser().parse_args(argv)
+        assert raised.value.code == 2, argv

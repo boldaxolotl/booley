@@ -241,6 +241,20 @@ _SNAPSHOT_FIELDS = frozenset(
     }
 )
 
+# SHA-256 of empty input: the source digest of a default (unnamed) required suite.
+_EMPTY_SHA256 = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+_FINGERPRINT_FIELDS = frozenset(
+    {
+        "workload_sha256",
+        "target_recipe_sha256",
+        "source_closures_sha256",
+        "required_suite_sha256",
+        "planning_disclosures_sha256",
+        "prerequisites_sha256",
+        "work_items_sha256",
+    }
+)
+
 T = TypeVar("T", bound=SimulationCampaignDocument)
 
 
@@ -1020,16 +1034,16 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
             "origin.execution_id must be empty or 32 lowercase hex"
         )
     _require_positive_int(origin["invocation_id"], "origin.invocation_id")
-    target = _validate_target(value["target"], "target")
-    workload = _validate_workload(value["workload"], schema)
-    suite = _validate_required_suite(value["required_suite"])
-    variants = _validate_variants(value["build_variants"], workload)
-    disclosures = _validate_disclosures(value["planning_disclosures"], schema)
-    prerequisites = _validate_prerequisites(value["prerequisites"])
-    items = _validate_work_items(value["work_items"], target, suite, variants, schema)
-    _validate_manifest_fingerprints(
-        value, target, workload, suite, variants, disclosures, prerequisites, items
-    )
+    _validate_target(value["target"], "target")
+    _validate_workload(value["workload"], schema)
+    _validate_required_suite(value["required_suite"])
+    _validate_variants(value["build_variants"])
+    _validate_disclosures(value["planning_disclosures"], schema)
+    _validate_prerequisites(value["prerequisites"])
+    _validate_work_items(value["work_items"], schema)
+    fingerprints = _exact_object(value["fingerprints"], set(_FINGERPRINT_FIELDS), "fingerprints")
+    for key, digest in fingerprints.items():
+        _require_digest(digest, f"fingerprints.{key}")
 
 
 def _validate_target(value: object, field: str) -> Mapping[str, object]:
@@ -1046,7 +1060,7 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
     return target
 
 
-def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
+def _validate_workload(value: object, schema: str) -> None:
     # v2 adds exactly one member, ``no_waivers``; the v1 grammar never changes.
     extra = (
         {"no_waivers"}
@@ -1092,7 +1106,6 @@ def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
     _validate_build_recipe(workload["build_recipe"])
     if workload["pre_sim_build_access"] not in {"immutable", "legacy-per-test"}:
         raise SimulationCampaignIntegrityError("pre_sim_build_access is invalid")
-    return workload
 
 
 def _validate_eda(value: object) -> None:
@@ -1111,12 +1124,9 @@ def _validate_runtime_declarations(value: object) -> None:
             {"declaration_id", "source_artifact_path", "destination"},
             f"runtime_inputs[{index}]",
         )
-        source = validate_relative_path(cast(str, declaration["source_artifact_path"]))
+        validate_relative_path(cast(str, declaration["source_artifact_path"]))
         destination = validate_relative_path(cast(str, declaration["destination"]))
-        expected = _digest({"source_artifact_path": source, "destination": destination})
-        if declaration["declaration_id"] != expected:
-            raise SimulationCampaignIntegrityError("runtime declaration digest disagrees")
-        ids.append(expected)
+        ids.append(_require_digest(declaration["declaration_id"], "declaration_id"))
         destinations.append(destination)
     if len(set(ids)) != len(ids) or len(set(destinations)) != len(destinations):
         raise SimulationCampaignIntegrityError("runtime declarations must be unique")
@@ -1187,7 +1197,7 @@ def _validate_build_recipe(value: object) -> None:
     _require_digest(recipe["command_model_sha256"], "command_model_sha256")
 
 
-def _validate_required_suite(value: object) -> Mapping[str, object]:
+def _validate_required_suite(value: object) -> None:
     suite = _exact_object(
         value,
         {"names", "default_invocation", "source_path", "source_bytes", "source_sha256"},
@@ -1215,57 +1225,39 @@ def _validate_required_suite(value: object) -> Mapping[str, object]:
     if suite["default_invocation"] and (
         suite["source_path"] != ""
         or suite["source_bytes"] != 0
-        or suite["source_sha256"] != _digest_bytes(b"")
+        or suite["source_sha256"] != _EMPTY_SHA256
     ):
         raise SimulationCampaignIntegrityError(
             "default required suite must authenticate empty source"
         )
-    return suite
 
 
-def _validate_variants(
-    value: object, workload: Mapping[str, object]
-) -> list[Mapping[str, object]]:
+def _validate_variants(value: object) -> None:
     variants = _exact_list(value, "build_variants", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
+    ids: list[object] = []
     for index, item in enumerate(variants):
         variant = _exact_object(
             item,
             {"build_variant_id", "kind", "sharing_eligible", "source_closure", "recipe_sha256"},
             f"build_variants[{index}]",
         )
-        _validate_variant(variant, workload)
-        decoded.append(variant)
-    ids = [item["build_variant_id"] for item in decoded]
+        _validate_variant(variant)
+        ids.append(variant["build_variant_id"])
     if len(set(ids)) != len(ids):
         raise SimulationCampaignIntegrityError("build variant IDs must be unique")
-    return decoded
 
 
-def _validate_variant(variant: Mapping[str, object], workload: Mapping[str, object]) -> None:
+def _validate_variant(variant: Mapping[str, object]) -> None:
     if variant["kind"] not in {"candidate", "trace", "coverage"}:
         raise SimulationCampaignIntegrityError("build variant kind is invalid")
     require_bool_value(variant["sharing_eligible"], field="sharing_eligible")
     _validate_source_entries(variant["source_closure"], "source_closure")
-    recipe = {
-        "kind": variant["kind"],
-        "source_closure": variant["source_closure"],
-        "source_recipe": workload["source_recipe"],
-        "build_recipe": workload["build_recipe"],
-        "eda": workload["eda"],
-        "trace": workload["trace"],
-        "coverage": workload["coverage"],
-    }
-    expected = _digest(recipe)
-    if variant["recipe_sha256"] != expected or variant["build_variant_id"] != (
-        f"variant:{expected.removeprefix('sha256:')}"
-    ):
-        raise SimulationCampaignIntegrityError("build variant recipe digest/ID disagrees")
+    _require_digest(variant["recipe_sha256"], "recipe_sha256")
+    _require_variant_id(variant["build_variant_id"])
 
 
-def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, object]]:
+def _validate_disclosures(value: object, schema: str) -> None:
     disclosures = _exact_list(value, "planning_disclosures", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(disclosures):
         disclosure = _exact_object(
             item,
@@ -1293,14 +1285,17 @@ def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, objec
         cleanup = _exact_object(disclosure["cleanup"], {"removed"}, "cleanup")
         if require_bool_value(cleanup["removed"], field="cleanup.removed") is not True:
             raise SimulationCampaignIntegrityError("planning scratch must be removed")
-        decoded.append(disclosure)
-    return decoded
 
 
-def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
+def _validate_prerequisites(value: object) -> None:
+    """Validate prerequisite links: unique by work item, consistent per campaign.
+
+    Several relative Cycle Count Goals of one Target link several work items
+    of the same baseline campaign, so a campaign may appear more than once.
+    """
     prerequisites = _exact_list(value, "prerequisites", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
-    identities: list[tuple[object, object, object]] = []
+    identities: list[tuple[object, object]] = []
+    campaigns: dict[object, tuple[object, object]] = {}
     for index, item in enumerate(prerequisites):
         prerequisite = _exact_object(
             item,
@@ -1334,48 +1329,28 @@ def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
             )
         if manifest["owner"] != prerequisite["campaign_id"]:
             raise SimulationCampaignIntegrityError("prerequisite manifest owner disagrees")
-        identities.append(
-            (prerequisite["campaign_id"], target["project_identity"], target["revision"])
-        )
-        decoded.append(prerequisite)
+        campaign = (manifest, target)
+        if campaigns.setdefault(prerequisite["campaign_id"], campaign) != campaign:
+            raise SimulationCampaignIntegrityError(
+                "prerequisites of the same campaign must name the same manifest and Target"
+            )
+        identities.append((prerequisite["campaign_id"], prerequisite["work_item_id"]))
     if len(set(identities)) != len(identities):
         raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
-    return decoded
 
 
-def _validate_work_items(
-    value: object,
-    target: Mapping[str, object],
-    suite: Mapping[str, object],
-    variants: list[Mapping[str, object]],
-    schema: str,
-) -> list[Mapping[str, object]]:
+def _validate_work_items(value: object, schema: str) -> None:
     items = _exact_list(value, "work_items", MAX_WORK_ITEMS)
-    variant_ids = {variant["build_variant_id"] for variant in variants}
     decoded_items: list[Mapping[str, object]] = []
     for ordinal, item in enumerate(items):
         decoded = _decode_work_item(item, ordinal, schema)
-        if decoded["target"] != target or decoded["build_variant_id"] not in variant_ids:
-            raise SimulationCampaignIntegrityError("work item target/build variant disagrees")
-        if decoded["role"] != target["role"] or decoded["revision"] != target["revision"]:
-            raise SimulationCampaignIntegrityError("work item role/revision disagrees with target")
-        selection = cast(Mapping[str, object], decoded["selection"])
-        if selection["kind"] == "default" and not suite["default_invocation"]:
-            raise SimulationCampaignIntegrityError("default work item requires an unnamed target")
-        identity_input = {
-            key: entry
-            for key, entry in decoded.items()
-            if key not in {"fingerprint_sha256", "work_item_id"}
-        }
-        expected = _digest(identity_input)
-        expected_id = f"item:{ordinal:04d}:{expected.removeprefix('sha256:')[:16]}"
-        if decoded["fingerprint_sha256"] != expected or decoded["work_item_id"] != expected_id:
-            raise SimulationCampaignIntegrityError("work item fingerprint/ID disagrees")
+        _require_work_item_id(decoded["work_item_id"])
+        _require_digest(decoded["fingerprint_sha256"], "work item fingerprint_sha256")
+        _require_variant_id(decoded["build_variant_id"])
         decoded_items.append(decoded)
     observation_count = sum(_planned_observation_count(item) for item in decoded_items)
     if observation_count > MAX_OBSERVATIONS:
         raise SimulationCampaignIntegrityError("planned observations exceed campaign ceiling")
-    return decoded_items
 
 
 def _planned_observation_count(item: Mapping[str, object]) -> int:
@@ -1388,10 +1363,10 @@ def _planned_observation_count(item: Mapping[str, object]) -> int:
 
 
 def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
-    """Bind a v4 work item's Test Runs to its selection, kind and each other."""
+    """Check a v4 work item's Test Runs are well formed, named uniquely and fit its kind."""
     entries = _exact_list(item["test_runs"], "test_runs", MAX_OBSERVATIONS)
     try:
-        runs = [test_run_from_document(entry) for entry in entries]
+        runs = [test_run_from_document(entry, trust_fingerprint=True) for entry in entries]
     except ValueError as exc:
         raise SimulationCampaignIntegrityError(f"work item test_runs: {exc}") from exc
     names = [run.name for run in runs]
@@ -1400,13 +1375,7 @@ def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
             "work item test_runs must be nonempty and uniquely named"
         )
     selection = cast(Mapping[str, object], item["selection"])
-    selected = list(cast(tuple[str, ...], selection["names"]))
-    if list(dict.fromkeys(run.test for run in runs if run.test is not None)) != selected:
-        raise SimulationCampaignIntegrityError("work item test_runs disagree with selection")
-    if not selected and [run.test for run in runs] != [None]:
-        raise SimulationCampaignIntegrityError(
-            "an unnamed work item requires exactly the unnamed Test Run"
-        )
+    selected = cast(tuple[str, ...], selection["names"])
     kind = item["kind"]
     if kind == "ordinary_hdl" and len(runs) != 1:
         raise SimulationCampaignIntegrityError("ordinary work item requires one Test Run")
@@ -1504,91 +1473,8 @@ def _validate_run_directory_path(value: object, field: str) -> str:
     return text
 
 
-def _validate_manifest_fingerprints(
-    manifest: Mapping[str, object],
-    target: Mapping[str, object],
-    workload: Mapping[str, object],
-    suite: Mapping[str, object],
-    variants: list[Mapping[str, object]],
-    disclosures: list[Mapping[str, object]],
-    prerequisites: list[Mapping[str, object]],
-    items: list[Mapping[str, object]],
-) -> None:
-    fingerprints = _exact_object(
-        manifest["fingerprints"],
-        {
-            "workload_sha256",
-            "target_recipe_sha256",
-            "source_closures_sha256",
-            "required_suite_sha256",
-            "planning_disclosures_sha256",
-            "prerequisites_sha256",
-            "work_items_sha256",
-        },
-        "fingerprints",
-    )
-    expected = _manifest_component_digests(
-        manifest, target, workload, suite, variants, disclosures, prerequisites, items
-    )
-    for key, digest in expected.items():
-        if fingerprints[key] != digest:
-            raise SimulationCampaignIntegrityError(f"fingerprints.{key} disagrees")
-
-
-def _manifest_component_digests(
-    manifest: Mapping[str, object],
-    target: Mapping[str, object],
-    workload: Mapping[str, object],
-    suite: Mapping[str, object],
-    variants: list[Mapping[str, object]],
-    disclosures: list[Mapping[str, object]],
-    prerequisites: list[Mapping[str, object]],
-    items: list[Mapping[str, object]],
-) -> dict[str, str]:
-    expected = {
-        "target_recipe_sha256": _digest(
-            {
-                "target": target,
-                "source_recipe": workload["source_recipe"],
-                "build_recipe": workload["build_recipe"],
-            }
-        ),
-        "source_closures_sha256": _digest(
-            [
-                {
-                    "build_variant_id": item["build_variant_id"],
-                    "source_closure": item["source_closure"],
-                }
-                for item in variants
-            ]
-        ),
-        "required_suite_sha256": _digest(suite),
-        "planning_disclosures_sha256": _digest(disclosures),
-        "prerequisites_sha256": _digest(prerequisites),
-        "work_items_sha256": _digest(items),
-    }
-    virtual = {
-        key: manifest[key]
-        for key in (
-            "target",
-            "workload",
-            "required_suite",
-            "build_variants",
-            "planning_disclosures",
-            "prerequisites",
-            "work_items",
-        )
-    }
-    expected["workload_sha256"] = _digest(virtual)
-    return expected
-
-
 def _digest(value: object) -> str:
-    return _digest_bytes(canonical_json_bytes(value)[:-1])
-
-
-def _digest_bytes(value: bytes) -> str:
-    return "sha256:" + hashlib.sha256(value).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(value)[:-1]).hexdigest()
 
 
 def _validate_evidence_ref(value: object, field: str) -> Mapping[str, object]:
