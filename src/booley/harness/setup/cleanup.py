@@ -343,7 +343,10 @@ def _active_use_reason(entry: ManifestEntry) -> str | None:
 
         record_path = Path(entry.job_record)
         if record_path.is_file():
-            record = job_records.read_record(record_path.stem, record_path.parent)
+            try:
+                record = job_records.read_record(record_path.stem, record_path.parent)
+            except OSError as exc:
+                return f"Job record is unreadable: {record_path}: {exc}"
             if record is None:
                 return f"Job record is unreadable: {record_path}"
             if job_records.is_active(record, is_pid_alive):

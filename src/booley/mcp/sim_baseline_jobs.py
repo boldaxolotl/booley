@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.file_lock import nonblocking_file_lock
-from booley.goals.model import GoalRecord, GoalState
+from booley.goals.model import GoalRecord, GoalState, RecordedGoal
 from booley.goals.protected_inputs import ProtectedInputRoots
 from booley.goals.sim_baseline_store import (
     SCHEMA,
@@ -59,19 +59,26 @@ def baseline_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key not in excluded}
 
 
-def launch_baseline(path: Path, request: dict[str, Any]) -> None:
-    """Spawn the supervisor; it owns PID stamping, watchdog and terminal publication."""
-    command = [sys.executable, "-m", "booley.mcp.sim_baseline_jobs", str(path)]
+def _supervisor_command(path: Path) -> list[str]:
+    """The supervisor argv; recorded in the Job record and used to spawn it."""
+    return [sys.executable, "-m", "booley.mcp.sim_baseline_jobs", str(path)]
+
+
+def _publish_job_record(path: Path, request: dict[str, Any]) -> None:
+    """Register and durably write the Job record, raising ``OSError`` if it cannot land.
+
+    Runs before the request is published as ``pending`` so a reader that sees
+    ``pending`` always finds the Job it waits for.
+    """
     rec = job_records.JobRecord(
         request["job_id"],
         "sim_baseline",
         utc_now_rfc3339(),
         BASELINE_TIMEOUT_S,
-        argv=command,
+        argv=_supervisor_command(path),
         work_dir=request["record"]["worktree_path"],
         session_key=request["record"]["session_key"],
     )
-    jobs = Path(request["jobs_root"])
     register_job(
         Path(request["booley_dir"]),
         rec.run_id,
@@ -79,7 +86,15 @@ def launch_baseline(path: Path, request: dict[str, Any]) -> None:
         rec.session_key,
         work_dir=rec.work_dir,
     )
-    job_records.write_record(rec, jobs)
+    job_records.write_record_strict(rec, Path(request["jobs_root"]))
+
+
+def launch_baseline(path: Path, request: dict[str, Any]) -> None:
+    """Spawn the supervisor; it owns PID stamping, watchdog and terminal publication.
+
+    The scheduler has already published the Job record (:func:`_publish_job_record`).
+    """
+    command = _supervisor_command(path)
     environment = baseline_environment()
     source = str(Path(__file__).resolve().parents[2])
     environment["PYTHONPATH"] = os.pathsep.join(
@@ -131,53 +146,69 @@ def schedule_sim_baselines(
 ) -> None:
     """Idempotent active-call scheduling; failure never changes lifecycle success.
 
-    *launch* defaults to :func:`launch_baseline`, looked up at call time.
+    *launch* defaults to :func:`launch_baseline`, looked up at call time. One
+    Goal's failure is logged and never stops the scheduling of the others.
     """
     if record.state is not GoalState.ACTIVE:
         return
     launcher = launch_baseline if launch is None else launch
     try:
         inputs = entry_inputs(project, record)
-        for goal in sim_goals(record):
-            identity = request_identity(record, goal, inputs)
-            path = request_path(project, identity)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with (
-                (path.parent / "launch.lock").open("a+b") as handle,
-                nonblocking_file_lock(handle),
-            ):
-                if path.exists():
-                    _reconcile_request(path)
-                    continue
-                request = {
-                    "schema": SCHEMA,
-                    "identity": identity,
-                    "inputs": inputs,
-                    "booley_dir": str(project),
-                    "record": record.to_json(),
-                    "source_repository": str(
-                        ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()
-                        or Path(record.worktree_path)
-                    ),
-                    "status": "pending",
-                    "results": [],
-                    "job_id": f"sim-baseline-{path.parent.name}",
-                    "jobs_root": str(baseline_jobs_dir(project)),
-                }
-                write_document(path, request)
-                try:
-                    launcher(path, request)
-                except (OSError, ValueError, RuntimeError) as exc:
-                    write_document(
-                        path,
-                        request
-                        | {
-                            "status": "unavailable",
-                            "reason": f"baseline Job launch failed: {exc}",
-                        },
-                    )
+        goals = sim_goals(record)
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
+        return
+    for goal in goals:
+        try:
+            _schedule_goal(project, record, goal, inputs, launcher)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
+
+
+def _schedule_goal(
+    project: Path,
+    record: GoalRecord,
+    goal: RecordedGoal,
+    inputs: dict[str, Any],
+    launcher: Launch,
+) -> None:
+    """Reconcile or create one Goal's request under its launch lock.
+
+    The Job record is written before the request is published as ``pending``,
+    so no reader observes ``pending`` without the Job it waits for.
+    """
+    identity = request_identity(record, goal, inputs)
+    path = request_path(project, identity)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with (path.parent / "launch.lock").open("a+b") as handle, nonblocking_file_lock(handle):
+        if path.exists():
+            _reconcile_request(path)
+            return
+        request = {
+            "schema": SCHEMA,
+            "identity": identity,
+            "inputs": inputs,
+            "booley_dir": str(project),
+            "record": record.to_json(),
+            "source_repository": str(
+                ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()
+                or Path(record.worktree_path)
+            ),
+            "status": "pending",
+            "results": [],
+            "job_id": f"sim-baseline-{path.parent.name}",
+            "jobs_root": str(baseline_jobs_dir(project)),
+        }
+        try:
+            _publish_job_record(path, request)
+            write_document(path, request)
+            launcher(path, request)
+        except (OSError, ValueError, RuntimeError) as exc:
+            write_document(
+                path,
+                request
+                | {"status": "unavailable", "reason": f"baseline Job launch failed: {exc}"},
+            )
 
 
 def _reconcile_request(path: Path) -> None:

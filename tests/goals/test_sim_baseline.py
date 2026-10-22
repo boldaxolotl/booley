@@ -696,6 +696,66 @@ def test_baseline_request_publication_tolerates_a_windows_reader(tmp_path, monke
     assert list(tmp_path.iterdir()) == [path]
 
 
+def _hold_reads(monkeypatch, held: dict[Path, int]):
+    """Raise a Windows sharing violation on the next N opens of each path."""
+    real_open = Path.open
+
+    def open_unless_held(path, *args, **kwargs):
+        if held.get(path, 0) > 0:
+            held[path] -= 1
+            error = PermissionError(13, "The process cannot access the file")
+            error.winerror = 32
+            raise error
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_unless_held)
+
+
+def test_baseline_observation_reads_through_transient_windows_sharing_errors(
+    baseline, monkeypatch
+):
+    path, request = _schedule(baseline)
+    job_path = Path(request["jobs_root"]) / (request["job_id"] + ".json")
+    _hold_reads(monkeypatch, {path: 1, job_path: 1})
+    report = baseline_observations(
+        baseline.control, baseline.record, sim_goals(baseline.record)[0]
+    )
+    assert report["status"] == "pending"
+
+
+def test_unreadable_baseline_job_record_reports_its_cause(baseline, monkeypatch):
+    _path, request = _schedule(baseline)
+    job_path = Path(request["jobs_root"]) / (request["job_id"] + ".json")
+    monkeypatch.setattr(
+        "booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS", (0.0,), raising=False
+    )
+    _hold_reads(monkeypatch, {job_path: 10**6})
+    report = baseline_observations(
+        baseline.control, baseline.record, sim_goals(baseline.record)[0]
+    )
+    assert report["status"] == "unavailable"
+    assert "interrupted" not in report["reason"]
+    assert "cannot be read" in report["reason"]
+    assert "cannot access the file" in report["reason"]
+
+
+def test_pending_request_is_published_only_after_its_job_record(baseline, monkeypatch):
+    from booley.mcp import sim_baseline_jobs
+
+    goal = sim_goals(baseline.record)[0]
+    seen = []
+    publish = sim_baseline_jobs.write_document
+
+    def publish_then_observe(path, value):
+        publish(path, value)
+        if value.get("status") == "pending":
+            seen.append(baseline_observations(baseline.control, baseline.record, goal))
+
+    monkeypatch.setattr(sim_baseline_jobs, "write_document", publish_then_observe)
+    schedule_sim_baselines(baseline.control, baseline.record, launch=lambda _path, _request: None)
+    assert [report["status"] for report in seen] == ["pending"]
+
+
 def test_unversioned_protected_program_is_captured_with_executable_state(layout):
     hook = layout.worktree / ".booley/hooks/build.py"
     hook.parent.mkdir()

@@ -78,6 +78,53 @@ class TestRecordRoundTrip:
         (root / "broken-1.json").write_text("{not json", encoding="utf-8")
         assert jobrec.read_record("broken-1", root=_jobs_env) is None
 
+    def test_unreadable_record_raises_instead_of_reading_as_absent(
+        self, _jobs_env, monkeypatch: pytest.MonkeyPatch
+    ):
+        rec = jobrec.JobRecord(run_id="sim-held-1", endpoint="sim", started_at="t", timeout_s=60)
+        jobrec.write_record(rec, root=_jobs_env)
+        monkeypatch.setattr(
+            "booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS", (0.0,), raising=False
+        )
+        real_open = Path.open
+
+        def held_open(path: Path, *args: object, **kwargs: object):
+            if path.name == "sim-held-1.json":
+                error = PermissionError(13, "The process cannot access the file")
+                error.winerror = 32  # type: ignore[attr-defined]
+                raise error
+            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "open", held_open)
+        with pytest.raises(PermissionError):
+            jobrec.read_record("sim-held-1", root=_jobs_env)
+        # Listing keeps its skip semantics; the Finish fence fails closed with the cause.
+        assert jobrec.list_records(_jobs_env) == []
+        with pytest.raises(jobrec.JobRecordError, match=r"sim-held-1\.json"):
+            jobrec.strict_records(_jobs_env)
+
+    def test_write_record_survives_a_transient_windows_reader(
+        self, _jobs_env, monkeypatch: pytest.MonkeyPatch
+    ):
+        rec = jobrec.JobRecord(run_id="sim-busy-1", endpoint="sim", started_at="t", timeout_s=60)
+        real_replace = Path.replace
+        blocked = False
+
+        def replace_after_reader_closes(source: Path, destination: Path):
+            nonlocal blocked
+            if destination.name == "sim-busy-1.json" and not blocked:
+                blocked = True
+                error = PermissionError(13, "A reader holds the record open")
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
+        jobrec.write_record(rec, root=_jobs_env)
+        assert blocked
+        got = jobrec.read_record("sim-busy-1", root=_jobs_env)
+        assert got is not None and got.run_id == "sim-busy-1"
+
     def test_list_records(self, _jobs_env):
         for i in (1, 2):
             jobrec.write_record(
