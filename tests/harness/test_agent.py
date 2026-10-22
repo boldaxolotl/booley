@@ -31,7 +31,8 @@ def test_agent_notice_names_role_and_purpose_on_stderr(capsys):
     announce_agent_dispatch(SimpleNamespace(label="triage-report"))
     output = capsys.readouterr()
     assert output.out == ""
-    assert "triage-report agent to prepare a review package" in output.err
+    assert "triage-report Specialist to perform the requested Specialist analysis" in output.err
+    assert "Ticket" not in output.err
 
 
 def test_doctor_probe_notice_names_provider_authorization_not_developer_agent(capsys):

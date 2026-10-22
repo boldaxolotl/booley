@@ -8,9 +8,9 @@ implementation Target, relative or absolute (from the baseline checkout for
 relative Criteria, from the candidate checkout otherwise), so later evidence
 can prove it measured the same recipe.
 
-This module owns that policy independently of who calls it. Ticket intake uses
-it today; any other entry point that knows a checkout, a baseline revision, and
-a scratch directory can reuse it by satisfying :class:`PinContext`.
+This module owns that policy independently of the entry code. Goal entry is its
+only caller; its errors name the Goal Mode and Goal entry. The caller supplies a
+checkout, a baseline revision, and a scratch directory through :class:`PinContext`.
 
 Flow-specific recipe normalization is injected as a :data:`SnapshotBuilder`:
 this Flow-neutral module may not select a concrete Flow implementation
@@ -18,11 +18,10 @@ this Flow-neutral module may not select a concrete Flow implementation
 FPGA snapshot function.
 
 Collaborators (Target catalog, FuseSoC registry, baseline worktrees, evidence
-fields) are imported inside the functions, as they were when this logic lived
-in Ticket intake. ``baseline_worktree`` is bound by name at call time, so a
-patched ``booley.flows.baseline_worktree.baseline_worktree`` stays effective;
-the deferred imports also keep importing this module from intake from loading
-any module intake did not already load at import time.
+fields) are imported inside the functions. ``baseline_worktree`` is bound by
+name at call time, so a patched ``booley.flows.baseline_worktree.baseline_worktree``
+stays effective; the deferred imports also keep importing this module from
+Goal entry from loading any module entry did not already load at import time.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ import contextlib
 import logging
 import shutil
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -54,23 +52,6 @@ class BaselinePinError(Exception):
     exception chain (``__cause__`` / ``__suppress_context__``) mirrors the
     underlying failure so translators can preserve it.
     """
-
-
-@dataclass(frozen=True)
-class PinWording:
-    """How pinning errors name the caller's work item and its entry point.
-
-    Messages are complete sentences shown to a human, so each caller supplies
-    its own nouns: ``work_item`` is what lacks a baseline ("the ticket"), and
-    ``entry_point`` is when Targets are checked ("ticket intake").
-    """
-
-    work_item: str
-    entry_point: str
-
-
-# The wording Ticket intake has always used; the default keeps its messages.
-TICKET_WORDING = PinWording(work_item="the ticket", entry_point="ticket intake")
 
 
 class PinContext(Protocol):
@@ -100,8 +81,6 @@ class PinContext(Protocol):
 def pin_cycle_count_baselines(
     ctx: PinContext,
     criterion_params: dict[str, dict[str, Any]],
-    *,
-    wording: PinWording = TICKET_WORDING,
 ) -> None:
     """Pin every relative Cycle Count Criterion to ``ctx.base_sha``.
 
@@ -118,7 +97,7 @@ def pin_cycle_count_baselines(
         if not ctx.base_sha:
             raise BaselinePinError(
                 f"Simulation criterion {key!r} requires a baseline-relative "
-                f"threshold, but {wording.work_item} has no base_sha"
+                f"threshold, but the Goal Mode has no base_sha"
             )
         params[BASELINE_REF_PARAM] = ctx.base_sha
 
@@ -131,7 +110,6 @@ def freeze_recipe_family(
     prefix: str,
     flow_label: str,
     snapshot_builder: SnapshotBuilder,
-    wording: PinWording = TICKET_WORDING,
     paired_project: PairedProjectBaseline | None = None,
 ) -> None:
     """Freeze the recorded Target recipe of every Criterion starting with ``prefix``.
@@ -159,9 +137,7 @@ def freeze_recipe_family(
     from booley.evidence.recipe import recipe_snapshot_fingerprint
 
     recipe_root = ctx.recipe_freeze_root / prefix.rstrip("_")
-    prepared = _prepare_recipe_targets(
-        ctx, expanded, criterion_params, prefix, flow_label, wording
-    )
+    prepared = _prepare_recipe_targets(ctx, expanded, criterion_params, prefix, flow_label)
     needed = any(item[3] for item in prepared)
     with _baseline_recipe_root(ctx, needed, flow_label, paired_project) as base_root:
         for key, recipe_target, params, needs_baseline in prepared:
@@ -175,7 +151,6 @@ def freeze_recipe_family(
                 needs_baseline,
                 flow_label,
                 snapshot_builder,
-                wording=wording,
             )
             if snapshot is None:
                 continue
@@ -191,8 +166,6 @@ def snapshot_recipe(
     needs_baseline: bool,
     flow_label: str,
     snapshot_builder: SnapshotBuilder,
-    *,
-    wording: PinWording = TICKET_WORDING,
 ) -> dict[str, Any] | None:
     """Resolve one Target under ``project_root`` and return its normalized recipe.
 
@@ -214,13 +187,12 @@ def snapshot_recipe(
         if needs_baseline:
             raise BaselinePinError(
                 f"{flow_label} criterion {key!r} requires baseline metrics, but "
-                f"Target {target!r} does not exist at {wording.entry_point}"
+                f"Target {target!r} does not exist at Goal entry"
             ) from None
         logger.info(
-            "%s Target %r is not authored at %s; deferring validation",
+            "%s Target %r is not authored at Goal entry; deferring validation",
             flow_label,
             target,
-            wording.entry_point,
         )
         return None
     except FuseSocError as exc:
@@ -245,7 +217,6 @@ def _prepare_recipe_targets(
     criterion_params: dict[str, dict[str, Any]],
     prefix: str,
     flow_label: str,
-    wording: PinWording,
 ) -> list[tuple[str, str, dict[str, Any], bool]]:
     """Validate each family Criterion and pick the Target whose recipe is frozen.
 
@@ -257,7 +228,7 @@ def _prepare_recipe_targets(
         candidate = params.get(TARGET_IDENTITY_PARAM)
         if not isinstance(candidate, str) or not candidate:
             raise BaselinePinError(f"{flow_label} criterion {key!r} has no Target")
-        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label, wording)
+        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
         baseline = params.get(BASELINE_TARGET_PARAM, candidate)
         if not isinstance(baseline, str) or not baseline:
             raise BaselinePinError(
@@ -280,8 +251,8 @@ def _baseline_recipe_root(
         return
     from booley.flows.baseline_worktree import BaselineWorktreeError, baseline_worktree
 
-    # The policy is passed only when the caller chose one, so the default call
-    # stays exactly what Ticket intake has always made.
+    # Pass the policy only when the caller chose one; otherwise baseline_worktree
+    # applies its own default.
     policy = {} if paired_project is None else {"paired_project": paired_project}
     try:
         with baseline_worktree(Path(ctx.work_dir), ctx.base_sha, **policy) as root:
@@ -297,7 +268,6 @@ def _pin_recipe_baseline(
     key: str,
     params: dict[str, Any],
     flow_label: str,
-    wording: PinWording,
 ) -> bool:
     """Pin relative recipe evidence to ``ctx.base_sha``, returning whether needed."""
     from booley.criteria.thresholds import has_relative_threshold
@@ -307,7 +277,7 @@ def _pin_recipe_baseline(
     if needs_baseline and not ctx.base_sha:
         raise BaselinePinError(
             f"{flow_label} criterion {key!r} requires a baseline-relative "
-            f"threshold, but {wording.work_item} has no base_sha"
+            f"threshold, but the Goal Mode has no base_sha"
         )
     if needs_baseline:
         params[BASELINE_REF_PARAM] = ctx.base_sha
