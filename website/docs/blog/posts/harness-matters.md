@@ -1,5 +1,5 @@
 ---
-title: "Same agent, same CPU bug: 56 minutes with a shell, 21 with the right tools"
+title: "Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools"
 description: >-
   The same agent, the same Caliptra bug, with and without Booley. Both fixed
   it every time; with Booley the agent finished in 21 minutes instead of 56.

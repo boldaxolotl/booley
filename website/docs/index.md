@@ -379,7 +379,7 @@ document: Booley product datasheet
   <article class="an">
     <div class="an__txt">
       <p class="an__id">AN-001</p>
-      <h3 class="an__t"><a href="blog/harness-matters/">Same agent, same CPU bug: 56 minutes with a shell, 21 with the right tools</a></h3>
+      <h3 class="an__t"><a href="blog/harness-matters/">Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools</a></h3>
       <p>The same agent, the same Caliptra bug, with and without Booley. Both fixed it every time. Most of the difference came from the work around the fix: building a test that exposed the bug and seeing what happened inside the processor.</p>
       <p class="an__meta">boldaxolotl, 16 October 2026. <a href="blog/harness-matters/">Read the application note</a></p>
     </div>
