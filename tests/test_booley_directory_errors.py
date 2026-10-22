@@ -48,18 +48,12 @@ def test_authority_refuses_unavailable_project_root(tmp_path):
     assert not missing.exists()
 
 
-@pytest.mark.parametrize(
-    "pin", [PairedProjectBaseline.ticket_pinned, PairedProjectBaseline.entry_pinned]
-)
-def test_paired_baseline_requires_a_commit(pin):
+def test_paired_baseline_requires_a_commit():
     with pytest.raises(ValueError, match="Paired Checkout baseline requires a commit"):
-        pin("")
+        PairedProjectBaseline.entry_pinned("")
 
 
-@pytest.mark.parametrize(
-    "pin", [PairedProjectBaseline.ticket_pinned, PairedProjectBaseline.entry_pinned]
-)
-def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, monkeypatch, pin):
+def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, monkeypatch):
     _init_repo(tmp_path)
     directory = tmp_path / ".booley"
     directory.mkdir()
@@ -69,7 +63,9 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
     before = baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout
     with (
         pytest.raises(baseline.BaselineWorktreeError, match="Paired Checkout is unavailable"),
-        baseline.baseline_worktree(tmp_path, "HEAD", paired_project=pin(head)),
+        baseline.baseline_worktree(
+            tmp_path, "HEAD", paired_project=PairedProjectBaseline.entry_pinned(head)
+        ),
     ):
         pytest.fail("missing paired inputs were accepted")
     assert baseline.git_full_sha("HEAD", tmp_path) == head

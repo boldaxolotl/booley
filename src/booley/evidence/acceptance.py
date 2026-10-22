@@ -66,14 +66,13 @@ class PairedBaselineMode(Enum):
 
     STANDALONE = "standalone"
     ABSENT = "absent"
-    TICKET_PINNED = "ticket-pinned"
     # The paired revision recorded when a Goal Mode was entered (ADR 0067).
     ENTRY_PINNED = "entry-pinned"
 
 
 @dataclass(frozen=True)
 class PairedProjectBaseline:
-    """Explicit Paired Checkout baseline policy; ticket pins never fall back."""
+    """Explicit Paired Checkout baseline policy; entry pins never fall back."""
 
     mode: PairedBaselineMode
     sha: str = ""
@@ -87,12 +86,6 @@ class PairedProjectBaseline:
         return cls(PairedBaselineMode.ABSENT)
 
     @classmethod
-    def ticket_pinned(cls, sha: str) -> PairedProjectBaseline:
-        if not sha:
-            raise ValueError("ticket-pinned Paired Checkout baseline requires a commit")
-        return cls(PairedBaselineMode.TICKET_PINNED, sha)
-
-    @classmethod
     def entry_pinned(cls, sha: str) -> PairedProjectBaseline:
         """The Paired Checkout revision recorded at Goal entry; never falls back."""
         if not sha:
@@ -102,7 +95,7 @@ class PairedProjectBaseline:
     @property
     def pinned(self) -> bool:
         """Whether the policy names an exact paired revision (no upstream lookup)."""
-        return self.mode in (PairedBaselineMode.TICKET_PINNED, PairedBaselineMode.ENTRY_PINNED)
+        return self.mode is PairedBaselineMode.ENTRY_PINNED
 
 
 @dataclass(frozen=True)

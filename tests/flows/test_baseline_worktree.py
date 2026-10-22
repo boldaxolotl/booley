@@ -785,9 +785,8 @@ def test_nonancestor_recorded_base_uses_older_common_ancestor(tmp_path, caplog):
     assert _git(paired, "config", "branch.goal-project.booleyBase") == recorded
 
 
-@pytest.mark.parametrize("mode", ["entry_pinned", "ticket_pinned"])
 @pytest.mark.parametrize("detached", [False, True])
-def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode, detached):
+def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, detached):
     from booley.evidence.acceptance import PairedProjectBaseline
 
     goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
@@ -795,7 +794,7 @@ def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode,
     _git(paired, "branch", "--set-upstream-to=project-source")
     if detached:
         _git(paired, "checkout", "--detach", "HEAD")
-    policy = getattr(PairedProjectBaseline, mode)(entry_sha)
+    policy = PairedProjectBaseline.entry_pinned(entry_sha)
     with baseline_worktree(goal, "HEAD", paired_project=policy) as baseline:
         assert git_full_sha("HEAD", baseline / ".booley") == entry_sha
     assert not baseline.exists()

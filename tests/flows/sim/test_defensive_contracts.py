@@ -8,7 +8,7 @@ import pytest
 from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
-    _admission_cancellation,
+    _admission_cancellation_cause,
     _simulation_admission,
 )
 from booley.flows.sim.campaign.model import _freeze_json
@@ -158,7 +158,7 @@ def test_simulation_admission_reports_malformed_runtime_identity(
 
 
 def test_unmanaged_admission_never_reports_cancellation() -> None:
-    assert _admission_cancellation(None, object())() is False
+    assert _admission_cancellation_cause(None, object())() is None
 
 
 @pytest.mark.parametrize(

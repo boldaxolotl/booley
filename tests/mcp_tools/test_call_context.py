@@ -208,6 +208,20 @@ class TestLocateJob:
 
         assert mcp_server._locate_job("nope-1") is None
 
+    def test_unreadable_record_never_blocks_the_lookup(
+        self, bare_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Terminal, cancel and reconcile writes resolve their root through this
+        # lookup; a record held open must read as "not found", not raise.
+        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(bare_env / "logs"))
+
+        def held(_run_id: str, root: Path | None = None) -> None:
+            raise PermissionError("record held open")
+
+        monkeypatch.setattr(jobrec, "read_record", held)
+
+        assert mcp_server._locate_job("sim-1") is None
+
     def test_unconfigured_root_is_none(self, bare_env: Path) -> None:
         assert jobrec.read_record("sim-1", root=session_jobs_dir()) is None
         assert mcp_server._locate_job("sim-1") is None

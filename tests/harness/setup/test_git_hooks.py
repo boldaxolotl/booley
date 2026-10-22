@@ -56,6 +56,7 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks,
 )
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
+from tests.harness.booley_dir_support import select_booley_dir
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -395,10 +396,11 @@ class TestWorktreeLinkPolicyStep:
 class TestProjectCommitMsgHookVendoring:
     """Project Git policy is one managed bundle plus two outer adapters."""
 
-    def test_vendors_runtime_helpers_alongside_scripts(self, tmp_path: Path):
+    def test_vendors_runtime_helpers_alongside_scripts(self, tmp_path: Path, monkeypatch, request):
         from booley.harness.setup.project_git_hook_bundle import BUNDLE_NAME
         from booley.runtime.booley_dir import resolve_booley_dir
 
+        select_booley_dir(request, monkeypatch, tmp_path)
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)
 
@@ -411,7 +413,7 @@ class TestProjectCommitMsgHookVendoring:
         assert ctx.results[-1].name == "project_git_hooks"
         assert ctx.results[-1].status == "ok"
 
-    def test_installed_hook_is_lf_not_crlf(self, tmp_path: Path):
+    def test_installed_hook_is_lf_not_crlf(self, tmp_path: Path, monkeypatch, request):
         """QA_REPORT D0a: the hook must be written with LF newlines.
 
         On a Windows host, Path.write_text with the default newline translates
@@ -420,6 +422,7 @@ class TestProjectCommitMsgHookVendoring:
         in-container commit fails — hence all of Ticket Mode.
         """
 
+        select_booley_dir(request, monkeypatch, tmp_path)
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)
 

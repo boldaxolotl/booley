@@ -27,16 +27,11 @@ def announce_agent_dispatch(params: AgentCallParams) -> None:
     """Disclose an actual Booley-owned agent call before backend dispatch."""
     role = params.label or "specialist"
     purpose = {
-        "developer": "execute the Ticket",
-        "triage-report": "prepare a review package",
-        "blocked-triage-report": "diagnose a blocked Ticket",
         "doctor-developer-probe": (
             "estimate the provider CLI's memory and check Specialist provider authorization for Doctor"
         ),
     }.get(role, "perform the requested Specialist analysis")
     actor = "provider probe" if role == "doctor-developer-probe" else "Specialist"
-    if role in {"developer", "triage-report", "blocked-triage-report"}:
-        actor = "agent"  # Retained Ticket callers keep their historical terminology.
     print(f"Booley is starting the {role} {actor} to {purpose}.", file=sys.stderr)
 
 

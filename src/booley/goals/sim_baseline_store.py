@@ -21,6 +21,7 @@ from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.filesystem_utils import read_file_bytes
 
 SCHEMA = "booley.sim-baseline/v1"
 INPUTS_FILE = "sim-baseline-inputs.json"
@@ -48,7 +49,7 @@ def write_document(path: Path, value: Mapping[str, Any]) -> None:
 
 def read_document(path: Path) -> dict[str, Any]:
     """Validate the document envelope at its filesystem boundary."""
-    raw = require_dict(json.loads(path.read_bytes()), field="simulation baseline")
+    raw = require_dict(json.loads(read_file_bytes(path)), field="simulation baseline")
     if raw.get("schema") != SCHEMA:
         raise ValueError("unsupported simulation baseline schema")
     return raw

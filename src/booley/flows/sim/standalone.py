@@ -427,7 +427,7 @@ class StandaloneMixin:
             selected = {catalog.select(target).identity for target in targets}
             if selected != set(expected):
                 raise ValueError(
-                    "elab-only-standalone must select exactly the Ticket's frozen Target set"
+                    "elab-only-standalone must select exactly the Criterion's frozen Target set"
                 )
         frontend = self._resolve_standalone_frontend()
         try:

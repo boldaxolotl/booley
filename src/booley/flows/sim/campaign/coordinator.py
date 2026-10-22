@@ -27,7 +27,6 @@ from .capacity import HeavyCapacity, HeavyCapacityError
 from .child_protocol import ChildExecutionRegistry
 from .codec import (
     SimulationCampaignIntegrityError,
-    encode_simulation_campaign_manifest,
 )
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
@@ -403,7 +402,8 @@ class SimulationCampaign:
     @staticmethod
     def _raise_if_cancelled(request: CampaignRunRequest) -> None:
         if request.admission.cancellation():
-            raise SimulationCampaignCancellationError("Simulation Campaign cancelled")
+            cause = request.admission.cancellation_cause() or "cancellation requested"
+            raise SimulationCampaignCancellationError(f"Simulation Campaign cancelled: {cause}")
 
     def _publish_coverage_reference(
         self,
@@ -511,7 +511,7 @@ class SimulationCampaign:
                 continue
             visited.add(campaign_id)
             store, prerequisite = _prerequisite_campaign(entry, invocation, request)
-            self._preflight_incomplete(prerequisite, store.scan(), request)
+            self._preflight_incomplete(prerequisite, store.scan(prerequisite), request)
             self._preflight_prerequisites(store, prerequisite, request, visited)
 
     def _run_prerequisites(
@@ -543,11 +543,13 @@ class SimulationCampaign:
                         ancestors | {campaign_id},
                         finished,
                     )
-                    recovery = prerequisite_store.scan()
+                    recovery = prerequisite_store.scan(prerequisite)
                     self._run_pending(prerequisite_store, prerequisite, recovery, request)
-                    prerequisite_store.regenerate_summary()
+                    prerequisite_store.regenerate_summary_validated(
+                        prerequisite, manifest_digest(prerequisite)
+                    )
                 finished.add(campaign_id)
-            selected = prerequisite_store.scan()
+            selected = prerequisite_store.scan(prerequisite)
             match = next(
                 (item for item in selected.items if item.work_item_id == entry["work_item_id"]),
                 None,
@@ -708,12 +710,7 @@ class SimulationCampaign:
             )
         except PreSimScopeStoppedError as signal:
             raise HeavyCapacityError(str(signal)) from signal
-        scope = current_supervised_execution()
-        if scope is not None and scope.cancelled():
-            raise HeavyCapacityError(
-                f"child execution cancelled before result publication: {scope.execution_id}"
-            )
-        _validate_scheduled_result(result, attempt, work_item_id)
+        raise_if_cancelled_before_publication()
         try:
             self._publish_scheduled_result(store, attempt, work_item_id, result)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -774,6 +771,15 @@ class SimulationCampaign:
             self._publication_checkpoint("after:simulation_result")
 
 
+def raise_if_cancelled_before_publication() -> None:
+    """Refuse to publish a result produced under a cancelled supervised scope."""
+    scope = current_supervised_execution()
+    if scope is not None and scope.cancelled():
+        raise HeavyCapacityError(
+            f"execution cancelled before result publication: {scope.describe_cancellation()}"
+        )
+
+
 def _invocation_number(directory: Path) -> int:
     try:
         return int(directory.name)
@@ -819,21 +825,6 @@ def _scheduled_collision_key(
         attempt_key=f"{ordinal:04d}-{attempt_id}",
     )
     return run.collision_key
-
-
-def _validate_scheduled_result(
-    result: SimulationResult, attempt: ScheduledAttempt, work_item_id: str
-) -> None:
-    document = result.document
-    identity = (
-        document["attempt_id"],
-        document["attempt_ordinal"],
-        document["work_item_id"],
-    )
-    if identity != (attempt.attempt_id, attempt.ordinal, work_item_id):
-        raise SimulationCampaignIntegrityError(
-            "serial executor returned a result for another attempt"
-        )
 
 
 def _new_preview(request: NewCampaignPreviewRequest) -> NewCampaignPreview:
@@ -932,7 +923,7 @@ def _scan_recovery(
     authenticated_manifest_sha256: str | None,
 ) -> CampaignRecovery:
     if authenticated_manifest_sha256 is None:
-        return store.scan()
+        return store.scan(manifest)
     return store.scan_validated(manifest, authenticated_manifest_sha256)
 
 
@@ -942,7 +933,7 @@ def _regenerate_summary(
     authenticated_manifest_sha256: str | None,
 ) -> Mapping[str, object]:
     if authenticated_manifest_sha256 is None:
-        return store.regenerate_summary()
+        return store.regenerate_summary_validated(manifest, manifest_digest(manifest))
     return store.regenerate_summary_validated(manifest, authenticated_manifest_sha256)
 
 
@@ -1118,10 +1109,10 @@ def _prerequisite_facts(
     for entry in entries:
         manifest_reference = cast(Mapping[str, object], entry["manifest"])
         store = CampaignStore((invocation / cast(str, manifest_reference["path"])).parent)
-        _linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
+        linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
             store, entry, manifest_reference
         )
-        selected = _selected_prerequisite_result(store, entry)
+        selected = _selected_prerequisite_result(store.scan(linked), entry)
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
         raw = result_path.read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -1175,8 +1166,7 @@ def _authenticate_prerequisite_manifest(
     reference: Mapping[str, object],
 ) -> tuple[SimulationCampaignManifest, str, Mapping[str, object] | None]:
     linked = store.load_manifest()
-    raw = encode_simulation_campaign_manifest(linked)
-    if len(raw) != reference["bytes"] or manifest_digest(linked) != reference["sha256"]:
+    if manifest_digest(linked) != reference["sha256"]:
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite manifest reference is unauthenticated"
         )
@@ -1207,9 +1197,9 @@ def _authenticate_prerequisite_manifest(
     return linked, names[0], runs[0] if runs else None
 
 
-def _selected_prerequisite_result(store: CampaignStore, entry: Mapping[str, object]):
+def _selected_prerequisite_result(recovery: CampaignRecovery, entry: Mapping[str, object]):
     selected = next(
-        (item for item in store.scan().items if item.work_item_id == entry["work_item_id"]),
+        (item for item in recovery.items if item.work_item_id == entry["work_item_id"]),
         None,
     )
     if selected is None or selected.result is None:
