@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Parallel Simulation tests no longer show their progress lines under another test's
+  stage or drop them, and one test starting a command no longer clears another test's
+  recent output. Records and transcript labels now carry `lane=<tests>/<attempt>`
+  while tests run at once; a single test at a time prints as before.
 - On Windows, a simulation baseline Job's request and Job record are now read and
   written through the short sharing errors a concurrent replace causes, so a baseline
   no longer reports "interrupted or unavailable" because a read raced a write. A Job

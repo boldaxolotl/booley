@@ -7,11 +7,12 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.flows.terminal_progress import progress_lane
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import SlotToken
 from booley.runtime.supervised_execution import (
@@ -37,6 +38,18 @@ class _ChildRunState:
     terminal_cause: str = "completed"
     lease_id: str | None = None
     token: SlotToken | None = None
+
+
+def _lane_label(attempt: ScheduledAttempt) -> str:
+    """Name a lane by its test(s) and attempt, e.g. ``alpha/1a2b3c4d`` (no whitespace)."""
+    selection = attempt.item.get("selection")
+    names = selection.get("names") if isinstance(selection, Mapping) else None
+    shown = [str(name) for name in names] if isinstance(names, list | tuple) else []
+    if len(shown) > 3:
+        shown = [*shown[:3], f"+{len(shown) - 3}"]
+    test = ",".join(shown) or str(attempt.item.get("work_item_id", ""))
+    short_attempt = attempt.attempt_id[:8]
+    return "".join((f"{test}/{short_attempt}" if test else short_attempt).split())
 
 
 class CampaignSchedulingError(RuntimeError):
@@ -65,6 +78,8 @@ class BoundedCampaignScheduler:
         self._allocation_gate = threading.Lock()
         self._collision_condition = threading.Condition()
         self._active_collisions: set[str] = set()
+        # Terminal progress is lane-scoped only while items really overlap.
+        self._lanes_concurrent = False
 
     def run(self, items: Sequence[Mapping[str, object]]) -> None:
         if not items:
@@ -77,6 +92,7 @@ class BoundedCampaignScheduler:
             if self._capacity.managed
             else 0
         )
+        self._lanes_concurrent = child_count > 0
         with self._capacity.outer_permit():
             if child_count == 0:
                 workers = [self._thread(self._worker, (ready, True), "outer")]
@@ -170,7 +186,7 @@ class BoundedCampaignScheduler:
     def _run_item(self, item: Mapping[str, object], outer: bool) -> None:
         with self._allocation_gate:
             attempt = self._allocate(item)
-        with self._collision_permit(attempt.collision_key):
+        with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):
             if outer:
                 scope = SupervisedExecutionScope(
                     None,
@@ -181,6 +197,12 @@ class BoundedCampaignScheduler:
                     self._execute(attempt, None, None)
                 return
             self._run_child(item, attempt)
+
+    def _lane_scope(self, attempt: ScheduledAttempt) -> AbstractContextManager[None]:
+        """Scope terminal progress to this attempt when lanes run concurrently."""
+        if not self._lanes_concurrent:
+            return nullcontext()
+        return progress_lane(_lane_label(attempt))
 
     @contextmanager
     def _collision_permit(self, key: str):
