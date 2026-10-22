@@ -66,7 +66,7 @@ def unseeded(monkeypatch: Any) -> None:
     from booley.flows import target_test_plan_loading as loading
 
     def plan(work_dir: Any, target: str) -> Any:
-        return loading.load_target_test_plan(work_dir, target, adapter="icarus")
+        return loading.load_target_test_plan(work_dir, target, identity=target, adapter="icarus")
 
     monkeypatch.setattr(loading, "load_checkout_target_test_plan", plan)
 

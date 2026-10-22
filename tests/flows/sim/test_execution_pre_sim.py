@@ -64,7 +64,7 @@ def test_test_registry_is_scoped_to_each_checkout(tmp_path: Path) -> None:
     assert load_test_configuration_field(baseline, "tests") == {"sim": ["then"]}
     launched = {}
     for root, name in ((current, "now"), (baseline, "then")):
-        plan = load_target_test_plan(root, "sim", adapter="icarus")
+        plan = load_target_test_plan(root, "sim", identity="sim", adapter="icarus")
         launched[name] = plan.launch((plan.run(name),)).select
     assert launched == {"now": "+test=now", "then": "+case=0"}
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.config.project_config import load_test_configuration_field
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
@@ -148,6 +149,28 @@ def test_custom_main_hook_errors_are_atomic_preflight_errors(tmp_path, hooks, re
     result = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     assert result.plan is None
     assert any("HOOK" in item.code for item in result.findings)
+
+
+def test_suite_reads_the_qualified_section_of_its_core(tmp_path: Path) -> None:
+    context = replace(project(tmp_path), test_names={"acme:demo:counter#sim_0": ("reset", "wrap")})
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert prepared.plan is not None
+    assert prepared.plan.targets[0].selected_tests == ("reset", "wrap")
+
+
+def test_suite_never_mixes_the_qualified_and_bare_sections(tmp_path: Path) -> None:
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    # The qualified section declares no ``tests``: the bare section's must not fill in.
+    (booley_dir / "tests.toml").write_text(
+        '["acme:demo:counter#sim_0"]\nenv = { A = "1" }\n[sim_0]\ntests = ["reset"]\n',
+        encoding="utf-8",
+    )
+    tests = load_test_configuration_field(tmp_path, "tests")
+    context = replace(project(tmp_path), test_names=tests)
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    assert [finding.code for finding in prepared.findings] == ["COV_SUITE_INVALID"]
 
 
 def test_unfiltered_suite_applies_configured_skips(tmp_path: Path) -> None:
