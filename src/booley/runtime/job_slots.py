@@ -54,10 +54,12 @@ from booley.runtime.execution_records import (
     ExecutionId,
     execution_paths,
     read_json,
+    read_slot_entry,
     request_cancellation,
     verify_inherited_execution_id,
 )
 from booley.runtime.execution_recovery import recover_execution, recover_process_owner
+from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.job_records import (
     DEADLINE_SLACK_SECONDS,
     _proc_cmdline,
@@ -112,6 +114,9 @@ NARRATE_INTERVAL_SECONDS = 30.0
 # permanent phantom-holder deadlocks.
 _ENTRY_IO_ATTEMPTS = 20
 _ENTRY_IO_RETRY_SECONDS = 0.01
+# Bound on waiting for an in-flight renewal in ``release``: lease gate, read and
+# replace each spend up to ~1.1 s of shared sharing-error backoff.
+_RENEWAL_JOIN_SECONDS = 5.0
 _ENTRY_CREATE_ATTEMPTS = 20
 
 # Ranking and waiter->holder promotion must be one serialized decision. Without
@@ -657,25 +662,17 @@ class SlotStore:
 
     def _rewrite_token(self, token: SlotToken) -> bool:
         tmp = token.path.with_name(f".{token.path.name}.{os.getpid()}.rewrite.tmp")
-        for attempt in range(_ENTRY_IO_ATTEMPTS):
-            try:
-                tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
-                if not token.path.exists():
-                    tmp.unlink(missing_ok=True)
-                    return False
-                tmp.replace(token.path)
-            except PermissionError:
-                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
-                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
-                    continue
-            except OSError:
-                pass
-            else:
-                return True
+        try:
+            tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
+            if not token.path.exists():
+                tmp.unlink(missing_ok=True)
+                return False
+            replace_file(tmp, token.path, sleep=self._sleep)
+        except OSError:
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
             return False
-        return False
+        return True
 
     def _stamp_promoted(self, token: SlotToken) -> bool:
         """Stamp complete holder metadata before the waiter→holder rename.
@@ -780,11 +777,14 @@ class SlotStore:
             stop, thread = renewal
             stop.set()
             if thread is not threading.current_thread():
-                thread.join(timeout=1)
+                thread.join(timeout=_RENEWAL_JOIN_SECONDS)
         with self._lease_gate(token) as acquired:
             if not acquired:
                 return
-            current = self._load_token(token.path)
+            try:
+                current = self._load_token(token.path)
+            except OSError:
+                current = None  # unreadable: still our own entry to release
             if current is None:
                 self._unlink_entry(token.path)
                 return
@@ -823,7 +823,10 @@ class SlotStore:
             if not acquired:
                 token.lease_health.lost.set()
                 return False
-            current = self._load_token(token.path)
+            try:
+                current = self._load_token(token.path)
+            except OSError:  # unreadable through the whole shared retry budget
+                current = None
             if (
                 current is None
                 or not current.is_holder
@@ -935,18 +938,35 @@ class SlotStore:
 
         Reaps first, so the view reflects only live claimants.
         """
+        holders, waiters, _unreadable = self._scan(job_class)
+        return holders, waiters
+
+    def _scan(self, job_class: str) -> tuple[list[SlotToken], list[SlotToken], bool]:
+        """Reaped view of *job_class* plus whether any live entry was unreadable."""
         self.reap(job_class)
         holders: list[SlotToken] = []
         waiters: list[SlotToken] = []
+        unreadable = False
         cls_dir = self.root / job_class
         if not cls_dir.is_dir():
-            return ([], [])
+            return [], [], False
         for name in sorted(self._live_entry_names(job_class)):
-            tok = self._load_token(cls_dir / name)
+            try:
+                tok = self._load_token(cls_dir / name)
+            except OSError:
+                unreadable = True
+                continue
             if tok is None:
                 continue
             (holders if tok.is_holder else waiters).append(tok)
-        return (holders, waiters)
+        return holders, waiters, unreadable
+
+    def execution_token_absent(self, job_class: str, execution_id: str) -> bool:
+        """Prove no entry of *job_class* carries *execution_id*; fail closed when unreadable."""
+        holders, waiters, unreadable = self._scan(job_class)
+        if unreadable:
+            return False
+        return all(candidate.execution_id != execution_id for candidate in (*holders, *waiters))
 
     def describe_holders(self, job_class: str) -> str:
         """Who is occupying *job_class* right now, as one human-readable line.
@@ -960,36 +980,18 @@ class SlotStore:
             return "holder unknown (it released while we looked)"
         return "; ".join(_describe_holder(tok, self._now()) for tok in holders)
 
-    def _read_entry(self, path: Path) -> str | None:
-        """Read an entry, retrying transient Windows sharing violations.
-
-        A reader that races a rewrite's replace on Windows gets
-        PermissionError. Treating that as "entry absent" made a live lease
-        look cancelled and aborted its whole run (#2024).
-        """
-        for attempt in range(_ENTRY_IO_ATTEMPTS):
-            try:
-                return path.read_text(encoding="utf-8")
-            except PermissionError:
-                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
-                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
-            except (OSError, ValueError):  # ValueError: undecodable bytes
-                return None
-        return None
-
     def _load_token(self, path: Path) -> SlotToken | None:
+        """Parse one entry: ``None`` = missing or corrupt, ``OSError`` = unreadable.
+
+        An entry that stays unreadable through the shared retry budget (a
+        Windows scanner or a racing rewrite) is not absent (#1905).
+        """
         parsed = _parse_entry_name(path.name)
         if parsed is None:
             return None
         _state, priority, seq, pid, n = parsed
-        text = self._read_entry(path)
-        if text is None:
-            return None
-        try:
-            payload = json.loads(text)
-        except ValueError:
-            return None
-        if not isinstance(payload, dict) or not isinstance(payload.get("argv", []), list):
+        payload = read_slot_entry(path, sleep=self._sleep)
+        if payload is None or not isinstance(payload.get("argv", []), list):
             return None
         owner_identity = ProcessIdentity.from_payload(payload.get("owner_identity"))
         try:
@@ -1043,7 +1045,10 @@ class SlotStore:
         """Withdraw exactly *token* while it is still queued."""
         if token.is_holder:
             return False
-        current = self._load_token(token.path)
+        try:
+            current = self._load_token(token.path)
+        except OSError:
+            return False
         if current is None or current.lease_id != token.lease_id:
             return False
         try:
@@ -1123,11 +1128,17 @@ class SlotStore:
             return self._is_old_junk(path)
         state, _priority, _seq, _pid, _n = parsed
 
-        tok = self._load_token(path)
+        try:
+            tok = self._load_token(path)
+        except OSError:
+            # Unreadable, not missing: reap only old entries whose owner is dead.
+            return not self._is_pid_alive(parsed[3]) and self._is_old_junk(path)
         if tok is None:
-            # Named like an entry but unreadable — corrupt; same junk rule.
+            # Named like an entry but corrupt; same junk rule.
             return self._is_old_junk(path)
+        return self._token_is_stale(tok, state)
 
+    def _token_is_stale(self, tok: SlotToken, state: str) -> bool:
         # Unknown future schemas fail closed: this process cannot safely infer
         # ownership or recovery rules from fields it does not understand.
         if not isinstance(tok.schema_version, int) or isinstance(tok.schema_version, bool):
@@ -1199,7 +1210,10 @@ class SlotStore:
             return True
         claimed = False
         with self._lease_gate(tok) as acquired:
-            current = self._load_token(tok.path) if acquired else None
+            try:
+                current = self._load_token(tok.path) if acquired else None
+            except OSError:
+                current = None  # unreadable: do not claim
             if current is not None and current.lease_state == LEASE_CANCELLING:
                 claimed = True
             elif current is not None and current.lease_state == LEASE_ACTIVE:
