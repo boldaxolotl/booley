@@ -25,7 +25,7 @@ from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
-from booley.flows.terminal_progress import TerminalProgress, announce_unit, progress_lane
+from booley.flows.terminal_progress import TerminalProgress, announce_unit
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
@@ -261,6 +261,9 @@ def test_one_lane_command_start_keeps_other_lane_tail(
 
 
 def test_closed_lane_output_is_not_dropped_before_the_final_drain(tmp_path: Path) -> None:
+    # Imported here so the three regression tests above still collect on the base.
+    from booley.flows.terminal_progress import progress_lane
+
     now = [0.0]
     sink = TerminalProgress("sim", "sim_demo", tmp_path, stream=Screen(), clock=lambda: now[0])
     with sink.installed():
