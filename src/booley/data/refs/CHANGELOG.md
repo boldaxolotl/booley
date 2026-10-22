@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- On Windows, a Simulation Campaign no longer stops with "child execution cancelled
+  before result publication" when a Job Slot token read or lease renewal races a
+  concurrent rewrite. Token reads and rewrites use the same bounded sharing-error
+  retry as other protocol files, and a token that stays unreadable is never treated
+  as absent. A campaign cancellation now names its cause (stop requested, lease lost,
+  or token missing) and the slot or lane.
 - On Windows, a simulation baseline Job's request and Job record are now read and
   written through the short sharing errors a concurrent replace causes, so a baseline
   no longer reports "interrupted or unavailable" because a read raced a write. A Job

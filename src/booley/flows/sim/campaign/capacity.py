@@ -60,6 +60,7 @@ class HeavyCapacity:
         self._outer_entered = False
         self._waiting: dict[str, SlotToken] = {}
         self._gate = threading.Lock()
+        self._cause: str | None = None
 
     @property
     def max_lanes(self) -> int:
@@ -163,8 +164,26 @@ class HeavyCapacity:
             raise
         return token
 
-    def cancel_waiters(self) -> None:
-        """Stop admission and withdraw only this campaign's queued claims."""
+    def cancellation_cause(self) -> str | None:
+        """Why the campaign was first cancelled, or ``None`` while it was not."""
+        with self._gate:
+            return self._cause
+
+    def _latch_cause(self, cause: str | None) -> None:
+        """Record the first cancellation cause; later triggers never overwrite it."""
+        if cause is None:
+            return
+        with self._gate:
+            if self._cause is None:
+                self._cause = cause
+
+    def cancel_waiters(self, cause: str | None = None) -> None:
+        """Stop admission and withdraw only this campaign's queued claims.
+
+        ``cause`` is latched before shutdown is signalled; calls without one
+        never mask the cause that triggered them.
+        """
+        self._latch_cause(cause)
         self._shutdown.set()
         store = self._admission.slot_store
         if store is None:
@@ -187,8 +206,7 @@ class HeavyCapacity:
         store = self._admission.slot_store
         if store is None:
             return True
-        holders, waiters = store.snapshot(CLASS_HEAVY)
-        return all(token.execution_id != execution_id for token in (*holders, *waiters))
+        return store.execution_token_absent(CLASS_HEAVY, execution_id)
 
     def retain_outer_until(self, workers: tuple[threading.Thread, ...]) -> None:
         """Transfer outer release to a terminal monitor for escaped workers."""
@@ -215,12 +233,24 @@ class HeavyCapacity:
         terminal.set()
 
     def _cancelled(self) -> bool:
-        return self._shutdown.is_set() or self._admission.cancellation()
+        if self._shutdown.is_set():
+            return True
+        if not self._admission.cancellation():
+            return False
+        self._latch_cause(
+            self._admission.cancellation_cause() or "admission cancellation requested"
+        )
+        return True
 
     def _watch_lease(self, permit: ChildHeavyPermit, stop: threading.Event) -> None:
         while not stop.wait(0.01):
             if not permit.lease_health.lost.is_set():
                 continue
+            token = permit.token
+            self._latch_cause(
+                f"Job Slot lease lost for child execution {permit.child_execution_id}: "
+                f"{token.job_class}/{token.path.name}"
+            )
             self._shutdown.set()
             store = self._admission.slot_store
             if store is not None:

@@ -243,18 +243,30 @@ def test_release_matching_token_rejects_duplicates_and_stale_files(tmp_path: Pat
 
 def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monkeypatch) -> None:
     execution_id = ExecutionId("e" * 32)
-    token = SimpleNamespace(execution_id=execution_id)
     registry = _registry(tmp_path)
-    store = SimpleNamespace(snapshot=lambda _kind: ((token,), ()))
+    store = SimpleNamespace(execution_token_absent=lambda _kind, _id: False)
     with pytest.raises(SimulationCampaignIntegrityError, match="slot claim remains"):
         registry._assert_token_absent(store, execution_id)
 
     token_path = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "token.json"
     token_path.parent.mkdir(parents=True)
     token_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(child_protocol, "read_json", lambda _path: {"execution_id": execution_id})
+    monkeypatch.setattr(
+        child_protocol, "read_slot_entry", lambda _path: {"execution_id": execution_id}
+    )
     with pytest.raises(SimulationCampaignIntegrityError, match="cannot be reconciled"):
         registry._assert_no_unmanaged_token(execution_id)
+
+
+def test_recovery_refuses_unreadable_child_token(tmp_path: Path) -> None:
+    # An unreadable slot entry may be the child's live claim: never retire it as absent (#1905).
+    execution_id = ExecutionId("e" * 32)
+    store = SimpleNamespace(
+        snapshot=lambda _kind: ((), ()),
+        execution_token_absent=lambda _kind, _id: False,
+    )
+    with pytest.raises(SimulationCampaignIntegrityError, match="cannot be proven"):
+        _registry(tmp_path)._release_matching_token(store, execution_id)
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])

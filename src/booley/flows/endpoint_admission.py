@@ -40,6 +40,10 @@ class AdmissionIdentityError(ValueError):
     """The enclosing runtime execution identity is malformed or inconsistent."""
 
 
+def _no_cancellation_cause() -> str | None:
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class AdmissionContext:
     """Borrowed outer heavy-admission facts for one Simulation invocation."""
@@ -52,6 +56,7 @@ class AdmissionContext:
     execution_id: ExecutionId | None
     timeout_seconds: float | None
     cancellation: Callable[[], bool]
+    cancellation_cause: Callable[[], str | None] = _no_cancellation_cause
     parent_execution_id: ExecutionId = field(init=False)
 
     def __post_init__(self) -> None:
@@ -98,6 +103,7 @@ class AdmissionGate:
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
             max_heavy = store.caps.max_heavy if store is not None else 1
+            cause = _admission_cancellation_cause(store, token)
             yield AdmissionContext(
                 mode="managed" if store is not None else "unmanaged",
                 slot_store=store,
@@ -106,7 +112,8 @@ class AdmissionGate:
                 role=role,
                 execution_id=execution_id,
                 timeout_seconds=timeout,
-                cancellation=_admission_cancellation(store, token),
+                cancellation=lambda: cause() is not None,
+                cancellation_cause=cause,
             )
         finally:
             if store is not None and token is not None:
@@ -154,13 +161,22 @@ def _runtime_execution_id() -> ExecutionId | None:
     return _coerce_execution_id(os.environ.get(RUNTIME_EXECUTION_ENV))
 
 
-def _admission_cancellation(
+def _admission_cancellation_cause(
     store: job_slots.SlotStore | None, token: object | None
-) -> Callable[[], bool]:
-    """Observe withdrawal or renewal loss of the borrowed outer claim."""
+) -> Callable[[], str | None]:
+    """Name why the borrowed outer claim was withdrawn or lost, else ``None``."""
     if store is None or not isinstance(token, job_slots.SlotToken):
-        return lambda: False
-    return lambda: token.lease_health.lost.is_set() or store.token_absent(token)
+        return _no_cancellation_cause
+    slot = f"{token.job_class}/{token.path.name}"
+
+    def cause() -> str | None:
+        if token.lease_health.lost.is_set():
+            return f"Job Slot lease lost: {slot}"
+        if store.token_absent(token):
+            return f"Job Slot token missing: {slot}"
+        return None
+
+    return cause
 
 
 @contextmanager
