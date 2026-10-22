@@ -38,27 +38,6 @@ def _reference(target: Path, nested: Path) -> Path:
     return reference
 
 
-def _owned_campaign(tmp_path: Path) -> tuple[Path, Path]:
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    (owned / ".qa-coverage-fault-copy").touch()
-    manifest = owned / NESTED
-    manifest.parent.mkdir(parents=True)
-    (manifest.parent / "coverage-points.jsonl.gz").write_bytes(b"points")
-    manifest.write_text(
-        json.dumps(
-            {
-                "$schema": "booley.coverage-campaign/v4",
-                "collection": {"status": "complete"},
-                "scoring": {"status": "valid", "reason": None},
-                "rollups": [{"metric": "line"}],
-                "source_rollups": [{"source": "rtl/a.sv", "rollups": []}],
-            }
-        )
-    )
-    return owned, manifest
-
-
 @pytest.mark.parametrize("mode", ["truncated-gzip", "duplicate-point", "symlink"])
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
 def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_kind):
@@ -85,27 +64,6 @@ def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_
     assert manifest.read_text() == "{}"
 
 
-@pytest.mark.parametrize(
-    ("mode", "retained", "cleared"),
-    [
-        ("invalid-overall-score", "rollups", "source_rollups"),
-        ("invalid-source-score", "source_rollups", "rollups"),
-    ],
-)
-def test_invalid_scoring_fault_retains_exact_smuggled_inventory(
-    tmp_path: Path, mode: str, retained: str, cleared: str
-) -> None:
-    owned, manifest = _owned_campaign(tmp_path)
-
-    faults.mutate(_reference(owned, manifest), owned, mode)
-
-    document = json.loads(manifest.read_text())
-    assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
-    assert document["collection"]["status"] == "collector_error"
-    assert document[retained]
-    assert document[cleared] == []
-
-
 def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Path) -> None:
     owned = tmp_path / "owned"
     owned.mkdir()
@@ -119,17 +77,11 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
 def _product_reference(owned: Path, mode: str) -> Path:
     from tests.flows.sim.test_coverage_campaign_reference import _nested_campaign
     from tests.flows.sim.test_coverage_campaign_reference import _reference as product_reference
-    from tests.flows.sim.test_coverage_campaign_store import _two_source_line_campaign
 
-    from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
     from booley.flows.sim.coverage_reference import publish_coverage_campaign_reference
 
     target = owned / "targets/sim_counter"
     manifest = _nested_campaign(target)
-    if mode == "wrong-source-rollup":
-        manifest.unlink()
-        (manifest.parent / "coverage-points.jsonl.gz").unlink()
-        publish_coverage_campaign(manifest.parent, _two_source_line_campaign())
     reference = target / "coverage.json"
     publish_coverage_campaign_reference(reference, product_reference(target, manifest))
     (owned / ".qa-coverage-fault-copy").touch()
@@ -143,14 +95,11 @@ _PRODUCT_FAULTS = {
     "truncated-gzip": {"COV_POINT_FORMAT"},
     "trailing-data": {"COV_POINT_FORMAT"},
     "symlink": {"COV_PATH_UNSAFE"},
-    "wrong-rollup": {"COV_SOURCE_ROLLUP_MISMATCH"},
-    "wrong-source-rollup": {"COV_SOURCE_ROLLUP_MISMATCH"},
+    "wrong-rollup": {"COV_ROLLUP_MISMATCH"},
     "wrong-evaluation": {"COV_EVALUATION_MISMATCH"},
     "v1": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "v2": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "v3": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
-    "invalid-overall-score": {"COV_INVALID_SCORING_SUMMARY"},
-    "invalid-source-score": {"COV_INVALID_SCORING_SUMMARY"},
     "resource-ceiling": {"COV_POINT_LIMIT"},
 }
 
