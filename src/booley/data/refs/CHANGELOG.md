@@ -51,11 +51,15 @@ Packaged release history starts at 0.2.7. For older changes, see
   `fatal: '.../.baseline-wt-...' already exists`. One run now checks out the
   baseline revision once and uses that checkout for Target authorization,
   planning, and the baseline Simulation.
-
 - `sim` with relative Cycle Count Goals on two or more Tests of one Target no
   longer fails with `prerequisite identities must be unique`. The candidate now
   links each Test's work item in the shared baseline campaign; that campaign
   runs once, and campaign resume accepts it.
+- In a Goal Mode or MCP `sim` run, the Cycle Count baseline now builds and runs
+  in the baseline checkout. Its build and launch commands used to start in the
+  candidate checkout, so the baseline build failed (`No such file or
+  directory`) and the relative Cycle Count Goal reported "Cycle Count
+  prerequisite has no cycle observation".
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a
