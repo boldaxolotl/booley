@@ -255,13 +255,8 @@ class _IncrementalBuildAdapter:
             self._verify_manual_ancestry(candidate_reference, parent_id)
         return candidate_reference
 
-    @staticmethod
-    def _verify_manual_ancestry(candidate: str, parent_id: str | None) -> None:
-        parent = project_image.inspect_layout_image(parent_id or "")
-        child = project_image.inspect_layout_image(candidate)
-        layers = parent.get("RootFS", {}).get("Layers", [])
-        actual = child.get("RootFS", {}).get("Layers", [])
-        if not layers or actual[: len(layers)] != layers:
+    def _verify_manual_ancestry(self, candidate: str, parent_id: str | None) -> None:
+        if not runtime_lifecycle._descends_from(self.docker, parent_id, candidate):
             raise ImageLifecycleError(
                 "manual Project recipe final image does not descend from the verified selected parent"
             )
@@ -275,7 +270,7 @@ class _IncrementalBuildAdapter:
             raise ImageLifecycleError(
                 "Booley Directory layout parent is unavailable; run init or refresh"
             )
-        parent = self._validated_layout_parent(node, parent_id)
+        user = self._validated_layout_user(node, parent_id)
         tag = f"127.0.0.1:1/booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout-parent:candidate"
         self.docker.tag(parent_id, tag)
         try:
@@ -284,15 +279,20 @@ class _IncrementalBuildAdapter:
                     raise ImageLifecycleError(
                         "Booley Directory layout parent tag changed before build"
                     )
-                spec, matching = self._layout_build_spec(node, candidate, parent, tag, directory)
+                spec, matching = self._layout_build_spec(
+                    node, candidate, parent_id, user, tag, directory
+                )
                 result = docker_image._docker_build_image(context, spec)
                 if result != 0 or self.docker.image_id(tag) != parent_id:
                     raise ImageLifecycleError(
                         "local-only Booley Directory layout build failed or parent was substituted"
                     )
-                project_image.verify_layout_image(
-                    parent, project_image.inspect_layout_image(candidate)
-                )
+                child_id = self.docker.image_id(candidate)
+                if child_id is None:
+                    raise ImageLifecycleError(
+                        "local-only Booley Directory layout build produced no image"
+                    )
+                project_image.verify_layout_parent_identity(child_id, parent_id, "docker")
                 if matching:
                     self._next_request_index += 1
         except RuntimeError as exc:
@@ -307,10 +307,10 @@ class _IncrementalBuildAdapter:
         except (ImageLifecycleError, OSError) as exc:
             context.record("layout_parent_cleanup", "warn", str(exc))
 
-    def _validated_layout_parent(self, node: ImageNode, parent_id: str) -> dict:
+    def _validated_layout_user(self, node: ImageNode, parent_id: str) -> str:
         try:
             parent = project_image.inspect_layout_image(parent_id)
-            project_image.layout_image_user(parent)
+            user = project_image.layout_image_user(parent)
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(str(exc)) from exc
         if parent.get("Id") != parent_id:
@@ -326,13 +326,11 @@ class _IncrementalBuildAdapter:
                 "Booley Directory layout parent has no matching wheel identity"
             )
         self._wheel_sha256 = wheel_sha
-        return parent
+        return user
 
-    def _layout_build_spec(self, node, candidate, parent, tag, directory):
+    def _layout_build_spec(self, node, candidate, parent_id, user, tag, directory):
         from booley.harness.setup import docker_image
 
-        parent_id = parent["Id"]
-        user = project_image.layout_image_user(parent)
         current = _capacity_request(node, output_tag=candidate)
         index = self._next_request_index
         matching = (
