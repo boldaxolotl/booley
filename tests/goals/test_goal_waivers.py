@@ -38,6 +38,7 @@ from booley.flows.sim.coverage_waivers import CoverageWaiverValidationError
 from booley.flows.sim.waiver_candidates import (
     CampaignBinding,
     WaiverProposal,
+    candidate_id,
     load,
     record_proposals,
 )
@@ -66,8 +67,41 @@ KEY = "coverage_top"
 IDENTITY = DurableTargetIdentity("::top:0#top")
 
 
+def existing_approval_file(case, source_bytes):
+    """Return an approval file for another hit point; ``id`` reuses the candidate's waiver id."""
+    waiver_id = candidate_id(str(IDENTITY), _POINT_ID, sha256_of(source_bytes))
+    fields = (
+        f'id = "{waiver_id if case == "id" else "existing-waiver"}"',
+        f'target = "{IDENTITY}"',
+        f'point_id = "{fixture_point(_valid_document()["points"][0], 1, hit=True)["id"]}"',
+        'reason = "excluded"',
+        'justification = "Intentionally excluded."',
+        'approved_by = "owner@example.test"',
+        'approved_at = "2026-08-31T09:00:00Z"',
+        'approval_ref = "review:CR-1"',
+    )
+    header = (
+        'schema = "booley.coverage-waivers/v1"\nsource = "rtl/counter.sv"\n'
+        f'source_sha256 = "{sha256_of(source_bytes)}"\n'
+    )
+    if case == "inline":
+        return header + "approval = [{ " + ", ".join(fields) + " }]\n"
+    return header + "\n[[approval]]\n" + "\n".join(fields) + "\n"
+
+
+def sha256_of(raw):
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
 def prepared(
-    layout, anchor="rtl_repository", directory="approvals", *, covered=1, total=2, protected=False
+    layout,
+    anchor="rtl_repository",
+    directory="approvals",
+    *,
+    covered=1,
+    total=2,
+    protected=False,
+    existing=None,
 ):
     protected_inputs = ""
     if protected:
@@ -91,6 +125,12 @@ def prepared(
     source = layout.worktree / "rtl" / "counter.sv"
     source.parent.mkdir(exist_ok=True)
     source.write_bytes(b"module counter; endmodule\n")
+    if existing:
+        # Written before the Campaign is observed: the observation binds the waiver set.
+        approval = root / directory / "rtl" / "counter.sv.toml"
+        approval.parent.mkdir(parents=True)
+        approval.write_text(existing_approval_file(existing, source.read_bytes()))
+        git(layout.worktree, "add", approval.relative_to(layout.worktree).as_posix())
     git(layout.worktree, "add", "rtl/counter.sv")
     git(layout.worktree, "commit", "-qm", "coverage source")
     layout.record = enter_goals(
@@ -635,6 +675,28 @@ def test_recovery_uses_captured_binding_after_producer_drift(layout, drift):
     assert not list((layout.worktree / "new-approvals").glob("*"))
 
 
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("id", "COV_WAIVER_ID_DUPLICATE"),
+        ("stale", "COV_WAIVER_SOURCE_STALE"),
+        ("inline", "COV_WAIVER_FILE_MALFORMED"),
+    ],
+    ids=["id", "stale", "inline"],
+)
+def test_existing_approval_file_refusal_names_loader_finding(layout, case, code):
+    """The real loader is the only gate: a refused promotion names its finding, writes nothing."""
+    env, candidate, root = prepared(layout, existing=case)
+    view = propose(layout, env, candidate)
+    if case == "stale":
+        (layout.worktree / "rtl" / "counter.sv").write_bytes(b"module counter; // edited\n")
+    before = file_bytes(root)
+    with pytest.raises(ProposalError, match=code):
+        approve(layout, env, view.proposal.id)
+    assert file_bytes(root) == before
+    assert not record_paths(layout.control, layout.record.id).changes_file.exists()
+
+
 def file_bytes(root):
     return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
@@ -691,7 +753,7 @@ def test_prediction_uses_captured_after_bytes_once(layout, monkeypatch, anchor, 
     state = load_goal_state(env.store, env.store.load(layout.record.id))
     captured, seen, spies = observe_prediction(monkeypatch, env.waivers, candidate, refuse)
     before = tree_snapshot(root)
-    expectation = pytest.raises(CoverageWaiverValidationError) if refuse else nullcontext()
+    expectation = pytest.raises(ProposalError) if refuse else nullcontext()
     with expectation:
         effects, _ = env.waivers.prepare(proposal, decision, state)
         assert len(effects) == 2
