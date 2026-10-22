@@ -5559,13 +5559,14 @@ def test_invocation_report_records_tools_by_target(flow_and_state, tmp_path, tar
             str(tmp_path / "reports"),
         ]
     )
+    flow.read_state()  # parse_args starts a new invocation
     with patch.object(
         flow,
         "_execute",
         return_value=SubprocessResult(returncode=0, stdout="Number of cells: 100\n"),
     ):
         result = flow._run()
-    path = flow.context.write_report(result)
+    path = flow.write_report(result)
     report = json.loads(path.read_bytes())
     expected = (
         {"eda_tool": "yosys"}

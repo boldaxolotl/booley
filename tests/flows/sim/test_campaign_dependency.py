@@ -87,7 +87,7 @@ def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeyp
     assert len(firings) == 2
 
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([candidate, baseline])
     detail = result.detail

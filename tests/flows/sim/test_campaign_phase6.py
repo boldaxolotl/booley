@@ -599,7 +599,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     invocation = tmp_path / "reports" / "sim" / "2"
     invocation.mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
+    flow._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
 
     def fail_after_attempt(*_args: object) -> None:
@@ -609,7 +609,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
         raise OSError("failed")
 
     monkeypatch.setattr(flow, "_execute_validated_resume", fail_after_attempt)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._execute_campaign_resume(validated, _admission(), observed)
 
     assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)
@@ -696,7 +696,7 @@ def test_acceptance_readiness_requires_strict_superset_grade() -> None:
 
 
 def _acceptance_endpoint(state, recorder, invocation):
-    endpoint = SimulateFlow().context
+    endpoint = SimulateFlow()
     endpoint.configure_flow_execution(recorder)
     endpoint._args = SimRequest(target="sim", report_dir=invocation.parents[1])
     endpoint._state = state
@@ -1197,7 +1197,7 @@ def test_simulation_reservation_locks_before_directory_publication(
 ) -> None:
     reports = tmp_path / "reports"
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
     observed = False
 
@@ -1210,7 +1210,7 @@ def test_simulation_reservation_locks_before_directory_publication(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", inspect_before_publish)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         assert flow.reserve_invocation_dir() == reports / "sim/1"
 
     assert observed
@@ -1224,7 +1224,7 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
 
     def lose_race_for_two(path: Path, *args: object, **kwargs: object) -> None:
@@ -1234,7 +1234,7 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", lose_race_for_two)
-    with campaign_invocation_lock(reports / "sim/1"), flow.context.publication_resources:
+    with campaign_invocation_lock(reports / "sim/1"), flow.publication_resources:
         assert flow.reserve_invocation_dir() == reports / "sim/3"
         # The raced number's producer lock was released, not leaked.
         with campaign_invocation_lock(reports / "sim/2"):
@@ -1250,7 +1250,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
 
     def disk_full_for_one(path: Path, *args: object, **kwargs: object) -> None:
@@ -1260,7 +1260,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
 
     monkeypatch.setattr(type(reports), "mkdir", disk_full_for_one)
     with (
-        flow.context.publication_resources,
+        flow.publication_resources,
         pytest.raises(OSError, match="No space left") as raised,
     ):
         flow.reserve_invocation_dir()
@@ -1276,10 +1276,10 @@ def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) 
     reports = tmp_path / "reports"
     (reports / "sim" / "1000000").mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
 
     with (
-        flow.context.publication_resources,
+        flow.publication_resources,
         pytest.raises(RuntimeError, match="reservation ceiling exceeded"),
     ):
         flow.reserve_invocation_dir()

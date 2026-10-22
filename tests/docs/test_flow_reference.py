@@ -189,7 +189,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     sim._compile_command_str = lambda _target: "make sim"  # type: ignore[method-assign]
     sim._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
     sim._artifacts_for = lambda _result: {}  # type: ignore[method-assign]
-    with sim.context.publication_resources:
+    with sim.publication_resources:
         sim._write_target_report(
             TargetResult(
                 target="sim_demo",
@@ -205,7 +205,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
 
 def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
     sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
-    with sim.context.publication_resources:
+    with sim.publication_resources:
         sim._write_elab_only_target_report(
             ElabOnlyTargetResult(
                 target="sim_demo",

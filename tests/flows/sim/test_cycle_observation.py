@@ -95,7 +95,7 @@ def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         units, errors = flow._plan_cycle_count_baseline_units(
             [_TARGET_SELECTOR],
             {_TARGET_SELECTOR: ["coremark"]},
@@ -378,7 +378,7 @@ def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkey
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
     assert result["sim_core"].passed is True
@@ -427,7 +427,7 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
     assert set(result) == {identity}
@@ -461,7 +461,7 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
 
     assert isinstance(result, EndpointOutcome)
@@ -493,7 +493,7 @@ def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
 
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_cycle_count_baselines(
             [_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]}
         )
@@ -657,7 +657,7 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
         return [_plan_unit(role, identity=handle.identity, revision=revision)], []
 
     monkeypatch.setattr(flow, "_plan_simulation_targets", preview)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         units, errors = flow._plan_cycle_count_baseline_units(
             ["sim_core"], {"sim_core": ["coremark"]}
         )
@@ -694,7 +694,7 @@ def test_cycle_baseline_execution_materializes_project_topologies(tmp_path, monk
         return TargetResult(target=target, passed=True, tests=[])
 
     monkeypatch.setattr(flow, "_run_target", run)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         results = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
         assert list(results) == [handle.identity]
         assert results[handle.identity].target_identity == handle.identity
@@ -736,7 +736,7 @@ def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeyp
     monkeypatch.setattr(flow, "_plan_simulation_targets", plan)
     monkeypatch.setattr(flow, "_run_target", run)
     monkeypatch.setattr(flow, "_planned_baseline_request", request)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         authorized = flow._campaign_authorization_baselines(revision, ["sim_core"])
         units, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
         assert errors == []

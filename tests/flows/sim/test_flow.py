@@ -327,7 +327,7 @@ def test_direct_evidence_namespaces_separate_candidate_and_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = _make_flow(tmp_path, config="lite")
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         invocation = flow.reserve_invocation_dir()
         assert invocation is not None
         monkeypatch.setattr(
@@ -347,7 +347,7 @@ def test_baseline_evidence_is_reported_and_prunable(tmp_path: Path) -> None:
     from booley.flows.sim.coverage_progress import CoverageProgress
 
     flow = _make_flow(tmp_path, config="lite")
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         invocation = flow.reserve_invocation_dir()
         assert invocation is not None
         log = invocation / "artifacts/baseline/abc123/sim_lite/tests/smoke/run.log"
@@ -401,7 +401,7 @@ def test_artifact_report_keys_do_not_drop_colliding_test_names(tmp_path: Path) -
 def test_dry_run_does_not_reserve_invocation_directory(tmp_path: Path) -> None:
     flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
@@ -1158,7 +1158,7 @@ class TestUnknownTestSelector:
         # End-to-end through _run: an unknown --test short-circuits to EXIT_ERROR
         # and never reaches _run_target — so no default test runs, no false PASS.
         flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "typo"])
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "typo" in result.report_text
@@ -1204,7 +1204,7 @@ class TestCriterionGating:
 class TestMultiConfig:
     def test_empty_config_fails(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert result.detail["mode"] == "simulate"
@@ -1250,7 +1250,7 @@ class TestDryRun:
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         captured = capsys.readouterr()
@@ -1269,7 +1269,7 @@ class TestDryRun:
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_expands_tests(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._run()
         captured = capsys.readouterr()
         plan = json.loads(captured.out)
@@ -1306,7 +1306,7 @@ class TestDryRun:
         capsys,
     ):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run", "--test", "smoke"])
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._run()
         captured = capsys.readouterr()
         plan = json.loads(captured.out)
@@ -1331,7 +1331,7 @@ class TestDryRun:
             config="lite,full",
             extra_args=["--dry-run", "--test", "smoke"],
         )
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._run()
         captured = capsys.readouterr()
         plan = json.loads(captured.out)
@@ -1361,7 +1361,7 @@ class TestDryRun:
             encoding="utf-8",
         )
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"], seed_core=False)
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         plan = json.loads(capsys.readouterr().out)
@@ -1457,7 +1457,7 @@ class TestSummaryParsing:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_summary_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
 
@@ -1466,7 +1466,7 @@ class TestSummaryParsing:
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_summary_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
 
@@ -1483,7 +1483,7 @@ class TestInconclusiveDetection:
     def test_inconclusive_no_criterion(self, _mock_backend, _mock_tests, tmp_path: Path):
         """No summary, rc=0 → inconclusive; criterion NOT set."""
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         assert "INCONCLUSIVE" in result.report_text
@@ -1498,7 +1498,7 @@ class TestFullRun:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_single_config_pass(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_met is True
@@ -1514,7 +1514,7 @@ class TestFullRun:
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_single_config_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         assert result.criterion_met is False
@@ -1524,7 +1524,7 @@ class TestFullRun:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_multi_test_all_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
 
@@ -1551,7 +1551,7 @@ class TestFullRun:
 
         with patch.object(SimulateFlow, "_execute", _alternating_execute):
             flow = _make_flow(tmp_path, config="lite,full")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         assert result.detail["targets_passed"] == 1
@@ -1568,7 +1568,7 @@ class TestCriterionSetting:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_sets_sim_pass_lite(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._run()
         assert flow.state.is_met("sim_pass_lite")
 
@@ -1577,7 +1577,7 @@ class TestCriterionSetting:
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_sets_sim_pass_full_false(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="full")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._run()
         assert not flow.state.is_met("sim_pass_full")
 
@@ -1604,7 +1604,7 @@ class TestCriterionSetting:
 
         with patch.object(SimulateFlow, "_execute", _mixed):
             flow = _make_flow(tmp_path, config="lite,full")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 flow._run()
         assert flow.state.is_met("sim_pass_lite")
         assert not flow.state.is_met("sim_pass_full")
@@ -1615,7 +1615,7 @@ class TestCriterionSetting:
     def test_inconclusive_skips_criterion(self, _mock_backend, _mock_tests, tmp_path: Path):
         """Inconclusive result must NOT set any criterion."""
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._run()
         assert not flow.state.has_criterion("sim_pass_lite")
 
@@ -1634,7 +1634,7 @@ def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
             patch("booley.flows.sim.flow._get_test_names", return_value={}),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(SimulateFlow, "_execute", _mock_execute_pass),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
     finally:
@@ -1654,7 +1654,7 @@ class TestReportGeneration:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_writes_config_report(self, _mock_backend, _mock_tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
         assert report_path.exists()
@@ -1687,7 +1687,7 @@ class TestReportGeneration:
             patch("booley.flows.sim.flow._get_test_names", return_value={}),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(flow, "_execute", return_value=proc),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
 
@@ -1708,7 +1708,7 @@ class TestReportGeneration:
 
     def test_interrupted_publication_is_explicitly_recoverable(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             target = TargetResult(
                 target="lite",
                 passed=True,
@@ -1755,7 +1755,7 @@ class TestReportGeneration:
         )
 
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
 
         assert "31,415 cycles" in result.report_text
@@ -1797,7 +1797,7 @@ class TestReportGeneration:
             ),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(flow, "_execute", side_effect=execute),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
 
@@ -1838,7 +1838,7 @@ class TestReportGeneration:
                     duration_s=0.1,
                 ),
             ),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
 
@@ -1867,7 +1867,7 @@ class TestReportGeneration:
                         duration_s=0.1,
                     ),
                 ),
-                flow.context.publication_resources,
+                flow.publication_resources,
             ):
                 flow._run()
             report_dir = sorted((tmp_path / "reports/sim").glob("[0-9]*"))[-1]
@@ -1919,7 +1919,7 @@ class TestReportGeneration:
             patch.object(flow, "_fileset_for_report", return_value=None),
             patch.object(flow, "_artifacts_for", return_value={}),
             pytest.raises(RuntimeError, match="outer interruption"),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             flow._run()
 
@@ -1969,10 +1969,10 @@ class TestReportGeneration:
                     "lite",
                 ]
             )
-        assert _apply_default_endpoint_report_root(flow.context) is None
+        assert _apply_default_endpoint_report_root(flow) is None
         flow.read_state()
         flow._simulation_execution_override = _BoundaryHarness(flow)
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         invocation = project_data / "flow-reports/sim/1"
@@ -2018,7 +2018,7 @@ class TestTimeout:
 
         with patch.object(SimulateFlow, "_execute", _timeout_execute):
             flow = _make_flow(tmp_path, config="lite")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         report = json.loads(
@@ -2074,7 +2074,7 @@ class TestTimeout:
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(flow, "_execute", return_value=SubprocessResult(returncode=-9)),
             patch(f"{__name__}._adapter_result_for_test_process", return_value=adapter),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
@@ -2217,7 +2217,7 @@ class TestErrorTailSource:
 
         with patch.object(SimulateFlow, "_execute", _execute):
             flow = _make_flow(tmp_path, config="lite")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 result = flow._run()
 
         assert result.exit_code == EXIT_FAILURE
@@ -2246,7 +2246,7 @@ class TestErrorTailSource:
 
         with patch.object(SimulateFlow, "_execute", _execute):
             flow = _make_flow(tmp_path, config="lite")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 result = flow._run()
 
         assert result.exit_code == EXIT_FAILURE
@@ -2294,7 +2294,7 @@ class TestTruncationResilientReport:
 
         with patch.object(SimulateFlow, "_execute", _alternating):
             flow = _make_flow(tmp_path, config="lite,full")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 result = flow._run()
 
         lines = result.report_text.splitlines()
@@ -2334,7 +2334,7 @@ class TestTruncationResilientReport:
 
         with patch.object(SimulateFlow, "_execute", _chatty_fail):
             flow = _make_flow(tmp_path, config="lite")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 flow._run()
 
         report = capsys.readouterr().out
@@ -2372,7 +2372,7 @@ class TestTruncationResilientReport:
 
         with patch.object(SimulateFlow, "_execute", _fail_and_write_log):
             flow = _make_flow(tmp_path, config="lite")
-            with flow.context.publication_resources:
+            with flow.publication_resources:
                 result = flow._run()
 
         assert "... (20 lines omitted, see run.log)" in result.report_text
@@ -2547,7 +2547,7 @@ class TestBuildContextReporting:
             tests=[SimTestResult(name="smoke", passed=False, elapsed_s=1.0)],
         )
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._write_target_report(tr)
 
         report = json.loads(
@@ -2574,7 +2574,7 @@ class TestBuildContextReporting:
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
         flow = _make_flow(tmp_path, config="sim", seed_core=False)
         flow._test_names_map = {}
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             invocation = flow.reserve_invocation_dir()
             assert invocation is not None
             build_root = invocation / "artifacts/candidate/sim_sim/tests/smoke"
@@ -2631,7 +2631,7 @@ class TestBuildContextReporting:
         (build_root / "result.json").write_text('{"passed": true}', encoding="utf-8")
         (build_root / "trace.fst").write_text("fst", encoding="utf-8")
         (build_root / "trace_incident.txt").write_text("old incident", encoding="utf-8")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._write_target_report(TargetResult(target="sim", passed=False, elapsed_s=1.0))
 
         artifacts = json.loads(
@@ -2654,7 +2654,7 @@ class TestBuildContextReporting:
         custom.parent.mkdir()
         custom.write_text("fst", encoding="utf-8")
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._write_target_report(
                 TargetResult(
                     target="sim",
@@ -2682,7 +2682,7 @@ class TestBuildContextReporting:
         flow._test_names_map = {}
         tr = TargetResult(target="ghost", passed=False, elapsed_s=0.1)
 
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             flow._write_target_report(tr)
 
         report = json.loads(
@@ -2857,7 +2857,7 @@ class TestMissingExecutableIsEdaToolError:
         )
         with (
             patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout)),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -2877,7 +2877,7 @@ class TestMissingExecutableIsEdaToolError:
         )
         with (
             patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout, 1)),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_FAILURE
@@ -2908,7 +2908,7 @@ class TestTraceArtifactReported:
             )
             return SubprocessResult(returncode=0, stdout=stdout, duration_s=0.05)
 
-        with patch.object(SimulateFlow, "_execute", _execute), flow.context.publication_resources:
+        with patch.object(SimulateFlow, "_execute", _execute), flow.publication_resources:
             result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
@@ -2926,7 +2926,7 @@ class TestTraceArtifactReported:
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_untraced_run_reports_no_trace_line(self, _sel, _tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert "trace:" not in result.report_text
 
@@ -3138,8 +3138,8 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
     )
     flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
     result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
-    with flow.context.publication_resources:
-        report = final_report_omits_headline(flow.context, result)
+    with flow.publication_resources:
+        report = final_report_omits_headline(flow, result)
     assert report["exit_code"] == result.exit_code
     if met is None:
         assert "elab_pass_lite" not in flow.state.criteria
@@ -3158,8 +3158,8 @@ def test_legacy_report_preserves_per_target_tool_identity(tmp_path):
         TargetResult("lite", eda_tool="Verilator", passed=True),
         TargetResult("full", eda_tool="icarus", passed=True),
     ]
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         outcome = flow._legacy_endpoint_outcome(["lite", "full"], results, [], True, 0, 0)
-        report = json.loads(flow.context.write_report(outcome).read_bytes())
+        report = json.loads(flow.write_report(outcome).read_bytes())
     assert report.get("eda_tools") == {"lite": "Verilator", "full": "icarus"}
     assert "eda_tool" not in report

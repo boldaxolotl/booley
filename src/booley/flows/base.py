@@ -19,18 +19,18 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
-from booley.criteria.state import DevelopmentState
-from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
+from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows import execution
 from booley.flows.cli_arguments import BuiltinArguments
-from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.cli_help import SurfaceHelp
 from booley.flows.cli_selection import CliInvocation
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
-from booley.flows.execution_persistence import FlowExecutionAdapter
+from booley.flows.endpoint_state import EndpointState
+from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
@@ -39,6 +39,9 @@ from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, Execu
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
+
+if TYPE_CHECKING:
+    from booley.flows.terminal_progress import TerminalProgress
 
 logger = logging.getLogger(__name__)
 
@@ -320,11 +323,10 @@ class FlowMechanics:
             execution.flow_enabled(self.name, Path(self.args.work_dir))
         except execution.FlowConfigError as exc:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
-        execution_state = getattr(self, "context", self)
-        resolved = execution_state.execution_adapter.validate_and_resolve(self.args)
+        resolved = self.execution_adapter.validate_and_resolve(self.args)
         if isinstance(resolved, EndpointOutcome):
             return resolved
-        execution_state.flow_acceptance = resolved
+        self.flow_acceptance = resolved
         return None
 
     def _run(self) -> EndpointOutcome:
@@ -506,26 +508,19 @@ class BooleyFlow(FlowMechanics, EndpointContext):
 RequestT = TypeVar("RequestT", bound=FlowRequest)
 
 
-class BuiltinFlow(FlowMechanics, Generic[RequestT]):
-    """Invocation seam shared only by Booley's four shipped Flows."""
+class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
+    """Invocation seam shared only by Booley's four shipped Flows.
+
+    The Flow is the single owner of its per-invocation state; every entry point
+    starts an invocation through ``_start_invocation``.
+    """
 
     request_type: ClassVar[type[FlowRequest]] = FlowRequest
     argument_adapter: ClassVar[type[BuiltinArguments]] = BuiltinArguments
     # The in-process caller's explicit CLI origin and outer Project; None reads the env marker.
     _cli_invocation: CliInvocation | None = None
 
-    name: str = ""
-    description: str = ""
-    # Human `--help` wording; ``description`` stays the agent-facing tool text.
-    cli_help: ClassVar[CliHelp | None] = None
-    code_modifying: bool = False
-    modifies_category: str | None = None
-    config_aware: bool = True
-    accepts_target: bool = True
     target_required: bool = False
-    announce_success_report: bool = False
-    satisfies: ClassVar[list[str]] = []
-    satisfies_args: ClassVar[dict[str, str]] = {}
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
@@ -541,46 +536,45 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     )
 
     def __init__(self) -> None:
-        from booley.flows.execution_persistence import StandaloneFlowExecution
-        from booley.flows.flow_session import FlowSession
+        self._start_invocation(StandaloneFlowExecution())
 
-        self.context = FlowSession(self, StandaloneFlowExecution())
+    def _start_invocation(
+        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
+    ) -> None:
+        """Start one invocation: fresh EndpointState fields, adapter, request and Flow extras."""
+        EndpointState.__init__(self)  # new invocation id, display identity, Criteria ledger, ...
+        self.configure_flow_execution(adapter)
+        self._args = request
+        self.terminal_progress: TerminalProgress | None = None
+        self.publication_resources = contextlib.ExitStack()
+        # Baseline worktrees held open in `publication_resources`, by revision; each
+        # revision is materialized once per invocation and shared (#1959).
+        self.baseline_worktrees: dict[str, Path] = {}
+        self._simulation_campaign_outcomes: tuple[Any, ...] = ()
+        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+        self.reset_report_metadata()
 
     @property
     def args(self) -> RequestT:
-        return cast(RequestT, self.context.args)
+        return cast(RequestT, super().args)
 
-    @property
-    def state(self) -> DevelopmentState:
-        return self.context.state
+    def reset_report_metadata(self) -> None:
+        """Clear invocation-local metadata before admission gates."""
+        super().reset_report_metadata()
+        self.cycle_report_json: str | None = None
+        self._automatic_target_notice = ""
+        self._automatic_target_notice_published = False
+        self._prepared_target_selection = None
+        self.begin_invocation()
 
-    def set_criterion(
-        self,
-        key: str,
-        met: bool,
-        *,
-        detail: dict[str, Any] | None = None,
-        source_target: str | None = None,
-    ) -> None:
-        self.context.set_criterion(key, met, detail=detail, source_target=source_target)
+    def _finalize_result(self, result: EndpointOutcome) -> None:
+        result.cycle_report_json = self.cycle_report_json or "{}"
+        super()._finalize_result(result)
 
-    def reserve_invocation_dir(self) -> Path | None:
-        return self.context.reserve_invocation_dir()
-
-    def emit_progress(self, line: str) -> None:
-        self.context.emit_progress(line)
-
-    def emit_completion(self, line: str, *, repeats_at_end: bool = False) -> None:
-        self.context.emit_completion(line, repeats_at_end=repeats_at_end)
-
-    def _requested_targets(self) -> list[str]:
-        return self.context._requested_targets()
-
-    def _flow_enabled(self) -> bool:
-        return self.context._flow_enabled()
-
-    def _resolve_job_class(self) -> str | None:
-        return None
+    def execute_prepared(self) -> ExecutionResult:
+        """Keep invocation resources alive through final report publication."""
+        with self.publication_resources:
+            return super().execute_prepared()
 
     def prepare_target_endpoint(self) -> EndpointOutcome | None:
         """Resolve the complete Target selection before admission."""
@@ -605,12 +599,12 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
                 report_text=f"{self.name} Target selection failed: {exc}",
             )
         self._prepared_target_selection = selection
-        self.context.set_report_targets([handle.selector for handle in selection.handles])
+        self.set_report_targets([handle.selector for handle in selection.handles])
         if selection.automatic:
             from booley.flows.endpoint_reporting import automatic_target_notice
 
             self.args.target = selection.target_arg
-            self.context._automatic_target_notice = automatic_target_notice(
+            self._automatic_target_notice = automatic_target_notice(
                 self.name, selection.target_arg
             )
         return None
@@ -630,57 +624,21 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         """Return the immutable selection prepared for this invocation."""
         return self._selected_target_selection().handles
 
-    def record_eda_tool(self, target: str, eda_tool: str | None) -> None:
-        """Forward resolved tool identity to the invocation's metadata owner."""
-        self.context.record_eda_tool(target, eda_tool)
-
-    @property
-    def _eda_tool(self) -> str | None:
-        return self.context._eda_tool
-
-    @_eda_tool.setter
-    def _eda_tool(self, value: str | None) -> None:
-        self.context._eda_tool = value
-
-    @property
-    def _args(self) -> FlowRequest | None:
-        return self.context._args
-
-    @_args.setter
-    def _args(self, value: FlowRequest) -> None:
-        self.context._args = value
-
-    @property
-    def _state(self) -> DevelopmentState | None:
-        return self.context._state
-
-    @_state.setter
-    def _state(self, value: DevelopmentState) -> None:
-        self.context._state = value
-
-    @property
-    def _flow_acceptance(self) -> ResolvedFlowAcceptance:
-        return self.context.flow_acceptance
-
     @property
     def _paired_project_baseline(self) -> PairedProjectBaseline:
-        return self.context.flow_acceptance.paired_project
-
-    def read_state(self) -> DevelopmentState:
-        return self.context.read_state()
+        return self.flow_acceptance.paired_project
 
     def parse_args(self, argv: list[str] | None = None) -> RequestT:
         from booley.flows.builtin_cli import parse_request
 
-        self.context._args = parse_request(self, argv)
-        self.context.reset_report_metadata()
+        self._start_invocation(self.execution_adapter, parse_request(self, argv))
         return self.args
 
     def begin_invocation(self) -> None:
         """Drop whatever this Flow object kept from an earlier invocation.
 
-        Called wherever a new invocation starts: a new session, a newly
-        parsed request, and the preparation of a session's execution. A Flow
+        Called wherever a new invocation starts: a new Flow, a newly
+        parsed request, and the preparation of its execution. A Flow
         that keeps per-invocation state overrides this to start it afresh, so
         one Flow object never answers a request from another request's state.
         """
@@ -691,19 +649,16 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         *,
         adapter: FlowExecutionAdapter | None = None,
     ) -> ExecutionResult:
-        """Execute typed input through a fresh, transport-independent session."""
+        """Execute typed input through a fresh, transport-independent invocation."""
         from dataclasses import replace
 
         from booley.flows.endpoint_cli import apply_environment
-        from booley.flows.execution_persistence import StandaloneFlowExecution
-        from booley.flows.flow_session import FlowSession
 
         if not isinstance(request, self.request_type):
             raise TypeError(f"{self.name} requires {self.request_type.__name__}")
-        self.context = FlowSession(self, adapter or StandaloneFlowExecution())
-        self.context._args = replace(request)
-        apply_environment(self.context._args, self.endpoint_kind)
-        return self.context.execute_prepared()
+        self._start_invocation(adapter or StandaloneFlowExecution(), replace(request))
+        apply_environment(self._args, self.endpoint_kind)
+        return self.execute_prepared()
 
     def execute_cli(
         self,

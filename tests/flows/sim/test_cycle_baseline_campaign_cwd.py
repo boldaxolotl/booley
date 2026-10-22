@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from booley.criteria.templates import CriteriaTemplate
 from booley.flows import base
+from booley.flows.endpoint_state import EndpointState
 from tests.flows.sim.test_endpoint_campaign_lifecycle import _ordinary_public_hook_fixture
 
 _REVISION = "b" * 40
@@ -55,8 +56,7 @@ def test_campaign_baseline_builds_and_runs_in_the_baseline_checkout(tmp_path, mo
             }
         }
     )
-    session = type(flow.context)
-    read_state = session.read_state
+    read_state = EndpointState.read_state
 
     def with_relative_criterion(context):
         state = read_state(context)
@@ -65,7 +65,7 @@ def test_campaign_baseline_builds_and_runs_in_the_baseline_checkout(tmp_path, mo
             state.criteria[name].params["_baseline_ref"] = _REVISION
         return state
 
-    monkeypatch.setattr(session, "read_state", with_relative_criterion)
+    monkeypatch.setattr(EndpointState, "read_state", with_relative_criterion)
 
     started: list[Path] = []
     start = base._start_local_process

@@ -1,7 +1,7 @@
 """Compatibility facade for Project-local endpoints and Specialists.
 
 Only legacy extensions inherit CLI parsing and the historical hook surface.
-Built-in Flows compose a FlowSession instead.
+Built-in Flows inherit EndpointState directly instead.
 """
 
 from __future__ import annotations

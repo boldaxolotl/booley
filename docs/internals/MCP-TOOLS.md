@@ -206,7 +206,7 @@ Chapter 3 covers any project Criteria named by `satisfies`.
 
 ## Chapter 2: The Shared Python Contract
 
-Built-in Flows compose a transport-independent execution session and accept
+Built-in Flows own their per-invocation execution state and accept
 typed requests. CLI and MCP adapters expose them through the existing commands
 and schemas; see [Built-in Flow execution](FLOW-EXECUTION.md). Custom Flows retain
 `BooleyFlow`, while Specialists and direct MCP endpoints retain their existing
@@ -223,7 +223,7 @@ Criteria themselves are defined and expanded.
 
 | Class | Contract | Built-in examples |
 |-------|----------|-------------------|
-| `BuiltinFlow` | Execute typed requests through a composed Flow session | `sim`, `lint`, `synth`, `fpga` |
+| `BuiltinFlow` | Execute typed requests as their own invocation-state owner | `sim`, `lint`, `synth`, `fpga` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Project-local custom endpoint |

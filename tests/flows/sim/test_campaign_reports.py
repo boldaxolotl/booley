@@ -238,7 +238,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     progress = json.loads((resumed / "sim/1/progress.json").read_text())
     assert "cycle_counts" not in json.dumps(progress)
     if failure:
-        assert flow.context._simulation_campaign_outcomes == ()
+        assert flow._simulation_campaign_outcomes == ()
     else:
         campaign = report["detail"]["campaigns"]["sim_0"]
         assert all(item["cycle_count"] is None for item in campaign["observations"])
@@ -269,8 +269,8 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     flow = SimulateFlow()
     flow._args = SimRequest(target="one,two", report_dir=tmp_path / "large", work_dir=tmp_path)
     result = flow._campaign_endpoint_outcome(outcomes)
-    with flow.context.publication_resources:
-        path = write_report(flow.context, result)
+    with flow.publication_resources:
+        path = write_report(flow, result)
     report = _read_report_json(path)
     assert _read_object(path) == report == json.loads((tmp_path / "large/sim.json").read_bytes())
     assert sum(map(len, report["cycle_counts"].values())) == 4000
@@ -342,7 +342,7 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
         assert counters == {"compile": expected_runs, "durable_reuse": 0, "launch": expected_runs}
     assert len(resumed.pre_sim_firings) == 1 + expected_runs
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([resumed])
     assert len(result.detail["pre_sim_lines"]) == expected_runs
@@ -406,7 +406,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     validated = ValidatedResumeManifest(node, (), (_handle(tmp_path / "project"),))
     invocation.mkdir(parents=True, exist_ok=True)
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(
         target=["sim"],
         result_verbosity="brief",
@@ -624,7 +624,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     baseline_root, candidate_root = tmp_path / "baseline", tmp_path / "candidate"
     baseline_root.mkdir()
     candidate_root.mkdir()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._current_published_pre_sim_keys = set()
 
     def baseline_role(document):
@@ -749,7 +749,7 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
                 f for f in candidate.pre_sim_firings if f.document["role"] == "candidate"
             )
             (firing.path.parents[3] / "result.json").write_text("{}")
-            flow.context._pending_criteria_set = ("before-final-integrity",)
+            flow._pending_criteria_set = ("before-final-integrity",)
         result = flow._campaign_endpoint_outcome([candidate])
         assert reads == []
         evidence["reads"] = reads
@@ -769,7 +769,7 @@ def test_final_published_baseline_hooks_bound_cycle_text(tmp_path, monkeypatch, 
     assert result.detail["pre_sim_current"] == 2
     assert len(flow._current_published_pre_sim_keys) == 2
     assert len(result.detail["pre_sim_lines"]) == 2
-    assert evidence["reads"] == [flow.context._reserved_invocation_dir]
+    assert evidence["reads"] == [flow._reserved_invocation_dir]
     assert result.report_text.count("pre_run_commands") == 2
     assert result.report_text.count("Candidate:") == 1
     assert result.report_text.count("Cycle Count baseline:") == 1
@@ -795,7 +795,7 @@ def test_missing_published_hook_key_suppresses_optional_budget(tmp_path, monkeyp
     result = flow._campaign_endpoint_outcome([candidate])
     assert "cycles=" not in result.report_text and "integrity" not in result.report_text
     assert candidate.pre_sim_firings is before
-    assert flow.context._simulation_campaign_outcomes == (candidate,)
+    assert flow._simulation_campaign_outcomes == (candidate,)
 
 
 @pytest.mark.parametrize("count", [None, 0, 1234])
@@ -811,7 +811,7 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
     outcome = replace(outcome, observations=(dict(outcome.observations[0], cycle_count=count),))
     flow = SimulateFlow()
     flow._args = SimRequest(target="sim")
-    flow.context._reserved_invocation_dir = outcome.producer_invocation_directory
+    flow._reserved_invocation_dir = outcome.producer_invocation_directory
     flow._current_published_pre_sim_keys = set()
 
     def unexpected_read(*_args):
@@ -832,8 +832,8 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     assert "integrity" not in evidence["endpoint_text"]
     assert result.exit_code == 2 and result.criterion_met is False
     assert "Simulation Campaign integrity failure:" in result.report_text
-    assert flow.context._simulation_campaign_outcomes == ()
-    assert flow.context._pending_criteria_set == ()
+    assert flow._simulation_campaign_outcomes == ()
+    assert flow._pending_criteria_set == ()
     assert result.detail["pre_sim_current"] == 2
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
 
@@ -963,9 +963,7 @@ def test_alias_normalization_precedes_simulation_preparation(
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    assert flow.context.args.report_dir == data / (
-        "flow-reports" if selection == "default" else "reports"
-    )
+    assert flow.args.report_dir == data / ("flow-reports" if selection == "default" else "reports")
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])

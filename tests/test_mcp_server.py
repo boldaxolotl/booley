@@ -2180,7 +2180,7 @@ def test_registered_poll_observes_blocked_legacy_simulation_execution(tmp_path, 
     monkeypatch.setattr(flow, "_simulation_execution", lambda **_kwargs: execution)
     monkeypatch.setattr(flow, "_target_handle", lambda _target: handle)
     with ExitStack() as stack:
-        stack.callback(flow.context.publication_resources.close)
+        stack.callback(flow.publication_resources.close)
         stack.enter_context(_compile_surface_patch(handle))
         stack.enter_context(
             patch(

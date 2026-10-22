@@ -110,7 +110,7 @@ class _GoalAdapter(StandaloneFlowExecution):
 
 def _goal_flow(tmp_path, monkeypatch, frozen: FrozenTestRuns, *argv: str) -> SimulateFlow:
     flow = _flow(tmp_path, monkeypatch, *argv)
-    flow.context.configure_flow_execution(_GoalAdapter(frozen))
+    flow.configure_flow_execution(_GoalAdapter(frozen))
     return flow
 
 
@@ -142,7 +142,7 @@ def test_target_run_under_a_target_goal_runs_its_frozen_test_runs(tmp_path, monk
     # ``reset`` was not frozen and runs as its current default.
     assert _names(flow) == ["stress+soak@5", "reset@1"]
     assert flow._test_runs.fresh_seed_selectors == {}
-    assert flow.context.execution_adapter.reads == 1  # read once per invocation
+    assert flow.execution_adapter.reads == 1  # read once per invocation
 
 
 def test_frozen_run_whose_variant_is_gone_or_skipped_does_not_run(tmp_path, monkeypatch):
@@ -361,7 +361,7 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
 
     flow = _flow(tmp_path, monkeypatch)
     registry = Registry()
-    flow.context.configure_flow_execution(registry)
+    flow.configure_flow_execution(registry)
     published: list[Path] = []
     publish = flow._manifest_publisher(published)
     publish(manifest)
@@ -370,7 +370,7 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
 
     diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
     silent = Registry()
-    diagnostic.context.configure_flow_execution(silent)
+    diagnostic.configure_flow_execution(silent)
     diagnostic._manifest_publisher([])(manifest)
     assert silent.campaigns == []
     # Outside Goal Mode nothing wants to know.
@@ -433,7 +433,7 @@ def test_a_coverage_campaign_collected_on_its_own_is_registered_before_it_runs(
     target = SimpleNamespace(handle=SimpleNamespace(selector="sim", identity="lib:ip:core#sim"))
     flow = _flow(tmp_path, monkeypatch)
     registry = Registry()
-    flow.context.configure_flow_execution(registry)
+    flow.configure_flow_execution(registry)
     flow._register_coverage_campaign(target, tmp_path / "reports" / "sim" / "1")
     (started,) = registry.campaigns
     assert started.manifest_path == tmp_path / "reports/sim/1/targets/sim/coverage.json"
@@ -441,7 +441,7 @@ def test_a_coverage_campaign_collected_on_its_own_is_registered_before_it_runs(
 
     diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
     silent = Registry()
-    diagnostic.context.configure_flow_execution(silent)
+    diagnostic.configure_flow_execution(silent)
     diagnostic._register_coverage_campaign(target, tmp_path / "reports" / "sim" / "2")
     assert silent.campaigns == []
 
