@@ -295,11 +295,23 @@ Authoring rules:
   the original data, address,
   enable, byte-enable, clock, and reset ports. Preserve clock domains,
   synchronous/asynchronous read behavior, visible latency, registered output
-  stages, write endpoints, and read startpoints—not contents, capacity,
-  collision semantics, macro area/power/placement, or internal timing arcs.
-  Use independent retained scalar/packed state for write endpoints and read
-  startpoints; never create a universal write-to-read data path or an unpacked
-  depth-by-width array. Unsupported shapes remain blocked.
+  stages, reset and zeroize behavior, and data dependence—not contents,
+  capacity, collision semantics, macro area/power/placement, or internal
+  timing arcs. Every read-data bit must depend, **through registers only**, on
+  the memory's write-side inputs: **write data, address, write enables, and
+  byte-enables**. Make every such input observable at some read output by
+  **combining it bit-wise** (for example, a registered XOR of write data and
+  address), **never through a reduction across bits**. **Never create a
+  combinational write-to-read arc** (from write data, write enables, or
+  byte-enables to read data). An asynchronous-read memory keeps its own
+  combinational read-address-to-read-data path; that read path is not a
+  write-to-read arc, and the registered dependence above still applies. Each
+  read port's own address and enable also reach its read data with the
+  memory's read latency. Keep the state small, fixed, and scalar/packed; never
+  use an unpacked depth-by-width array or other storage that scales with
+  depth. Read data driven only by the address or by constants lets synthesis
+  delete the logic around the memory and understates area and Fmax.
+  Unsupported shapes remain blocked.
 
   Write the surrogate as an ordinary Verilog/SystemVerilog source in a
   synthesis-only fileset. Select it through a Target-owned
@@ -308,8 +320,27 @@ Authoring rules:
   Targets. Do not introduce a manifest or custom file type. Immediately run a
   focused elaboration/Yosys statistics check proving that the intended module
   was selected, the surrogate contributes zero inferred-memory cells, and its
-  mapped storage cost does not scale with the original memory depth. A mismatch
+  mapped storage cost does not scale with the original memory depth. Measure
+  that standalone cost with the same generic synthesis as the probe below,
+  once per distinct parameter set the Target instantiates. A mismatch
   invalidates the plan instead of inviting a guessed model.
+
+  Then run the **no-pruning probe** with raw Yosys in **logical mode**: run
+  Yosys directly on the Target's resolved sources (not `booley flow synth`),
+  using generic flattening synthesis (`synth -flatten -top <toplevel>`
+  followed by `stat`), with **no liberty** file and no physical flow.
+  (1) Synthesize the Target with the surrogate selected. (2) Synthesize the
+  Target without the surrogate fileset and define, with the memory module that
+  define replaces as a **black box** (for example `blackbox <module>` before
+  `synth`). (3) Subtract the surrogate's **standalone cost** from the depth
+  check, per instance and its parameter set, from run 1's totals and compare
+  them with run 2's totals without its black-box cells. Count every `$_DFF*`,
+  `$_SDFF*`, `$_ALDFF*`, `$_DLATCH*` and `$_SR*` cell as a flop and all other
+  cells as combinational. The surrogate passes only if **flop counts match
+  exactly** and combinational cell counts agree **within ±2%** of run 2. A
+  probe failure invalidates the surrogate, not the plan: **fix it and
+  re-run** the probe. A surrogate whose read data comes **only from the
+  address or from constants** fails this probe.
 - **`fpga` Targets:** `flow: generic`, `flow_options: {tool: vivado, …}`;
   `xdc` is a typed fileset, `top` is `toplevel`, and the board `part` plus
   `out_of_context` live in Target `flow_options`. **No `hooks:`** (decision 21,

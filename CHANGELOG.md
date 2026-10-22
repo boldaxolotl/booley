@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Project Setup's Memory Timing Surrogate guidance now requires every
+  read-data bit to depend, through registers only and bit-wise, on the
+  memory's write data, address, write enables, and byte-enables, and adds a
+  no-pruning probe against a black-box synthesis. Surrogates built under the
+  earlier rule, with read data from the address or constants, may let
+  synthesis delete the surrounding logic and understate area and Fmax.
+  Projects with a surrogate should re-run setup's surrogate validation
+  (Project Configuration step) and fix any surrogate that fails the probe.
 - On Windows, a Simulation Campaign no longer stops with "child execution cancelled
   before result publication" when a Job Slot token read or lease renewal races a
   concurrent rewrite. Token reads and rewrites use the same bounded sharing-error

@@ -32,6 +32,9 @@ filesets:
     tags: [tb]               # REQUIRED on the testbench fileset (decision 13).
   # Ordinary synth-only RTL; never attach this fileset or its selection define
   # to sim/lint/fpga Targets.
+  # Its read data depends, through registers only and bit-wise, on the
+  # memory's write data, address, write enables, and byte-enables, with no
+  # combinational write-to-read arc; setup's no-pruning probe checks it.
   # synth_memory:
   #   files:
   #     - synth/dut_ram_timing_surrogate.sv: {file_type: systemVerilogSource}
