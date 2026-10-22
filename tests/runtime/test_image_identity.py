@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from booley.runtime import image_identity as identity
@@ -494,11 +496,16 @@ def test_layout_inspection_preserves_exact_docker_record(monkeypatch: pytest.Mon
         ("_probe_layout_directory", ("image",), "cannot verify Booley Directory layout"),
     ],
 )
-def test_layout_docker_transport_failure_is_controlled(monkeypatch, operation, args, message):
+@pytest.mark.parametrize(
+    "failure", [OSError("Docker unavailable"), subprocess.CalledProcessError(1, "docker")]
+)
+def test_layout_docker_transport_failure_is_controlled(
+    monkeypatch, operation, args, message, failure
+):
     from booley.runtime import project_image
 
     def unavailable(*_args, **_kwargs):
-        raise OSError("Docker unavailable")
+        raise failure
 
     monkeypatch.setattr(project_image.subprocess, "run", unavailable)
     with pytest.raises(RuntimeError, match=message):

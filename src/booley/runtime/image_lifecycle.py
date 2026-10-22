@@ -1133,7 +1133,7 @@ def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
             or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent
         ):
             return Diagnostic("parent-changed", "recorded immutable parent differs")
-        if not _descends_from(docker, expected_parent, node.reference):
+        if not descends_from(docker, expected_parent, node.reference):
             return Diagnostic(
                 "parent-changed", "filesystem layers do not descend from the verified parent"
             )
@@ -1319,7 +1319,7 @@ def _verify_prepared_image(
     if (
         parent_artifact is not None
         and node.parent is not None
-        and not _descends_from(docker, parent_artifact, reference)
+        and not descends_from(docker, parent_artifact, reference)
     ):
         raise ImageLifecycleError(
             f"prepared candidate {reference!r} does not descend from its verified immutable parent"
@@ -2453,7 +2453,7 @@ def _layout_alias_capable(image_id: str) -> bool:
         raise ImageLifecycleError(str(exc)) from exc
 
 
-def _descends_from(docker: DockerPort, parent: str | None, child: str) -> bool:
+def descends_from(docker: DockerPort, parent: str | None, child: str) -> bool:
     """Whether the child's filesystem layers extend the parent's non-empty layers."""
     layers = docker.image_layers(parent) if parent else []
     return bool(layers) and docker.image_layers(child)[: len(layers)] == layers

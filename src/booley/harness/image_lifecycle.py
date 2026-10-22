@@ -256,7 +256,7 @@ class _IncrementalBuildAdapter:
         return candidate_reference
 
     def _verify_manual_ancestry(self, candidate: str, parent_id: str | None) -> None:
-        if not runtime_lifecycle._descends_from(self.docker, parent_id, candidate):
+        if not runtime_lifecycle.descends_from(self.docker, parent_id, candidate):
             raise ImageLifecycleError(
                 "manual Project recipe final image does not descend from the verified selected parent"
             )

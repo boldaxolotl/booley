@@ -3743,7 +3743,7 @@ def test_layout_builder_rejects_untrusted_parent_before_tagging(
         labels.pop(lifecycle.LABEL_WHEEL_SHA256)
     elif failure == "user":
         parent["Config"]["User"] = "root;exit"
-    else:
+    elif failure == "missing":
         docker.images.clear()
 
     def inspect(_image):
@@ -3753,7 +3753,8 @@ def test_layout_builder_rejects_untrusted_parent_before_tagging(
 
     monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", inspect)
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
-    with pytest.raises(lifecycle.ImageLifecycleError):
+    expected = "inspection unavailable" if failure == "inspect-error" else None
+    with pytest.raises(lifecycle.ImageLifecycleError, match=expected):
         adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
     assert docker.mutations == []
     assert docker.image_id("candidate") is None
