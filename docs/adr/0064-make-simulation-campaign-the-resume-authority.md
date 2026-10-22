@@ -12,8 +12,9 @@ scheduling, per-work-item durability, aggregation, and explicit resume. An
 immutable `manifest.json` and immutable terminal work-item results are the
 authority; replaceable summaries and `simulation.json` are projections. This
 supersedes ADR 0058's placement of campaign policy in `SimulateFlow` while
-retaining its normalized simulator-adapter seam and authenticated evidence
-contract.
+retaining its normalized simulator-adapter seam and evidence contract
+(authenticated at launch and reuse; trusted on read, amended 2026-10-21, see
+Amendments).
 
 ## Considered Options
 
@@ -33,3 +34,12 @@ closed, while execution policy may change. Ordinary HDL tests are independently
 resumable; Cocotb and coverage initially publish coarser work-item results that
 match their real execution granularity. Durable evidence precedes terminal
 results, and terminal results precede Criteria publication.
+
+## Amendments (2026-10-21)
+
+Recorded while implementing issue #1745. Campaign evidence is authenticated
+when a Simulator Bundle or executable snapshot is
+launched or reused, and trusted on read. A scan decodes each work item's final
+attempt and result and binds them by attempt ID and ordinal. It does not re-read
+the build, bundle or snapshot chain or re-hash evidence files. Retention owns the
+files a completed attempt's result names and its Booley-written build trees.

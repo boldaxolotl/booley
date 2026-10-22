@@ -871,3 +871,36 @@ def test_prune_canonicalizes_explicit_project_data(project_alias, monkeypatch) -
     )
     retention.prune_invocation(data / "reports", 1, project_data=alias)
     assert received == [data]
+
+
+def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign.inspection import (
+        authenticate_retained_campaign_inventory,
+        inspect_retained_campaign,
+    )
+    from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _manifest_for, _request
+
+    manifest = _manifest_for(("alpha", "beta"))
+    project = tmp_path / "project"
+    project.mkdir()
+    build_root = tmp_path / "engine-build"
+    build_root.mkdir()
+    (build_root / "simv").write_bytes(b"image")
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    items = manifest.document["work_items"]
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    for item, invocation in ((items[0], 1), (items[1], 2)):
+        result = _executor(build_root, counters).execute(
+            _request(store, manifest, item, project, invocation=invocation)
+        )
+        store.publish_result(item["work_item_id"], result)  # type: ignore[index]
+
+    status = inspect_retained_campaign(store.manifest_path)
+    owned = {*status.retention_files, *authenticate_retained_campaign_inventory(status)}
+    produced = {
+        path.absolute() for path in (store.root / "build-variants").rglob("*") if path.is_file()
+    }
+    assert counters["compile"] == 2
+    assert produced <= owned

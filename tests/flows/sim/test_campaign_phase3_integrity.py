@@ -399,12 +399,6 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     first = _executor(build_root, counters).execute(
         _request(store, manifest, items[0], project, invocation=1)
     )
-    store.verify_result_evidence(
-        store.work_item_directory(items[0]["work_item_id"])  # type: ignore[index]
-        / "attempts"
-        / f"{first.document['attempt_ordinal']:04d}-{first.document['attempt_id']}",
-        first,
-    )
     second = _executor(build_root, counters).execute(
         _request(store, manifest, items[1], project, invocation=1)
     )
@@ -1155,21 +1149,15 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
         request.store.read_pre_sim_firings()
 
 
-@pytest.mark.parametrize("entry", ["verify", "inspect"])
-def test_pre_sim_verification_and_inspection_read_fresh(tmp_path, monkeypatch, entry):
-    from booley.flows.sim.campaign.codec import decode_simulation_result
+def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     store = CampaignStore(invocation / "targets/sim/campaign")
-    result = decode_simulation_result((firing.path.parents[3] / "result.json").read_bytes())
 
     def inspect():
-        if entry == "verify":
-            store.verify_result_evidence(firing.path.parent.parent, result)
-        else:
-            assert store.inspect_pre_sim_firings() == outcome.pre_sim_firings
+        assert store.inspect_pre_sim_firings() == outcome.pre_sim_firings
 
     accesses, _ = _observe_pre_sim_reads(monkeypatch)
     inspect()
@@ -1193,23 +1181,20 @@ def test_pre_sim_verification_and_inspection_read_fresh(tmp_path, monkeypatch, e
         ("test_names", ["other"], "selection disagrees"),
         ("stdout_tail", "x" * 8193, "over-budget stdout_tail"),
         ("status", "invented", "status"),
-        ("bytes", None, "terminal hook lacks authenticated reference"),
+        ("bytes", None, "result references disagree"),
         ("sidecar-link", None, "regular file|link"),
         ("ordinal-path", None, "ordinal disagrees"),
         ("directory-owner", None, "directory owner disagrees"),
-        ("missing-reference", None, "terminal hook lacks authenticated reference"),
-        ("ancestor-link", None, "cannot read authoritative file.*attempt.json"),
+        ("missing-reference", None, "result references disagree"),
     ],
     ids=lambda value: None if value is None else str(value)[:32],
 )
 def test_pre_sim_read_identity_and_reference_cases(tmp_path, monkeypatch, defect, value, message):
-    from booley.flows.sim.campaign.codec import decode_simulation_result
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     result_path = firing.path.parents[3] / "result.json"
-    result = decode_simulation_result(result_path.read_bytes())
     if value is not None:
         document = json.loads(firing.path.read_bytes())
         document[defect] = value
@@ -1230,20 +1215,12 @@ def test_pre_sim_read_identity_and_reference_cases(tmp_path, monkeypatch, defect
         result_path.unlink()
         if defect == "ordinal-path":
             firing.path.rename(firing.path.with_name("0002.json"))
-        elif defect == "directory-owner":
+        else:
             directory = firing.path.parent.parent
             directory.rename(directory.with_name("0001-other-owner"))
-        else:
-            directory = firing.path.parent.parent
-            destination = tmp_path / "moved-attempt"
-            directory.rename(destination)
-            directory.symlink_to(destination, target_is_directory=True)
     store = CampaignStore(invocation / "targets/sim/campaign")
     with pytest.raises(SimulationCampaignIntegrityError, match=message):
-        if defect == "ancestor-link":
-            store.verify_result_evidence(firing.path.parent.parent, result)
-        else:
-            store.scan()
+        store.scan()
 
 
 def _observe_pre_sim_reads(monkeypatch):

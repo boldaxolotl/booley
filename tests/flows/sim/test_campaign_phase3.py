@@ -406,7 +406,6 @@ def _seed_failed_campaign(store, manifest, project, handle, build_root):
     counters = {"compile": 0, "launch": 0}
     request = _work_request(store, manifest, items[0], project, handle)
     result = _failed_shared_executor(build_root, counters).execute(request)
-    store.verify_result_evidence(request.attempt_directory, result)
     store.publish_result(items[0]["work_item_id"], result)
     node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
     validated = ValidatedResumeManifest(
