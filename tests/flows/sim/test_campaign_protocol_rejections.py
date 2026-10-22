@@ -257,6 +257,13 @@ def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monke
     with pytest.raises(SimulationCampaignIntegrityError, match="cannot be reconciled"):
         registry._assert_no_unmanaged_token(execution_id)
 
+    def unreadable(_path):
+        raise PermissionError(13, "held by a scanner")
+
+    monkeypatch.setattr(child_protocol, "read_slot_entry", unreadable)
+    with pytest.raises(SimulationCampaignIntegrityError, match="entry unreadable"):
+        registry._assert_no_unmanaged_token(execution_id)
+
 
 def test_recovery_refuses_unreadable_child_token(tmp_path: Path) -> None:
     # An unreadable slot entry may be the child's live claim: never retire it as absent (#1905).

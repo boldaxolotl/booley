@@ -318,6 +318,53 @@ class TestSingleProcess:
         assert not token.lease_health.lost.is_set()
         assert store.snapshot(CLASS_HEAVY)[0][0].lease_generation == 1
 
+    @staticmethod
+    def _lock_reads(monkeypatch, target: Path) -> None:
+        """Make *target* permanently unreadable (a scanner holds it)."""
+        original_open = Path.open
+
+        def locked_open(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError(13, "held by a scanner")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", locked_open)
+
+    def test_unreadable_entry_is_not_treated_as_a_live_lease(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        token.execution_id = "a" * 32  # recovery only claims execution-bound entries
+        self._lock_reads(monkeypatch, token.path)
+
+        assert store.renew(token) is False  # unreadable past the budget: lease lost
+        assert token.lease_health.lost.is_set()
+        assert store._begin_execution_recovery(token, request_cancel=False) is False
+        store.release(token)  # still our own entry to release
+        assert not token.path.exists()
+
+    def test_unreadable_waiter_is_not_withdrawn(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        waiter = store.submit(CLASS_HEAVY, pid=100)
+        self._lock_reads(monkeypatch, waiter.path)
+
+        assert store.cancel_waiter_token(waiter) is False
+        assert waiter.path.exists()
+
+    def test_renew_fails_when_rewrite_stays_denied(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        clock = BackoffClock()
+        store._sleep = clock.sleep
+        deny_until(monkeypatch, "replace", token.path, clock, seconds=1000.0)
+
+        assert store.renew(token) is False
+        assert token.lease_health.lost.is_set()
+
     def test_unreadable_old_waiter_is_not_reaped(self, root, world, monkeypatch):
         # Unreadable is not missing: a live owner's entry survives the junk rule,
         # a dead owner's does not (#1905).

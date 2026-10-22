@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
@@ -61,7 +62,9 @@ class _Campaign:
             if child_id is not None:
                 if child_failure:
                     raise RuntimeError("child boom")
-                threading.Event().wait(5.0)  # idle child lane until cancelled
+                deadline = time.monotonic() + 5.0  # idle child lane until cancelled
+                while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
                 return
             trigger()
             # The scheduler's monitor has now run its argument-less cancel_waiters,
@@ -109,16 +112,55 @@ def test_outer_lane_lease_lost_names_slot(tmp_path: Path) -> None:
     assert campaign.outer.path.name in campaign.outer_message
 
 
-def test_outer_lane_missing_token_names_slot(tmp_path: Path) -> None:
+def test_outer_lane_missing_token_names_slot(tmp_path: Path, monkeypatch) -> None:
     campaign = _Campaign(tmp_path, max_heavy=1)
     path = campaign.outer.path
-    campaign.run(1, trigger=path.unlink)
+    real_absent = campaign.slots.token_absent
+    withdrawn = threading.Event()
+    # Report the entry gone without unlinking it: Windows may still hold it open.
+    monkeypatch.setattr(
+        campaign.slots, "token_absent", lambda token: withdrawn.is_set() or real_absent(token)
+    )
+    campaign.run(1, trigger=withdrawn.set)
 
-    assert campaign.slots.token_absent(campaign.outer) is True
     assert campaign.outer_message is not None
     assert "outer lane" in campaign.outer_message
     assert "token missing" in campaign.outer_message
     assert path.name in campaign.outer_message
+    # A really missing file (released by the run) is still absent.
+    assert real_absent(campaign.outer) is True
+
+
+def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
+    campaign = _Campaign(tmp_path, max_heavy=2)
+
+    def boom() -> None:
+        raise RuntimeError("outer boom")
+
+    campaign.run(2, trigger=boom)
+
+    cause = campaign.capacity.cancellation_cause()
+    assert cause == "campaign stop requested after a work item failed (RuntimeError)"
+
+
+def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
+    campaign = _Campaign(tmp_path, max_heavy=1)
+    scheduler = BoundedCampaignScheduler(
+        campaign.capacity, campaign.registry, allocate=lambda item: item, execute=lambda *_: None
+    )
+    lost = threading.Event()
+    permit = SimpleNamespace(
+        lease_health=SimpleNamespace(lost=lost),
+        token=SimpleNamespace(job_class="heavy", path=Path("child.json")),
+    )
+    try:
+        assert scheduler._child_cancellation_cause(permit) is None
+        lost.set()
+        assert (
+            scheduler._child_cancellation_cause(permit) == "Job Slot lease lost: heavy/child.json"
+        )
+    finally:
+        campaign.slots.release(campaign.outer)
 
 
 def test_unreadable_child_token_is_not_absent(tmp_path: Path, monkeypatch) -> None:
