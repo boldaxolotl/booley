@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
-from booley.config.project_config import lookup_target_section
+from booley.config.project_config import TargetFieldMap, lookup_target_section
 from booley.flows.test_runs import TestRun
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
@@ -48,6 +48,13 @@ class CoverageInvocationRequest:
     diagnostic: bool = False
 
 
+def _keep_keys(fields, copy):
+    """*copy* of a tests.toml field map that keeps its section keys (one section per Target)."""
+    kept = TargetFieldMap(copy(fields))
+    kept.section_keys = getattr(fields, "section_keys", frozenset(fields))
+    return kept
+
+
 @dataclass(frozen=True)
 class CoverageProjectContext:
     """Explicit repository roots and snapshotted registered test declarations."""
@@ -62,13 +69,13 @@ class CoverageProjectContext:
     criterion_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "test_names", immutable_mapping(self.test_names))
+        object.__setattr__(self, "test_names", _keep_keys(self.test_names, immutable_mapping))
         object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
         object.__setattr__(self, "criterion_names", MappingProxyType(dict(self.criterion_names)))
         object.__setattr__(
             self,
             "skipped_tests",
-            MappingProxyType({key: tuple(value) for key, value in self.skipped_tests.items()}),
+            _keep_keys(self.skipped_tests, lambda f: {key: tuple(v) for key, v in f.items()}),
         )
 
 

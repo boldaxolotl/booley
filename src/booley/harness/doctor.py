@@ -7334,8 +7334,8 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
         except (OSError, ValueError, tomllib.TOMLDecodeError):
             sections = {}  # _audit_tests_toml already reported the breakage
         try:
-            identity = TargetCatalog.build(project.project_root).select(target).identity
-            section = lookup_target_section(sections, identity)
+            handle = TargetCatalog.build(project.project_root).select(target, for_flow="sim")
+            section = lookup_target_section(sections, handle.identity)
         except (FuseSocError, TargetSectionConflictError):
             section = None  # reported by the resolve and section-key audits
         if isinstance(section, dict):
