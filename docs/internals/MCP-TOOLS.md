@@ -992,7 +992,7 @@ entering severity counts, dispositions, or acceptance predicates.
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
 path) and optional `instruction`. V3 or V4 input returns `booley.coverage-analysis/v2`
-with the Campaign manifest and integrity-linked point-store digest as observed evidence.
+with the Campaign manifest and recorded point-store digest as observed evidence.
 The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
 bounded evidence-retrieval scope.
@@ -1009,8 +1009,8 @@ Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity, the complete point-store
-manifest/point-store relationship, and a matching completed Simulation projection
+The wrapper checks canonical invocation/Target identity, the complete
+manifest/point-store pair (schema, format, ceiling, every point), and a matching completed Simulation projection
 before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
 constructor injection substitutes only the external text-model boundary.
@@ -1033,8 +1033,8 @@ cumulative byte budgets; later `points` or `source` queries may pass delivered v
 as `point_refs`. The host privately resolves them back to exact Campaign IDs before
 publishing an advisory report. Point records include their complete eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host first
-deep-validates the complete manifest/point-store pair, so paging and reference
-resolution never weaken Campaign integrity. No other MCP tool is visible to this
+deep-loads the complete manifest/point-store pair before paging and reference
+resolution. No other MCP tool is visible to this
 model. The validated session retains references to immutable
 Coverage Points rather than encoded population copies, uses an exact-ID index, derives
 overview counts once, and keeps at most one filtered match set for consecutive pages.

@@ -31,9 +31,10 @@ from .coverage_campaign import (
     encode_coverage_point,
     freeze_coverage_mapping,
 )
-from .coverage_campaign_store import MAX_POINTS
 from .coverage_source_gaps import source_gap_overview, source_gap_paths
 
+#: The largest Campaign one Analyst evidence session indexes.
+MAX_POINTS = 1_000_000
 MAX_RESPONSE_BYTES = 64 * 1024
 DEFAULT_TOTAL_BUDGET_BYTES = 384 * 1024
 MAX_POINT_LIMIT = 100
