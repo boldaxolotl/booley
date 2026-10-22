@@ -130,7 +130,7 @@ def authorize_simulation_targets(
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
         report_text=(
-            "sim: strict Ticket has no authorized Criterion binding for Target(s): "
+            "sim: Goal Mode has no authorized Criterion binding for Target(s): "
             + ", ".join(missing)
         ),
     )
