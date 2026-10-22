@@ -51,8 +51,6 @@ _DURABLE_BOUNDARIES = (
 )
 _CRASH_POINTS = (
     *(f"{side}:{boundary}" for boundary in _DURABLE_BOUNDARIES for side in ("before", "after")),
-    "integrity:prelaunch_authentication",
-    "integrity:post_exit_authentication",
 )
 
 
@@ -298,8 +296,6 @@ def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:
             for boundary in _DURABLE_BOUNDARIES
             for side in ("before", "after")
         ),
-        "integrity:prelaunch_authentication",
-        "integrity:post_exit_authentication",
     }
 
 
@@ -781,3 +777,47 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     assert all(
         firing.document["stdout_tail"] == "hook-out\n" for firing in resumed.pre_sim_firings
     )
+
+
+def test_result_commit_and_scan_trust_evidence_changed_after_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Booley's own published evidence is trusted on commit and on every scan."""
+    manifest = _crash_manifest()
+    project, build_root, run_log = _crash_environment(tmp_path)
+    launches: list[int] = []
+    group = _CrashGroup(build_root, run_log, launches)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: _CrashCatalog(project),
+    )
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+
+    def change_published_evidence(boundary: str) -> None:
+        # Rewrite a snapshot artifact after authentication at launch.
+        if boundary == "after:execution_evidence":
+            for path in store.root.glob("work-items/*/attempts/*/snapshot/simv"):
+                path.chmod(0o600)
+                path.write_bytes(b"changed image")
+
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
+        publication_checkpoint=change_published_evidence,
+    )
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan=create_simulation_campaign_plan(manifest),
+            project_root=project,
+            report_root=invocation.parent,
+            policy=CampaignPolicy(),
+            invocation_directory=invocation,
+            admission=_admission(),
+        )
+    )
+
+    assert outcome.complete is True
+    assert [item.state for item in store.scan().items] == ["complete"]

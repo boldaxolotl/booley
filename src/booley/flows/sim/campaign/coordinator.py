@@ -769,7 +769,6 @@ class SimulationCampaign:
         result: SimulationResult,
     ) -> None:
         with self._publication_gate:
-            store.verify_result_evidence(attempt.directory, result)
             self._publication_checkpoint("before:simulation_result")
             store.publish_result(work_item_id, result)
             self._publication_checkpoint("after:simulation_result")
