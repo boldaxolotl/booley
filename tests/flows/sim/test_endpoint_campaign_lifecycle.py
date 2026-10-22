@@ -1795,7 +1795,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
     observations = []
     reports = tmp_path / "reports"
 
-    def invoke(command, *, timeout=None):
+    def invoke(command, *, timeout=None, cwd=None):
         invocation = flow._reserved_invocation_dir
         if invocation is not None and (invocation / "progress.json").exists():
             progress = json.loads((invocation / "progress.json").read_text())
@@ -1810,7 +1810,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
                     assert "flow=sim" in log.read_text().splitlines()[0]
                     assert str(log.parent) in command[-1]
                 observations.append(active["stage"])
-        return original(command, timeout=timeout)
+        return original(command, timeout=timeout, cwd=cwd)
 
     monkeypatch.setattr(flow, "_execute_boundary", invoke)
     result = flow.execute(SimRequest(target="sim_a", work_dir=project, report_dir=reports))

@@ -22,8 +22,8 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EXIT_SUCCESS
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
+    _canned_build_session,  # noqa: F401 -- autouse fixture
     _make_flow,
-    _use_legacy_build_transport_for_canned_flow_tests,  # noqa: F401 -- autouse fixture
 )
 
 _REVISION = "b" * 40

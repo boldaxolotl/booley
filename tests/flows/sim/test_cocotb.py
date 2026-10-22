@@ -18,31 +18,25 @@ import pytest
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.build_session import TargetCompileSurface
-from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
 @pytest.fixture(autouse=True)
-def _use_legacy_build_transport_for_canned_cocotb_tests(
+def _canned_cocotb_build_session(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Canned FuseSoC output here has no leased generation."""
+    """Canned FuseSoC output here: real leased session, stubbed capture and image gates."""
     monkeypatch.setattr(
         execution_engine,
         "resolve_target_compile_surface",
         lambda handle: TargetCompileSurface(handle.project_root, (), ()),
     )
-    with patch.object(
-        SimulationExecution,
-        "_run_groups_with_session",
-        lambda self, handle, groups, **planned: self._run_planned_groups(
-            handle, groups, **planned
-        ),
-    ):
+    with canned_build_session():
         yield
 
 

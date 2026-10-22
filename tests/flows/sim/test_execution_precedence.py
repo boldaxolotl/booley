@@ -19,6 +19,7 @@ from booley.flows.sim.execution import NamedTests, SimulationExecution, Simulati
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.leased_session import canned_build_session, without_build_record
 
 _TOKEN = "abc123"
 
@@ -69,30 +70,31 @@ def _run(
     handle = _handle(tmp_path)
     prepared = _prepared(handle)
 
-    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            built = f"BOOLEY_BUILD_STAGE token={_TOKEN} rc=0" in process.stdout
+            return (
+                SubprocessResult(0, stdout=f"BOOLEY_BUILD_STAGE token={_TOKEN} rc=0\n")
+                if built
+                else process
+            )
         if result is not None:
             identity = AdapterTransportIdentity(
                 "icarus",
                 _TOKEN,
                 handle.identity,
                 ("smoke",),
-                prepared.build_root / f".booley-adapter-{_TOKEN}.json",
+                prepared.build_root / f".a-{_TOKEN[:24]}.json",
             )
             write_adapter_result(identity, result)
-        return process
+        return without_build_record(process)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
     inspection = SimpleNamespace(toplevel="tb_core", eda_tool="icarus", flow_options={})
     inspection.inspect = lambda _handle: inspection
     with (
-        patch.object(
-            execution,
-            "_run_groups_with_session",
-            side_effect=lambda current_handle, groups: [
-                execution._run_group(current_handle, group) for group in groups
-            ],
-        ),
+        canned_build_session(),
         patch("booley.flows.sim.execution.engine.TargetCatalog.build", return_value=inspection),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=_TOKEN),
@@ -161,7 +163,7 @@ def test_adapter_pass_cannot_override_nonzero_process_exit(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("build_rc", [1, 137])
-def test_build_failure_cannot_hide_adapter_authentication_error(tmp_path, build_rc) -> None:
+def test_nonzero_launch_cannot_hide_adapter_authentication_error(tmp_path, build_rc) -> None:
     from dataclasses import replace
 
     writer = write_adapter_result
@@ -171,7 +173,7 @@ def test_build_failure_cannot_hide_adapter_authentication_error(tmp_path, build_
 
     process = SubprocessResult(
         returncode=build_rc,
-        stdout=f"BOOLEY_BUILD_STAGE token={_TOKEN} rc={build_rc}\n",
+        stdout=f"BOOLEY_BUILD_STAGE token={_TOKEN} rc=0\n",
     )
     with (
         patch(__name__ + ".write_adapter_result", side_effect=foreign_writer),

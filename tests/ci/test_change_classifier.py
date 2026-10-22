@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
@@ -79,6 +80,7 @@ def _run_classifier(
     windows_shard_count: int = 4,
     windows_shard_benchmark: bool = False,
     riscv_measurement: str | None = None,
+    linux_options: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -103,6 +105,8 @@ def _run_classifier(
         command.extend(("--event-name", event_name))
     if riscv_measurement is not None:
         command.extend(("--riscv-measurement", riscv_measurement))
+    for option, value in (linux_options or {}).items():
+        command.extend((f"--linux-{option}", value))
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     return result, output
 
@@ -117,6 +121,7 @@ def _classify(
     windows_shard_count: int = 4,
     windows_shard_benchmark: bool = False,
     riscv_measurement: str | None = None,
+    linux_options: dict[str, str] | None = None,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -127,6 +132,7 @@ def _classify(
         windows_shard_count=windows_shard_count,
         windows_shard_benchmark=windows_shard_benchmark,
         riscv_measurement=riscv_measurement,
+        linux_options=linux_options,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -882,3 +888,186 @@ def test_demo_evidence_and_fixture_inputs_select_riscv_validation_without_git(pa
     from ci_changes import classify
 
     assert "riscv_image" in classify([path])
+
+
+def _merged_source_change(tmp_path: Path) -> tuple[Path, str, str]:
+    """Return a repo, its first commit, and a two-parent merge touching Python source."""
+    repo, base = _repository(tmp_path)
+    _git(repo, "switch", "-c", "feature")
+    _write(repo, "src/booley/example.py")
+    _commit(repo, "feature change")
+    _git(repo, "switch", "main")
+    _write(repo, "docs/upstream.md")
+    _commit(repo, "upstream change")
+    return repo, base, _merge(repo, "feature")
+
+
+_TODAYS_LINUX_FULL_COMMAND = (
+    "pytest tests/ -q --tb=short -n 4 --dist=loadscope"
+    ' --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"'
+    " --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8"
+    " --timeout-headroom-warn=0.5' || '' }}"
+    ' --durations=30 --junitxml="${{ runner.temp }}/junit.xml" -p ci_pytest_shard'
+    ' --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"'
+)
+
+
+def test_default_linux_inputs_keep_todays_matrix_and_linux_command(tmp_path: Path) -> None:
+    repo, base, head = _merged_source_change(tmp_path)
+    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+    full_step = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Run full compatibility suite"
+    )
+    todays_matrix = {
+        "include": [
+            {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
+            {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
+            {
+                "name": "windows-3.11-compatibility",
+                "os": "windows-latest",
+                "python": "3.11",
+                "mode": "compatibility",
+            },
+            {
+                "name": "windows-3.13-compatibility",
+                "os": "windows-latest",
+                "python": "3.13",
+                "mode": "compatibility",
+            },
+            *(
+                {
+                    "name": f"windows-3.14-shard-{index + 1}-of-10",
+                    "os": "windows-latest",
+                    "python": "3.14",
+                    "mode": "shard",
+                    "group": "windows",
+                    "shard_index": index,
+                    "shard_count": 10,
+                }
+                for index in range(10)
+            ),
+        ]
+    }
+
+    for event in ("pull_request", "push", "workflow_call"):
+        outputs = _classify(
+            repo,
+            base,
+            head,
+            event_name=event,
+            windows_shard_count=10,
+            linux_options={
+                "shard-count": "1",
+                "scheduler": "loadscope",
+                "shard-benchmark": "false",
+            },
+        )
+        rendered = full_step["run"].replace(
+            "${{ needs.changes.outputs.linux_scheduler }}", outputs["linux_scheduler"]
+        )
+
+        assert json.loads(outputs["test_matrix"]) == todays_matrix
+        assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == ("1", "loadscope")
+        assert " ".join(rendered.split()) == _TODAYS_LINUX_FULL_COMMAND
+
+
+def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+    non_linux = build_test_matrix(4)["include"][2:]
+
+    for count in (1, 2, 3):
+        for scheduler in ("loadscope", "worksteal"):
+            outputs = _classify(
+                repo,
+                base,
+                head,
+                event_name="workflow_dispatch",
+                linux_options={"shard-count": str(count), "scheduler": scheduler},
+            )
+            entries = json.loads(outputs["test_matrix"])["include"]
+            linux = [entry for entry in entries if entry["os"] == "ubuntu-latest"]
+
+            assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == (
+                str(count),
+                scheduler,
+            )
+            assert entries[len(linux) :] == non_linux
+            if count == 1:
+                assert linux == build_test_matrix(4)["include"][:2]
+                continue
+            assert [entry["name"] for entry in linux] == [
+                f"ubuntu-{python}-shard-{index + 1}-of-{count}"
+                for python in ("3.11", "3.14")
+                for index in range(count)
+            ]
+            assert all(
+                (entry["mode"], entry["group"], entry["shard_count"])
+                == ("shard", f"linux-{entry['python']}", count)
+                for entry in linux
+            )
+            assert [entry["shard_index"] for entry in linux] == list(range(count)) * 2
+
+
+def test_linux_shard_benchmark_selects_the_ordinary_python_job_set(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    ordinary = _classify(repo, base, _commit(repo, "ordinary"), event_name="push")
+    _git(repo, "reset", "--hard", base)
+    _write(repo, ".github/workflows/test.yml")
+    head = _commit(repo, "benchmark workflow")
+
+    outputs = _classify(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        linux_options={"shard-benchmark": "true"},
+    )
+
+    assert _jobs(outputs) == _jobs(ordinary)
+    assert _required(outputs) == _required(ordinary)
+
+
+def test_linux_shard_benchmark_rejects_non_dispatch_events_and_riscv_arms(
+    tmp_path: Path,
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    for event in ("push", None):
+        result, _output = _run_classifier(
+            repo, base, head, event_name=event, linux_options={"shard-benchmark": "true"}
+        )
+
+        assert result.returncode == 2
+        assert "Linux shard benchmarking requires workflow_dispatch" in result.stderr
+    result, _output = _run_classifier(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        riscv_measurement="cold",
+        linux_options={"shard-benchmark": "true"},
+    )
+
+    assert result.returncode == 2
+    assert "Linux shard benchmarking cannot be combined" in result.stderr
+
+
+def test_linux_shard_overrides_require_workflow_dispatch(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    for override in ({"shard-count": "2"}, {"scheduler": "worksteal"}):
+        result, _output = _run_classifier(
+            repo, base, head, event_name="push", linux_options=override
+        )
+
+        assert result.returncode == 2
+        assert "Linux shard count and scheduler overrides require" in result.stderr

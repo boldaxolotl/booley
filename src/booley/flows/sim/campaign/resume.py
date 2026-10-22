@@ -105,9 +105,8 @@ def validate_resume_manifest(
         )
     candidate = _load_node(canonical)
     invocation = _origin_invocation(canonical)
-    visited = {canonical}
     prerequisites: list[ValidatedManifestNode] = []
-    _walk_prerequisites(candidate, invocation, visited, prerequisites)
+    _walk_prerequisites(candidate, invocation, frozenset({canonical}), prerequisites)
     if len(prerequisites) > _MAX_PREREQUISITES:
         raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
     root_for = revision_root or (lambda _target: project_root)
@@ -147,9 +146,14 @@ def _verify_revision(root: Path, target: Mapping[str, str]) -> None:
 def _walk_prerequisites(
     node: ValidatedManifestNode,
     invocation: Path,
-    visited: set[Path],
+    ancestors: frozenset[Path],
     result: list[ValidatedManifestNode],
 ) -> None:
+    """Authenticate every prerequisite link and collect each linked manifest once.
+
+    Several links may name one manifest (one per relative Cycle Count Test);
+    a manifest that links back to one of its *ancestors* is a cycle.
+    """
     entries = cast(tuple[Mapping[str, object], ...], node.manifest.document["prerequisites"])
     for entry in entries:
         reference = cast(Mapping[str, object], entry["manifest"])
@@ -160,10 +164,10 @@ def _walk_prerequisites(
             raise SimulationCampaignIntegrityError(
                 "prerequisite manifest escapes invocation"
             ) from exc
-        if linked in visited:
-            raise SimulationCampaignIntegrityError("duplicate or cyclic prerequisite manifest")
-        visited.add(linked)
-        loaded = _load_node(linked)
+        if linked in ancestors:
+            raise SimulationCampaignIntegrityError("cyclic prerequisite manifest")
+        walked = next((item for item in result if item.path == linked), None)
+        loaded = walked or _load_node(linked)
         raw = encode_simulation_campaign_manifest(loaded.manifest)
         expected_digest = cast(str, reference["sha256"])
         if len(raw) != reference["bytes"] or loaded.sha256 != expected_digest:
@@ -174,10 +178,12 @@ def _walk_prerequisites(
             raise SimulationCampaignIntegrityError("prerequisite campaign identity disagrees")
         if loaded.manifest.document["target"] != entry["target"]:
             raise SimulationCampaignIntegrityError("prerequisite Target identity disagrees")
+        if walked is not None:
+            continue
         result.append(loaded)
         if len(result) > _MAX_PREREQUISITES:
             raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
-        _walk_prerequisites(loaded, invocation, visited, result)
+        _walk_prerequisites(loaded, invocation, ancestors | {linked}, result)
 
 
 def _origin_invocation(path: Path) -> Path:

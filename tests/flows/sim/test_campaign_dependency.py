@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,18 +37,11 @@ def _add_observed_cycles(monkeypatch):
     monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
 
 
-def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
-    tmp_path, monkeypatch
-):
-    from booley.flows.sim.campaign import collect_pre_sim_firings
+def _two_role_campaigns(tmp_path, monkeypatch):
+    """A candidate and a Cycle Count baseline Campaign sharing one invocation."""
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
     from booley.flows.sim.campaign.store import CampaignStore
-    from booley.flows.sim.flow import (
-        SimulateFlow,
-        _campaign_hook_inputs,
-        _campaign_pre_sim_details,
-        _campaign_pre_sim_report_lines,
-    )
+    from booley.flows.sim.flow import SimulateFlow
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     _add_observed_cycles(monkeypatch)
@@ -80,17 +74,56 @@ def test_same_selector_baseline_and_candidate_hook_owners_are_collected_once(
         invocation_directory=invocation,
     )
     assert candidate.aggregate_grade == "pass"
-    assert len(collect_pre_sim_firings(candidate.manifest_path)) == 2
-    detail = _campaign_pre_sim_details(
-        *_campaign_hook_inputs([candidate, baseline], invocation), invocation
-    )
+    return invocation, candidate, baseline
+
+
+def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import collect_pre_sim_firings
+    from booley.flows.sim.execution.pre_sim import TAIL_MAX_BYTES
+    from booley.flows.sim.flow import SimulateFlow
+
+    invocation, candidate, baseline = _two_role_campaigns(tmp_path, monkeypatch)
+    firings = collect_pre_sim_firings(candidate.manifest_path)
+    assert len(firings) == 2
+
+    flow = SimulateFlow()
+    flow._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    result = flow._campaign_endpoint_outcome([candidate, baseline])
+    detail = result.detail
     assert detail["pre_sim_total"] == detail["pre_sim_current"] == 2
+    assert detail["pre_sim_historical"] == 0
     assert set(detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
-    lines = _campaign_pre_sim_report_lines(
-        *_campaign_hook_inputs([candidate, baseline], invocation)
+    card = result.report_text.splitlines()
+    card_hooks = [line for line in card if line.startswith("pre_run_commands ")]
+    assert sorted(card_hooks) == sorted(detail["pre_sim_lines"])
+    assert card.count("Candidate:") == card.count("Cycle Count baseline:") == 1
+
+    # Bounded output: previews carry no tails, persisted tails stay within the cap.
+    assert all(
+        "stdout_tail" not in run and "stderr_tail" not in run for run in detail["pre_sim_runs"]
     )
-    assert "Candidate:" in lines and "Cycle Count baseline:" in lines
-    assert len([line for line in lines if line.startswith("pre_run_commands")]) == 2
+    assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16384
+    for firing in firings:
+        for tail in (firing.document["stdout_tail"], firing.document["stderr_tail"]):
+            assert 0 < len(tail.encode()) <= TAIL_MAX_BYTES
+    assert {(run["role"], run["attempt_id"]) for run in detail["pre_sim_runs"]} == {
+        (firing.document["role"], firing.document["attempt_id"]) for firing in firings
+    }
+
+    # Failed re-authentication drops the card block and the sim.json projection together.
+    sidecar = candidate.pre_sim_firings[0].path
+    sidecar.write_bytes(sidecar.read_bytes() + b" ")
+    result = flow._attach_published_pre_sim(result)
+    assert result.exit_code == 2
+    assert not [
+        line
+        for line in result.report_text.splitlines()
+        if line.startswith("pre_run_commands ") or line in {"Candidate:", "Cycle Count baseline:"}
+    ]
+    assert [key for key in result.detail if key.startswith("pre_sim_")] == [
+        "pre_sim_unauthenticated_references"
+    ]
 
 
 def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
@@ -349,3 +382,221 @@ def test_dependency_registration_requires_exact_paths(tmp_path):
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
+
+
+def _cycle_baseline_manifest(names):
+    """A Cycle Count baseline campaign with one work item per Test in *names*."""
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
+    from booley.flows.sim.campaign.planning import finalize_manifest
+    from tests.flows.sim.test_campaign_manifest_codec import _sha
+    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+
+    document = json.loads(canonical_json_bytes(_manifest_for(names).document))
+    document.pop("fingerprints")
+    document["campaign_id"] = CAMPAIGN_ID
+    document["target"].update(role="cycle_count_baseline", revision="baseline")
+    for ordinal, item in enumerate(document["work_items"]):
+        item.update(target=document["target"], role="cycle_count_baseline", revision="baseline")
+        identity = {
+            key: value
+            for key, value in item.items()
+            if key not in {"work_item_id", "fingerprint_sha256"}
+        }
+        item["fingerprint_sha256"] = _sha(identity)
+        item["work_item_id"] = f"item:{ordinal:04d}:" + _sha(identity).removeprefix("sha256:")[:16]
+    return finalize_manifest(document)
+
+
+def _candidate_manifest(names, prerequisites):
+    """A candidate campaign over *names* that depends on *prerequisites*."""
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
+    from booley.flows.sim.campaign.planning import finalize_manifest
+    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+
+    document = json.loads(canonical_json_bytes(_manifest_for(names).document))
+    document.pop("fingerprints")
+    document["prerequisites"] = list(prerequisites)
+    return finalize_manifest(document)
+
+
+def _run_campaign(tmp_path, monkeypatch, manifest, invocation):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign.coordinator import (
+        CampaignPolicy,
+        NewCampaignRunRequest,
+        SimulationCampaign,
+    )
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from tests.flows.sim.test_campaign_phase3_integrity import _admission, _executor, _handle
+
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    build = tmp_path / "build"
+    build.mkdir(exist_ok=True)
+    (build / "simv").write_bytes(b"image")
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: _handle(project)),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.simulation_target_environment",
+        lambda _handle: {},
+    )
+    request = NewCampaignRunRequest(
+        create_simulation_campaign_plan(manifest),
+        project,
+        invocation.parent,
+        CampaignPolicy(),
+        invocation,
+        _admission(),
+    )
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    return SimulationCampaign(_executor(build, counters)).run(request), counters
+
+
+def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path, monkeypatch):
+    """Two relative Cycle Count Goals of one Target link two work items of one baseline.
+
+    Both prerequisites name the same baseline campaign, which used to be refused
+    as a duplicate ("prerequisite identities must be unique") or run as a cycle.
+    """
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import SimulateFlow
+
+    _add_observed_cycles(monkeypatch)
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    baseline, _ = _run_campaign(
+        tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
+    )
+    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    prerequisites = SimulateFlow._campaign_prerequisite_documents(
+        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+    )
+    assert len(prerequisites) == 2
+    assert len({item["campaign_id"] for item in prerequisites}) == 1
+
+    candidate, counters = _run_campaign(
+        tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
+    )
+
+    assert candidate.aggregate_grade == "pass"
+    facts = candidate.acceptance_facts.document["prerequisites"]
+    assert [fact["cycle_observation"]["test"] for fact in facts] == ["alpha", "beta"]
+    assert counters["launch"] == 2  # the shared baseline already ran; only the candidate runs
+
+
+def test_prerequisites_may_share_a_campaign_but_not_a_work_item():
+    """Prerequisites are unique by work item; one campaign is referenced consistently."""
+    from booley.flows.sim.campaign.codec import (
+        SimulationCampaignIntegrityError,
+        canonical_json_bytes,
+        decode_simulation_campaign_manifest,
+    )
+
+    baseline = _cycle_baseline_manifest(("alpha", "beta"))
+    reference = {
+        "path_base": "origin_invocation",
+        "path": "targets/baseline/campaign/manifest.json",
+        "bytes": 1,
+        "sha256": "sha256:" + "a" * 64,
+        "kind": "simulation_campaign_manifest",
+        "owner": CAMPAIGN_ID,
+    }
+
+    def entry(item, **changes):
+        return {
+            "role": "cycle_count_baseline",
+            "manifest": {**reference, **changes},
+            "campaign_id": CAMPAIGN_ID,
+            "target": baseline.document["target"],
+            "required_observation": "cycle_count",
+            "work_item_id": item["work_item_id"],
+        }
+
+    alpha, beta = baseline.document["work_items"]
+    shared = _candidate_manifest(("alpha", "beta"), [entry(alpha), entry(beta)])
+    decoded = decode_simulation_campaign_manifest(canonical_json_bytes(shared.document))
+    assert len(decoded.document["prerequisites"]) == 2
+
+    for entries, message in (
+        ([entry(alpha), entry(alpha)], "unique"),
+        ([entry(alpha), entry(beta, bytes=2)], "same campaign"),
+    ):
+        document = json.loads(canonical_json_bytes(shared.document))
+        document["prerequisites"] = entries
+        with pytest.raises(SimulationCampaignIntegrityError, match=message):
+            decode_simulation_campaign_manifest(canonical_json_bytes(document))
+
+
+def _shared_baseline_candidate(tmp_path, monkeypatch):
+    """Run a two-Test baseline and a candidate linking both of its work items."""
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import SimulateFlow
+
+    _add_observed_cycles(monkeypatch)
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    baseline, _ = _run_campaign(
+        tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
+    )
+    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    prerequisites = SimulateFlow._campaign_prerequisite_documents(
+        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+    )
+    candidate, _ = _run_campaign(
+        tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
+    )
+    return baseline, candidate
+
+
+def test_resume_authenticates_a_shared_baseline_campaign_once(tmp_path, monkeypatch):
+    """Resuming a candidate whose links share one baseline manifest walks it once."""
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign import resume
+    from tests.flows.sim.test_campaign_phase3_integrity import _handle
+
+    baseline, candidate = _shared_baseline_candidate(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    monkeypatch.setattr(resume, "_verify_revision", lambda _root, _target: None)
+    monkeypatch.setattr(
+        resume.TargetCatalog,
+        "build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: _handle(project)),
+    )
+
+    validated = resume.validate_resume_manifest(candidate.manifest_path, project_root=project)
+
+    assert [node.path for node in validated.prerequisites] == [baseline.manifest_path]
+
+
+def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
+    """Sharing a prerequisite campaign is allowed; depending on oneself is not."""
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+
+    own = _manifest_for(("alpha",)).document
+    baseline = _cycle_baseline_manifest(("alpha",))
+    entry = {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": "targets/self/campaign/manifest.json",
+            "bytes": 1,
+            "sha256": "sha256:" + "a" * 64,
+            "kind": "simulation_campaign_manifest",
+            "owner": own["campaign_id"],
+        },
+        "campaign_id": own["campaign_id"],
+        "target": baseline.document["target"],
+        "required_observation": "cycle_count",
+        "work_item_id": baseline.document["work_items"][0]["work_item_id"],
+    }
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    with pytest.raises(SimulationCampaignIntegrityError, match="cyclic"):
+        _run_campaign(tmp_path, monkeypatch, _candidate_manifest(("alpha",), [entry]), invocation)

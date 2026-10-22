@@ -9,6 +9,23 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
+  run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
+  that point into it; `booley cleanup preview --run-id <id>` lists its files.
+  `booley cleanup record` and the `--digest`, `--retention` and
+  `--cache-disposition` options are removed, and plan row 22 (build-cache
+  disposition) is gone. Setup cleanup removes nothing outside the run root, such
+  as Doctor scratch written elsewhere. Run roots created by older versions have
+  no marker and are refused; delete them by hand.
+- When a Simulation Campaign's Pre-Sim evidence fails re-authentication, the report
+  card no longer keeps the `Candidate:` and `Cycle Count baseline:` headings without
+  their firing lines. The card and `sim.json` now come from one projection.
+- Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
+  `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
+  preparation (invalid `enabled` or `max_size` values still do). The cache root is
+  the issued `BOOLEY_COMPILER_CACHE_ROOT` as given. When it is unset, including
+  outside a Sandbox where builds previously cached under the host Booley Directory,
+  builds compile uncached with a `booley session refresh` warning.
 - Coverage finds RTL sources without coverage points with a lexical scan at
   Preflight instead of a Verilator declaration dump. User `--dumpi-*` Verilator
   options now pass through to coverage builds. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`
@@ -18,7 +35,36 @@ Packaged release history starts at 0.2.7. For older changes, see
   and the verdict card omits the source line when there are no gaps. Campaigns
   from 0.3.0 still load. A coverage Simulation Campaign interrupted before the
   upgrade cannot be resumed because its command model changed; collect it again.
-
+- Deep Doctor now keeps only the latest completed deep attempt: a failed or
+  incomplete attempt makes deep status due until the next qualifying run, reports one
+  "latest deep attempt failed" reason, and `deep_status` no longer includes
+  `last_success`, the per-reason `checks` list, or the `latest-attempt-not-qualified` code. Existing deep records are replaced by the next deep run.
+- The Reviewer no longer fails when a Claude agent reports its findings through
+  `ReportFindings` more than once. Each `ReportFindings` finding must now match an
+  issue at the same file and line in the final issues JSON, instead of the two
+  channels being compared by issue counts. The run still fails when a
+  reported finding is missing from the JSON or, when it carries a severity, rated
+  lower there. A `ReportFindings` verdict (`CONFIRMED`/`PLAUSIBLE`) no longer
+  counts as a severity.
+- `sim` with a relative Cycle Count Goal (for example
+  `cycle_count_increase_at_most: "10%"`) no longer fails planning with
+  `fatal: '.../.baseline-wt-...' already exists`. One run now checks out the
+  baseline revision once and uses that checkout for Target authorization,
+  planning, and the baseline Simulation.
+- `sim` with relative Cycle Count Goals on two or more Tests of one Target no
+  longer fails with `prerequisite identities must be unique`. The candidate now
+  links each Test's work item in the shared baseline campaign; that campaign
+  runs once, and campaign resume accepts it.
+- In a Goal Mode or MCP `sim` run, the Cycle Count baseline now builds and runs
+  in the baseline checkout. Its build and launch commands used to start in the
+  candidate checkout, so the baseline build failed (`No such file or
+  directory`) and the relative Cycle Count Goal reported "Cycle Count
+  prerequisite has no cycle observation".
+- A relative Cycle Count Goal (for example `cycle_count_increase_at_most: "10%"`)
+  can now be met in Goal Mode. Its baseline observation used to stay
+  `mismatched`, so the Goal stayed unmet with "baseline Cycle Count evidence is
+  unavailable or invalid" even when the baseline ran: acceptance found the
+  baseline Target only through Criterion fields that Goal entry does not write.
 - Native-only coverage pruning (`--native-target`) now deletes the Target's whole
   `native/` directory, including files Booley did not record, after writing the
   `pruning` availability sidecar; it no longer re-hashes native files or uses a

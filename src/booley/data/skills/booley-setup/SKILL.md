@@ -1,6 +1,6 @@
 ---
 name: booley-setup
-description: Perform design-aware Project Setup after Host Bootstrap and Project Initialization — plan first (feasibility + decision grill → SETUP-PLAN.md, Step 0), then execute gate-free (config, AGENTS.md, doctor audit — Steps 2–4). Phase-detects from the plan file; also runs a single step on request, or `new` for a from-scratch (`init --scaffold`) project with a lightweight grill. Post-gate Step 5 optionally cross-checks Booley's results against the repo's native build system; Step 6 reports findings; Step 7 performs bounded manifest-owned cleanup.
+description: Perform design-aware Project Setup after Host Bootstrap and Project Initialization — plan first (feasibility + decision grill → SETUP-PLAN.md, Step 0), then execute gate-free (config, AGENTS.md, doctor audit — Steps 2–4). Phase-detects from the plan file; also runs a single step on request, or `new` for a from-scratch (`init --scaffold`) project with a lightweight grill. Post-gate Step 5 optionally cross-checks Booley's results against the repo's native build system; Step 6 reports findings; Step 7 removes the run's scratch root.
 ---
 
 # Booley setup (plan → execute, Steps 0–7, + optional parity)
@@ -37,7 +37,7 @@ without interruption.
 | 4 | **Doctor** — final audit; resolve every failure and warning, then the deep gate. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
 | 5 | **Parity** — diff Booley vs the repo's native flow, where EDA tools match. | container | no (only if plan row 18 ≠ `none`) | `steps/5-parity.md` |
 | 6 | **Findings** — report, triage, optional redacted export. | container | yes | `steps/6-findings.md` |
-| 7 | **Cleanup** — preview and apply bounded current-run retention. | container | yes | `steps/7-cleanup.md` |
+| 7 | **Cleanup** — preview and remove the run's scratch root. | container | yes | `steps/7-cleanup.md` |
 
 Step 4 is the gate: setup is not complete until plain `booley doctor` and
 `booley doctor --deep` both exit 0 **and report zero active (unwaived)
@@ -171,8 +171,8 @@ you when one ends. Parking on "standing by" is never a correct state: if you are
 waiting, you are polling.
 
 - **Start it detached.** Run the command in the background with stdout and
-  stderr redirected beneath the current run's manifest-owned scratch root,
-  after `booley cleanup prepare`; register the capture before moving on. A
+  stderr redirected beneath the current run's scratch root,
+  created by `booley cleanup prepare`. A
   foreground call that outlives your own MCP tool timeout loses the output and
   reads as a hang.
 - **Know the bound before you start.** Most Flow work uses
@@ -257,9 +257,9 @@ plain-English reason it matters.
    `.booley/SETUP-REPORT.md`, and creates a redacted export only when the
    user explicitly requests one. Post-gate and non-blocking.
 8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
-   approved retention mode after the report exists. It uses only the current
-   run's manifest, materializes structured Feedback attachments before source
-   deletion, and treats plans without ownership ledgers as inventory-only.
+   approved retention mode after the report exists. It removes only the
+   current run's marked scratch root, materializes structured Feedback
+   attachments before deletion, and does nothing for a plan without a run ID.
 
 ## Delivered Flow results
 
@@ -292,9 +292,8 @@ without blocking post-gate reporting.
 Before scratch cleanup, snapshot the cited reports and required linked artifacts
 in a run-owned evidence subtree under the resolved Booley Directory, recording
 original path, source digest and cited field paths. Cite the retained copies in the
-report and summary, keeping original paths as provenance. Register the snapshots
-as retained report evidence in the run manifest before Step 7's cleanup preview,
-and preserve them through Step 7's retention rules.
+report and summary, keeping original paths as provenance. Keep the snapshots
+outside the run's scratch root so Step 7 does not remove them.
 
 After each setup-owned Feedback render, Step 6 adds or replaces one Delivered Flow
 results section at its returned path; the final summary quotes the same evidence

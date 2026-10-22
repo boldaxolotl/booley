@@ -38,9 +38,9 @@ attributes conflicts or current-checkout inspection errors. Existing
 warning. Resolve the inspection limitation or accept it through a targeted
 waiver; do not remove a valid local rule or prune registrations to hide it.
 
-Deep Doctor is **current** when a qualifying deep run matches the executing
-Booley version and active immutable Sandbox Image, and no later saved completed failed,
-warning-blocked, or incomplete deep attempt supersedes it. The recorded date is
+Deep Doctor is **current** when the latest completed deep attempt qualified and
+matches the executing Booley version and active immutable Sandbox Image. Each
+completed attempt replaces the single saved record. The recorded date is
 informational;
 deep evidence has no age expiry. Current means prior qualifying setup validation;
 it does not guarantee a new deep run will pass after arbitrary design edits.
@@ -87,12 +87,14 @@ does not require Docker on its PATH.
 A host-side deep invocation cannot qualify when it skips the in-Sandbox Specialist
 provider probe; run deep Doctor inside the Sandbox for full evidence.
 
-A saved completed failed, warning-blocked, or incomplete deep attempt retains historical
-success but makes deep Doctor due until a later qualifying run succeeds. Warning-only
-attempts say “did not qualify” and name the unwaived warning IDs; actual failures
-say “failed.” Older unsuccessful records with unknown health details say “did not
-qualify; legacy health verdict details unavailable.” Cancellation or an
-unexpected abort before a completed result leaves the previous evidence intact;
+A completed failed, warning-blocked, or incomplete deep attempt replaces the
+saved record, so deep Doctor is due until a later attempt qualifies. A failed
+attempt says “latest deep attempt failed” and names up to eight blocking check IDs
+(failures, unwaived warnings, and checks that did not run; a blocker with no ID shows
+as `unidentified-failure` or `unidentified-warning`) and how many more are hidden; an incomplete one says
+“applicable deep checks incomplete” and names the checks that did not run.
+Cancellation or an unexpected abort before a completed result leaves the previous
+record intact;
 version or image drift still applies independently. Successful and failed plain
 runs leave deep evidence unchanged.
 
@@ -115,10 +117,10 @@ proof and cannot establish currency. A qualifying new run establishes evidence.
 Deep records live at `<booley_dir>/runtime/doctor_deep_stamp.json`, independently
 of the existing plain stamp's configuration fingerprint and age policy.
 
-Plain Doctor and `booley session up` report **current** with version/date or
+Plain Doctor, automatic Doctor, and `booley session up` report **current** with version/date or
 **due** with all applicable reasons. Manual and automatic structured reports at
 `<booley_dir>/runtime/doctor/last.json` include `deep_status` with the same status,
-reason codes and messages, and historical success.
+reason codes and messages.
 If saving fails, Doctor logs one informational line: “deep result was not saved”.
 Status is computed from the saved record, whose bytes remain intact;
 no new saved success is claimed.

@@ -15,6 +15,7 @@ from typing import Protocol, cast
 
 from booley.flows.test_runs import (
     TestRun,
+    TestRunNameError,
     discovered_test_run,
     rerun_command,
     test_run_document,
@@ -104,7 +105,11 @@ def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun
         manifest = decode_simulation_campaign_manifest(manifest_path.read_bytes())
     except (OSError, SimulationCampaignIntegrityError):
         return {}
-    return _manifest_test_runs(manifest)
+    try:
+        return _manifest_test_runs(manifest)
+    except TestRunNameError:
+        # Decode trusts stored fingerprints; a hand-edited one surfaces here.
+        return {}
 
 
 def _manifest_test_runs(manifest: SimulationCampaignManifest) -> dict[tuple[object, str], TestRun]:
