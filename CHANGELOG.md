@@ -17,6 +17,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   and `booley doctor` fails them and any key that names no Target. A stale
   qualified key, for example after a core rename, no longer falls back to the
   bare section: Doctor fails it as dead. Keep one key per Target.
+- Templated `[flows.sim].run_cwd` cleanup now also removes the empty parent directories
+  Booley created to reach the attempt directory, stopping at the template root and at any
+  directory it did not create, and templated attempt run-lock files are no longer left in
+  `.runtime/simulation-run-locks/`. Directories and lock files left by earlier runs stay.
 - `[models.roles]` accepts only the Specialist roles `reviewer`, `mutation_tester`
   and `coverage_analyst`. The `developer`, `recovery` and `triage_report` pins
   no longer change any model (nothing reads them); such a pin now fails

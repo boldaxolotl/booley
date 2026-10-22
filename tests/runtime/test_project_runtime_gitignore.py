@@ -379,7 +379,7 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
         assert run.lock_path.is_file()
         assert_clean(repo)
     assert not run.path.exists()
-    assert run.lock_path.is_file()
+    assert not run.lock_path.exists()
     assert_clean(repo)
 
 

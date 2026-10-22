@@ -239,7 +239,7 @@ def test_legacy_hook_never_runs_when_literal_run_cwd_is_missing(
 
 def test_claim_rejects_literal_removed_after_preflight(tmp_path: Path) -> None:
     missing = tmp_path / "gone"
-    run = RunDirectory(missing, str(missing), False, tmp_path / "locks" / "gone.lock")
+    run = RunDirectory(missing, str(missing), False, tmp_path / "locks" / "gone.lock", None)
 
     with (
         pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught,

@@ -1125,6 +1125,9 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
         assert run.is_absolute() and run.resolve().is_relative_to(project.resolve())
     assert result.document["grade"] == "pass"
     assert counters["launch"] == 1
+    if "{" in configured:
+        # Booley-created parents of the templated attempt directory are cleaned up.
+        assert list((project / "runs").iterdir()) == []
     builds = list(store.root.rglob("build-result.json"))
     assert len(builds) == 1
     assert result.document["build_result"]["sharing"] == (
