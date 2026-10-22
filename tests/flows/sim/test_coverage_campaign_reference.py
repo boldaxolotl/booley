@@ -18,7 +18,6 @@ from booley.flows.sim.coverage_campaign import (
     decode_coverage_campaign,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CoverageCampaignStoreError,
     publish_coverage_campaign,
 )
 from booley.flows.sim.coverage_reference import (
@@ -379,7 +378,7 @@ def test_reference_rejects_score_bearing_invalid_nested_campaign(tmp_path: Path)
     manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
     nested.write_text(json.dumps(manifest))
 
-    with pytest.raises(CoverageCampaignStoreError, match="Invalid scoring state"):
+    with pytest.raises(CoverageCampaignValidationError, match="COV_INVALID_SCORING_ROLLUPS"):
         _reference(target, nested)
 
 

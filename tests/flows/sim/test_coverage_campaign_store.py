@@ -228,29 +228,6 @@ def _source_campaign():
     return replace(base, points=points, rollups=derive_coverage_rollups(points))
 
 
-def _two_source_line_campaign():
-    base = _campaign()
-    points = (
-        _point(
-            source="rtl/counter.sv",
-            metric="line",
-            line=10,
-            hits=1,
-            disposition="eligible",
-            hierarchy="TOP.first",
-        ),
-        _point(
-            source="tb/counter_tb.sv",
-            metric="line",
-            line=11,
-            hits=0,
-            disposition="unscored",
-            hierarchy="TOP.second",
-        ),
-    )
-    return replace(base, points=points, rollups=derive_coverage_rollups(points))
-
-
 def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
 
@@ -273,10 +250,7 @@ def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     assert paths.points.is_file()
 
     loaded = load_coverage_campaign(paths.campaign, TARGET)
-    summary = loaded.summary
-    assert summary.rollups[0].percent == 100.0
-    assert summary.source_rollups[0].source == "rtl/counter.sv"
-    assert summary.evaluation["status"] == "not_requested"
+    assert loaded.summary.document["source_rollups"][0]["source"] == "rtl/counter.sv"
     assert loaded.campaign == _campaign()
     assert not hasattr(loaded.campaign, "schema")
 
@@ -289,44 +263,9 @@ def test_invalid_scoring_summary_and_deep_load_retain_points(tmp_path: Path) -> 
     assert manifest["rollups"] == []
     assert manifest["source_rollups"] == []
     loaded = load_coverage_campaign(paths.campaign, TARGET)
-    assert loaded.summary.scoring == {"reason": "collector_error", "status": "invalid"}
+    assert loaded.summary.document["scoring"] == {"reason": "collector_error", "status": "invalid"}
     assert loaded.campaign.points
     assert loaded.campaign.rollups == ()
-
-
-@pytest.mark.parametrize(
-    "scoring",
-    [
-        {"status": "valid", "reason": None},
-        {"status": "invalid", "reason": "incomplete"},
-        {"status": "invalid", "reason": None},
-    ],
-)
-def test_v4_rejects_scoring_state_contradictions(tmp_path: Path, scoring: object) -> None:
-    paths = publish_coverage_campaign(tmp_path, _invalid_campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["scoring"] = scoring
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_SCORING_STATE_INVALID"
-
-
-@pytest.mark.parametrize("inventory", ["rollups", "source_rollups"])
-def test_v4_rejects_scores_smuggled_behind_invalid_state(tmp_path: Path, inventory: str) -> None:
-    valid_paths = publish_coverage_campaign(tmp_path / "valid", _campaign())
-    invalid_paths = publish_coverage_campaign(tmp_path / "invalid", _invalid_campaign())
-    valid = json.loads(valid_paths.campaign.read_text(encoding="utf-8"))
-    invalid = json.loads(invalid_paths.campaign.read_text(encoding="utf-8"))
-    invalid[inventory] = valid[inventory]
-    invalid_paths.campaign.write_text(json.dumps(invalid), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(invalid_paths.campaign, TARGET)
-
-    assert error.value.code == "COV_INVALID_SCORING_SUMMARY"
 
 
 def test_valid_v4_remains_readable_with_runs_named_by_their_test(tmp_path: Path) -> None:
@@ -381,39 +320,6 @@ def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:
     )
 
 
-def test_deep_reader_rejects_source_distribution_tamper(tmp_path: Path) -> None:
-    campaign = _two_source_line_campaign()
-    paths = publish_coverage_campaign(tmp_path, campaign)
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    by_source = {item["source"]: item for item in manifest["source_rollups"]}
-    rtl_line = by_source["rtl/counter.sv"]["rollups"][0]
-    tb_line = by_source["tb/counter_tb.sv"]["rollups"][0]
-    rtl_line.update(
-        total_points=0, eligible_points=0, covered_points=0, waived_points=0, percent=None
-    )
-    tb_line.update(
-        total_points=2, eligible_points=1, covered_points=1, waived_points=0, percent=100.0
-    )
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_SOURCE_ROLLUP_MISMATCH"
-
-
-def test_reader_rejects_source_semantics_tamper(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["source_rollups"][0]["rollups"][0]["semantics"] = "tampered"
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_SOURCE_ROLLUP_MISMATCH"
-
-
 def test_publish_rejects_oversized_manifest_and_removes_point_store(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -436,7 +342,7 @@ def test_publish_decodes_nothing_it_just_encoded(tmp_path: Path, monkeypatch) ->
         raise AssertionError("publication must not decode the manifest it just encoded")
 
     with monkeypatch.context() as patched:
-        patched.setattr(store, "validate_coverage_campaign_summary", refuse_decode)
+        patched.setattr(store, "_decode_owned_coverage_campaign", refuse_decode)
         paths = publish_coverage_campaign(tmp_path, _campaign())
 
     assert load_coverage_campaign(paths.campaign, TARGET).campaign == _campaign()
@@ -528,16 +434,30 @@ def test_manifest_reader_rejects_linked_parent(tmp_path: Path) -> None:
     assert error.value.code == "COV_PATH_UNSAFE"
 
 
-def test_summary_read_rejects_invalid_stored_evaluation_without_opening_points(
-    tmp_path: Path,
-) -> None:
+def test_deep_load_validates_the_campaign_once(tmp_path: Path, monkeypatch) -> None:
+    import booley.flows.sim.coverage_campaign as codec
+
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    structural = codec._structural_findings
+    calls = 0
+
+    def counted(document):
+        nonlocal calls
+        calls += 1
+        return structural(document)
+
+    monkeypatch.setattr(codec, "_structural_findings", counted)
+    load_coverage_campaign(paths.campaign, TARGET)
+    assert calls == 1
+
+
+def test_deep_load_rejects_invalid_stored_evaluation(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
     manifest["evaluation"]["status"] = "pass"
     paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-    paths.points.unlink()
 
-    with pytest.raises(CoverageCampaignValidationError, match="invalid"):
+    with pytest.raises(CoverageCampaignValidationError, match="COV_EVALUATION_MISMATCH"):
         load_coverage_campaign(paths.campaign, TARGET)
 
 

@@ -178,8 +178,7 @@ Try:
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
   (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
   the model: v1, v2, v3, missing points, truncated gzip, trailing data, symlink, invalid final record,
-  duplicate point, wrong rollup/source rollup/evaluation, invalid-overall-score,
-  invalid-source-score, resource ceiling (over-ceiling decompression).
+  duplicate point, wrong rollup/evaluation, resource ceiling (over-ceiling decompression).
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;

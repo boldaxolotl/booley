@@ -46,13 +46,9 @@ MODEL_TIERS = ("heavy", "standard", "light")
 _MODEL_TIERS = MODEL_TIERS
 
 # [models.roles] vocabulary: the agents whose model may be pinned by name.
-# Two kinds of role live here and they resolve through different call paths:
-#
-#   * harness steps (``developer``, ``recovery``) — keys of config.STEP_TIERS,
-#     resolved by the Runtime composition root.
-#   * specialists (``reviewer``, ``mutation_tester``, …) — each runs as its own
-#     `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml, so
-#     the role key must equal the specialist's ``Specialist.name``.
+# Each role is a Specialist (``reviewer``, ``mutation_tester``, …) that runs as its
+# own `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml, so
+# the role key must equal the Specialist's ``Specialist.name``.
 #
 # The list is explicit rather than derived from the MCP endpoint registry: importing
 # the registry here would drag the whole endpoint packages into the config layer,
@@ -61,15 +57,16 @@ _MODEL_TIERS = MODEL_TIERS
 # without extending this set, so it cannot drift silently.
 KNOWN_ROLES = frozenset(
     {
-        "developer",
-        "recovery",
-        "triage_report",
         "reviewer",
         "mutation_tester",
         "coverage_analyst",
     }
 )
 _KNOWN_ROLES = KNOWN_ROLES
+
+# Former harness-step pins that no agent call reads. Refused (not ignored) so a
+# leftover pin cannot silently do nothing.
+RETIRED_ROLES = frozenset({"developer", "recovery", "triage_report"})
 
 
 class BackendConfigError(RuntimeError):
@@ -79,6 +76,17 @@ class BackendConfigError(RuntimeError):
     for (the old codex default surfaced as a mystery 401 from an
     unauthenticated Codex call).
     """
+
+
+class RetiredRoleError(BackendConfigError):
+    """A ``[models.roles]`` pin names a role no agent call reads any more."""
+
+    def __init__(self, role: str) -> None:
+        self.role = role
+        super().__init__(
+            f"booley.toml [models.roles] {role!r} is a retired role that no agent call reads; "
+            f"remove the {role} pin from [models.roles]."
+        )
 
 
 def _inside_container() -> bool:
@@ -142,7 +150,7 @@ class AgentSettings:
 
     tier_models: Mapping[str, str] = field(default_factory=lambda: dict(_DEFAULT_TIER_MODELS))
     # [models.roles]: role name -> tier name or literal model id. Empty = every
-    # role takes its step/floor tier, which is the pre-knob behavior.
+    # role takes its floor tier, which is the pre-knob behavior.
     role_models: Mapping[str, str] = field(default_factory=dict)
     auth: str = _DEFAULT_AUTH
     provider: str = _DEFAULT_PROVIDER
@@ -628,7 +636,8 @@ def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
 
     An unknown role key raises ``BackendConfigError``. Silently ignoring it is
     the one failure mode this knob must not have: the user pins a model, the
-    run bills a different one, and nothing says so.
+    run bills a different one, and nothing says so. A retired role raises
+    ``RetiredRoleError`` for the same reason: nothing reads that pin.
     """
     roles_section = models_section.get("roles", {})
     if not roles_section:
@@ -641,6 +650,8 @@ def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
 
     role_models: dict[str, str] = {}
     for role, value in roles_section.items():
+        if role in RETIRED_ROLES:
+            raise RetiredRoleError(role)
         if role not in _KNOWN_ROLES:
             raise BackendConfigError(
                 f"booley.toml [models.roles] has an unknown role {role!r}; "
