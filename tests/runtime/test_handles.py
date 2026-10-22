@@ -325,6 +325,8 @@ def test_baseline_allocates_before_launch_and_broken_maps_do_not_block_it(
         "jobs_root": str(tmp_path / "jobs"),
         "record": {"worktree_path": "/work", "session_key": "codex:one"},
     }
+    # The scheduler publishes the Job record (and its handle) before launching.
+    sim_baseline_jobs._publish_job_record(tmp_path / "request.json", request)
     sim_baseline_jobs.launch_baseline(tmp_path / "request.json", request)
     assert len(launched) == 1
     assert job_records.read_record("baseline-one", tmp_path / "jobs") is not None
