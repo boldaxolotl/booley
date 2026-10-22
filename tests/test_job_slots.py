@@ -190,6 +190,69 @@ class TestSingleProcess:
         assert attempts == 3
         assert store.snapshot(CLASS_HEAVY)[0][0].lease_generation == 1
 
+    def test_renew_retries_transient_lease_gate_permission_error(self, root, world, monkeypatch):
+        # Windows denies mkdir while the previous gate's rmdir is pending (#2024).
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        original_mkdir = Path.mkdir
+        denials = 0
+
+        def flaky_mkdir(path, *args, **kwargs):
+            nonlocal denials
+            if path.name.endswith(".lease.lock") and denials < 2:
+                denials += 1
+                raise PermissionError("delete pending")
+            return original_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+
+        assert store.renew(token) is True
+        assert denials == 2
+        assert not token.lease_health.lost.is_set()
+
+    def test_live_holder_survives_transient_read_permission_error(self, root, world, monkeypatch):
+        # A reader racing a rewrite on Windows must not see the lease as gone,
+        # or the run is reported cancelled (#2024).
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        original_read_text = Path.read_text
+        denials = 0
+
+        def flaky_read_text(path, *args, **kwargs):
+            nonlocal denials
+            if path == token.path and denials < 2:
+                denials += 1
+                raise PermissionError("file is temporarily in use")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+        assert store.token_absent(token) is False
+        assert denials == 2
+
+    def test_unreadable_live_entry_is_not_absent(self, root, world, monkeypatch):
+        # A lock outlasting every retry still must not read as cancellation (#2024).
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        original_read_text = Path.read_text
+
+        def locked_read_text(path, *args, **kwargs):
+            if path == token.path:
+                raise PermissionError("file is held by a scanner")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", locked_read_text)
+
+        assert store.token_absent(token) is False
+        store.release(token)
+        assert store.token_absent(token) is True
+
     def test_renew_does_not_resurrect_a_deleted_holder(self, root, world, monkeypatch):
         spawn(world, 100)
         store = make_store(root, world)
