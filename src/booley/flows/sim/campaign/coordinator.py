@@ -12,6 +12,7 @@ from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReference,
@@ -429,7 +430,7 @@ class SimulationCampaign:
                 origin_target_directory=store.root.parent,
                 coverage_campaign_path=nested_path,
             )
-        except CoverageCampaignStoreError as exc:
+        except (CoverageCampaignStoreError, CoverageCampaignValidationError) as exc:
             raise SimulationCampaignIntegrityError(
                 "nested Coverage Campaign cannot be authenticated"
             ) from exc

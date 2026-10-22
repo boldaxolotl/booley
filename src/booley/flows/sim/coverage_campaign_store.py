@@ -15,9 +15,7 @@ from pathlib import Path
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
-    require_finite_number,
     require_int,
-    require_list,
     require_str,
 )
 from booley.runtime.atomic_files import atomic_write_once
@@ -29,17 +27,13 @@ from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageRollup,
-    CoverageSourceRollup,
-    CoverageTarget,
     DurableTargetIdentity,
     FrozenJson,
     _decode_owned_coverage_campaign,
-    coverage_metric_semantics,
     derive_coverage_source_rollups,
     encode_coverage_campaign,
     encode_coverage_point,
     freeze_coverage_mapping,
-    validate_coverage_campaign_summary,
 )
 
 CAMPAIGN_SCHEMA_V1 = "booley.coverage-campaign/v1"
@@ -79,6 +73,7 @@ _SUMMARY_FIELDS = frozenset(
         "evaluation",
     }
 )
+_STORE_FIELDS = frozenset({"point_store", "source_rollups", "scoring"})
 
 
 @dataclass(frozen=True)
@@ -94,16 +89,9 @@ class CoveragePointStoreReference:
 
 @dataclass(frozen=True)
 class CoverageCampaignSummary:
-    """Validated manifest-local Campaign facts."""
+    """The persisted envelope callers bind to; Campaign facts come from the codec."""
 
     source_schema: str
-    campaign_id: str
-    target: CoverageTarget
-    rollups: tuple[CoverageRollup, ...]
-    source_rollups: tuple[CoverageSourceRollup, ...]
-    collection: Mapping[str, FrozenJson]
-    scoring: Mapping[str, FrozenJson]
-    evaluation: Mapping[str, FrozenJson]
     document: Mapping[str, FrozenJson]
     manifest_sha256: str
     point_store: CoveragePointStoreReference | None
@@ -273,197 +261,11 @@ def _decode_reference(value: object) -> CoveragePointStoreReference:
     )
 
 
-def _decode_source_rollups(value: object) -> tuple[CoverageSourceRollup, ...]:
-    records = require_list(value, field="source_rollups")
-    decoded: list[CoverageSourceRollup] = []
-    previous_source: str | None = None
-    for index, item in enumerate(records):
-        record = require_dict(item, field=f"source_rollups[{index}]")
-        if set(record) != {"source", "rollups"}:
-            raise CoverageCampaignStoreError(
-                "COV_MANIFEST_FORMAT", "Malformed V3 source coverage summary"
-            )
-        source = require_str(record, "source")
-        if previous_source is not None and source <= previous_source:
-            raise CoverageCampaignStoreError(
-                "COV_SOURCE_ROLLUP_MISMATCH", "Source coverage summaries are not canonical"
-            )
-        previous_source = source
-        rollup_values = require_list(record["rollups"], field="rollups")
-        metrics = ("line", "branch", "expression", "toggle")
-        if len(rollup_values) != len(metrics):
-            raise CoverageCampaignStoreError(
-                "COV_SOURCE_ROLLUP_MISMATCH", "Source coverage metric order is not canonical"
-            )
-        rollups = tuple(
-            _decode_manifest_rollup(item, expected_metric=metric)
-            for item, metric in zip(rollup_values, metrics, strict=True)
-        )
-        decoded.append(CoverageSourceRollup(source, rollups))
-    return tuple(decoded)
-
-
-def _decode_manifest_rollup(value: object, *, expected_metric: str) -> CoverageRollup:
-    record = require_dict(value, field="source rollup")
-    expected = {
-        "metric",
-        "semantics",
-        "total_points",
-        "eligible_points",
-        "covered_points",
-        "waived_points",
-        "percent",
-    }
-    if set(record) != expected:
-        raise CoverageCampaignStoreError(
-            "COV_MANIFEST_FORMAT", "Malformed V3 source metric summary"
-        )
-    metric = require_str(record, "metric")
-    semantics = require_str(record, "semantics")
-    if metric != expected_metric or semantics != coverage_metric_semantics(metric):
-        raise CoverageCampaignStoreError(
-            "COV_SOURCE_ROLLUP_MISMATCH",
-            "Source coverage metric identity is not canonical",
-        )
-    raw_percent = record["percent"]
-    percent = (
-        require_finite_number(raw_percent, field="percent") if raw_percent is not None else None
-    )
-    rollup = CoverageRollup(
-        metric,
-        semantics,
-        require_int(record["total_points"], field="total_points"),
-        require_int(record["eligible_points"], field="eligible_points"),
-        require_int(record["covered_points"], field="covered_points"),
-        require_int(record["waived_points"], field="waived_points"),
-        percent,
-    )
-    counts = (
-        rollup.total_points,
-        rollup.eligible_points,
-        rollup.covered_points,
-        rollup.waived_points,
-    )
-    expected_percent = (
-        round(rollup.covered_points * 100 / rollup.eligible_points, 2)
-        if rollup.eligible_points
-        else None
-    )
-    if (
-        any(count < 0 for count in counts)
-        or rollup.covered_points > rollup.eligible_points
-        or rollup.eligible_points + rollup.waived_points > rollup.total_points
-        or rollup.percent != expected_percent
-    ):
-        raise CoverageCampaignStoreError(
-            "COV_SOURCE_ROLLUP_MISMATCH", "Source coverage summary arithmetic is invalid"
-        )
-    return rollup
-
-
-def _validate_source_reconciliation(
-    source_rollups: tuple[CoverageSourceRollup, ...], rollups: tuple[CoverageRollup, ...]
-) -> None:
-    overall = {item.metric: item for item in rollups}
-    metrics = ("line", "branch", "expression", "toggle")
-    for index, metric in enumerate(metrics):
-        matches = [source.rollups[index] for source in source_rollups]
-        expected = overall.get(metric)
-        totals = tuple(
-            sum(getattr(item, field) for item in matches)
-            for field in ("total_points", "eligible_points", "covered_points", "waived_points")
-        )
-        expected_totals = (
-            (0, 0, 0, 0)
-            if expected is None
-            else (
-                expected.total_points,
-                expected.eligible_points,
-                expected.covered_points,
-                expected.waived_points,
-            )
-        )
-        if totals != expected_totals:
-            raise CoverageCampaignStoreError(
-                "COV_SOURCE_ROLLUP_MISMATCH",
-                "Source coverage summaries do not reconcile with overall rollups",
-            )
-
-
 def _expected_scoring(collection: Mapping[str, object]) -> dict[str, object]:
     status = collection.get("status")
     if status == "complete":
         return {"status": "valid", "reason": None}
     return {"status": "invalid", "reason": status}
-
-
-def _decode_scoring(
-    value: object,
-    collection: Mapping[str, FrozenJson],
-) -> Mapping[str, FrozenJson]:
-    record = require_dict(value, field="scoring")
-    if set(record) != {"status", "reason"}:
-        raise CoverageCampaignStoreError("COV_SCORING_STATE_INVALID", "Malformed scoring state")
-    status = require_str(record, "status")
-    reason = record["reason"]
-    if reason is not None and not isinstance(reason, str):
-        raise CoverageCampaignStoreError(
-            "COV_SCORING_STATE_INVALID", "Scoring reason must be a string or null"
-        )
-    expected = _expected_scoring(collection)
-    if record != expected or status not in {"valid", "invalid"}:
-        raise CoverageCampaignStoreError(
-            "COV_SCORING_STATE_INVALID",
-            "Scoring state contradicts the collection status",
-        )
-    return freeze_coverage_mapping(record)
-
-
-def _validate_scoring_rollups(
-    scoring: Mapping[str, FrozenJson],
-    rollups: tuple[CoverageRollup, ...],
-    source_rollups: tuple[CoverageSourceRollup, ...],
-) -> None:
-    if scoring["status"] == "invalid":
-        if rollups or source_rollups:
-            raise CoverageCampaignStoreError(
-                "COV_INVALID_SCORING_SUMMARY",
-                "Invalid scoring state must have empty overall and source summaries",
-            )
-        return
-    _validate_source_reconciliation(source_rollups, rollups)
-
-
-def _summary(
-    document: Mapping[str, object],
-    expected_target: DurableTargetIdentity,
-    manifest_sha256: str,
-) -> CoverageCampaignSummary:
-    schema = document.get("$schema")
-    if set(document) != _SUMMARY_FIELDS:
-        raise CoverageCampaignStoreError(
-            "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Campaign manifest"
-        )
-    probe = dict(document)
-    source_rollup_values = probe.pop("source_rollups")
-    scoring_value = probe.pop("scoring")
-    fields = validate_coverage_campaign_summary(probe, expected_target)
-    source_rollups = _decode_source_rollups(source_rollup_values)
-    scoring = _decode_scoring(scoring_value, fields.collection)
-    _validate_scoring_rollups(scoring, fields.rollups, source_rollups)
-    return CoverageCampaignSummary(
-        source_schema=str(schema),
-        campaign_id=fields.campaign_id,
-        target=fields.target,
-        rollups=fields.rollups,
-        source_rollups=source_rollups,
-        collection=fields.collection,
-        scoring=scoring,
-        evaluation=fields.evaluation,
-        document=freeze_coverage_mapping(document),
-        manifest_sha256=manifest_sha256,
-        point_store=_decode_reference(document.get("point_store")),
-    )
 
 
 def _contains_link(path: Path) -> bool:
@@ -524,37 +326,10 @@ def _point_documents(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-def _load_current(
-    path: Path,
-    document: Mapping[str, object],
-    expected_target: DurableTargetIdentity,
-    manifest_sha256: str,
-) -> LoadedCoverageCampaign:
-    summary = _summary(document, expected_target, manifest_sha256)
-    points_path = path.parent / POINT_STORE_NAME
-    points = _point_documents(points_path)
-    v1_document = dict(document)
-    v1_document["$schema"] = CAMPAIGN_SCHEMA_V1
-    del v1_document["point_store"]
-    del v1_document["source_rollups"]
-    del v1_document["scoring"]
-    v1_document["points"] = points
-    campaign = _decode_owned_coverage_campaign(v1_document, expected_target)
-    if (
-        summary.scoring["status"] == "valid"
-        and derive_coverage_source_rollups(campaign.points) != summary.source_rollups
-    ):
-        raise CoverageCampaignStoreError(
-            "COV_SOURCE_ROLLUP_MISMATCH",
-            "Source coverage summaries do not match the deterministic point derivation",
-        )
-    return LoadedCoverageCampaign(summary, campaign)
-
-
 def _load_manifest(
     path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V4/V5 Campaign from exact manifest bytes; accept no point evidence first."""
+    """Deep-load one V4/V5 Campaign; the codec validates manifest and points once."""
     try:
         if len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
@@ -568,17 +343,32 @@ def _load_manifest(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
             )
+        if set(document) != _SUMMARY_FIELDS:
+            raise CoverageCampaignStoreError(
+                "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Campaign manifest"
+            )
+        point_store = _decode_reference(document["point_store"])
         if expected_target is None:
             target = require_dict(document.get("target"), field="target")
             expected_target = DurableTargetIdentity(require_str(target, "identity"))
-        digest = f"{_SHA256_PREFIX}{hashlib.sha256(raw).hexdigest()}"
-        return _load_current(path, document, expected_target, digest)
+        # Source rollups and scoring are writer-derived manifest content (ADR 0062).
+        v1_document = {key: value for key, value in document.items() if key not in _STORE_FIELDS}
+        v1_document["$schema"] = CAMPAIGN_SCHEMA_V1
+        v1_document["points"] = _point_documents(path.parent / POINT_STORE_NAME)
+        campaign = _decode_owned_coverage_campaign(v1_document, expected_target)
     except (CoverageCampaignValidationError, CoverageCampaignStoreError):
         raise
     except (json.JSONDecodeError, UnicodeError, BoundaryError) as exc:
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
         ) from exc
+    summary = CoverageCampaignSummary(
+        source_schema=schema,
+        document=freeze_coverage_mapping(document),
+        manifest_sha256=f"{_SHA256_PREFIX}{hashlib.sha256(raw).hexdigest()}",
+        point_store=point_store,
+    )
+    return LoadedCoverageCampaign(summary, campaign)
 
 
 def load_coverage_campaign(

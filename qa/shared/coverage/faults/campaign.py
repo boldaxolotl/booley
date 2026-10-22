@@ -118,28 +118,12 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
         points.symlink_to(outside)
     elif mode == "wrong-rollup":
         document["rollups"][0]["covered_points"] += 1
-    elif mode == "wrong-source-rollup":
-        rows = document["source_rollups"]
-        if len(rows) < 2 or rows[0]["rollups"] == rows[1]["rollups"]:
-            raise ValueError("two sources with distinct distributions required")
-        rows[0]["rollups"], rows[1]["rollups"] = rows[1]["rollups"], rows[0]["rollups"]
-    elif mode in {"invalid-overall-score", "invalid-source-score"}:
-        corrupt_scoring(mode, document)
     elif mode == "wrong-evaluation":
         document["evaluation"]["status"] = (
             "pass" if document["evaluation"]["status"] != "pass" else "fail"
         )
     else:
         raise ValueError(f"unknown Campaign fault: {mode}")
-
-
-def corrupt_scoring(mode: str, document: dict) -> None:
-    document["collection"]["status"] = "collector_error"
-    document["scoring"] = {"status": "invalid", "reason": "collector_error"}
-    if mode == "invalid-overall-score":
-        document["source_rollups"] = []
-    else:
-        document["rollups"] = []
 
 
 def main() -> None:
