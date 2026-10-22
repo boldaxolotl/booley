@@ -42,6 +42,7 @@ from booley.runtime.session_admission import (
 from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
+from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
@@ -4827,9 +4828,11 @@ def test_project_sandbox_resolution_revalidation_fails_closed(
 @pytest.mark.parametrize("owner", ["editor", "headless"])
 @pytest.mark.parametrize("command", [None, ["hostname"]])
 def test_enter_preserves_container_credentials_without_literal_placeholder_overrides(
-    workspace, project_sandbox_resolution, monkeypatch, owner, command
+    workspace, tmp_path, request, project_sandbox_resolution, monkeypatch, owner, command
 ):
     from booley.runtime import auth_token, runtime_attachment
+
+    select_booley_dir(request, monkeypatch, tmp_path)
 
     fixture = project_sandbox_resolution
     for key in auth_token.CREDENTIAL_ENV_KEYS:

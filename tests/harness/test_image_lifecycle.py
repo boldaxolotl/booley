@@ -18,6 +18,7 @@ from booley.runtime.docker_capacity import (
     DockerBuildPlan,
     DockerBuildRequest,
 )
+from tests.harness.booley_dir_support import select_booley_dir
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
 
@@ -2982,8 +2983,9 @@ def test_failed_mutation_untags_base_without_prior_image(tmp_path: Path) -> None
 
 
 def test_incremental_adapter_prepare_and_policy_helpers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
+    select_booley_dir(request, monkeypatch, tmp_path)
     docker = FakeDocker({"candidate": ("sha256:candidate", {})})
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
     node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
