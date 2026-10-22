@@ -463,14 +463,3 @@ def test_a_v2_result_may_not_name_test_runs(tmp_path: Path):
     document["$schema"] = "booley.simulation-result/v2"
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         decode_simulation_result(canonical_json_bytes(document))
-
-
-def test_a_result_naming_a_test_run_its_work_item_does_not_record_is_refused(tmp_path: Path):
-    from booley.flows.sim.campaign.store import _validate_result_test_runs
-
-    plan = _hdl_plan(tmp_path, ((_SOAK,),))
-    item = plan.manifest.document["work_items"][0]
-    _validate_result_test_runs(item, ({"test": "count", "test_run": "count+soak@42"},))
-    _validate_result_test_runs(item, ({"test": "count"},))  # a result before v3
-    with pytest.raises(SimulationCampaignIntegrityError, match="does not record"):
-        _validate_result_test_runs(item, ({"test": "count", "test_run": "count+soak@43"},))

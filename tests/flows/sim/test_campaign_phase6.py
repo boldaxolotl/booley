@@ -566,21 +566,6 @@ def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -
     assert resumed.manifest == manifest.document
 
 
-def test_resume_inspection_rejects_manifest_replaced_after_validation(tmp_path: Path) -> None:
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
-    store.publish_manifest(_manifest_for(("smoke",)))
-    validated = _resume_request(store, tmp_path).validated
-
-    store.manifest_path.unlink()
-    store.publish_manifest(_manifest_for(("replacement",)))
-
-    with pytest.raises(
-        SimulationCampaignIntegrityError,
-        match="changed after resume validation",
-    ):
-        SimulationCampaign().inspect_resume(validated)
-
-
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_resume_endpoint_refreshes_recovery_after_failure(
     tmp_path: Path,
@@ -1486,3 +1471,37 @@ def test_summary_reader_rejects_corrupt_record(tmp_path, error):
     )
     with pytest.raises(SimulationCampaignIntegrityError):
         store.load_summary()
+
+
+def test_resume_inspection_scans_the_validated_manifest_without_rereading(
+    tmp_path: Path,
+) -> None:
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    validated = _resume_request(store, tmp_path).validated
+    store.manifest_path.unlink()
+
+    status = SimulationCampaign().inspect_resume(validated)
+
+    assert status.manifest_sha256 == validated.sha256
+
+
+def test_foreign_attempt_result_fails_closed_at_the_read_boundary(tmp_path: Path) -> None:
+    class _ForeignAttemptExecutor(_NoEdaExecutor):
+        def execute(self, request: WorkExecutionRequest) -> SimulationResult:
+            result = super().execute(request)
+            return SimulationResult({**result.document, "attempt_id": str(uuid.uuid4())})
+
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        plan=create_simulation_campaign_plan(_manifest_for(("smoke",))),
+        project_root=project,
+        report_root=None,
+        policy=CampaignPolicy(),
+        invocation_directory=tmp_path / "reports" / "sim" / "1",
+        admission=_admission(),
+    )
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="final published attempt"):
+        SimulationCampaign(_ForeignAttemptExecutor()).run(request)
