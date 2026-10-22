@@ -14,6 +14,7 @@ from booley.harness import booley as cli
 from booley.harness.endpoint_help import _parse_help, _parser_copy, _ParserSyntaxError
 from booley.mcp.base import McpTool
 from booley.mcp.registry import McpToolInfo
+from booley.runtime.booley_dir import reset_cache
 
 
 @pytest.fixture
@@ -279,6 +280,7 @@ def test_missing_project_error_precedes_host_venue_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    reset_cache()
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(name, raising=False)
