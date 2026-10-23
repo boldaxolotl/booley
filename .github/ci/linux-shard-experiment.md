@@ -37,8 +37,9 @@ dispatches.
 | C Shards | 2 | `loadscope` |
 | D Shards + scheduler | 2 | `worksteal` |
 
-Dispatch order rotated to spread runner load: A B C D, then B C D A, then
-C D A B (the rerun below shifted the tail).
+The planned rotation to spread runner load was A B C D, then B C D A, then
+C D A B. The two cancelled arm D runs and one rerun (below) shifted the actual
+order, by run ID: A B C D, B C D(cancelled) D, A C D(cancelled), A B.
 
 ## Per-run results
 
@@ -69,13 +70,14 @@ shows `<group> <eligible tests>/<shards>`, each verified by `test-verify`.
 
 | Arm | Complete runs | Gate median (range) | Runner min median (range) | Slowest Ubuntu job median (range) | Max execution median (range) | Max collection median (range) |
 | --- | ---: | --- | --- | --- | --- | --- |
-| A | 3 | 1030 s (982-1101) | 196.4 (187.9-196.7) | 997 s (954-1068) | 875 s (817-945) | 67 s (62-72) |
+| A | 3 | 1030 s (982-1101) | 196.4 (187.9-196.7) | 997 s (954-1068) | 875 s (817-945) | 66 s (62-72) |
 | B | 3 | 1171 s (1121-1186) | 186.2 (183.0-199.4) | 1087 s (949-1140) | 951 s (809-995) | 76 s (58-77) |
 | C | 3 | 903 s (850-920) | 183.6 (176.2-185.9) | 576 s (563-618) | 454 s (452-489) | 68 s (67-75) |
-| D | 2 | 881 s (874-888) | 193.6 (192.8-194.4) | 614 s (594-633) | 486 s (470-503) | 71 s (71-71) |
+| D | 2 | 881 s (874-888) | 193.6 (192.8-194.4) | 614 s (594-633) | 486 s (469-503) | 71 s (71-71) |
 
 Maximum setup stayed between 27 s and 36 s in every arm; maximum queue was 3 to
-5 s apart from the two outliers noted above and an 18 s value in one C run.
+5 s apart from the 184 s outlier noted above, a 12 s value in A #1, and an
+18 s value in C #1.
 
 ## Comparisons
 
@@ -86,7 +88,7 @@ Differences of medians (negative is faster or cheaper):
 | Scheduler, one shard | B - A | +141 s | -10.2 |
 | Scheduler, two shards | D - C | -22 s (2 runs for D) | +10.0 |
 | Shard count, `loadscope` | C - A | -127 s | -12.8 |
-| Shard count, `worksteal` | D - B | -290 s (2 runs for D) | +7.5 |
+| Shard count, `worksteal` | D - B | -290 s (2 runs for D) | +7.4 |
 
 Shards cut the longest Ubuntu job from about 1,000 s to about 580-610 s, but the
 gate moved much less because the latest job in every sharded run is a Windows
@@ -95,9 +97,14 @@ Ubuntu legs are no longer the critical path, so the 3.11 and 3.14 gains beyond
 this point are invisible at the gate. In the one-shard arms the 3.11 or 3.14
 complete-suite job finished last.
 
-Latency versus cost: C saves 127 s of median gate and 12.8 runner minutes, so
-it costs nothing extra. The runner-minute figure is the unrounded one; the
-rounded estimate puts C at 198 against 209 for A. `worksteal` on one shard was
+Latency versus cost: C saves 127 s of median gate, and its median runner
+minutes are 12.8 lower, so no extra cost showed up. Two more Ubuntu jobs per
+Python version repeat about 30 s of setup and 60-75 s of collection each, so
+roughly 6-7 extra runner minutes would be expected; the measured saving is
+about the size of the spread between A and B (-10.2), whose job layouts are
+identical, so read it as "no measurable increase", not as a real saving. The
+runner-minute figure is the unrounded one; the rounded estimate puts C at 198
+against 209 for A. `worksteal` on one shard was
 slower and more variable (B), and with two shards it moved the median by
 -22 s on two runs, inside the range noise.
 
@@ -108,8 +115,10 @@ scheduler effects are within noise.
 ## Per-shard setup totals (context)
 
 Summed `test_phases` per shard artifact, setup / call / teardown seconds. Setup
-is not in the model, and some shards carry much more of it; it explains some
-call-time imbalance between shards of the same group:
+is not in the model, and some shards carry much more of it. It can explain some
+call-time imbalance between shards of the same group, as can the one-second
+default weight: only 869 of the 22,283 eligible tests have a measured weight,
+so most of each shard is balanced by count:
 
 - C #1: 3.11 shards 172/1580/9 and 180/1604/9; 3.14 shards 126/1119/5 and 109/1010/5.
 - C #2: 3.11 167/1528/8 and 180/1601/9; 3.14 126/1101/5 and 193/1728/8.
@@ -130,21 +139,28 @@ viable on this commit with no further reruns, so D got no third complete run and
 stays "not viable, not recommended". The maintainer accepted D as 2 of 3
 complete runs (decision d1792-1). The cancellation reason is the same in both
 lost runs: a Windows shard hit its 15-minute job limit. Windows shard
-configuration is identical in all arms, and the slowest Windows shard in the
-completed C and D runs finished in 826 to 890 s against the 900 s limit (C #1,
-890 s, and D #1, 868 s, included), so the timeouts are probably Windows runner
-variance, not an Ubuntu effect. The D figures above rest on two runs and are
+configuration is identical in all arms, and the latest Windows shard in the
+completed C and D runs finished 826 to 890 s after the run started (a finish
+time, not a job duration), so the timeouts look like Windows runner variance,
+not an Ubuntu effect. If so, every arm carries the same timeout risk and D's
+label reflects which runs happened to time out. The D figures above rest on two runs and are
 indicative only. The adopt-C recommendation below does not depend on D: it
-rests on the A and C runs, three each. No other run failed or was excluded. Fourteen runs were dispatched in total.
+rests on the A and C runs, three each. No other run failed or was excluded.
+
+Thirteen runs were dispatched in total: the twelve planned arm slots (the two
+cancelled runs above filled two D slots, so D #3 never ran) plus one rerun
+(D #2). The maintainer approved twelve controlled dispatches; the rerun was the
+thirteenth.
 
 ## Recommendation
 
 Adopt two Ubuntu shards with `loadscope` (arm C). It is the only viable
 Ubuntu change that measurably shortens the required gate: its slowest run
 (920 s) beats the baseline's fastest (982 s), and its median gate is 127 s
-lower (-12%). It also used 12.8 fewer runner minutes at the median, so the
-extra jobs cost nothing here. `worksteal` is not recommended: it was 141 s
+lower (-12%). Its median runner minutes were 12.8 lower, so no extra
+cost was measurable (a saving that size is within the A-to-B spread). `worksteal` is not recommended: it was 141 s
 slower on one shard and showed no measurable gain on two. Gains beyond C are
-capped by the Windows shards. The production default stays unchanged here
+capped by the Windows shards, which finished last in every sharded run and
+account for the only timeouts seen. The production default stays unchanged here
 (one complete-suite job per Python version with `loadscope`); whether to
 adopt C is the maintainer's decision.
