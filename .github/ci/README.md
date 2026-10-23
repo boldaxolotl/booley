@@ -73,6 +73,15 @@ October 9, 2026 to ten. See [the experiment record](windows-shard-experiment.md)
 for the raw comparison, the changes, and the post-change validation
 requirement.
 
+## Test-cost profile
+
+[The test-cost profile](test-cost-profile.md) ranks test families and fixture
+phases per platform from ten complete `main` runs (SHAs `0c4b5acbe..4fe5edfe7`,
+October 22-23, 2026). It lists setup, call, and teardown medians and ranges,
+keeps summed test time, job elapsed time, required-gate elapsed time, and runner
+minutes as separate quantities, states its sampling limitations, and proposes
+optimization candidates with the integration coverage each must keep.
+
 ## Ubuntu shard-count and scheduler experiment
 
 Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
