@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import contextvars
 import io
 import os
 import select
@@ -28,7 +29,11 @@ class _Capture:
         self.error: BaseException | None = None
         self.stop = threading.Event()
         self.done = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=True)
+        # Built on the producing thread: the reader runs in a copy of its context so
+        # observed chunks carry the producer's progress lane (plain threads start empty).
+        self.thread = threading.Thread(
+            target=contextvars.copy_context().run, args=(self._run,), daemon=True
+        )
 
     def _read(self) -> bytes | None:
         if os.name != "nt":
