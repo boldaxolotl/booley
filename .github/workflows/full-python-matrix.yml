@@ -49,6 +49,10 @@ jobs:
       - name: Prove the full suite executed
         if: always()
         shell: bash
+        # The 10000 floor is a collection-collapse sanity check, not the suite size:
+        # about 22.3k tests were collected on 2026-10-23 (Linux, Python 3.13,
+        # `pytest --collect-only -q tests/ -m "not native_bwave"`; other legs differ
+        # slightly). Adding or removing tests needs no edit unless the suite nears it.
         run: >-
           python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
           --label "${{ matrix.os }} / Python ${{ matrix.python }}"

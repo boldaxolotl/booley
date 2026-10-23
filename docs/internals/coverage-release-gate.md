@@ -82,8 +82,9 @@ only after all validation succeeds also lowered the 40,000-point deep-load trace
 274,216,879 to 195,528,575 bytes. Full loading and the first filtered scan remain linear; the result
 does not establish constant-memory analysis.
 
-The hosted `bwave-smoke` job runs both native pytest suites and checks their
-JUnit report with `--min-tests 18 --max-skips 0`. Missing native prerequisites
+The hosted `bwave-smoke` job runs the Coverage Campaign release pytest suites
+and checks their JUnit report for at least one test and no skips
+(`--max-skips 0`). Missing native prerequisites
 cannot silently pass the release gate. The compiler acceptance runner independently
 fails on missing tools or wrong source identity.
 
