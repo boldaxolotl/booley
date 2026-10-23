@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from booley.targets.selection import selectors_name_distinct_cores, split_selector
+
 
 class CampaignScopeError(ValueError):
     """The campaign has no unambiguous authorized RTL scope."""
@@ -32,15 +34,29 @@ def resolve_target_criteria(
     criterion_keys: Sequence[str],
     criteria: Mapping[str, object],
 ) -> tuple[TargetCriterion, ...]:
-    """Return the criteria belonging to *target* in requested order."""
+    """Return the criteria belonging to *target* in requested order.
+
+    A criterion keyed by the exact *target* spelling wins. A ``vlnv#name`` target
+    otherwise falls back to the criterion keyed by its Target name, unless that
+    criterion is bound to a provably different core.
+    """
+    name = split_selector(target)[1]
     resolved: list[TargetCriterion] = []
     for base_key in criterion_keys:
         key = f"{base_key}_{target}"
         if key not in criteria:
-            continue
+            key = f"{base_key}_{name}"
+            if key not in criteria or _bound_to_other_core(criteria[key], target):
+                continue
         params = _entry_params(criteria[key])
         resolved.append(TargetCriterion(base_key, key, MappingProxyType(dict(params))))
     return tuple(resolved)
+
+
+def _bound_to_other_core(entry: object, target: str) -> bool:
+    """Whether *entry*'s stored ``target`` provably names another core than *target*."""
+    bound = _entry_params(entry).get("target")
+    return isinstance(bound, str) and selectors_name_distinct_cores(bound, target)
 
 
 def resolve_campaign_scope(
