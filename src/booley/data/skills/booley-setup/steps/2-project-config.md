@@ -327,20 +327,26 @@ Authoring rules:
 
   Then run the **no-pruning probe** with raw Yosys in **logical mode**: run
   Yosys directly on the Target's resolved sources (not `booley flow synth`),
-  using generic flattening synthesis (`synth -flatten -top <toplevel>`
-  followed by `stat`), with **no liberty** file and no physical flow.
+  reading them with the same frontend, defines, parameters, and include
+  directories the Target's synthesis uses. Use generic flattening synthesis
+  (`synth -flatten -top <toplevel>` followed by `stat`), with **no liberty**
+  file and no physical flow.
   (1) Synthesize the Target with the surrogate selected. (2) Synthesize the
   Target without the surrogate fileset and define, with the memory module that
-  define replaces as a **black box** (for example `blackbox <module>` before
-  `synth`). (3) Subtract the surrogate's **standalone cost** from the depth
-  check, per instance and its parameter set, from run 1's totals and compare
-  them with run 2's totals without its black-box cells. Count every `$_DFF*`,
+  define replaces as a **black box**: `blackbox <module>` before `synth` after
+  `read_verilog`, or `--blackboxed-module <module>` on `read_slang`
+  (`blackbox` does nothing under `read_slang`). (3) Subtract the surrogate's
+  **standalone cost** (the `stat` of the surrogate module alone, built with the
+  parameters of each instance) from run 1's totals, and compare the result
+  with run 2's totals, excluding its black-box cells. Count every `$_DFF*`,
   `$_SDFF*`, `$_ALDFF*`, `$_DLATCH*` and `$_SR*` cell as a flop and all other
   cells as combinational. The surrogate passes only if **flop counts match
   exactly** and combinational cell counts agree **within ±2%** of run 2. A
   probe failure invalidates the surrogate, not the plan: **fix it and
   re-run** the probe. A surrogate whose read data comes **only from the
-  address or from constants** fails this probe.
+  address or from constants** is invalid even when the probe passes: the
+  probe compares whole-design totals, so on a large design it can miss a small
+  deleted cone, and the authoring rules above are the primary guard.
 - **`fpga` Targets:** `flow: generic`, `flow_options: {tool: vivado, …}`;
   `xdc` is a typed fileset, `top` is `toplevel`, and the board `part` plus
   `out_of_context` live in Target `flow_options`. **No `hooks:`** (decision 21,

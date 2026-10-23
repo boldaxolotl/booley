@@ -195,6 +195,8 @@ def test_setup_surrogate_validation_runs_no_pruning_probe():
         "fix it and re-run",
         "only from the address or from constants",
         "not booley flow synth",
+        "--blackboxed-module <module>",
+        "primary guard",
     ):
         assert required in project_config
     # Standalone cost is measured first; the plan-invalidation sentence must not govern probe failures.

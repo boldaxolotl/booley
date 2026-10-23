@@ -794,9 +794,9 @@ data, address, write enables, and byte-enables, combined bit-wise, with no
 combinational write-to-read arc. Read data driven only by the address or by
 constants lets synthesis delete the logic around the memory and understates
 area and Fmax; Project Setup checks each surrogate with a no-pruning probe
-against a black-box synthesis. The surrogate is a
-timing-boundary approximation: synthesis results exclude the memory's real
-capacity, contents, macro area, power, placement, and internal timing arcs.
+against a black-box synthesis. The surrogate is a timing-boundary
+approximation: synthesis results exclude the memory's real capacity, contents,
+macro area, power, placement, and internal timing arcs.
 
 `logical` runs only Yosys mapping. It is much faster and gives a useful mapped
 area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped
