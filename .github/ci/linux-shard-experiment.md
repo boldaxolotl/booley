@@ -125,14 +125,17 @@ call-time imbalance between shards of the same group:
 - [40004940869](https://github.com/boldaxolotl/booley/actions/runs/40004940869) (arm D): cancelled the same way;
   `windows-3.14-shard-9-of-10` hit the job limit.
 
-By the pre-set rule a job timeout that recurs in the same arm makes the arm not
-viable on this commit with no further reruns. Arm D therefore has two complete
-runs and is not recommended. The timeouts were in Windows shards, whose
-configuration is identical in all arms and whose slowest shard in the completed C and D runs finished in 826
-to 890 s against the 900 s limit (C #1, 890 s, and D #1, 868 s,
-included), so they are probably Windows runner variance, not an Ubuntu effect.
-Whether to spend one more D run is the maintainer's decision. No other run
-failed or was excluded. Fourteen runs were dispatched in total.
+By the pre-set rule a job timeout that recurs in the same arm marks the arm not
+viable on this commit with no further reruns, so D got no third complete run and
+stays "not viable, not recommended". The maintainer accepted D as 2 of 3
+complete runs (decision d1792-1). The cancellation reason is the same in both
+lost runs: a Windows shard hit its 15-minute job limit. Windows shard
+configuration is identical in all arms, and the slowest Windows shard in the
+completed C and D runs finished in 826 to 890 s against the 900 s limit (C #1,
+890 s, and D #1, 868 s, included), so the timeouts are probably Windows runner
+variance, not an Ubuntu effect. The D figures above rest on two runs and are
+indicative only. The adopt-C recommendation below does not depend on D: it
+rests on the A and C runs, three each. No other run failed or was excluded. Fourteen runs were dispatched in total.
 
 ## Recommendation
 
