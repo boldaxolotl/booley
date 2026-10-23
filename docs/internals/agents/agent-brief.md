@@ -6,7 +6,8 @@ the build identity, the verified cause with `file:line` evidence, and the
 discussion. The brief says what the finished change must do.
 
 These rules extend the triage skill's Agent Brief format. Booley adds the
-`**Audit:**` field, a fixed placement, and an authority rule.
+`**Audit:**` and `**Review:**` fields, a fixed placement, and an authority
+rule.
 
 ## Write it durable
 
@@ -41,6 +42,7 @@ Optional:
 - `**Key interfaces:**` commands, types, functions, or config keys the change
   touches, named without paths.
 - `**Audit:**` see below.
+- `**Review:**` see below.
 
 ## Audit
 
@@ -48,6 +50,44 @@ Add `**Audit:**` when the defect or gap may exist elsewhere: the triage blast
 radius is yes or likely. Name the pattern to search for and the suspected
 places by concept, such as the other Booley Flows or sibling commands. Add an
 acceptance criterion that every place the audit finds is fixed.
+
+## Review
+
+By default the pipeline reviews a plan and its pull request once each, with
+its standard reviewer models. Add `**Review:**` when a wrong result would be
+hard to detect after merge, so the work needs a stronger reviewer and repeated
+review: for example, a cache whose hits count as Goal evidence, where a wrong
+hit looks like a pass.
+
+The value is one line of `key=value` pairs, split with shell quoting rules:
+quote any value that contains spaces. Follow it with another field or the end
+of the brief:
+
+```markdown
+**Review:** model=claude-fable-5-1 effort=high rounds=uncapped park-after=5 focus="no wrong cache hit"
+```
+
+- `model` (required): a reviewer model the pipeline accepts, today
+  `claude-fable-5-1` or `claude-opus-5-5`. It replaces the reviewer of the plan
+  and of the code; the planner and implementer keep their usual models.
+- `effort` (required): the reviewer's effort, `low`, `medium`, `high`, or
+  `xhigh`.
+- `rounds`: `1` (default) or `uncapped`. With `uncapped`, every fix starts
+  another review of the whole change, until one round has no open finding. A
+  finding closes only through a fix, or through a written rebuttal that the
+  next round's reviewer accepts.
+- `park-after`: an integer of at least 2, allowed only with `rounds=uncapped`.
+  It is how many rounds may run without a clean one before the pipeline stops
+  and asks the maintainer. Default 6. The count covers rounds under the current
+  brief; a new brief starts it again.
+- `focus`: one quoted line that tells the reviewer what to look for first.
+
+A malformed field keeps the issue out of the pipeline rather than falling back
+to the default review. Malformed means an unknown key or model, a repeated key,
+a missing `model` or `effort`, an unsupported `rounds` value, `park-after`
+without `rounds=uncapped`, a value spread over several lines, or unbalanced
+quotes. With `rounds=uncapped`, the pipeline queues the pull request only after
+a clean round on its current head.
 
 ## Placement and authority
 
