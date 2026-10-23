@@ -7,10 +7,10 @@ ledger rows, whether the frozen runs let the Goal be met, and names the
 reason when they do not:
 
 - a slot still pending, or no Test Run required at all;
-- a frozen run whose Test or Test Variant is gone from the Target or whose
-  Test the Target now skips, or whose
-  declared arguments or environment changed: only an approved retarget
-  freezes the Goal again;
+- a frozen run whose Test or Test Variant is gone from the Target, whose Test
+  the Target now skips, or whose declared arguments or environment changed:
+  only an approved Goal change (or, for a skip, removing the Test from
+  ``skip``) lets the Goal be met;
 - a required run that failed, or has not passed yet. Not for a coverage
   Goal: it is judged by its coverage floors alone
   (:func:`~booley.goals.test_run_evidence.outcomes_decide`).
@@ -171,7 +171,7 @@ def _views(
 
 def _missing_text(gone: Sequence[str], skipped: Sequence[str], target: str) -> str:
     """The status text for frozen runs the Target no longer has or now skips."""
-    clauses = []
+    clauses: list[str] = []
     if gone:
         clauses.append(
             f"Test Runs {', '.join(gone)} no longer exist on Target {target!r}; "
@@ -194,7 +194,11 @@ def _declaration_defect(
         plan = plans.plan(target)
     except TargetPlanError as exc:
         return REASON_MISSING, str(exc)
-    skipped = [run.name for run in required if run.test in plan.skipped and run.test in plan.tests]
+    skipped = [
+        run.name
+        for run in required
+        if plan is not None and run.test in plan.skipped and run.test in plan.tests
+    ]
     gone = [
         run.name
         for run in required
