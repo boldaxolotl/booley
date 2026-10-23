@@ -2211,6 +2211,11 @@ def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocot
     if cached:
         monkeypatch.setattr(
             endpoint,
+            "_pinned_build",
+            lambda *_args: SimpleNamespace(rel=".", runtime_inputs=()),
+        )
+        monkeypatch.setattr(
+            endpoint,
             "_pinned_sim_command",
             lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={})),
         )
