@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- On Windows, cancelling a queued Job no longer reports it as running when the
+  withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
+  stays locked, the Job is still cancelled, is reported as running, and the refused
+  withdrawal is logged.
 - Project Setup's Memory Timing Surrogate guidance now requires every
   read-data bit to depend, through registers only and bit-wise, on the
   memory's write data, address, write enables, and byte-enables, and adds a

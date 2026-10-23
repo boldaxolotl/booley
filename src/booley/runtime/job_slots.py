@@ -59,7 +59,7 @@ from booley.runtime.execution_records import (
     verify_inherited_execution_id,
 )
 from booley.runtime.execution_recovery import recover_execution, recover_process_owner
-from booley.runtime.filesystem_utils import replace_file
+from booley.runtime.filesystem_utils import replace_file, unlink_file
 from booley.runtime.job_records import (
     DEADLINE_SLACK_SECONDS,
     _proc_cmdline,
@@ -1026,7 +1026,8 @@ class SlotStore:
         The unlink is the cancellation claim: it can only succeed while the
         entry still has its waiter name — promotion renames the file, so a
         child that became a holder in the meantime makes this fail (False)
-        and the cancel must be refused. The cancelled child's ``acquire``
+        and the cancel must be refused. A Windows sharing error is retried
+        and, if it persists, refuses the withdrawal (False, logged). The cancelled child's ``acquire``
         then sees LOST and raises instead of re-queueing.
         """
         for job_class in JOB_CLASSES:
@@ -1034,11 +1035,7 @@ class SlotStore:
             for tok in waiters:
                 if tok.pid != pid:
                     continue
-                try:
-                    tok.path.unlink()
-                except OSError:
-                    return False  # promoted (or vanished) under us — refuse
-                return True
+                return self._withdraw_waiter_entry(tok.path)
         return False
 
     def cancel_waiter_token(self, token: SlotToken) -> bool:
@@ -1051,9 +1048,23 @@ class SlotStore:
             return False
         if current is None or current.lease_id != token.lease_id:
             return False
+        return self._withdraw_waiter_entry(token.path)
+
+    def _withdraw_waiter_entry(self, path: Path) -> bool:
+        """Unlink a queued entry: True when withdrawn, False when refused or lost.
+
+        Uses the shared winerror-filtered retry rather than ``_unlink_entry``'s
+        any-``PermissionError`` loop on purpose: the error class decides the
+        cancel outcome here. Only a missing file means promotion won the race;
+        any other failure refuses the withdrawal and is logged, never mistaken
+        for promotion.
+        """
         try:
-            token.path.unlink()
-        except OSError:
+            unlink_file(path, sleep=self._sleep)
+        except FileNotFoundError:
+            return False  # promoted (renamed) or already removed: the race is lost
+        except OSError as exc:
+            logger.warning("Refusing to withdraw queued slot entry %s: %s", path.name, exc)
             return False
         return True
 

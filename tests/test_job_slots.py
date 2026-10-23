@@ -9,6 +9,7 @@ directory, with its own fake PID, and the test controls which PIDs are
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -352,6 +353,48 @@ class TestSingleProcess:
 
         assert store.cancel_waiter_token(waiter) is False
         assert waiter.path.exists()
+
+    @staticmethod
+    def _withdraw(store, waiter, withdraw: str) -> bool:
+        if withdraw == "pid":
+            return store.cancel_waiter(waiter.pid)
+        return store.cancel_waiter_token(waiter)
+
+    @pytest.mark.parametrize("withdraw", ["pid", "token"])
+    def test_withdrawal_retries_windows_sharing_error(self, root, world, monkeypatch, withdraw):
+        spawn(world, 100)
+        spawn(world, 101)
+        store = make_store(root, world)
+        holder = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(holder).state == HOLDING  # so the next entry stays queued
+        waiter = store.submit(CLASS_HEAVY, pid=101)
+        clock = BackoffClock()
+        store._sleep = clock.sleep
+        deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=0.005)
+
+        assert self._withdraw(store, waiter, withdraw) is True
+        assert not waiter.path.exists()
+
+    @pytest.mark.parametrize("withdraw", ["pid", "token"])
+    def test_withdrawal_refused_when_sharing_error_persists(
+        self, root, world, monkeypatch, caplog, withdraw
+    ):
+        spawn(world, 100)
+        spawn(world, 101)
+        store = make_store(root, world)
+        holder = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(holder).state == HOLDING
+        waiter = store.submit(CLASS_HEAVY, pid=101)
+        clock = BackoffClock()
+        store._sleep = clock.sleep
+        deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=1000.0)
+
+        with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
+            assert self._withdraw(store, waiter, withdraw) is False
+        assert waiter.path.exists()
+        assert [t.lease_id for t in store.snapshot(CLASS_HEAVY)[1]] == [waiter.lease_id]
+        assert "Refusing to withdraw" in caplog.text
+        assert waiter.path.name in caplog.text
 
     def test_renew_fails_when_rewrite_stays_denied(self, root, world, monkeypatch):
         spawn(world, 100)
