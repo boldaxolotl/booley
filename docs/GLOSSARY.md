@@ -214,6 +214,10 @@ _Avoid_: Design Configuration, build config, profile, named config
 **Tech Cell Replacement**:
 A Project's documented mapping and design inputs for realizing technology-dependent RTL intent with cells from its selected physical-library family, including preserved direct instantiations and substitutions through Project hooks or adapters.
 
+**Memory Timing Surrogate**:
+A standard-cell stand-in for a memory, selected by a synth-only define, that drops storage capacity but keeps the memory's latency, reset behavior and data dependence, so the surrounding logic synthesizes as in the real design.
+_Avoid_: RAM stub, fake RAM
+
 **Cocotb Target**:
 A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its **Tests** are named cocotb test functions registered in `tests.toml`. Booley executes its **Test Runs** in batches, one simulator process for Test Runs of different Tests that share an environment and a seed, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
 _Avoid_: python testbench config, cocotb core, cocotb suite

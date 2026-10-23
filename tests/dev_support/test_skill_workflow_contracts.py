@@ -138,7 +138,6 @@ def test_setup_requires_explicit_memory_dispositions_and_synth_only_surrogates()
         assert required in plan
     for required in (
         "project-owned replacement seam",
-        "never create a universal write-to-read data path",
         "ordinary Verilog/SystemVerilog source",
         "paramtype: vlogdefine",
         "Do not introduce a manifest or custom file type",
@@ -154,6 +153,89 @@ def test_setup_requires_explicit_memory_dispositions_and_synth_only_surrogates()
     combined = " ".join((plan, project_config, template, core))
     assert "booleyMemoryContract" not in combined
     assert "flow_options.memory_contract" not in combined
+
+
+def _setup_config_step_text() -> str:
+    """Compact the setup Project Configuration step, dropping Markdown emphasis and code ticks."""
+    text = _skill_text("booley-setup", "steps/2-project-config.md")
+    return " ".join(text.replace("*", "").replace("`", "").split())
+
+
+def test_setup_surrogates_keep_registered_dependence_on_every_write_input():
+    project_config = _setup_config_step_text()
+
+    for banned in (
+        "universal write-to-read data path",
+        "independent retained scalar/packed state",
+    ):
+        assert banned not in project_config
+    for required in (
+        "through registers only",
+        "write data, address, write enables, and byte-enables",
+        "combining it bit-wise",
+        "never through a reduction across bits",
+        "Never create a combinational write-to-read arc",
+        "unpacked depth-by-width array",
+        "reset and zeroize behavior",
+    ):
+        assert required in project_config
+
+
+def test_setup_surrogate_validation_runs_no_pruning_probe():
+    project_config = _setup_config_step_text()
+
+    for required in (
+        "no-pruning probe",
+        "logical mode",
+        "no liberty",
+        "black box",
+        "standalone cost",
+        "flop counts match exactly",
+        "within \u00b12%",
+        "fix it and re-run",
+        "only from the address or from constants",
+        "not booley flow synth",
+        "--blackboxed-module <module>",
+        "primary guard",
+    ):
+        assert required in project_config
+    # Standalone cost is measured first; the plan-invalidation sentence must not govern probe failures.
+    assert (
+        project_config.index("does not scale with the original memory depth")
+        < project_config.index("invalidates the plan")
+        < project_config.index("no-pruning probe")
+    )
+
+
+def test_surrogate_reference_docs_state_registered_data_dependence():
+    root = Path(__file__).resolve().parents[2]
+    config = " ".join((root / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+    for required in (
+        "through registers only",
+        "no combinational write-to-read arc",
+        "no-pruning probe",
+    ):
+        assert required in config
+    template = (skills_dir() / "booley-setup" / "CORE_TEMPLATE.yaml").read_text(encoding="utf-8")
+    comments = " ".join(
+        line.strip().lstrip("#") for line in template.splitlines() if line.strip().startswith("#")
+    )
+    comments = " ".join(comments.split())
+    assert "through registers only" in comments
+    assert "no combinational write-to-read arc" in comments
+
+
+def test_shared_glossary_defines_memory_timing_surrogate():
+    root = Path(__file__).resolve().parents[2]
+    glossary = (root / "docs/GLOSSARY.md").read_text(encoding="utf-8")
+    active = " ".join(glossary.split("## Retired and ambiguous terminology", 1)[0].split())
+    for required in (
+        "**Memory Timing Surrogate**:",
+        "synth-only define",
+        "data dependence",
+        "_Avoid_: RAM stub, fake RAM",
+    ):
+        assert required in active
 
 
 def test_heal_has_bounded_doctor_repair_and_verification_loop():
