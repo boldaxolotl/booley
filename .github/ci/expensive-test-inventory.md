@@ -88,7 +88,9 @@ Cost per candidate is the sum of its nodes' `test_phases` per leg per run, then
 the median and min-max over the 20 runs: Ubuntu 3.11 and 3.14 complete suites;
 Windows 3.14 as the sum of the ten shards (each node runs in one shard); Ubuntu
 3.13 coverage as the sum of three shards (tracing inflates it, so it is its own
-column). Cells read `call median (min-max); setup+teardown median`, in seconds.
+column). Cells read `call median (min-max); setup+teardown median`, in seconds. Node
+counts are the counts present in the sampled runs' timing files; a local
+collection can differ by a node or two.
 Setup is charged to the first user of a fixture and moves with scheduling
 (`README.md`, "Shard safety"), so it is never counted as saved unless a whole
 module and its module fixtures leave the leg. The Windows 3.11/3.13 compatibility
@@ -125,8 +127,8 @@ runner-minute figures only; its job timings are used.
 
 Three `Tests` runs were dispatched one at a time on the ticket branch with
 `gh workflow run Tests --ref codex/issue-1797-ci-cost-inventory -f windows_shard_benchmark=true`
-(production ten Windows shards, Ubuntu defaults; maintainer decision d1797-1
-approved three). The benchmark option selects the ordinary Python-change job
+(production ten Windows shards, Ubuntu defaults; the maintainer approved
+three such runs). The benchmark option selects the ordinary Python-change job
 set (`ci_changes.py:495-496`), so image, Rust, sidecar, and `bwave-smoke` jobs
 are skipped. The branch head was `4fe5edfe7`, the same tree as `main`. All three
 succeeded; none was cancelled or rerun for infrastructure. They are reported
@@ -154,7 +156,7 @@ Observations, each from the table or the runs' job lists:
 Consequence for estimates: Windows seconds saved shorten the gate only through
 the slowest shard. On `worksteal` with four workers per shard and ten shards,
 a total saving S moves a shard by about S / 40 if the timing model rebalances
-(P1: about 19 s); Ubuntu `loadscope` legs move between zero and the module
+(P1: about 14 s); Ubuntu `loadscope` legs move between zero and the module
 saving. Both are bounds, not predictions.
 
 ## The exhaustive-recovery pattern as it was implemented
@@ -181,11 +183,11 @@ Today
 `pyproject.toml:261-265` has no such marker, `ci_changes.py` has no such
 category, and `test.yml:299,376` run `-m 'not native_bwave'`, so every Goal
 recovery and authority permutation runs in full on every code PR. The policy
-text is stale; Q2 of the plan leaves its rewrite to the maintainer, and the
-summary table carries it as row S4.
+text is stale; rewriting it is the maintainer's choice, so this record leaves it
+and the summary table carries the rewrite as row P4.
 
 Pattern a tier must follow: representative before/after, repository-role, and
-first/last checkpoint cases run on every code PR; the complete set runs when a
+checkpoint cases run on every code PR; the complete set runs when a
 named dependency changes, when a path is unclassified (`ci_changes.py:248-255`
 makes unknown paths `full`), on `main` pushes (`FORCE_ALL`), and in
 `full-python-matrix.yml` (Sunday 03:17 UTC, Ubuntu and Windows x 3.11/3.13/3.14,
@@ -209,7 +211,7 @@ six in total. `main` and the weekly matrix add Windows/Ubuntu 3.11/3.13/3.14.
 | C4a `tests/ci/test_test_profiles.py` | 30 | 15.5 (10.2-18.4); 0.2 | 15.7 (10.5-22.1); 0.2 | 25.5 (19.8-30.0); 0.2 | 23.0 (22.0-24.7); 0.1 | not run / not run |
 | C4b `tests/test_pytest_configuration.py` | 59 | 10.3 (5.9-11.4); 0.3 | 9.3 (6.2-13.1); 0.2 | 19.8 (15.2-24.7); 0.3 | 14.7 (13.0-17.3); 0.3 | not run / not run |
 | C4 node `test_suite_default_timeout_preserves_explicit_settings` | 8 | 5.2 (3.3-5.6); 0.0 | 5.4 (3.7-7.1); 0.0 | 8.8 (6.4-10.2); 0.0 | 8.6 (7.8-10.4); 0.0 | not run / not run |
-| C5 `tests/docs/` five modules | 145 | 20.8 (17.4-22.3); 0.8 | 14.7 (9.3-17.8); 0.8 | 26.4 (19.6-33.9); 0.8 | 22.9 (20.9-28.7); 0.5 | not run / not run |
+| C5 `tests/docs/` (all modules) | 145 | 20.8 (17.4-22.3); 0.8 | 14.7 (9.3-17.8); 0.8 | 26.4 (19.6-33.9); 0.8 | 22.9 (20.9-28.7); 0.5 | not run / not run |
 | C5 `test_links.py` | 10 | 2.4 (1.9-3.5); 0.1 | 2.1 (1.2-3.3); 0.1 | 8.0 (3.9-9.2); 0.1 | 3.6 (2.4-4.7); 0.0 | not run / not run |
 | C5 `test_documented_commands.py` | 16 | 3.2 (2.7-3.9); 0.1 | 2.5 (1.4-3.3); 0.1 | 3.9 (2.6-5.3); 0.1 | 4.7 (4.1-6.0); 0.1 | not run / not run |
 | C5 `test_current_version_docs.py` | 79 | 4.0 (3.1-4.6); 0.3 | 2.4 (1.6-3.9); 0.3 | 4.0 (2.7-5.0); 0.4 | 3.9 (3.0-5.1); 0.3 | not run / not run |
@@ -233,7 +235,7 @@ six in total. `main` and the weekly matrix add Windows/Ubuntu 3.11/3.13/3.14.
 | `test_entry.py::test_a_crash_at_every_boundary_is_rolled_back_by_the_next_entry` | 6 | 2.6 (1.8-3.1); 0.2 | 2.2 (1.5-3.1); 0.2 | 3.5 (2.6-3.9); 0.2 | 38.3 (30.6-52.2); 2.6 |
 | `test_r1_lifecycle.py::test_abandonment_closure_requires_terminal_authority_and_recovers_crashes` | 4 | 1.8 (1.5-2.1); 0.2 | 1.9 (1.2-2.3); 0.2 | 2.7 (1.7-2.9); 0.2 | 23.0 (17.0-26.8); 1.8 |
 
-Group totals of the median call seconds of the selected functions, and the part that belongs to the cases a tier would relocate (T1, below), with the min-max of the relocatable part:
+Group totals: for each run, the call seconds of the selected functions summed, then the median over the 20 runs (so a total can differ slightly from the sum of the per-function medians above, and the three groups do not add exactly to "All twelve"). The relocatable part is the cases a tier would relocate (T1, below), with its min-max:
 
 | Group | Cases / kept as representatives | Ubuntu 3.11 | Ubuntu 3.14 | Ubuntu 3.13 coverage | Windows 3.14 |
 | --- | --- | --- | --- | --- | --- |
@@ -253,12 +255,12 @@ the cause was not investigated here.
 | C1 | The leak scanner blocks banned terms and unapproved identities in outgoing commits, history, and PR text without echoing terms, fails closed on a missing key or tampered vocabulary, and trusts only Mergify identities (`tests/ci/test_confidential_content_guard.py:266,427,522,663,676,877,931,1077`); two tests read the workflow text (`:1316,:1327`). | `confidential-content.yml:40-85` scans real PR commits and full `main` history with the real key. Inputs differ (real history and key against synthetic repos and a sentinel term), so it enforces the repository's content while the tests enforce the scanner: not a duplicate. | 4 | Python-version: yes (stdlib, Git, one crypto package). OS: not shown; tests cover symlink and rename handling (`:618,:631`). Coverage: runs `.github/scripts/`, not `src/booley`, so no `src` line coverage. | Keep. No evidence that any case is redundant; it protects a security gate. |
 | C2a | The production import graph satisfies the approved dependency contract and its derived rules: whole contract (`tests/architecture/test_source_dependency_contract.py:28`), no Job/Report path to the MCP adapter (`:36`), exact Campaign storage edges (`:57`) and types (`:68`), low-level Target mechanics (`:279`), shared health (`:467,:489`). | None dedicated. Pyright in `lint` (`test.yml:222-288`) checks types and include scope: a different property. | 6 | OS and Python-version independent in principle (pure AST over the source tree); it runs on the compatibility legs by design (`test.yml:334`). Coverage: reads source as data, so no `src` line coverage. | Consolidate (P3). Five tests each rebuild the whole-source graph (`analyze_imports(_SOURCE_ROOT)` at `:29,:37,:58,:469,:494`) and two more parse every source file themselves (`:68`, `:279`). The contract and every assertion stay. |
 | C2b | Config, EDA, and runtime direction rules D23/D24 and cyclic-group tightening on synthetic trees (`tests/architecture/test_config_eda_runtime_separation.py:18,45,51,70,97`). | Overlaps the contract in intent, but tests synthetic trees that prove the evaluator catches each import form; the real tree is checked by C2a. | 6 | As C2a. | Keep: it is the evaluator's fault-injection proof, which a consolidation of C2a needs. |
-| C2c | Five package-direction checks (`tests/test_dependency_direction.py:41,49,56,64,71`) plus the session-issuance facade check (`:79`). | The five checks are subsumed by contract rules D1, D3, D4, D5, and D6 (`tests/architecture/booley_contract.py`, `DirectionRule` entries), which also cover subpackages, relative imports, and deferred imports; the standalone checks read only top-level `*.py` files and absolute imports, and share their two exemptions (`mcp/server.py`, `incontainer_register`) with the contract's C2 and C8 permissions. The session-issuance check (`:79`) is not covered by the contract. Fault injection on a copy of `src/booley` during this audit: a `from booley.mcp import base` added to `config/limits.py` failed both; a relative `from ..specialists import specialist` added to `runtime/atomic_files.py` failed contract rule D5 and passed the standalone runtime check. | 4 (not on compatibility legs) | As C2a. | Delete the five superseded direction tests (P2); keep `:79`. Retained: rules D1, D3, D4, D5, D6 in C2a. |
+| C2c | Five package-direction checks (`tests/test_dependency_direction.py:41,49,56,64,71`) plus the session-issuance facade check (`:79`). | The five checks are subsumed by contract rules D1, D3, D4, D5, and D6 (`tests/architecture/booley_contract.py`, `DirectionRule` entries), which also cover subpackages, relative imports, and deferred imports; the standalone checks read only top-level `*.py` files and absolute imports, and exempt whole files (`mcp/server.py`, `incontainer_register`) where the contract's C2 and C8 permit only one named edge each, so the contract is the stricter check. The session-issuance check (`:79`) is not covered by the contract. Fault injection on a copy of `src/booley` during this audit: a `from booley.mcp import base` added to `config/limits.py` failed both; a relative `from ..specialists import specialist` added to `runtime/atomic_files.py` failed contract rule D5 and passed the standalone runtime check. | 4 (not on compatibility legs) | As C2a. | Delete the five superseded direction tests (P2); keep `:79`. Retained: rules D1, D3, D4, D5, D6 in C2a. |
 | C3 | The read-only Agent Readiness Check and its tools bootstrap: commands, receipts, schema migration, console scripts (`tests/ci/test_agent_readiness.py`, for example `:415`). | None: no workflow runs `agent_readiness.py` or `bootstrap_agent_tools.py` (searched `.github/workflows/`). | 4 | OS: no (launchers and venv layout differ). Coverage: executes `booley.dev_support.agent_readiness`, so it contributes `src` lines. | Keep. The 10-16 s receipt-rebuild case is the one cost outlier, and no evidence says another case covers launcher repair. |
 | C4 | Test-profile prerequisites and fail-fast pytest controller behavior (`tests/ci/test_test_profiles.py`, child pytest runs) and the repository's pytest, marker, and CI-matrix configuration (`tests/test_pytest_configuration.py`, for example `:1234`). | `test-verify` and `coverage` check that the shard union equals the eligible set; `assert_junit.py --min-tests` guards the weekly matrix. Different inputs and failure modes (a run's artifacts against the configuration's source). | 4 | OS: no (asserts Windows path forms and workflow command tokens, for example `ntpath` and `shlex` use). Coverage: `test_test_profiles.py` executes `booley.dev_support.test_profiles`. | Keep. A tier is not proposed: it would gate the tests that protect the gate. |
 | C5 | Published Markdown links resolve (`tests/docs/test_links.py:36-52`), documented commands match the registered CLI trees (`test_documented_commands.py`), current-version package text (`test_current_version_docs.py`), tool names in guidance (`test_guidance_guard.py`, `test_goal_work_dir_guidance.py`). | `docs-check` runs only `git diff --check` (`test.yml:168-181`); no other job validates links or commands. | 4 | Mostly independent; the CLI help checks import `booley` and cover some `src` lines. | Keep. Each module guards a distinct property and the total is 15-26 s per leg. |
 | C6 | No retired host-execution imports or symbols remain in production (`tests/test_no_retired_host_execution.py:57-79`), and no retired Ticket wording remains in production strings (`tests/test_retired_ticket_wording.py:129-131`). | None. Ruff does not search for retired symbols or wording. | 4 | Independent (source text). Coverage: none. | Keep. Both scans re-parse the same tree as C2a; if P3 lands, a shared parsed-source cache could serve them (follow-up of P3, not a separate row). |
-| C7 | Goal Finish: a saved attempt's path, fields, and publication proof are bound to independent authority, and every publication crash boundary recovers exactly once (`tests/goals/test_finish.py`, `test_finish_authority.py`, `test_finish_review_fixes.py`). | None; no tier exists (see "The exhaustive-recovery pattern"). | 4 | OS: no (Git process behavior). Coverage: executes `src/booley/goals/finish*.py` recovery paths; representatives keep every function and its first and last checkpoint. | Relocate non-representative cases to a tier (P1). |
+| C7 | Goal Finish: a saved attempt's path, fields, and publication proof are bound to independent authority, and every publication crash boundary recovers exactly once (`tests/goals/test_finish.py`, `test_finish_authority.py`, `test_finish_review_fixes.py`). | None; no tier exists (see "The exhaustive-recovery pattern"). | 4 | OS: no (Git process behavior). Coverage: executes `src/booley/goals/finish*.py` recovery paths; representatives keep every function and two or three cases that span it. | Relocate non-representative cases to a tier (P1). |
 | C8 | Goal Apply/Change: an existing intent must equal the captured entry before recovery (`tests/goals/test_apply_authority.py`). | None. | 4 | As C7. | Relocate to the same tier (P1). |
 | C9 | Other Goal recovery families: waiver effects (`test_goal_waivers.py`), hard process death (`test_r1_lifecycle.py`), Abandon (`test_abandon.py`), recorder transactions (`test_recorder.py`), Entry crash rollback (`test_entry.py`). | None. | 4 | As C7. | Relocate to the same tier (P1). |
 
@@ -267,8 +269,9 @@ the cause was not investigated here.
 ### T1: Goal recovery and authority permutations
 
 Representative cases kept on every code PR (25 of 89 cases, two or three per
-function; the first and last checkpoint of each family, plus one case per path
-form for the tamper family):
+function, chosen to span each family, plus one case per path form for the
+tamper family; the follow-up must justify each choice by the fault injection
+in its required proof):
 
 - `tests/goals/test_finish_authority.py::test_saved_attempt_path_tamper_refuses_before_any_effect`: `absolute-normal-finishing`, `different-literal-stealth-attempt-frozen`, `traversal-excluded-attempt-frozen`
 - `tests/goals/test_finish.py::test_every_publication_crash_boundary_recovers_exactly_once`: `attempt-frozen`, `finished`
@@ -290,68 +293,53 @@ Explicit path dependencies that select the complete set (no filename-pattern
 guesses; each is a path whose change can alter the behavior these cases check):
 
 - `src/booley/goals/` and `tests/goals/` (any file);
-- the first-party modules the twelve functions' test modules import outside
-  `booley.goals`:
-  - `src/booley/criteria/evidence_ledger.py`
-  - `src/booley/criteria/freshness.py`
-  - `src/booley/criteria/state.py`
-  - `src/booley/criteria/templates.py`
-  - `src/booley/evidence/acceptance.py`
-  - `src/booley/evidence/fields.py`
-  - `src/booley/evidence/review_receipt.py`
-  - `src/booley/flows/baseline_pins.py`
-  - `src/booley/flows/baseline_worktree.py`
-  - `src/booley/flows/endpoint_diff.py`
-  - `src/booley/flows/endpoint_state.py`
-  - `src/booley/flows/execution_persistence.py`
-  - `src/booley/flows/sim/coverage_campaign.py`
-  - `src/booley/flows/sim/coverage_campaign_store.py`
-  - `src/booley/flows/sim/coverage_policy.py`
-  - `src/booley/flows/sim/coverage_reference.py`
-  - `src/booley/flows/sim/coverage_waiver_application.py`
-  - `src/booley/flows/sim/coverage_waiver_promotion.py`
-  - `src/booley/flows/sim/coverage_waivers.py`
-  - `src/booley/flows/sim/waiver_candidates.py`
-  - `src/booley/flows/source_fingerprint.py`
-  - `src/booley/flows/target_test_plan.py`
-  - `src/booley/flows/target_test_plan_loading.py`
-  - `src/booley/flows/test_runs.py`
-  - `src/booley/fusesoc/fusesoc_registry.py`
-  - `src/booley/harness/__init__.py`
-  - `src/booley/harness/doctor.py`
-  - `src/booley/mcp/base.py`
-  - `src/booley/mcp/goal_changes.py`
-  - `src/booley/mcp/goal_completion.py`
-  - `src/booley/mcp/goal_freshness.py`
-  - `src/booley/mcp/goal_waivers.py`
-  - `src/booley/mcp/sim_baseline_jobs.py`
-  - `src/booley/review/goal_package.py`
-  - `src/booley/review/goal_presentation_v1.py`
-  - `src/booley/runtime/history_commit.py`
-  - `src/booley/runtime/job_records.py`
-  - `src/booley/runtime/job_wait.py`
-  - `src/booley/runtime/pinned_history.py`
-  - `src/booley/runtime/project_gitignore.py`
-  - `src/booley/runtime/timefmt.py`
-  - `src/booley/specialists/reviewer.py`
-  - `src/booley/targets/catalog.py`
-  - `src/booley/targets/domain.py`
-  - `src/booley/targets/goal_diff.py`
+- every first-party module outside `booley.goals` that a file under
+  `src/booley/goals/` or `tests/goals/`, or one of the helper tests below,
+  imports directly, deferred imports included (an AST scan of those files;
+  135 modules). This includes the durability and Git helpers the recovery
+  cases exercise (`runtime/atomic_files.py`, `runtime/git.py`,
+  `runtime/publication_ownership.py`, `runtime/git_environment.py`), which
+  the policy removed in `1460ad065` also named in part (`runtime/git.py`):
+  - `src/booley/commit_policy/`: `__init__`
+  - `src/booley/config/`: `coverage_waiver_inputs`, `project_config`, `protected_inputs`, `tests_toml_rules`
+  - `src/booley/core/`: `__init__`, `booley_dir`, `booley_layout`, `boundary`, `config_paths`, `file_lock`, `layout_lock`, `process_identity`
+  - `src/booley/criteria/`: `__init__`, `categories`, `endpoint_catalog`, `evidence_ledger`, `freshness`, `presentation`, `reference`, `state`, `templates`, `thresholds`
+  - `src/booley/dev_support/`: `test_profiles`
+  - `src/booley/evidence/`: `acceptance`, `fields`, `review_receipt`, `timing`
+  - `src/booley/flows/`: `__init__`, `base`, `baseline_pins`, `baseline_worktree`, `campaign_results`, `criterion_freshness`, `endpoint_diff`, `endpoint_events`, `endpoint_state`, `execution_persistence`, `frozen_test_runs`, `request`, `review_scope`, `source_fingerprint`, `target_test_plan`, `target_test_plan_loading`, `test_runs`
+  - `src/booley/flows/fpga/`: `flow`
+  - `src/booley/flows/lint/`: `flow`
+  - `src/booley/flows/sim/`: `__init__`, `coverage_analysis_input`, `coverage_campaign`, `coverage_campaign_store`, `coverage_flow_context`, `coverage_invocation`, `coverage_policy`, `coverage_reference`, `coverage_transaction`, `coverage_waiver_application`, `coverage_waiver_promotion`, `coverage_waivers`, `flow`, `request`, `unpublished_results`, `waiver_candidates`
+  - `src/booley/flows/sim/campaign/`: `__init__`, `codec`, `planning`, `test_run_report`
+  - `src/booley/flows/sim/execution/`: `__init__`, `engine`
+  - `src/booley/flows/synth/`: `flow`
+  - `src/booley/fusesoc/`: `__init__`, `core_projection`, `fusesoc_registry`
+  - `src/booley/harness/`: `__init__`, `booley`, `doctor`, `init_cmd`
+  - `src/booley/harness/dashboard/`: `app`, `jobs`, `model`
+  - `src/booley/harness/setup/`: `line_endings`, `project_git_hook_bundle`
+  - `src/booley/mcp/`: `__init__`, `application`, `base`, `call_context`, `catalog`, `goal_changes`, `goal_completion`, `goal_flow_runner`, `goal_freshness`, `goal_generated_inputs`, `goal_tools`, `goal_waivers`, `job_results`, `registry`, `server`, `sim_baseline_execution`, `sim_baseline_jobs`, `unbound_recorder`
+  - `src/booley/review/`: `goal_package`, `goal_presentation_v1`
+  - `src/booley/runtime/`: `__init__`, `atomic_files`, `booley_dir`, `booley_dir_migration`, `endpoint_execution`, `filesystem_utils`, `git`, `git_attributes_policy`, `git_environment`, `git_ignore`, `guarded_write`, `history_commit`, `job_records`, `job_wait`, `lifecycle_lock`, `pid`, `pinned_history`, `project_gitignore`, `project_repositories`, `project_worktree_pairing`, `publication_ownership`, `runtime_context`, `session_activity`, `session_paths`, `timefmt`, `worktree_paths`
+  - `src/booley/specialists/`: `coverage_candidate_recording`, `reviewer`
+  - `src/booley/targets/`: `catalog`, `declared_inputs`, `domain`, `goal_diff`, `surface_diff`
 - helper tests: `tests/conftest.py`, `tests/criteria/ledger_support.py`,
   `tests/golden/conftest.py`, `tests/flows/sim/test_coverage_campaign.py`;
 - `pyproject.toml`, `.github/ci/`, `.github/scripts/`, and
   `.github/workflows/` (test configuration and CI orchestration; Markdown
   excluded); any unclassified path selects `full` as today.
 
-A static import closure was tried and rejected: it reaches 481 of 613 source
-modules because Goal code imports the harness and runtime, so a closure rule
-would select the full set for nearly every change.
+The list is one import hop, not a closure. A static import closure was tried
+and rejected: it reaches 481 of 613 source modules because Goal code imports
+the harness and runtime, so a closure rule would select the full set for
+nearly every change. The cost of the one-hop rule is a missed second-hop
+change: a module imported only by one of the 135 listed modules runs the
+representatives on the PR and the complete set after merge.
 
 Pattern: the complete set also runs on `main` pushes and in
-`full-python-matrix.yml`. Caveat: that workflow is weekly and does not block
-merge, so a failure that only it catches surfaces after merge, up to a week
-later. This is the real cost of the tier; the dependency list is what keeps it
-small.
+`full-python-matrix.yml`. Caveat: a failure that only the complete set catches
+surfaces after merge: on the next `main` push run, or at the latest in the
+weekly `full-python-matrix.yml` run (up to a week later, non-blocking). This is
+the real cost of the tier; the dependency list is what keeps it small.
 
 Machinery a follow-up must introduce (it was removed in `1460ad065`):
 a registered marker in `pyproject.toml`; a classifier category and output in
@@ -363,25 +351,30 @@ verification in `test-verify` and `coverage` must use the same expression so a
 deselected case is not reported missing.
 
 Share of PRs that run the complete set: applying the dependency list to the
-file lists of the 50 most recent merged PRs (2026-10-21T09:19Z to
-2026-10-23T19:18Z, `gh pr list --state merged -L 50 --json number,files`),
-49 select Python tests and 16 of those 49 (33%) match a dependency or select
-`full`; the other 33 (67%) would run representatives only. The 16 are PRs
-#1966, #1967, #1975, #1989, #1990, #1992, #1996, #2008, #2027, #2053, #2054, #2058, #2064, #2078, #2112, #2116. The other PR (#2112) changes only Markdown (docs-only).
+file lists of the 50 most recent merged PRs (#1951 to #2116, 2026-10-21T09:19Z
+to 2026-10-23T19:18Z, `gh pr list --state merged -L 50 --json number,files`)
+with the repository's change classifier (`ci_changes.classify`): 49 select
+Python tests and 25 of those 49 (51%) match a dependency or select `full`; the
+other 24 (49%) would run representatives only. The 25 are PRs #1954, #1956,
+#1965, #1966, #1967, #1968, #1975, #1977, #1980, #1987, #1989, #1990, #1992,
+#1996, #2004, #2008, #2025, #2027, #2053, #2054, #2058, #2064, #2078, #2112,
+#2116. The one other PR (#2111) changes only Markdown under `docs/`.
 
 ## Summary of proposed dispositions
 
 Ordered by estimated saving. Every figure is an estimate from the 20-run
 sample: seconds of test call time per code-PR run unless stated, tier rows
-scaled by (1 - 0.33) for the share of PRs that still run the complete set.
-Runner minutes are the per-platform sum divided by 60. A real saving needs the
+scaled by (1 - 0.51) for the share of PRs that still run the complete set.
+Runner minutes are an estimate of the summed call seconds divided by 4 (every
+test job runs `-n 4`, `test.yml:321,337,349,415`, so concurrent workers share
+the job's billed time) and by 60. A real saving needs the
 follow-up's 20-run before/after; none of these figures is that.
 
 | ID | Proposed issue title | Candidate | Disposition | Retained coverage | Required proof from the follow-up | Estimate (per code-PR run) | Measurement rule |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1 | CI: run Goal recovery and authority permutations as a path-triggered tier | C7, C8, C9: 64 relocatable cases of 12 functions (89 cases) | Relocate to a tier following the exhaustive-recovery pattern | 25 representative cases on every code PR; complete set on the T1 dependencies, unclassified paths, `main` pushes, and `full-python-matrix.yml` (weekly, post-merge detection) | (1) Historical regression: show the 25 representatives fail on the parent of `276dc774b` or `0cf4262b7` (Goal recovery fixes), or fault-inject `src/booley/goals/finish*.py` and `apply*.py` and show a representative fails. (2) Backstop: a `full-python-matrix.yml` run (or a dispatch) in which the relocated cases execute and a deliberately failing case is reported. (3) Marker-subset and classifier tests, and `test-verify` and `coverage` shard-union checks pass under the new expression. (4) Coverage report before and after; the 80% floor and 90% diff-cover unchanged | Call seconds, estimate: Ubuntu 3.11 about 59 (range 38-66), Ubuntu 3.14 about 56 (39-69), coverage about 86 (70-100), Windows 3.14 about 753 (685-819); about 15.9 runner minutes (7.6% of the 209-minute median). Gate: between 0 and about 59 s via Ubuntu 3.11 (the slowest job in 11 of 20 `main` runs), and about 19 s via a Windows shard (critical in 2 of 3 dispatched PR-shaped runs) | 20 ordinary code-PR runs before and after: required-gate elapsed, Ubuntu complete job times, runner minutes; report the share of PRs that ran the complete set |
-| P2 | Tests: delete the five package-direction tests the architecture contract supersedes | C2c: 5 of 6 tests in `tests/test_dependency_direction.py` | Delete as obsolete | Contract rules D1, D3, D4, D5, D6 in `test_production_source_dependencies_obey_approved_contract`; the session-issuance test stays | Fault injection per rule: add one forbidden import (absolute and relative) to a module in each of config/fusesoc/targets, specialists, mcp infrastructure, runtime, and shared runtime, and show the contract test fails for each (done once for D1 and D5 in this audit); the five deleted tests listed with the rule that replaces each | Call seconds, estimate: Ubuntu 3.11 3.1, Ubuntu 3.14 2.8, coverage 5.6, Windows 3.14 2.7; about 0.24 runner minutes. Gate: between 0 and 3.1 s | 20-run before/after of the Ubuntu complete jobs; expect no visible change, so judge by the call-time medians of the module |
-| P3 | Tests: build the production import graph once for the architecture contract | C2a: 7 whole-source tests | Consolidate (session or module cache of the immutable analysis result) | Every assertion and the contract unchanged | Same fault-injection set as P2 passes; no test mutates the cached result; module call time before and after on 20 runs | Call seconds, estimate between a lower bound of 6 builds x 1.6 s (local unloaded build) and an upper bound of 6/7 of the seven tests' call time: Ubuntu 3.11 10-41, Ubuntu 3.14 10-30, coverage 10-70, Windows 3.14 10-38, Windows compat. 3.11/3.13 10-24 / 10-22; 1.0-3.7 runner minutes. Gate: between 0 and the Ubuntu figure (a module runs on one `loadscope` worker) | 20-run before/after of `test_source_dependency_contract.py` call medians and Ubuntu job times |
+| P1 | CI: run Goal recovery and authority permutations as a path-triggered tier | C7, C8, C9: 64 relocatable cases of 12 functions (89 cases) | Relocate to a tier following the exhaustive-recovery pattern | 25 representative cases on every code PR; complete set on the T1 dependencies, unclassified paths, `main` pushes, and `full-python-matrix.yml` (weekly, post-merge detection) | (1) Historical regression: show the 25 representatives fail on the parent of `276dc774b` or `0cf4262b7` (Goal recovery fixes), or fault-inject `src/booley/goals/finish*.py` and `apply*.py` and show a representative fails. (2) Backstop: a `full-python-matrix.yml` run (or a dispatch) in which the relocated cases execute and a deliberately failing case is reported. (3) Marker-subset and classifier tests, and `test-verify` and `coverage` shard-union checks pass under the new expression. (4) Coverage report before and after; the 80% floor and 90% diff-cover unchanged | Call seconds, estimate: Ubuntu 3.11 about 43 (range 28-48), Ubuntu 3.14 about 41 (28-50), coverage about 62 (51-73), Windows 3.14 about 548 (499-596); about 2.9 runner minutes (1.4% of the 209-minute median). Gate: no Ubuntu leg was the critical job in the three PR-shaped runs, and on `main` pushes the complete set still runs, so no Ubuntu gate effect is shown; about 14 s via a Windows shard (critical in 2 of 3 dispatched PR-shaped runs) | 20 ordinary code-PR runs before and after: required-gate elapsed, Ubuntu complete job times, runner minutes; report the share of PRs that ran the complete set |
+| P2 | Tests: delete the five package-direction tests the architecture contract supersedes | C2c: 5 of 6 tests in `tests/test_dependency_direction.py` | Delete as obsolete | Contract rules D1, D3, D4, D5, D6 in `test_production_source_dependencies_obey_approved_contract`; the session-issuance test stays | Fault injection per rule: add one forbidden import (absolute and relative) to a module in each of config/fusesoc/targets, specialists, mcp infrastructure, runtime, and shared runtime, and show the contract test fails for each (done once for D1 and D5 in this audit); the five deleted tests listed with the rule that replaces each | Call seconds, estimate (upper bound: the whole module, which includes the kept `:79` test): Ubuntu 3.11 3.1, Ubuntu 3.14 2.8, coverage 5.6, Windows 3.14 2.7; about 0.06 runner minutes. Gate: between 0 and 3.1 s | 20-run before/after of the Ubuntu complete jobs; expect no visible change, so judge by the call-time medians of the module |
+| P3 | Tests: build the production import graph once for the architecture contract | C2a: 5 tests that call `analyze_imports(_SOURCE_ROOT)` (`:29,:37,:58,:469,:494`) | Consolidate (session or module cache of the immutable analysis result); the two tests that parse every file themselves (`:68`, `:279`) are outside this row unless the follow-up also rewrites them | Every assertion and the contract unchanged | Same fault-injection set as P2 passes; no test mutates the cached result; module call time before and after on 20 runs | Call seconds, estimate: lower bound 4 avoided builds x 1.6 s (local unloaded build) = 6.4 on each leg; the upper bound is unmeasured per test and is capped by the whole module's call time: Ubuntu 3.11 48, Ubuntu 3.14 35, coverage 81, Windows 3.14 45, Windows compat. 3.11/3.13 28 / 26 (JUnit); 0.16-1.1 runner minutes. Gate: between 0 and the Ubuntu figure (a module runs on one `loadscope` worker) | 20-run before/after of `test_source_dependency_contract.py` call medians and Ubuntu job times |
 | P4 | Docs: restore or rewrite the exhaustive-recovery policy text | `.github/ci/README.md` "Exhaustive recovery policy", `docs/internals/CONTRIBUTING.md` "Agent source-development checks" | Correct the text: P1's PR rewrites it if P1 is approved, else a docs-only fix stating every recovery permutation runs on every code PR | The records above | The text matches `ci_changes.py`, `test.yml`, and `pyproject.toml` at the PR's head | No saving | Not applicable |
 
 Keep rows (no change proposed): C1, C2b, C3, C4, C5, C6.
@@ -392,8 +385,19 @@ Keep rows (no change proposed): C1, C2b, C3, C4, C5, C6.
   worker and `test-timings.json` has no per-worker spans
   (`ci_pytest_shard.py:111-149`), so a saving inside one module moves the job
   between none and the full module saving. Windows shards use `worksteal` with
-  four workers, so elapsed saving there is about saving / 4 per shard set, and
-  the gate does not depend on it.
+  four workers and ten shards, so a total Windows saving S moves the slowest
+  shard by about S / 40 if the timing model rebalances (it needs the committed
+  Windows timing file regenerated). Whether that moves the gate depends on
+  which job is critical: a Windows shard in 2 of 3 PR-shaped runs, an Ubuntu
+  job on `main`.
+- Runner-minute figures divide summed call seconds by 4 workers; they are
+  estimates and ignore setup and collection time.
+- Ubuntu complete jobs ran about 745 s in the three PR-shaped runs against
+  medians of 1025 s and 956 s on `main`; the record does not explain the gap, so
+  per-test costs measured on `main` may overstate costs on a PR.
+- The Windows column is 10 to 20 times the Ubuntu column for the Goal
+  functions; the cause was not investigated, and a saving there is assumed
+  linear in the cases relocated.
 - Estimates assume the relocated cases cost the same on other days; the min-max
   ranges above show how much they moved across 20 runs.
 - Coverage: no row claims line coverage is unaffected. Each non-keep row
