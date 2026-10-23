@@ -21,3 +21,12 @@ tests/fixtures/cocotb_timeout_progress/2.1.0/*.log -text -whitespace
 # Frozen experiment downloads retain exact bytes, including blank patch context.
 website/docs/blog/posts/harness-matters/*.patch -text -whitespace
 website/docs/blog/posts/harness-matters/agent-prompt.txt -text
+
+# Many parallel PRs each append a bullet under `## Unreleased`. Union merge keeps
+# both sides' added lines, so a local `git merge origin/main` no longer stops on
+# a CHANGELOG conflict. The packaged mirror must stay byte-identical (tested).
+# Caveat: union never reports conflicts, so it suits append-only bullet lists;
+# overlapping edits to the same line can duplicate or misorder text. Review the
+# merged Unreleased section.
+CHANGELOG.md merge=union
+src/booley/data/refs/CHANGELOG.md merge=union
