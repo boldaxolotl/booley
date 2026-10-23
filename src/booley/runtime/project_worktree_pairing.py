@@ -258,6 +258,22 @@ def pair_project_worktree(
     return True
 
 
+def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:
+    """Undo :func:`pair_project_worktree` after a later creation step failed.
+
+    The recorded base marks the branch as this run's; a missing record keeps the
+    branch (only the registration goes), as :func:`_rollback_pair` does for a moved one.
+    """
+    branch = f"booley-worktree/{name}"
+    key = f"branch.{branch}.booleyBase"
+    with _project_lock(source):
+        recorded = run_git(source, "config", "--get", key)
+        base = recorded.stdout.strip() if recorded.returncode == 0 else ""
+        _rollback_pair(source, worktree / BOOLEY_DIR_NAME, branch, base)
+        # Deleting the branch already dropped the key; a kept branch still carries it.
+        run_git(source, "config", "--unset", key)
+
+
 def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:
     """Remove the newly created outer checkout after paired rollback completes."""
     _remove_registration(project_root, worktree)
