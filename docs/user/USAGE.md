@@ -519,7 +519,7 @@ contents, the Goal stays unmet as not measured.
 If a frozen Test Run's Test or Test Variant is removed, or its declared
 arguments or environment change, the Goal stays unmet until you approve a
 retarget. If its Test is skipped in `tests.toml`, the Goal stays unmet until
-the Test leaves `skip` or you approve a Goal change that no longer requires it;
+the Test leaves `skip` or you approve a Goal change that drops it;
 a retarget of a Goal that names the skipped Test is refused, while a retarget
 of a Goal on the whole Target freezes its suite again without that Test. See
 [A Goal that names Test Runs stays unmet](TROUBLESHOOTING.md#a-goal-that-names-test-runs-stays-unmet)
