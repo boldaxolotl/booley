@@ -67,6 +67,12 @@ def _native_record(
     return f"C '{identity}' {hits}\n"
 
 
+def _collection_detail(result) -> str:
+    """Describe a collector result for a failed status assertion."""
+    findings = [(finding.code, finding.message) for finding in result.findings]
+    return f"findings={findings!r} infrastructure_error={result.infrastructure_error}"
+
+
 class _GeneratedMainExecution:
     def build(self, request) -> SimulationBuildResult:
         return SimulationBuildResult(success=True, collector=PINNED_VERILATOR)
@@ -81,6 +87,23 @@ class _GeneratedMainExecution:
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         request.output_path.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
         return SimulationCommandResult(returncode=0)
+
+
+class _PresenceExecution(_GeneratedMainExecution):
+    """Writes one caller-chosen payload as both the raw and the merged database."""
+
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    def run(self, request) -> SimulationRunResult:
+        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+        request.raw_path.write_text(self.payload, encoding="utf-8")
+        return SimulationRunResult("pass")
+
+    def command(self, request) -> SimulationCommandResult:
+        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        request.output_path.write_text(self.payload, encoding="utf-8")
+        return SimulationCommandResult(0)
 
 
 class _MissingRawExecution(_GeneratedMainExecution):
@@ -142,21 +165,15 @@ class _RichNativeExecution(_GeneratedMainExecution):
         return SimulationCommandResult(returncode=0)
 
 
-class _StagedSourceExecution(_GeneratedMainExecution):
-    payload = _HEADER + _LINE_POINT.replace(
-        "\x01f\x02rtl/counter.sv",
-        "\x01f\x02/build/src/acme_demo_counter_1/rtl/counter.sv",
-    )
-
-    def run(self, request) -> SimulationRunResult:
-        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        request.raw_path.write_text(self.payload, encoding="utf-8")
-        return SimulationRunResult(verdict="pass")
-
-    def command(self, request) -> SimulationCommandResult:
-        request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        request.output_path.write_text(self.payload, encoding="utf-8")
-        return SimulationCommandResult(returncode=0)
+class _StagedSourceExecution(_PresenceExecution):
+    def __init__(self) -> None:
+        super().__init__(
+            _HEADER
+            + _LINE_POINT.replace(
+                "\x01f\x02rtl/counter.sv",
+                "\x01f\x02/build/src/acme_demo_counter_1/rtl/counter.sv",
+            )
+        )
 
 
 class _PostResetExecution(_GeneratedMainExecution):
@@ -414,7 +431,7 @@ def test_successful_pre_sim_evidence_is_serialized_on_the_run(tmp_path: Path) ->
 
     result = collect(_request(tmp_path, "reset"), execution)
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     assert result.runs[0].attributes["pre_sim"]["status"] == "passed"
     assert result.runs[0].attributes["pre_sim"]["test_names"] == ("reset",)
 
@@ -424,7 +441,7 @@ def test_generated_main_collects_one_native_database_and_normalizes_line_point(
 ) -> None:
     result = collect(_request(tmp_path, "reset"), _GeneratedMainExecution())
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     _assert_build_evidence(result)
     _assert_line_point(result.points[0])
     assert [(run.test, run.simulation_verdict, run.collection) for run in result.runs] == [
@@ -481,7 +498,7 @@ def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None
 
     result = collect(request, _StagedSourceExecution())
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     assert result.points[0].identity.location["source"] == "rtl/counter.sv"
     assert result.points[0].disposition["kind"] == "eligible"
 
@@ -623,7 +640,7 @@ def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
 
     result = collect(request, _RichNativeExecution())
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     _assert_rich_points(result)
     _assert_rich_capabilities(result)
     assert [(finding.severity, finding.code) for finding in result.findings] == [
@@ -700,7 +717,7 @@ def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Pa
 
     result = collect(request, _PostResetExecution())
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     assert result.coverage_window.mode == "post_reset"
     assert [artifact.kind for artifact in result.artifacts] == [
         "raw_native",
@@ -870,7 +887,7 @@ def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) 
         _HookFailureExecution([{"hook": "write", "sequence": 1, "success": True}]),
     )
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     assert result.runs[0].collection == "included"
     assert result.coverage_window.mode == "whole_run"
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
@@ -1036,7 +1053,7 @@ def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_da
 
     result = collect(request, execution)
 
-    assert result.status == "complete"
+    assert result.status == "complete", _collection_detail(result)
     assert result.build.variant.name == "trace-coverage"
     assert [run.simulation_verdict for run in result.runs] == ["pass", "fail"]
     assert len(execution.run_requests) == 2
@@ -1160,29 +1177,25 @@ def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path:
     assert [finding.code for finding in result.findings] == ["COV_VERILATOR_IDENTITY_MISMATCH"]
 
 
-def test_native_source_presence_precedes_metric_filtering(tmp_path):
-    for record_type, hits in [("line", 0), ("future", 0), ("toggle", 2)]:
-        payload = _HEADER + _native_record(record_type, "point", hits=hits).replace(
-            "rtl/counter.sv", "/stage/rtl/counter.sv"
-        )
+@pytest.mark.parametrize(
+    ("record_type", "hits"),
+    [("line", 0), ("future", 0), ("toggle", 2)],
+    ids=["line", "future", "toggle"],
+)
+def test_native_source_presence_precedes_metric_filtering(
+    tmp_path: Path, record_type: str, hits: int
+) -> None:
+    payload = _HEADER + _native_record(record_type, "point", hits=hits).replace(
+        "rtl/counter.sv", "/stage/rtl/counter.sv"
+    )
 
-        class Execution(_GeneratedMainExecution):
-            def run(self, request, payload=payload):
-                request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-                request.raw_path.write_text(payload)
-                return SimulationRunResult("pass")
+    result = collect(_request(tmp_path, f"presence-{record_type}"), _PresenceExecution(payload))
 
-            def command(self, request, payload=payload):
-                request.output_path.parent.mkdir(parents=True, exist_ok=True)
-                request.output_path.write_text(payload)
-                return SimulationCommandResult(0)
-
-        result = collect(_request(tmp_path, f"presence-{record_type}"), Execution())
-        assert result.status == "complete"
-        assert result.native_sources == ("rtl/counter.sv",)
-        if record_type == "future":
-            assert not result.points
-            assert result.unrecognized_records
+    assert result.status == "complete", _collection_detail(result)
+    assert result.native_sources == ("rtl/counter.sv",)
+    if record_type == "future":
+        assert not result.points
+        assert result.unrecognized_records
 
 
 @pytest.mark.parametrize("verdict", ["pass", "fail"])
@@ -1221,7 +1234,9 @@ def test_authenticated_cleanup_warning_survives_collection(
         monkeypatch.setattr("booley.flows.sim.verilator_coverage._artifact", denied_artifact)
     result = collect(_request(tmp_path, "smoke"), Execution())
     assert result.runs[0].simulation_verdict == verdict
-    assert result.status == ("collector_error" if artifact_error else "complete")
+    assert result.status == ("collector_error" if artifact_error else "complete"), (
+        _collection_detail(result)
+    )
     assert result.merge.status == ("not_run" if artifact_error else "equivalent")
     warning = next(
         item for item in result.findings if item.code == "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED"
