@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from booley.targets.selection import selectors_name_distinct_cores, split_selector
+from booley.targets.selection import selector_target_name, selectors_name_distinct_cores
 
 
 class CampaignScopeError(ValueError):
@@ -40,7 +40,7 @@ def resolve_target_criteria(
     otherwise falls back to the criterion keyed by its Target name, unless that
     criterion is bound to a provably different core.
     """
-    name = split_selector(target)[1]
+    name = selector_target_name(target)
     resolved: list[TargetCriterion] = []
     for base_key in criterion_keys:
         key = f"{base_key}_{target}"

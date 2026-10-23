@@ -21,6 +21,11 @@ def split_selector(token: str) -> tuple[str | None, str]:
     return qualifier or None, name
 
 
+def selector_target_name(selector: str) -> str:
+    """Return the Target name of a bare or ``vlnv#name`` selector."""
+    return split_selector(selector)[1]
+
+
 def vlnv_matches(query: str, vlnv: str) -> bool:
     """Return whether *query* is a segment suffix of *vlnv*'s identity."""
     key_segments = vlnv_key(vlnv).split(":")
