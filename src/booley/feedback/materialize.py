@@ -106,14 +106,3 @@ def materialize_attachments(booley_dir: Path, sources: Iterable[Path]) -> tuple[
         if changed:
             _rewrite_attachments_only(booley_dir, log.entries)
         return tuple(sorted(changed))
-
-
-def referenced_sources(booley_dir: Path, sources: Iterable[Path]) -> set[Path]:
-    """Find structured attachment references without requiring a clean log."""
-    selected = {path.expanduser().resolve(strict=False) for path in sources}
-    return {
-        normalized
-        for finding in findings.read_log(booley_dir).entries
-        for attachment in finding.attachments
-        if (normalized := normalize_attachment_path(attachment, booley_dir)) in selected
-    }
