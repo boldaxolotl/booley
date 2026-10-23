@@ -110,6 +110,18 @@ Goal and review code select standard and RISC-V image validation. Goal tests
 `tests/fixtures/goal_mode_smoke/`. These paths do not independently select
 exhaustive Ticket Board recovery permutations.
 
+## Expensive test inventory
+
+[The expensive test inventory](expensive-test-inventory.md) is a measured
+record of costly repository-wide scans, duplicate scenarios, and recovery
+permutation families, from 20 successful `main` push runs between
+`17a2f1800` and `4fe5edfe7` (October 21 to 23, 2026). Its dispositions are
+proposals; each approved one is implemented by its own issue with its own
+before/after measurement. The exhaustive-recovery selection described in the
+previous section was removed with the Ticket Board in `1460ad065`, so every
+Goal recovery case currently runs on every code pull request; the record
+describes the mechanism as it was and proposes how a tier would restore it.
+
 ## Performance telemetry
 
 The fixed `ci-metrics` job runs after `ci-required` and records workflow queue
