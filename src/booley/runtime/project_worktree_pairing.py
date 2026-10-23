@@ -304,6 +304,9 @@ def worktree_removal_instructions(
         "this worktree (see docs/user/USAGE.md).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
+        "Git refuses to remove a worktree that holds populated submodules without "
+        "--force: after preserving evidence, add --force to each 'git worktree remove' "
+        "below.",
     ]
     if paired:
         steps.append(

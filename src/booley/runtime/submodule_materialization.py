@@ -199,39 +199,12 @@ def _materialize_tree(
         destination = destination_root / full_relative
         commit = _gitlink_commit(destination_repo, relative)
         _assert_link_free_path(destination, destination_root, "destination")
-        if missing_only and _is_populated(destination):
-            # Accepted unchanged; only nested gitlinks inside it may still be missing.
-            _materialize_tree(
-                source_root,
-                destination,
-                destination_root,
-                full_relative,
-                created,
-                excluded_paths=excluded_paths,
-                missing_only=True,
+        # Under missing_only a populated destination is accepted unchanged; only
+        # nested gitlinks inside it may still be missing.
+        if not (missing_only and _is_populated(destination)):
+            _ensure_repository(
+                source_root, destination, destination_root, full_relative, commit, created
             )
-            continue
-        if source_root is None:
-            raise SubmoduleMaterializationError(
-                f"submodule {full_relative.as_posix()} cannot be copied: the main checkout "
-                "and its Versioned Booley Directory must both be initialized repositories"
-            )
-        source = source_root / full_relative
-        _validate_source(source, source_root, full_relative)
-        if _accept_existing(destination, commit):
-            _materialize_tree(
-                source_root,
-                destination,
-                destination_root,
-                full_relative,
-                created,
-                excluded_paths=excluded_paths,
-                missing_only=missing_only,
-            )
-            continue
-        had_placeholder = _remove_empty_placeholder(destination, destination_root)
-        created.append((destination, had_placeholder))
-        _create_repository(source, destination, commit, full_relative)
         _materialize_tree(
             source_root,
             destination,
@@ -241,6 +214,29 @@ def _materialize_tree(
             excluded_paths=excluded_paths,
             missing_only=missing_only,
         )
+
+
+def _ensure_repository(
+    source_root: Path | None,
+    destination: Path,
+    destination_root: Path,
+    full_relative: Path,
+    commit: str,
+    created: list[tuple[Path, bool]],
+) -> None:
+    """Leave a matching destination as is, else create it from the validated source."""
+    if source_root is None:
+        raise SubmoduleMaterializationError(
+            f"submodule {full_relative.as_posix()} cannot be copied: the main checkout "
+            "and its Versioned Booley Directory must both be initialized repositories"
+        )
+    source = source_root / full_relative
+    _validate_source(source, source_root, full_relative)
+    if _accept_existing(destination, commit):
+        return
+    had_placeholder = _remove_empty_placeholder(destination, destination_root)
+    created.append((destination, had_placeholder))
+    _create_repository(source, destination, commit, full_relative)
 
 
 def _is_populated(destination: Path) -> bool:

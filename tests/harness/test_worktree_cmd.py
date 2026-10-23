@@ -163,6 +163,7 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     assert "WARNING: usable host removal commands are unavailable" in output.err
     assert "preserve" in output.err and "docs/user/USAGE.md" in output.err
     assert output.err.count("git -C") == 1 and "branch -D" not in output.err
+    assert "populated submodules" in output.err and "--force" in output.err
     assert (worktree / ".git").is_file()
     assert (worktree / "README.md").read_text(encoding="utf-8") == "hello\n"
     assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").returncode != 0
