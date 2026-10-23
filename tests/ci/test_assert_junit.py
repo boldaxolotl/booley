@@ -52,8 +52,8 @@ def test_rejects_required_suite_skip(tmp_path: Path) -> None:
 _GITHUB_DIR = Path(__file__).parents[2] / ".github"
 
 # The one evidence floor allowed to exceed 1: a deliberate order-of-magnitude
-# sanity floor against collection collapse of the full suite (~22.3k tests
-# collected 2026-10-23), documented in the workflow itself.
+# sanity floor against collection collapse of the full suite; its source
+# (measured size) is documented in the workflow itself.
 _DOCUMENTED_SANITY_FLOORS = {(".github/workflows/full-python-matrix.yml", "10000")}
 
 # Files whose assert_junit.py invocations deliberately set no skip limit
@@ -88,11 +88,11 @@ def test_ci_junit_floors_do_not_encode_suite_sizes() -> None:
     """Evidence floors are 1 plus --max-skips 0, never a count that drifts from the suite."""
     files = _ci_files_using_assert_junit()
     violations: list[str] = []
-    ones = 0
+    floor_one_count = 0
     for rel, text in sorted(files.items()):
         for value in re.findall(r"--min-tests[=\s]+(\S+)", text):
             if value == "1":
-                ones += 1
+                floor_one_count += 1
             elif (rel, value) not in _DOCUMENTED_SANITY_FLOORS:
                 violations.append(f"{rel}: --min-tests {value}")
         invocations = text.count("assert_junit.py")
@@ -104,7 +104,7 @@ def test_ci_junit_floors_do_not_encode_suite_sizes() -> None:
                 f"with --max-skips 0 (expected {expected})"
             )
 
-    assert ones, "found no --min-tests 1 floor; the scan is vacuous"
+    assert floor_one_count, "found no --min-tests 1 floor; the scan is vacuous"
     assert not violations, (
         "CI JUnit floors must not encode suite sizes; use '--min-tests 1 --max-skips 0' "
         "(or document a sanity floor in _DOCUMENTED_SANITY_FLOORS):\n" + "\n".join(violations)
