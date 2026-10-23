@@ -811,11 +811,6 @@ jobs:
     # finish in minutes; the generous ceiling is for cold-cache runs only.
     timeout-minutes: 180
     steps:
-      - name: Start duration budget clock
-        id: duration-clock
-        shell: bash
-        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -925,6 +920,16 @@ jobs:
             --file src/booley/data/docker/Dockerfile.wheel \
             --tag booley-test \
             --build-context booley-substrate=docker-image://booley-standard-substrate:ci .
+
+      # The duration budget times validation, not image builds: the substrate
+      # build swings 50-545 s with runner and cache-network speed while the
+      # validations stay steady. The clock starts once the standard candidate
+      # exists; the RISC-V lane's own image build stays on the clock (its
+      # budget follows its tooling source).
+      - name: Start test-phase duration clock
+        id: duration-clock
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
 
       - name: Capture Docker cache and layer evidence
         shell: bash
@@ -1414,31 +1419,30 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Normal published-base runs historically measured 5m10s-7m56s; on
-      # 2026-10-21 hosted-runner slowdown pushed non-RISC-V runs to 603-675 s
-      # on the budget clock (about 40 runs: 19-675 s, 8 over the old 600 s).
-      # The standard budget is 750 s: measured maximum 675 s plus 10%, rounded
-      # up to the next 10 s. A RISC-V
-      # lane's budget depends on its tooling source (ADR 0070), so a slow
-      # registry hit cannot hide behind the local-build ceiling.
-      # - local (and compatibility fallback): automatic local-build runs from
-      #   2026-10-03 to 2026-10-04 measured 1122-1189 s of job time; the
-      #   measured maximum plus 10%, rounded up, is 1310 s.
-      # - registry: the original hit runs measured 611-631 s on the budget
-      #   clock; the 2026-10-21 main push (run 39665456547) measured 858 s on
-      #   the same hit path under runner slowdown. The measured maximum plus
-      #   10%, rounded up, is 950 s.
+      # The clock covers the test phase only (from "Start test-phase duration
+      # clock" to here). Each budget is the measured maximum test phase plus
+      # 10%, rounded up to the next 10 s, from successful and budget-only-
+      # failed runs 2026-10-20 to 2026-10-23, including the 2026-10-21
+      # hosted-runner slowdown. A RISC-V lane's budget depends on its tooling
+      # source (ADR 0070), so a slow registry hit cannot hide behind the
+      # local-build ceiling.
+      # - standard: 210 runs, 211-503 s (median 347 s): 560 s.
+      # - registry: 32 runs, 307-648 s (median 490 s): 720 s.
+      # - local (and compatibility fallback): the 8 automatic local-build runs
+      #   from 2026-10-03 to 2026-10-11 measured 755-1027 s: 1130 s.
       # Stable-base changes deliberately retain the 180-minute safety cap.
       - name: Enforce duration budget
-        if: always() && steps.runtime-base.outputs.build != 'true'
+        if: >-
+          always() && steps.runtime-base.outputs.build != 'true' &&
+          steps.duration-clock.outcome == 'success'
         shell: bash
         env:
           RISCV_IMAGE: ${{ needs.changes.outputs.riscv_image }}
           STARTED_AT_EPOCH: ${{ steps.duration-clock.outputs.started_at_epoch }}
           TOOLING_RECORD: ${{ runner.temp }}/riscv-image-evidence/tooling-source.json
-          STANDARD_BUDGET_SECONDS: 750
-          REGISTRY_BUDGET_SECONDS: 950
-          LOCAL_BUDGET_SECONDS: 1310
+          STANDARD_BUDGET_SECONDS: 560
+          REGISTRY_BUDGET_SECONDS: 720
+          LOCAL_BUDGET_SECONDS: 1130
         run: |
           budget="${STANDARD_BUDGET_SECONDS}"
           if [[ "${RISCV_IMAGE}" == true ]]; then
