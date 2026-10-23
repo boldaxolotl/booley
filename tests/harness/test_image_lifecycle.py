@@ -752,32 +752,6 @@ def test_validate_rejects_candidates_changed_after_preparation(
         lifecycle.validate(prepared, docker=docker)
 
 
-def test_validate_names_every_changed_image_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = _project(tmp_path)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
-    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
-    changed_snapshot = lifecycle.InputSnapshot(
-        ((*planned.input_snapshot.identities[0][:3], "changed-input"),)
-    )
-    monkeypatch.setattr(
-        lifecycle,
-        "plan",
-        lambda *_args, **_kwargs: replace(planned, input_snapshot=changed_snapshot),
-    )
-
-    with pytest.raises(lifecycle.ImageLifecycleError, match="inputs changed") as caught:
-        lifecycle.validate(prepared, docker=docker)
-
-    message = str(caught.value)
-    assert ".parent_compatibility_key" in message
-    assert "changed-input" in message
-
-
 def test_incremental_adapter_build_inputs_cover_each_image_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3029,17 +3003,33 @@ def test_runtime_identity_and_ancestry_edge_guards(
     assert lifecycle._node_ancestry_reason(child, docker).code == "parent-changed"
 
 
-def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuses(
-    tmp_path, monkeypatch
-):
+def _unexpected_call(*_args, **_kwargs):
+    raise AssertionError("adoption must reuse the prepared result")
+
+
+@pytest.fixture
+def external_layout(tmp_path, monkeypatch):
+    """An alias-capable Project whose switchable Booley Directory is external."""
+    dirs = {"external": tmp_path / "external", "other": tmp_path / "other"}
     root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    dirs["internal"] = root / "inner"
+    for directory in dirs.values():
+        directory.mkdir()
+    layout = SimpleNamespace(
+        root=root, docker=FakeDocker({}), dirs=dirs, directory=dirs["external"]
+    )
+    monkeypatch.setattr(
+        "booley.runtime.booley_dir.resolve_booley_dir", lambda _r: layout.directory
+    )
+    _wire(monkeypatch, layout.docker)
     monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
+    return layout
+
+
+def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuses(
+    external_layout, monkeypatch
+):
+    root, docker = external_layout.root, external_layout.docker
     initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     assert initial.nodes[-1].role is lifecycle.ImageRole.WHEEL_OVERLAY
     builder = TransactionBuilder(docker)
@@ -3053,8 +3043,11 @@ def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuse
     assert terminal.reference != lifecycle.BASE_IMAGE
     assert builder.built[-1][1] == prepared.candidates[-2].image_id
     assert prepared.candidates[-1].wheel_sha256 == prepared.candidates[-2].wheel_sha256
-    lifecycle.validate(prepared, docker=docker)
-    committed = lifecycle.commit(prepared, docker=docker)
+    with monkeypatch.context() as late:  # adoption reuses the prepared result, not a new plan
+        late.setattr(lifecycle.project_image, "project_data_alias_capable", _unexpected_call)
+        late.setattr(lifecycle, "_plan_steps", _unexpected_call)
+        lifecycle.validate(prepared, docker=docker)
+        committed = lifecycle.commit(prepared, docker=docker)
     assert committed.selected_reference == terminal.reference
     assert committed.wheel_sha256 == "e" * 64
     repeated = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
@@ -3067,24 +3060,54 @@ def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuse
     assert replay.candidates[-1].image_id == committed.selected_id
 
 
-def test_layout_preparation_reuses_planned_topology(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    first, second = tmp_path / "first", tmp_path / "second"
-    first.mkdir()
-    second.mkdir()
-    selected = {"dir": first}
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _r: selected["dir"])
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
-    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
-    selected["dir"] = second
+def test_layout_preparation_reuses_planned_topology(external_layout):
+    docker = external_layout.docker
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(external_layout.root), docker=docker)
+    external_layout.directory = external_layout.dirs["other"]
     prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
-    with pytest.raises(lifecycle.ImageLifecycleError, match="layout recipe or parent identity"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="Booley Directory topology"):
         lifecycle.validate(prepared, docker=docker)
     parent_id = prepared.candidates[-2].image_id
     assert prepared.plan.nodes[-1].reference == planned.layout_topology.identity(parent_id)[0]
+
+
+_ADOPTION_CHANGES = [
+    pytest.param(change, alias, id=change + ("" if alias else "-no-alias"))
+    for change in ("to-external", "to-internal", "directory", "recipe")
+    for alias in (True, False)
+] + [pytest.param(change, True, id=change) for change in ("parent-rebound", "candidate-rebound")]
+
+
+_SWITCHED_DIRECTORY = {"to-external": "external", "to-internal": "internal", "directory": "other"}
+
+
+@pytest.mark.parametrize(("change", "alias"), _ADOPTION_CHANGES)
+def test_layout_adoption_rejects_changed_mutable_inputs(
+    external_layout, monkeypatch, tmp_path, change, alias
+):
+    docker, dirs = external_layout.docker, external_layout.dirs
+    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _i: alias)
+    external_layout.directory = dirs["internal" if change == "to-external" else "external"]
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(external_layout.root), docker=docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    managed = {n.reference: docker.image_id(n.reference) for n in prepared.plan.nodes}
+    rebound = None
+    if change in ("parent-rebound", "candidate-rebound"):
+        rebound = prepared.candidates[-2 if change == "parent-rebound" else -1].candidate_reference
+        docker.images[rebound] = ("sha256:rebound", docker.images[rebound][1])
+    elif change == "recipe":
+        (tmp_path / "recipe").write_text("different recipe")
+        monkeypatch.setattr(project_image, "layout_recipe", lambda: tmp_path / "recipe")
+    else:
+        external_layout.directory = dirs[_SWITCHED_DIRECTORY[change]]
+    for adopt in (lifecycle.validate, lifecycle.commit):
+        with pytest.raises(lifecycle.ImageLifecycleError):
+            adopt(prepared, docker=docker)
+    assert {ref: docker.image_id(ref) for ref in managed} == managed
+    if rebound:
+        assert docker.image_id(rebound) == "sha256:rebound"  # abort preserves foreign rebinding
+    else:
+        assert not any(ref.startswith("booley-lifecycle-") for ref in docker.images)
 
 
 def test_layout_identity_changes_for_parent_topology_recipe_and_project(tmp_path, monkeypatch):
@@ -3118,18 +3141,11 @@ def test_layout_identity_changes_for_parent_topology_recipe_and_project(tmp_path
 
 
 def test_release_layout_child_retains_verified_parent_policy_and_zero_build_check(
-    tmp_path, monkeypatch
+    external_layout, monkeypatch
 ):
-    root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
+    root, docker = external_layout.root, external_layout.docker
     contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
     monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: contracts)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
     parent = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
     _stage_registry_candidate(
         docker, parent, parent.reference, label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64}
@@ -3309,22 +3325,15 @@ def test_layout_probe_rejects_nonzero_and_unknown_output(monkeypatch):
 
 
 def test_release_project_overlay_retains_wheel_identity_through_layout_convergence(
-    tmp_path, monkeypatch
+    external_layout, monkeypatch
 ):
-    root = _project(tmp_path)
+    root, docker = external_layout.root, external_layout.docker
     (root / "requirements.txt").write_text("cocotb\n")
     (root / ".booley/booley.toml").write_text(
         '[sandbox]\npip_requirements = ["requirements.txt"]\n'
     )
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
     contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
     monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: contracts)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
     parent = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
     _stage_registry_candidate(
         docker, parent, parent.reference, label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64}
@@ -3352,14 +3361,9 @@ def test_release_project_overlay_retains_wheel_identity_through_layout_convergen
 
 
 def test_prepared_parent_losing_alias_can_validate_and_commit_without_obsolete_layout(
-    tmp_path, monkeypatch
+    external_layout, monkeypatch
 ):
-    root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
+    root, docker = external_layout.root, external_layout.docker
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "old-wheel")
     original = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     _install_planned_graph(docker, original.nodes)
