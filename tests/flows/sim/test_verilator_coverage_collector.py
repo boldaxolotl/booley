@@ -165,21 +165,15 @@ class _RichNativeExecution(_GeneratedMainExecution):
         return SimulationCommandResult(returncode=0)
 
 
-class _StagedSourceExecution(_GeneratedMainExecution):
-    payload = _HEADER + _LINE_POINT.replace(
-        "\x01f\x02rtl/counter.sv",
-        "\x01f\x02/build/src/acme_demo_counter_1/rtl/counter.sv",
-    )
-
-    def run(self, request) -> SimulationRunResult:
-        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        request.raw_path.write_text(self.payload, encoding="utf-8")
-        return SimulationRunResult(verdict="pass")
-
-    def command(self, request) -> SimulationCommandResult:
-        request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        request.output_path.write_text(self.payload, encoding="utf-8")
-        return SimulationCommandResult(returncode=0)
+class _StagedSourceExecution(_PresenceExecution):
+    def __init__(self) -> None:
+        super().__init__(
+            _HEADER
+            + _LINE_POINT.replace(
+                "\x01f\x02rtl/counter.sv",
+                "\x01f\x02/build/src/acme_demo_counter_1/rtl/counter.sv",
+            )
+        )
 
 
 class _PostResetExecution(_GeneratedMainExecution):
