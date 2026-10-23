@@ -301,9 +301,10 @@ def _layout_pair(monkeypatch, tmp_path):
     return images, records, parent_labels, child_labels
 
 
-def _layout_status(images, tmp_path, **kwargs):
-    kwargs.setdefault("project_root", tmp_path / "project")
-    return identity.compare_logical_selection("issued", "configured", images.get, **kwargs).status
+def _layout_status(images, tmp_path):
+    return identity.compare_logical_selection(
+        "issued", "configured", images.get, project_root=tmp_path / "project"
+    ).status
 
 
 def test_proven_layout_derivative_preserves_parent_logical_selection(monkeypatch, tmp_path):
