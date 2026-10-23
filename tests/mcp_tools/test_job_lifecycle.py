@@ -393,6 +393,53 @@ async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
         await stop_jobs(jobs)
 
 
+def _sharing_violation() -> PermissionError:
+    """The error Windows raises when unlinking a file another handle holds open."""
+    exc = PermissionError(13, "The process cannot access the file")
+    exc.winerror = 32  # type: ignore[attr-defined]  # POSIX lacks the field
+    return exc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        pytest.param(_sharing_violation, "queued", id="sharing-once"),
+        pytest.param(lambda: FileNotFoundError("promoted"), "running", id="not-found"),
+    ],
+)
+async def test_queued_cancel_withdrawal_unlink_faults(context, monkeypatch, fault, expected):
+    """A transient sharing error on the withdrawal unlink is retried (queued, #2089);
+    a missing entry means promotion won the race (running)."""
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
+    jobs = FastSupervisor()
+    real_unlink = Path.unlink
+    raised: list[Path] = []
+
+    def faulty_unlink(path, *args, **kwargs):
+        is_waiter = path.parent.name == "heavy" and path.name.startswith("w-")
+        if is_waiter and not raised:
+            raised.append(path)
+            raise fault()
+        return real_unlink(path, *args, **kwargs)
+
+    try:
+        run_id = jobs.submit("lint", queued_command(context), JOB_TIMEOUT, context=context)
+        await wait_until((context.work_dir / "queued").exists)
+        monkeypatch.setattr(Path, "unlink", faulty_unlink)
+        outcome = await jobs.cancel(run_id)
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        assert raised, "the withdrawal never unlinked a waiter entry"
+        assert outcome == expected
+        assert (await jobs.poll(run_id)).result.exit_code == 130
+        assert not (context.work_dir / "started").exists()
+    finally:
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        store.release(holder)
+        await stop_jobs(jobs)
+
+
 def descendant_command(context):
     descendant_ready = context.work_dir / "descendant"
     child_script = f"""
