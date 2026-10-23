@@ -11,7 +11,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 import logging as _logging
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,7 @@ from booley.core.booley_dir import resolve_booley_dir, resolve_checkout_booley_d
 from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.config_paths import resolve_toml
+from booley.targets.selection import target_section_key
 
 _logger = _logging.getLogger(__name__)
 
@@ -123,33 +124,36 @@ def _load_config() -> dict[str, Any]:
         # tests.toml verification-intent (decision 16): {target: [test_names]}
         # and {target: select_template}. Single mutable dict instances so that
         # tests may ``monkeypatch.setitem`` them.
-        "TEST_NAMES": {
-            name: section["tests"]
-            for name, section in normalized_tests.items()
-            if "tests" in section
-        },
-        "TEST_SELECT": {
-            name: section["select"]
-            for name, section in normalized_tests.items()
-            if "select" in section
-        },
+        "TEST_NAMES": _field_map(normalized_tests, "tests"),
+        "TEST_SELECT": _field_map(normalized_tests, "select"),
         # Per-target known-hang / known-fail skip list (tests.toml ``skip``).
         # Lets a project exclude tests that burn the full wall-clock budget
         # without a per-call ``--test`` filter dance. {target: [test_names]}.
-        "TEST_SKIP": {
-            name: section["skip"]
-            for name, section in normalized_tests.items()
-            if "skip" in section
-        },
+        "TEST_SKIP": _field_map(normalized_tests, "skip"),
         # Per-Target environment injected into the simulator process (tests.toml
         # ``env``). Env-parameterized testbenches — a cocotb module branching on
         # ``os.getenv("FLAVOR")`` — are a common upstream pattern with no other
         # Booley home: pre_run_commands run in their own shell. {target: {NAME: VALUE}}.
-        "TEST_ENV": {
-            name: section["env"] for name, section in normalized_tests.items() if "env" in section
-        },
+        "TEST_ENV": _field_map(normalized_tests, "env"),
     }
     return _CONFIG_CACHE
+
+
+class TargetFieldMap(dict[str, Any]):
+    """One ``tests.toml`` field per section key, remembering every section key.
+
+    A Target owns exactly one section; choosing it per field could mix sections
+    and hide duplicate keys, so the key comes from ``section_keys``.
+    """
+
+    section_keys: frozenset[str] = frozenset()
+
+
+def _field_map(sections: Mapping[str, Mapping[str, Any]], field: str) -> TargetFieldMap:
+    """The *field* of every section that declares it, carrying all section keys."""
+    fields = TargetFieldMap({key: body[field] for key, body in sections.items() if field in body})
+    fields.section_keys = frozenset(sections)
+    return fields
 
 
 def _get(name: str) -> Any:
@@ -157,7 +161,7 @@ def _get(name: str) -> Any:
 
     ``mock.patch("booley.config.project_config.TEST_NAMES", ...)`` sets a real module
     attribute; prefer it so patched and unpatched reads agree between internal
-    callers (``resolve_test_name``) and external ones (``project_config.X``).
+    callers and external ones (``project_config.X``).
     """
     if name in globals():
         return globals()[name]
@@ -356,33 +360,19 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def bare_target(target: str) -> str:
-    """Strip a ``vlnv#name`` qualifier down to the bare Target name."""
-    return target.rsplit("#", 1)[-1]
+def lookup_target_section(sections: Mapping[str, Any], identity: str) -> Any:
+    """The section of Target *identity* (``vlnv#name``), or None.
 
-
-def lookup_target_section(sections: Mapping[str, Any], target: str) -> Any:
-    """Find ``target``'s section, tolerating VLNV qualification on either side.
-
-    A Target is named either bare (``sim``) or VLNV-qualified
-    (``booley:ibex:port#sim``), and the two forms must not diverge: a
-    multi-core repo may pass a qualified ``--target`` to disambiguate, while
-    the tests.toml template and the scaffold both emit a bare section. Matching
-    only on the literal string silently returns "no tests declared" — the test
-    runs uninitialized instead of erroring, which is the worst possible
-    failure mode. ``resolve_target`` already strips the qualifier for FuseSoC;
-    this is the same normalization for the test registry.
-
-    Exact match wins so a repo that deliberately declares two qualified
-    sections sharing a bare name keeps them distinct.
+    A qualified key naming the Target wins over the bare key equal to its name,
+    whatever the key order; two keys naming it raise ``TargetSectionConflictError``.
+    Field maps pick the key among every section key, so all fields of a Target
+    come from one section. A bare *identity* (no ``#``) matches only the bare key.
     """
-    if target in sections:
-        return sections[target]
-    bare = bare_target(target)
-    for key, section in sections.items():
-        if bare_target(key) == bare:
-            return section
-    return None
+    keys: Iterable[str] = (
+        sections.section_keys if isinstance(sections, TargetFieldMap) else sections
+    )
+    key = target_section_key(keys, identity)
+    return None if key is None else sections.get(key)
 
 
 def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
@@ -403,13 +393,9 @@ def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
 def load_test_configuration_field(
     work_dir: Path | str,
     field: str,
-) -> dict[str, Any]:
+) -> TargetFieldMap:
     """Project-root-scoped mapping for one normalized ``tests.toml`` field."""
-    return {
-        target: section[field]
-        for target, section in load_test_configuration(work_dir).items()
-        if field in section
-    }
+    return _field_map(load_test_configuration(work_dir), field)
 
 
 # Every key a Target section of tests.toml may hold. The set is closed: a key
@@ -612,39 +598,3 @@ def _validate_variant_inputs(
 # TEST_NAMES ({target: [test_names]}) and TEST_SELECT ({target: select_template})
 # are derived from tests.toml in ``_load_config`` and exposed lazily via
 # ``__getattr__``. Internal callers read them through ``_get``.
-
-
-def resolve_test_name(target: str, name: str) -> int:
-    """Resolve a test name (or substring) to a numeric test index.
-
-    Args:
-        target: Target name (key in TEST_NAMES, e.g. "config_a", "config_b").
-        name: Test name or substring (e.g. "my_test", "smoke").
-
-    Returns:
-        0-based test index.
-
-    Raises:
-        ValueError: If no match, multiple matches, or Target has no test map.
-    """
-    test_names = _get("TEST_NAMES")
-    tests = lookup_target_section(test_names, target)
-    if tests is None:
-        raise ValueError(
-            f"No test names defined for target '{target}'. "
-            f"Targets with tests: {', '.join(sorted(test_names))}"
-        )
-    matches = [(i, t) for i, t in enumerate(tests) if name in t]
-
-    if len(matches) == 0:
-        raise ValueError(
-            f"No test matching '{name}' for target '{target}'. "
-            f"Available tests: {', '.join(f'{i}:{t}' for i, t in enumerate(tests))}"
-        )
-    if len(matches) > 1:
-        raise ValueError(
-            f"Ambiguous test name '{name}' for target '{target}'. "
-            f"Matches: {', '.join(f'{i}:{t}' for i, t in matches)}"
-        )
-
-    return matches[0][0]

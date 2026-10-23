@@ -223,7 +223,9 @@ def test_a_refused_goal_says_why_instead_of_waiting_for_its_test(
     from booley.flows import target_test_plan_loading
 
     def unseeded(work_dir: Any, target: str) -> Any:
-        return target_test_plan_loading.load_target_test_plan(work_dir, target, adapter="icarus")
+        return target_test_plan_loading.load_target_test_plan(
+            work_dir, target, identity=target, adapter="icarus"
+        )
 
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(target_test_plan_loading, "load_checkout_target_test_plan", unseeded)

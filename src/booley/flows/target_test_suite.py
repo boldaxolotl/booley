@@ -64,17 +64,18 @@ def configured_test_skips() -> Mapping[str, list[str]]:
 def resolve_target_test_suite(
     target: str,
     *,
+    identity: str,
     test_names: Mapping[str, list[str]] | None = None,
     test_skips: Mapping[str, list[str]] | None = None,
 ) -> TargetTestSuite:
     """Resolve runnable tests and preserve the complete durable skip set."""
     names = configured_test_names() if test_names is None else test_names
     skips_by_target = configured_test_skips() if test_skips is None else test_skips
-    available = list(lookup_target_section(names, target) or [])
+    available = list(lookup_target_section(names, identity) or [])
     if not available:
         return TargetTestSuite((None,))
 
-    durable_skips = set(lookup_target_section(skips_by_target, target) or [])
+    durable_skips = set(lookup_target_section(skips_by_target, identity) or [])
     runnable = [test for test in available if test not in durable_skips]
     if not runnable:
         return TargetTestSuite((), tuple(available))
@@ -85,12 +86,14 @@ def resolve_target_test_suite(
 def require_runnable_target_test_suite(
     target: str,
     *,
+    identity: str,
     test_names: Mapping[str, list[str]] | None = None,
     test_skips: Mapping[str, list[str]] | None = None,
 ) -> TargetTestSuite:
     """Resolve *target* and reject an all-skipped, vacuous campaign."""
     suite = resolve_target_test_suite(
         target,
+        identity=identity,
         test_names=test_names,
         test_skips=test_skips,
     )

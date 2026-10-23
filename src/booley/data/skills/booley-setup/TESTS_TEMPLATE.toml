@@ -11,9 +11,9 @@ smoke = ["reset", "basic"]
 #   ["mylib:myip:port#sim"]
 #   tests = ["reset", "basic"]
 #
-# Booley matches the bare and qualified forms against each other, and doctor
-# fails a section whose key names no declared Target — but keeping the two
-# selectors consistent is what makes the config readable.
+# A qualified key names its core's Target and wins over the bare key; a bare key
+# serves every Target of that name with no qualified key. Doctor fails a key
+# that names no declared Target and two keys that name one Target.
 
 [sim]                        # keyed by .core Target name
 tests = ["reset", "basic", "stress"]
