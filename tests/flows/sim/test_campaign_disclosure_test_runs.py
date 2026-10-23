@@ -73,7 +73,7 @@ def test_campaign_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
         "booley.flows.sim.flow.TargetCatalog.build",
         lambda _root: SimpleNamespace(inspect=lambda _handle: object()),
     )
-    handle = SimpleNamespace(project_root=tmp_path, selector="sim")
+    handle = SimpleNamespace(project_root=tmp_path, selector="sim", identity="sim")
 
     flow._ordinary_campaign_inputs("sim", _MAP, handle, None)
 
@@ -120,7 +120,7 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
         (build_test_run("count", variant="other", seed=9, env={"MODE": "D"}),),
     )
     manifest = _cocotb_plan(tmp_path, groups).manifest
-    handle = SimpleNamespace(project_root=tmp_path, selector="sim")
+    handle = SimpleNamespace(project_root=tmp_path, selector="sim", identity="sim")
     validated = SimpleNamespace(
         manifest=manifest, binding_for=lambda _manifest: None, target_handles=(handle,)
     )

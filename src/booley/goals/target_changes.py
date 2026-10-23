@@ -54,7 +54,7 @@ def resolved_surfaces(root: Path) -> dict[str, Any]:
                 for name, declaration in selected.items()
                 if declaration.get("paramtype") == "vlogdefine"
             },
-            "tests": lookup_target_section(tests, handle.selector),
+            "tests": lookup_target_section(tests, handle.identity),
             "flow_options": dict(inspection.flow_options),
             "tool_options": dict(inspection.tool_options),
         }

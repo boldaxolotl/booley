@@ -187,7 +187,9 @@ class TestBuildPlan:
         (project / "tests.toml").write_text(
             '[sim]\ntests = ["reset"]\ndefault_seed = 9\n', encoding="utf-8"
         )
-        plan = load_target_test_plan(tmp_path, "lib:ip:core:1#sim", adapter="verilator")
+        plan = load_target_test_plan(
+            tmp_path, "lib:ip:core:1#sim", identity="lib:ip:core:1#sim", adapter="verilator"
+        )
         assert plan.tests == ("reset",)
         assert plan.default_seed == 9
 

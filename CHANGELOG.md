@@ -17,6 +17,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   synthesis delete the surrounding logic and understate area and Fmax.
   Projects with a surrogate should re-run setup's surrogate validation
   (Project Configuration step) and fix any surrogate that fails the probe.
+- `tests.toml` sections now match Targets by identity. In a Project with several
+  cores that declare the same Target name, a Target no longer picks up another
+  core's section: a qualified key (`["vendor:lib:core#sim"]`) serves only the
+  core it names, and a bare key serves Targets without a qualified key, in any
+  file order. Two keys naming one Target make the Simulation Flow refuse the run,
+  and `booley doctor` fails them and any key that names no Target. A stale
+  qualified key, for example after a core rename, no longer falls back to the
+  bare section: Doctor fails it as dead. Keep one key per Target.
 - Templated `[flows.sim].run_cwd` cleanup now also removes the empty parent directories
   Booley created to reach the attempt directory, stopping at the template root and at any
   directory it did not create, and templated attempt run-lock files are no longer left in

@@ -14,6 +14,7 @@ from booley.flows.sim.execution.artifacts import artifact_path_component
 from booley.flows.sim.execution.engine import (
     _adapter_identity,
     prepare_simulation_work,
+    simulation_target_environment,
     target_test_plan,
 )
 from booley.flows.sim.execution.pre_sim import (
@@ -23,8 +24,10 @@ from booley.flows.sim.execution.pre_sim import (
 )
 from booley.flows.sim.flow import _resolve_sim_campaign_work_units
 from booley.flows.test_runs import build_test_run
+from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.test_execution_engine import _handle, _prepared
 from tests.flows.sim.test_test_run_launch import _VARIANTS, _project
+from tests.target_test_support import write_two_core_sim_project
 
 _SOAK = build_test_run("stress", variant="soak", seed=42, args=("+iters=9",))
 
@@ -323,3 +326,13 @@ class TestWatchdogSizing:
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
             assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["nope+x@x3"]) == 1
             assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["stress+nope"]) == 1
+
+
+def test_target_environment_is_never_another_cores_env(tmp_path):
+    write_two_core_sim_project(
+        tmp_path,
+        '["vendor:a:x#sim"]\nenv = { WHO = "a" }\n["vendor:b:y#sim"]\nenv = { WHO = "b" }\n',
+    )
+    catalog = TargetCatalog.build(tmp_path)
+    assert simulation_target_environment(catalog.select("x#sim")) == {"WHO": "a"}
+    assert simulation_target_environment(catalog.select("y#sim")) == {"WHO": "b"}

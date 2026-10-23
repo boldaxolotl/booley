@@ -100,16 +100,17 @@ from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
+from booley.targets.selection import TargetSectionConflictError
 
 from .specialist import Specialist
 
 _SIM_RUN_HALVES = SIM_RUN_HALVES
 
 
-def _target_environment(work_dir: Path, target: str) -> dict[str, str]:
-    """The ``tests.toml`` env table of *target* in the checkout at *work_dir*."""
+def _target_environment(work_dir: Path, identity: str) -> dict[str, str]:
+    """The ``tests.toml`` env table of Target *identity* in the checkout at *work_dir*."""
     sections = load_test_configuration_field(work_dir, "env")
-    return dict(lookup_target_section(sections, target) or {})
+    return dict(lookup_target_section(sections, identity) or {})
 
 
 _resolve_sim_sentinels = resolve_sim_sentinels
@@ -874,7 +875,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 self.satisfies,
                 self.state.criteria,
                 explicit_scope=self.args.scope,
-                **self._registered_tests(),
+                **self._registered_tests(self.args.target),
                 enforce_scope_match=(
                     self.state.strict_criteria and not getattr(self.args, "diagnostic", False)
                 ),
@@ -894,11 +895,10 @@ replacement must differ, and every proposal must remain a single source edit.
                     "or the invocation must pass --scope."
                 ),
             )
-        except NoRunnableTestsError as exc:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"mutation_tester: {exc}",
-            )
+        except UnsupportedSimTargetError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        except (NoRunnableTestsError, TargetSectionConflictError) as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"mutation_tester: {exc}")
         self._target_campaign = campaign
         self.args.scope = campaign.scope_arg
         params = campaign.params_for("mutation_score")
@@ -1797,7 +1797,7 @@ replacement must differ, and every proposal must remain a single source edit.
             lane_kind="unreserved",
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
-            environment=_target_environment(work_dir, target),
+            environment=_target_environment(work_dir, handle.identity),
         )
         if mutation is not None:
             materialize_build_mutation(mutation[0], mutation[1], work_dir, prepared.resolved)
@@ -1926,14 +1926,22 @@ replacement must differ, and every proposal must remain a single source edit.
         (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
         return rel
 
-    def _registered_tests(self) -> dict[str, dict[str, list[str]]]:
-        """The Test registry and skips of the checkout this run mutates.
+    def _target_identity(self, target: str) -> str:
+        """The identity (``vlnv#name``) of *target* in the checkout this run mutates."""
+        try:
+            return TargetCatalog.build(self.args.work_dir).select(target, for_flow="sim").identity
+        except fusesoc_registry.FuseSocError as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+
+    def _registered_tests(self, target: str) -> dict[str, Any]:
+        """*target*'s identity plus the Test registry and skips of the mutated checkout.
 
         Read from that checkout's ``tests.toml``, the same file the launch of
         each Test Run reads, so the suite and its arguments cannot disagree.
         """
         work_dir = self.args.work_dir
         return {
+            "identity": self._target_identity(target),
             "test_names": load_test_configuration_field(work_dir, "tests"),
             "test_skips": load_test_configuration_field(work_dir, "skip"),
         }
@@ -1941,8 +1949,8 @@ replacement must differ, and every proposal must remain a single source edit.
     def _target_test_suite(self, target: str) -> TargetTestSuite:
         """Return every runnable test declared for *target*."""
         try:
-            return require_runnable_target_test_suite(target, **self._registered_tests())
-        except NoRunnableTestsError as exc:
+            return require_runnable_target_test_suite(target, **self._registered_tests(target))
+        except (NoRunnableTestsError, TargetSectionConflictError) as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
 
     def _campaign_for_target(self, target: str) -> TargetCampaign:
@@ -1958,7 +1966,7 @@ replacement must differ, and every proposal must remain a single source edit.
             target,
             criterion_keys=self.satisfies,
             criteria=criteria,
-            **self._registered_tests(),
+            **self._registered_tests(target),
         )
 
     def _cocotb_sim_cmd(
@@ -2209,7 +2217,8 @@ replacement must differ, and every proposal must remain a single source edit.
                 {
                     **os.environ,
                     **launch_environment(
-                        _target_environment(work_dir, target), launch.environment
+                        _target_environment(work_dir, self._target_identity(target)),
+                        launch.environment,
                     ),
                 },
                 python_artifact_root(os.environ, build_path / "python-artifacts"),

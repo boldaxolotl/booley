@@ -131,6 +131,7 @@ from booley.targets.domain import (
     criterion_matches_target,
 )
 from booley.targets.flow_names import config_section
+from booley.targets.selection import TargetSectionConflictError
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
@@ -294,7 +295,7 @@ class PreparedSimulationEndpoint:
     targets: tuple[TargetHandle, ...]
     resume: ValidatedResumeManifest | None
     selected_targets: tuple[str, ...]
-    test_names_map: Mapping[str, list[str]]
+    test_names_map: dict[str, list[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1945,16 +1946,28 @@ def _filter_tests(tests: list[str], exact_names: str | Sequence[str]) -> list[st
     return [name for name in requested if name in available]
 
 
+def _sizing_identity(work_dir: Path, target: str) -> str:
+    """Identity of *target* for sizing; an unresolvable token keeps its bare name.
+
+    The child Flow reports the resolution error, so sizing falls back to the
+    bare-name section lookup instead of raising.
+    """
+    try:
+        return TargetCatalog.build(work_dir).select(target, for_flow="sim").identity
+    except (fusesoc_registry.FuseSocError, OSError, ValueError):
+        return target.rsplit("#", 1)[-1]
+
+
 def _selected_test_work_units(
-    target: str,
+    identity: str,
     test_names: Mapping[str, list[str]],
     configured_skips: Mapping[str, list[str]],
     test_selector: Sequence[str] | str | None,
     skip_arg: str | None,
 ) -> int:
     """Simulator processes a non-cocotb Target will launch, at least one."""
-    available = list(lookup_target_section(test_names, target) or [])
-    skips = set(lookup_target_section(configured_skips, target) or [])
+    available = list(lookup_target_section(test_names, identity) or [])
+    skips = set(lookup_target_section(configured_skips, identity) or [])
     if skip_arg:
         skips.update(item.strip() for item in skip_arg.split(",") if item.strip())
     if test_selector:
@@ -1987,6 +2000,7 @@ def _selector_test_run_count(available: Sequence[str], test_selector: Sequence[s
 def _resolved_work_units(
     work_dir: Path,
     target: str,
+    identity: str,
     registered: Sequence[str],
     skips: Collection[str],
     test_selector: Sequence[str] | None,
@@ -2004,7 +2018,9 @@ def _resolved_work_units(
     cocotb = _target_is_cocotb(work_dir, target)
     # Sizing only: every HDL simulator launches one process per Test Run, and
     # the seeded one accepts each seed form the real Target might accept.
-    plan = load_target_test_plan(work_dir, target, adapter="cocotb" if cocotb else "verilator")
+    plan = load_target_test_plan(
+        work_dir, target, identity=identity, adapter="cocotb" if cocotb else "verilator"
+    )
     plan = replace(
         plan,
         tests=tuple(registered),
@@ -2070,13 +2086,19 @@ def _resolve_sim_campaign_work_units(
     selectors = (test_selector,) if isinstance(test_selector, str) else test_selector
     units = 0
     for target in targets:
-        registered = list(lookup_target_section(test_names, target) or [])
-        skips = set(lookup_target_section(configured_skips, target) or [])
+        identity = _sizing_identity(work_dir, target)
+        try:
+            registered = list(lookup_target_section(test_names, identity) or [])
+            skips = set(lookup_target_section(configured_skips, identity) or [])
+        except TargetSectionConflictError:
+            units += 1  # the child Flow refuses duplicate section keys
+            continue
         skips.update(item.strip() for item in (skip_arg or "").split(",") if item.strip())
         try:
             resolved = _resolved_work_units(
                 work_dir,
                 target,
+                identity,
                 registered,
                 skips,
                 tuple(selectors) if selectors else None,
@@ -2085,7 +2107,7 @@ def _resolve_sim_campaign_work_units(
         except ValueError:
             resolved = 0
         units += resolved or _selected_test_work_units(
-            target, test_names, configured_skips, test_selector, skip_arg
+            identity, test_names, configured_skips, test_selector, skip_arg
         )
     return max(1, units)
 
@@ -2684,7 +2706,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         test
                         for test in resolve_target_test_suite(
                             handle.selector,
-                            test_names=dict(prepared.test_names_map),
+                            identity=handle.identity,
+                            test_names=prepared.test_names_map,
                             test_skips=skips,
                         ).tests
                         if test is not None
@@ -2692,7 +2715,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     {
                         "default" if test is None else test
                         for test in self._resolve_tests_to_run(
-                            handle.selector, dict(prepared.test_names_map)
+                            handle.selector, prepared.test_names_map
                         )
                     },
                 )
@@ -2748,7 +2771,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return refusal
             if resume is None:
                 selection_error = self._validate_prepared_selection(
-                    list(selected_targets), dict(test_names_map)
+                    list(selected_targets), test_names_map
                 )
                 if selection_error is not None:
                     return selection_error
@@ -2943,7 +2966,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             tuple[TargetHandle, ...],
             ValidatedResumeManifest | None,
             tuple[str, ...],
-            Mapping[str, list[str]],
+            dict[str, list[str]],
         ]
         | EndpointOutcome
     ):
@@ -3130,7 +3153,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         own value. ``{}`` when the Target declares none — the run then inherits
         the ambient environment exactly as before.
         """
-        return dict(lookup_target_section(_get_test_envs(self.args.work_dir), target) or {})
+        return dict(
+            lookup_target_section(
+                _get_test_envs(self.args.work_dir), self._target_identity(target)
+            )
+            or {}
+        )
 
     def _sim_env_preview_lines(self, target: str) -> list[str]:
         """Shell export lines for the Target's configured simulator environment."""
@@ -4488,7 +4516,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             targets, test_names_map = resolved
         else:
             targets = list(prepared.selected_targets)
-            test_names_map = dict(prepared.test_names_map)
+            test_names_map = prepared.test_names_map
         resolution_s = time.monotonic() - resolution_started
 
         special_result = self._maybe_dispatch_special_run(
@@ -5228,11 +5256,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         disclosures = _group_disclosures(execution, handle, preview.groups, preview.run_groups)
         suite = resolve_target_test_suite(
             target,
+            identity=handle.identity,
             test_names=test_names_map,
             test_skips=_get_test_skips(self.args.work_dir),
         )
         required = tuple(name for name in suite.tests if name is not None)
-        catalog_backed = bool(lookup_target_section(test_names_map, target) or [])
+        catalog_backed = bool(lookup_target_section(test_names_map, handle.identity) or [])
         return inspection, preview, disclosures, required, catalog_backed
 
     def _cocotb_campaign_plan(
@@ -6181,6 +6210,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ),
         )
 
+    def _target_identity(self, target: str) -> str:
+        """The identity (``vlnv#name``) of the selected Target written *target*."""
+        return self._target_handle(target).identity
+
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle for the active checkout.
 
@@ -6212,7 +6245,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         declared = list(
             lookup_target_section(
                 getattr(self, "_test_names_map", None) or _get_test_names(self.args.work_dir),
-                target_result.target,
+                self._target_identity(target_result.target),
             )
             or []
         )
@@ -6424,9 +6457,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "pre_run_commands": _resolve_pre_sim_commands(self.args.work_dir),
             "run_cwd": normalized_run_cwd,
             "environment": self._target_sim_env(result.target),
-            "select": lookup_target_section(_get_test_selects(self.args.work_dir), result.target),
+            "select": lookup_target_section(
+                _get_test_selects(self.args.work_dir), self._target_identity(result.target)
+            ),
             "skip": list(
-                lookup_target_section(_get_test_skips(self.args.work_dir), result.target) or []
+                lookup_target_section(
+                    _get_test_skips(self.args.work_dir), self._target_identity(result.target)
+                )
+                or []
             ),
         }
         for test in result.tests:
@@ -6935,7 +6973,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _effective_skips(self, target: str) -> set[str]:
         """Return Project-configured exact names excluded by default."""
-        return set(lookup_target_section(_get_test_skips(self.args.work_dir), target) or [])
+        return set(
+            lookup_target_section(
+                _get_test_skips(self.args.work_dir), self._target_identity(target)
+            )
+            or []
+        )
 
     def _validate_test_selector(
         self,
@@ -6960,7 +7003,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if not selectors:
             return None
         for target in targets:
-            available = lookup_target_section(test_names_map, target) or []
+            available = lookup_target_section(test_names_map, self._target_identity(target)) or []
             if not available:
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
@@ -6994,9 +7037,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         selects = _get_test_selects(self.args.work_dir)
         for target in targets:
-            if lookup_target_section(selects, target) is not None and self.is_cocotb_target(
-                target
-            ):
+            if lookup_target_section(
+                selects, self._target_identity(target)
+            ) is not None and self.is_cocotb_target(target):
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
@@ -7090,10 +7133,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if self.args.test:
             return None  # an explicit selector deliberately overrides skips
         for target in targets:
-            available = list(lookup_target_section(test_names_map, target) or [])
+            available = list(
+                lookup_target_section(test_names_map, self._target_identity(target)) or []
+            )
             try:
                 require_runnable_target_test_suite(
                     target,
+                    identity=self._target_identity(target),
                     test_names={target: available},
                     test_skips={target: list(self._effective_skips(target))},
                 )
@@ -7135,12 +7181,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> list[str | None]:
         """Selected Test names from the registry alone, without the ``.core`` Target."""
         if self.args.test:
-            available = lookup_target_section(test_names_map, target) or []
+            available = lookup_target_section(test_names_map, self._target_identity(target)) or []
             wanted = [parse_test_selector(text).test for text in self.args.test]
             return cast(list[str | None], _filter_tests(available, wanted))
         suite = resolve_target_test_suite(
             target,
-            test_names=dict(test_names_map),
+            identity=self._target_identity(target),
+            test_names=test_names_map,
             test_skips=_get_test_skips(self.args.work_dir),
         )
         return list(suite.tests)
@@ -7196,7 +7243,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> TargetTestPlan:
         """*target*'s Test Run plan over the registry this invocation resolved."""
         plan = self._target_test_plan(target)
-        registered = tuple(lookup_target_section(test_names_map, target) or ())
+        registered = tuple(
+            lookup_target_section(test_names_map, self._target_identity(target)) or ()
+        )
         skipped = tuple(name for name in registered if name in self._effective_skips(target))
         if (registered, skipped) == (plan.tests, plan.skipped):
             return plan
@@ -7231,6 +7280,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return list(
             resolve_target_test_suite(
                 target,
+                identity=self._target_identity(target),
                 test_names=test_names_map,
                 test_skips=_get_test_skips(self.args.work_dir),
             ).skipped
