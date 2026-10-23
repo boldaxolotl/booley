@@ -301,14 +301,14 @@ def _layout_pair(monkeypatch, tmp_path):
     return images, records, parent_labels, child_labels
 
 
+def _layout_status(images, tmp_path, **kwargs):
+    kwargs.setdefault("project_root", tmp_path / "project")
+    return identity.compare_logical_selection("issued", "configured", images.get, **kwargs).status
+
+
 def test_proven_layout_derivative_preserves_parent_logical_selection(monkeypatch, tmp_path):
     images, _records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.MATCH
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.MATCH
 
 
 def test_layout_does_not_hide_changed_parent_selection(monkeypatch, tmp_path):
@@ -317,12 +317,7 @@ def test_layout_does_not_hide_changed_parent_selection(monkeypatch, tmp_path):
     images["configured"] = _metadata(
         "configured", image_id="sha256:" + "2" * 64, labels=configured
     )
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.MISMATCH
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.MISMATCH
 
 
 def test_layout_does_not_hide_forged_recipe_topology_or_parent_fingerprint(monkeypatch, tmp_path):
@@ -335,12 +330,7 @@ def test_layout_does_not_hide_forged_recipe_topology_or_parent_fingerprint(monke
     ):
         original = child_labels[label]
         child_labels[label] = "3" * 64
-        assert (
-            identity.compare_logical_selection(
-                "issued", "configured", images.get, project_root=tmp_path / "project"
-            ).status
-            is identity.Status.UNKNOWN
-        )
+        assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
         child_labels[label] = original
 
 
@@ -350,22 +340,12 @@ def test_layout_requires_actual_parent_configuration_and_layer_ancestry(monkeypa
     images, records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
     child = records[images["issued"].image_id]
     child["Config"]["User"] = "root"
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.UNKNOWN
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
     child["Config"]["User"] = "agent"
     for layers in (["foreign", "layout"], ["base", "layout", "extra"]):
         child["RootFS"]["Layers"] = layers
         project_image.verify_layout_parent_identity.cache_clear()
-        assert (
-            identity.compare_logical_selection(
-                "issued", "configured", images.get, project_root=tmp_path / "project"
-            ).status
-            is identity.Status.UNKNOWN
-        )
+        assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
 
 
 def _layout_inspections(parent_id, child_id, parent_labels, child_labels):
@@ -410,12 +390,7 @@ def test_layout_requires_explicit_matching_project_and_topology(monkeypatch, tmp
     reference, inputs = project_image.layout_topology(foreign).identity("sha256:" + "a" * 64)
     child_labels[project_image.LABEL_LAYOUT_REFERENCE] = reference
     child_labels[identity.LABEL_EFFECTIVE_INPUTS] = inputs
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.UNKNOWN
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
 
 
 def test_layout_verification_uses_configured_docker_executable(monkeypatch, tmp_path):
