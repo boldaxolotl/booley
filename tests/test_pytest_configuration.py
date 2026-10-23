@@ -739,7 +739,7 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     evidence = _named_step(job, "Assert worktree execution evidence")
     assert evidence["if"] == "always()"
     assert 'assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml"' in evidence["run"]
-    assert "--min-tests 8 --max-skips 0" in evidence["run"]
+    assert "--min-tests 1 --max-skips 0" in evidence["run"]
     for item in [job, *job["steps"]]:
         assert not item.get("continue-on-error", False)
         assert "|| true" not in item.get("run", "")
@@ -915,13 +915,13 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
     assert "test_verilator_compiler_cache_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
-    assert "--min-tests 21 --max-skips 0" in coverage["run"]
+    assert "--min-tests 1 --max-skips 0" in coverage["run"]
     goal_mode = next(step for step in validations if step["name"].startswith("Run Goal Mode"))
     assert "BOOLEY_GOAL_MODE_SMOKE=1" in goal_mode["run"]
     assert "test_goal_mode_image_smoke.py" in goal_mode["run"]
     assert "--junitxml=/validation-tmp/goal-mode.xml" in goal_mode["run"]
     assert "assert_junit.py" in goal_mode["run"]
-    assert "--min-tests 3 --max-skips 0" in goal_mode["run"]
+    assert "--min-tests 1 --max-skips 0" in goal_mode["run"]
     upload = next(
         step for step in steps if step.get("name") == "Upload coverage release test timing"
     )
