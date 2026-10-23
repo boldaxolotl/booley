@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,95 @@ def test_thread_timeout_retains_evidence_after_process_exit(tmp_path: Path, work
     assert metadata["worker"] == ("gw0" if workers else "controller")
     assert metadata["pid"] > 0
     assert "test_case.py" in "\n".join(lines[1:])
+
+
+_SPAWN_AND_RECORD_PID = (
+    "import subprocess, sys; "
+    "proc = subprocess.Popen([sys.executable, '-c', {code!r}], "
+    "stdin=subprocess.PIPE, stdout=subprocess.PIPE); "
+    "open('child.pid', 'w').write(str(proc.pid))"
+)
+# Wait for the child to exit without reaping it, so its Popen stays unreaped.
+_WAIT_WITHOUT_REAPING = (
+    "import _winapi; _winapi.WaitForSingleObject(int(proc._handle), _winapi.INFINITE)"
+    if os.name == "nt"
+    else "os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)"
+)
+
+
+def _child_entry(metadata: dict[str, object], evidence_dir: Path) -> dict[str, object]:
+    """Return the header's entry for the child PID the nested test recorded."""
+    child_pid = int((evidence_dir.parent / "child.pid").read_text())
+    assert "children" in metadata, metadata
+    entries = [entry for entry in metadata["children"] if entry["pid"] == child_pid]  # type: ignore[attr-defined]
+    assert len(entries) == 1, metadata
+    return entries[0]
+
+
+def _read_header(evidence: Path) -> tuple[dict[str, object], list[str]]:
+    (report,) = evidence.glob("timeout-*.log")
+    lines = report.read_text(encoding="utf-8").splitlines()
+    return json.loads(lines[0]), lines[1:]
+
+
+def test_timeout_evidence_records_live_child(tmp_path: Path) -> None:
+    started = datetime.now(UTC).replace(microsecond=0)
+    body = (
+        _SPAWN_AND_RECORD_PID.format(code="import sys; sys.stdin.read()  # live-child-marker")
+        + "; proc.stdout.read()"
+    )
+    result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(3)", body)
+    finished = datetime.now(UTC).replace(microsecond=0)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    metadata, _stack = _read_header(evidence)
+    assert "timed_out_at" in metadata, metadata
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", metadata["timed_out_at"])
+    timed_out = datetime.strptime(metadata["timed_out_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    assert started <= timed_out <= finished
+    entry = _child_entry(metadata, evidence)
+    assert isinstance(entry["args"], list)
+    assert "live-child-marker" in entry["args"][-1]
+    assert entry["running"] is True
+    assert entry["returncode"] is None
+    assert 0 <= entry["elapsed_seconds"] <= 30
+    assert entry["started_at"].endswith("Z")
+
+
+def test_timeout_evidence_reports_exited_unreaped_child(tmp_path: Path) -> None:
+    body = (
+        _SPAWN_AND_RECORD_PID.format(code="raise SystemExit(3)")
+        + f"; import os; {_WAIT_WITHOUT_REAPING}; time.sleep(10)"
+    )
+    result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(3)", body)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    metadata, _stack = _read_header(evidence)
+    entry = _child_entry(metadata, evidence)
+    assert entry["running"] is False
+    assert entry["returncode"] == 3
+    assert "reaped_elsewhere" not in entry
+
+
+def test_timeout_evidence_collection_error_keeps_stack_and_kill(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(
+        "import timeout_evidence\n"
+        "def _boom():\n    raise RuntimeError('collection boom')\n"
+        "timeout_evidence._child_evidence = _boom\n",
+        encoding="utf-8",
+    )
+    result, evidence = _run_pytest_case(tmp_path, 1, "")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Not properly terminated" in result.stdout
+    metadata, stack = _read_header(evidence)
+    assert {"nodeid", "timeout_seconds", "worker", "pid"} <= metadata.keys()
+    assert "children_error" in metadata, metadata
+    assert "RuntimeError: collection boom" in metadata["children_error"]
+    assert "children" not in metadata
+    assert "test_case.py" in "\n".join(stack)
 
 
 def test_integration_timeout_overrides_unit_budget_without_false_evidence(tmp_path: Path) -> None:
