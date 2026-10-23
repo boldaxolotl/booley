@@ -316,20 +316,71 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     job = workflow["jobs"]["bwave-smoke"]
     steps = job["steps"]
 
-    start = next(step for step in steps if step.get("name") == "Start duration budget clock")
+    start = next(step for step in steps if step.get("name") == "Start test-phase duration clock")
     canary = next(step for step in steps if step.get("name") == "Enforce duration budget")
 
     assert job["timeout-minutes"] == 180
     assert "started_at_epoch=$(date +%s)" in start["run"]
-    assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
+    assert canary["if"] == (
+        "always() && steps.runtime-base.outputs.build != 'true' && "
+        "steps.duration-clock.outcome == 'success'"
+    )
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
-    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 750
+    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 560
     assert '--budget-seconds "${budget}"' in canary["run"]
     assert steps.index(canary) > next(
         index
         for index, step in enumerate(steps)
         if step.get("name") == "Upload installed agent CLI policy evidence"
     )
+
+
+def _bwave_smoke_clock_seconds(*, build_seconds: int, validation_seconds: int) -> int:
+    """Return the budget-clock reading for a synthetic run of the real step order.
+
+    Every top-level ``Build …`` step takes ``build_seconds``, the parallel
+    validation group takes ``validation_seconds``, and every other step 1 s.
+    """
+    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    clock = names.index("Start test-phase duration clock")
+    enforce = names.index("Enforce duration budget")
+
+    def duration(step: dict) -> int:
+        if "parallel" in step:
+            return validation_seconds
+        return build_seconds if step.get("name", "").startswith("Build ") else 1
+
+    return sum(duration(step) for step in steps[clock + 1 : enforce])
+
+
+@pytest.mark.parametrize(
+    ("build_seconds", "validation_seconds", "passed"),
+    [(900, 450, True), (60, 600, False)],
+    ids=["slow-build-normal-tests", "fast-build-slow-tests"],
+)
+def test_bwave_smoke_budget_times_tests_not_image_builds(
+    build_seconds: int, validation_seconds: int, *, passed: bool
+) -> None:
+    """Runner build variance cannot fail the budget; a test-time regression does."""
+    from ci_duration_budget import evaluate
+
+    budget_step = next(
+        step
+        for step in _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Enforce duration budget"
+    )
+    elapsed = _bwave_smoke_clock_seconds(
+        build_seconds=build_seconds, validation_seconds=validation_seconds
+    )
+    result = evaluate(
+        "bwave-smoke",
+        started_at=1_000,
+        now=1_000 + elapsed,
+        budget=budget_step["env"]["STANDARD_BUDGET_SECONDS"],
+    )
+
+    assert result.passed is passed
 
 
 def test_standard_size_ceiling_runs_without_riscv_gate() -> None:

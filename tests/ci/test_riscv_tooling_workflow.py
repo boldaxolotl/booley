@@ -353,7 +353,7 @@ def test_budget_without_a_source_record_is_the_local_budget(tmp_path: Path) -> N
 
 
 def test_budget_without_the_riscv_lane_is_the_standard_budget(tmp_path: Path) -> None:
-    assert _budget(tmp_path, None, riscv="false") == (0, "750")
+    assert _budget(tmp_path, None, riscv="false") == (0, "560")
 
 
 def test_budget_rejects_an_unreadable_source_record(tmp_path: Path) -> None:

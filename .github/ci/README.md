@@ -205,8 +205,11 @@ published image has drifted from the runtime base; republish it by editing
 the stage, which mints a new key. Local and release builds always build the
 stage from source.
 
-The `bwave-smoke` duration budget follows the recorded source. Registry hits
-and local builds (including fallbacks) each get their own budget, derived from
-measured runs of that source, so a slow hit cannot hide behind the
-local-build ceiling. A lane that stopped before writing its record is judged
-against the local budget.
+The `bwave-smoke` duration budget times the test phase only: its clock starts
+after the standard candidate image and its wheel overlay are built, so runner
+and cache-network build speed cannot fail it. The RISC-V lane builds its image
+inside the validation group, so that build stays on the clock, and the budget
+follows the recorded source. Registry hits and local builds (including
+fallbacks) each get their own budget, derived from measured runs of that
+source, so a slow hit cannot hide behind the local-build ceiling. A lane that
+stopped before writing its record is judged against the local budget.
