@@ -8,7 +8,8 @@ import pytest
 from booley.flows.sim import flow, verilator_coverage_execution
 from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.execution import engine
-from booley.targets.domain import TargetHandle
+from booley.targets.domain import FuseSocError, TargetHandle
+from booley.targets.selection import split_selector
 from tests.file_lock_probe import lock_is_held
 
 
@@ -33,6 +34,20 @@ def explicit_surface_for_lightweight_target_handles(
     monkeypatch.setattr(
         verilator_coverage_execution, "resolve_target_compile_surface", resolve_or_fake
     )
+
+
+@pytest.fixture(autouse=True)
+def bare_identity_for_targets_without_a_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Layer tests with no ``.core``: an undeclared Target's identity is its bare name."""
+    identity = flow.SimulateFlow._target_identity
+
+    def identity_or_bare(self: flow.SimulateFlow, target: str) -> str:
+        try:
+            return identity(self, target)
+        except FuseSocError:
+            return split_selector(target)[1]
+
+    monkeypatch.setattr(flow.SimulateFlow, "_target_identity", identity_or_bare)
 
 
 def _is_lock_file(path: Path) -> bool:

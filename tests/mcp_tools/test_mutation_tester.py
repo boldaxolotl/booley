@@ -43,6 +43,7 @@ from booley.specialists.mutation_tester import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.conftest import require_symlinks, symlink_or_skip
+from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
 _TARGET_PARAMETERS: dict[str, Any] = {}
@@ -215,6 +216,7 @@ def test_creator_provider_failure_has_durable_debug_traceback(
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
     endpoint = _make_endpoint(tmp_path, monkeypatch)
+    _patch_resolve_target(monkeypatch)
     with (
         patch.object(endpoint, "_validate_scope_against_target", return_value=None),
         patch.object(endpoint, "_validate_target_runner"),
@@ -228,6 +230,18 @@ def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch)
 
     assert result.exit_code == EXIT_ERROR
     assert "no runnable tests" in result.report_text
+
+
+def test_two_keys_for_one_target_refuse_naming_both(tmp_path: Path, monkeypatch) -> None:
+    write_two_core_sim_project(
+        tmp_path, '["y#sim"]\ntests = ["one"]\n["vendor:b:y#sim"]\ntests = ["two"]\n'
+    )
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="y#sim")
+
+    result = endpoint._apply_campaign_defaults()
+
+    assert result is not None and result.exit_code == EXIT_ERROR
+    assert "[vendor:b:y#sim] and [y#sim]" in result.report_text
 
 
 def _sample_creator_json(specs: list[MutationSpec]) -> str:
@@ -1196,6 +1210,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
     _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
     endpoint = _make_endpoint(tmp_path, monkeypatch)
+    _patch_resolve_target(monkeypatch)
     assert endpoint._target_test_suite("lib:ip:core#default").tests == (
         "test_a",
         "test_b",
@@ -1760,6 +1775,7 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | Non
                 {
                     "selector": target,
                     "name": target,
+                    "identity": f"::{target}:0#{target}",
                     "vlnv": f"::{target}:0",
                     "project_root": Path(work_dir),
                     "cocotb_module": module,
