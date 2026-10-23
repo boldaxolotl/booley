@@ -75,6 +75,26 @@ def test_invalid_run_cwd_template_is_refused_before_a_manifest_exists(tmp_path: 
         _plan(handle, inspection, preview, ("reset", "count"))
 
 
+@pytest.mark.parametrize(
+    "value",
+    ['"make -C tests build"', '["make", 3]'],
+    ids=["bare-string", "non-string-entry"],
+)
+def test_invalid_pre_run_commands_are_refused_before_a_manifest_exists(
+    tmp_path: Path, value: str
+) -> None:
+    """Planning rejects a knob that is not a list of strings; nothing is frozen."""
+    project, handle, inspection, preview = _planning_fixture(tmp_path)
+    (project / "booley.toml").write_text(
+        f"[flows.sim]\npre_run_commands = {value}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        ValueError, match=r"\[flows\.sim\]\.pre_run_commands must be a list of strings"
+    ):
+        _plan(handle, inspection, preview, ("reset", "count"))
+
+
 def _planning_fixture(tmp_path: Path):
     project = tmp_path / ".booley"
     project.mkdir()
