@@ -6,7 +6,8 @@ stack dump. Header keys: ``nodeid``, ``timeout_seconds``, ``worker``, ``pid``;
 ``timed_out_at`` (UTC, RFC 3339, second resolution); ``children`` (one entry
 per unreaped ``subprocess.Popen`` of this process: ``pid``, ``args`` as a
 string or a list of strings, ``started_at``, ``elapsed_seconds``, ``running``,
-``returncode``, and ``reaped_elsewhere`` only when true); ``children_error``
+``returncode``, and ``reaped_elsewhere`` only when true; ``pid`` and ``error``
+alone when that one child could not be described); ``children_error``
 instead of ``children`` when collection failed. Children are tracked through
 weak references, so on Windows a ``Popen`` dropped by its owner while its
 child still runs is not reported (POSIX also scans ``subprocess._active``).
@@ -66,7 +67,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def _child_state(popen: subprocess.Popen[Any]) -> dict[str, Any]:
-    """Return running/returncode without reaping or mutating the Popen."""
+    """Return running/returncode without reaping the child (Windows ``poll`` may set returncode)."""
     if os.name == "nt":
         returncode = popen.poll()
         return {"running": returncode is None, "returncode": returncode}
@@ -106,15 +107,17 @@ def _child_evidence() -> list[dict[str, Any]]:
         if popen.returncode is not None or started is None:
             continue
         started_at, started_monotonic = started
-        entries.append(
-            {
+        try:
+            entry = {
                 "pid": popen.pid,
                 "args": _command_args(popen),
                 "started_at": started_at,
                 "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
                 **_child_state(popen),
             }
-        )
+        except Exception as error:  # noqa: BLE001 - one bad child must not hide the others
+            entry = {"pid": popen.pid, "error": f"{type(error).__name__}: {error}"}
+        entries.append(entry)
     return entries
 
 

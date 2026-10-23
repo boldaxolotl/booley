@@ -132,6 +132,41 @@ def test_timeout_evidence_collection_error_keeps_stack_and_kill(tmp_path: Path) 
     assert "test_case.py" in "\n".join(stack)
 
 
+def test_timeout_evidence_unserializable_children_keeps_stack_and_kill(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(
+        "import timeout_evidence\ntimeout_evidence._child_evidence = lambda: [object()]\n",
+        encoding="utf-8",
+    )
+    result, evidence = _run_pytest_case(tmp_path, 1, "")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Not properly terminated" in result.stdout
+    metadata, stack = _read_header(evidence)
+    assert "children_error" in metadata, metadata
+    assert "children" not in metadata
+    assert "test_case.py" in "\n".join(stack)
+
+
+def test_timeout_evidence_one_failing_child_keeps_its_pid(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(
+        "import timeout_evidence\n"
+        "def _boom(popen):\n    raise RuntimeError('state boom')\n"
+        "timeout_evidence._child_state = _boom\n",
+        encoding="utf-8",
+    )
+    body = (
+        _SPAWN_AND_RECORD_PID.format(code="import sys; sys.stdin.read()") + "; proc.stdout.read()"
+    )
+    result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(3)", body)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    metadata, stack = _read_header(evidence)
+    entry = _child_entry(metadata, evidence)
+    assert "RuntimeError: state boom" in entry["error"]
+    assert "children_error" not in metadata
+    assert "test_case.py" in "\n".join(stack)
+
+
 def test_integration_timeout_overrides_unit_budget_without_false_evidence(tmp_path: Path) -> None:
     result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(10)")
 
