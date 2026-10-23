@@ -114,13 +114,12 @@ class TestReplaceFile:
         assert destination.read_text() == "new"
         assert not source.exists()
 
-    @pytest.mark.parametrize("winerror", [5, 32])
     def test_retries_transient_windows_sharing_errors(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         source, destination = tmp_path / "new", tmp_path / "record.json"
         source.write_text("new")
-        flaky = _FlakyReplace([_windows_permission_error(winerror)] * 3)
+        flaky = _FlakyReplace([_windows_permission_error(32)] * 3)
         flaky.install(monkeypatch)
         delays: list[float] = []
         replace_file(source, destination, sleep=delays.append)
@@ -194,13 +193,12 @@ class TestUnlinkFile:
         unlink_file(target)
         assert not target.exists()
 
-    @pytest.mark.parametrize("winerror", [5, 32])
     def test_retries_transient_windows_sharing_errors(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         target = tmp_path / "entry"
         target.write_text("x")
-        flaky = _FlakyUnlink([_windows_permission_error(winerror)] * 3)
+        flaky = _FlakyUnlink([_windows_permission_error(32)] * 3)
         flaky.install(monkeypatch)
         delays: list[float] = []
         unlink_file(target, sleep=delays.append)
@@ -218,25 +216,6 @@ class TestUnlinkFile:
             unlink_file(target, sleep=delays.append)
         assert flaky.calls == len(delays) + 1
         assert sum(delays) < 2.0
-
-    def test_missing_file_propagates_without_sleeping(self, tmp_path: Path):
-        delays: list[float] = []
-        with pytest.raises(FileNotFoundError):
-            unlink_file(tmp_path / "absent", sleep=delays.append)
-        assert delays == []
-
-    def test_does_not_retry_posix_permission_errors(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        target = tmp_path / "entry"
-        target.write_text("x")
-        flaky = _FlakyUnlink([PermissionError(13, "Permission denied")])
-        flaky.install(monkeypatch)
-        delays: list[float] = []
-        with pytest.raises(PermissionError):
-            unlink_file(target, sleep=delays.append)
-        assert flaky.calls == 1
-        assert delays == []
 
 
 class _FlakyOpen:

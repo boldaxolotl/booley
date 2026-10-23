@@ -1027,8 +1027,9 @@ class SlotStore:
         entry still has its waiter name — promotion renames the file, so a
         child that became a holder in the meantime makes this fail (False)
         and the cancel must be refused. A Windows sharing error is retried
-        and, if it persists, refuses the withdrawal (False, logged). The cancelled child's ``acquire``
-        then sees LOST and raises instead of re-queueing.
+        and, if it persists, refuses the withdrawal (False, logged). The
+        cancelled child's ``acquire`` then sees LOST and raises instead of
+        re-queueing.
         """
         for job_class in JOB_CLASSES:
             _holders, waiters = self.snapshot(job_class)

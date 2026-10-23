@@ -355,13 +355,8 @@ class TestSingleProcess:
         assert waiter.path.exists()
 
     @staticmethod
-    def _withdraw(store, waiter, withdraw: str) -> bool:
-        if withdraw == "pid":
-            return store.cancel_waiter(waiter.pid)
-        return store.cancel_waiter_token(waiter)
-
-    @pytest.mark.parametrize("withdraw", ["pid", "token"])
-    def test_withdrawal_retries_windows_sharing_error(self, root, world, monkeypatch, withdraw):
+    def _queued_waiter(root, world):
+        """A store with a holder and one queued waiter whose backoff sleeps are simulated."""
         spawn(world, 100)
         spawn(world, 101)
         store = make_store(root, world)
@@ -370,6 +365,17 @@ class TestSingleProcess:
         waiter = store.submit(CLASS_HEAVY, pid=101)
         clock = BackoffClock()
         store._sleep = clock.sleep
+        return store, waiter, clock
+
+    @staticmethod
+    def _withdraw(store, waiter, withdraw: str) -> bool:
+        if withdraw == "pid":
+            return store.cancel_waiter(waiter.pid)
+        return store.cancel_waiter_token(waiter)
+
+    @pytest.mark.parametrize("withdraw", ["pid", "token"])
+    def test_withdrawal_retries_windows_sharing_error(self, root, world, monkeypatch, withdraw):
+        store, waiter, clock = self._queued_waiter(root, world)
         deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=0.005)
 
         assert self._withdraw(store, waiter, withdraw) is True
@@ -379,14 +385,7 @@ class TestSingleProcess:
     def test_withdrawal_refused_when_sharing_error_persists(
         self, root, world, monkeypatch, caplog, withdraw
     ):
-        spawn(world, 100)
-        spawn(world, 101)
-        store = make_store(root, world)
-        holder = store.submit(CLASS_HEAVY, pid=100)
-        assert store.refresh(holder).state == HOLDING
-        waiter = store.submit(CLASS_HEAVY, pid=101)
-        clock = BackoffClock()
-        store._sleep = clock.sleep
+        store, waiter, clock = self._queued_waiter(root, world)
         deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=1000.0)
 
         with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
