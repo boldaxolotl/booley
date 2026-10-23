@@ -67,6 +67,14 @@ unit in place. Simulation identifies builds, reuse, Pre-Sim Commands and test
 attempts; lint identifies configuration and checking. Current and baseline
 work are labeled separately. Queue waiting never consumes the EDA timeout.
 
+When Simulation runs several tests at once (`[jobs].max_heavy` above 1 with more
+than one test), each test is a lane. Its records and transcript labels also carry
+`lane=<tests>/<attempt>`, for example `lane=alpha/1a2b3c4d`, and each lane keeps its
+own six recent output lines, printed on the heartbeat, when that lane moves to
+another work unit, and at the end of the run.
+The heartbeat then shows `stage=lanes=<count>`, and a terminal shows one row per
+running lane. One test at a time keeps the single-stage format.
+
 Place presentation flags **after the Flow name**:
 
 ```bash
