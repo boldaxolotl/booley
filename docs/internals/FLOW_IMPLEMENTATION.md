@@ -1072,13 +1072,13 @@ exact completed Target Campaign without publishing policy evidence.
 The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
 Deep readers open the canonical store without following links, gunzip it once under the
-uncompressed ceiling, check the header schema, then validate every
-point, scoring/collection state, valid rollups, and evaluation before accepting
-point-dependent evidence. Summary readers validate rollup ordering and arithmetic,
-reconcile valid overall/source rollups, and require empty invalid rollups. Criteria
+uncompressed ceiling, check the header schema, then hand the manifest and points
+to the Campaign codec once. The codec validates every point, collection state,
+overall rollups (empty when collection is not complete), and evaluation before
+point-dependent evidence is accepted. Per-source rollups and scoring are
+writer-derived manifest content that readers do not re-derive. Criteria
 blocks on collection before denominator/metric work. Contract failures expose
-stable `COV_*` error codes. Summary readers validate manifest-local facts without
-opening point storage. Campaign and Simulation publication precede Criterion evidence. Coverage
+stable `COV_*` error codes. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
 bound evidence-state save as the updated Criteria. Acceptance readers ignore evidence

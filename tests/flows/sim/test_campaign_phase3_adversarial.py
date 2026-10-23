@@ -487,7 +487,9 @@ def _run_identity() -> dict[str, str]:
 
 def test_stale_owned_run_tree_is_cleaned_only_for_exact_owner(tmp_path: Path) -> None:
     identity = _run_identity()
-    run = RunDirectory(tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock")
+    run = RunDirectory(
+        tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock", tmp_path
+    )
     with claimed_run_directory(run, identity=identity) as directory:
         (directory / "nested").mkdir()
         (directory / "nested/output.log").write_text("stale", encoding="utf-8")
@@ -504,7 +506,9 @@ def test_stale_run_cleanup_preserves_unmarked_or_mismatched_tree(
     tmp_path: Path, marker: str
 ) -> None:
     identity = _run_identity()
-    run = RunDirectory(tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock")
+    run = RunDirectory(
+        tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock", tmp_path
+    )
     run.path.mkdir()
     payload = run.path / "preserve.log"
     payload.write_text("mine", encoding="utf-8")

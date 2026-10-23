@@ -25,6 +25,9 @@ from booley.config.agent import (
     load_agent_settings,
 )
 
+# Pins that once looked valid but that no agent call ever read.
+RETIRED_ROLE_NAMES = ("developer", "recovery", "triage_report")
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
@@ -67,8 +70,19 @@ class TestParseRoleModels:
     def test_unknown_role_raises(self):
         # The whole point of the knob is that a pin is honored; a typo that
         # silently bills a different model is the failure mode to prevent.
-        with pytest.raises(BackendConfigError, match="unknown role 'reviwer'"):
+        with pytest.raises(BackendConfigError, match="unknown role 'reviwer'") as excinfo:
             _parse_role_models({"roles": {"reviwer": "claude-opus-4-8"}})
+        # Only Specialist roles are offered as the valid set.
+        assert "valid roles are coverage_analyst, mutation_tester, reviewer." in str(excinfo.value)
+
+    def test_retired_role_raises(self):
+        # These pins never changed any model; refuse them so they cannot
+        # silently do nothing.
+        for role in RETIRED_ROLE_NAMES:
+            with pytest.raises(BackendConfigError, match="retired") as excinfo:
+                _parse_role_models({"roles": {role: "heavy"}})
+            assert repr(role) in str(excinfo.value)
+            assert "remove" in str(excinfo.value)
 
     @pytest.mark.parametrize("bad", [42, "", "   ", None, ["claude-opus-4-8"]])
     def test_non_string_or_empty_value_raises(self, bad):
@@ -147,10 +161,15 @@ class TestLoadAgentSettings:
         assert cfg.model_for_role("reviewer", "heavy") == "claude-sonnet-4-6"
         assert cfg.model_for_role("mutation_tester", "heavy") == cfg.model_for_tier("light")
 
-    def test_developer_pin_reaches_settings(self, tmp_path):
-        _write_toml(tmp_path, '[models.roles]\ndeveloper = "claude-sonnet-4-6"\n')
-        settings = load_agent_settings(tmp_path)
-        assert settings.model_for_role("developer", "heavy") == "claude-sonnet-4-6"
+    def test_retired_role_refuses_to_load(self, tmp_path):
+        from booley.audit.agent_schema import audit_models_table
+
+        _write_toml(tmp_path, '[models.roles]\ndeveloper = "heavy"\n')
+        with pytest.raises(BackendConfigError, match="retired") as excinfo:
+            load_agent_settings(tmp_path)
+        # The same error Doctor reports for the same [models] data.
+        doctor = audit_models_table({"models": {"roles": {"developer": "heavy"}}})
+        assert [finding.message for finding in doctor.findings] == [str(excinfo.value)]
 
     def test_models_honored_without_an_agent_table(self, tmp_path):
         # Regression: [models] used to be read only when [agent] existed, so
@@ -184,6 +203,12 @@ class TestSpecialistSubprocessPath:
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         cfg = bc.get_agent_settings()
         assert cfg.model_for_role("reviewer", "standard") == "claude-opus-4-8"
+
+    def test_lazy_config_refuses_retired_role(self, tmp_path, monkeypatch):
+        _write_toml(tmp_path, '[models.roles]\nrecovery = "light"\n')
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+        with pytest.raises(BackendConfigError, match="retired"):
+            bc.get_agent_settings()
 
     def test_env_provider_handoff_still_applies_project_models(self, tmp_path, monkeypatch):
         # The developer hands off BOOLEY_PRIMARY_PROVIDER, which settles the
@@ -230,15 +255,14 @@ class TestSpecialistResolvesRolePin:
 # --- vocabulary drift guard --------------------------------------------------
 
 
-def test_known_roles_matches_specialists_and_steps():
-    """_KNOWN_ROLES is hand-maintained; this fails if a specialist is added.
+def test_known_roles_match_specialist_names():
+    """_KNOWN_ROLES is hand-maintained; this fails if a specialist is added or renamed.
 
     The config layer can't import the MCP tool registry (bare Specialist
     subprocesses import it at startup), so the role vocabulary is a literal.
     This test is what keeps that literal honest — including for specialists
     currently hidden from discovery via registry.SKIP_MODULES.
     """
-    from booley.config.settings import STEP_TIERS
     from booley.mcp.registry import extract_mcp_tool_info
 
     specialists_dir = Path(bc.__file__).resolve().parent.parent / "specialists"
@@ -248,24 +272,30 @@ def test_known_roles_matches_specialists_and_steps():
         if (info := extract_mcp_tool_info(py_file, builtin=True)) and info.kind == "specialist"
     }
     assert specialists, "no specialists discovered — the AST probe broke, not the vocabulary"
-    assert specialists | set(STEP_TIERS) == _KNOWN_ROLES
+    assert specialists == _KNOWN_ROLES
 
 
 class TestDoctorModelsTable:
     """Doctor surfaces a bad [models] before the first ticket dies on it."""
 
-    def _run(self, models):
+    def _run(self, models, fixes: list[str] | None = None):
         from booley.audit.agent_schema import audit_models_table
         from tests.diagnostic_helpers import _record_audit
 
         passes: list[str] = []
         warns: list[str] = []
         fails: list[str] = []
+
+        def record_fail(msg: str, fix: str = "") -> None:
+            fails.append(msg)
+            if fixes is not None:
+                fixes.append(fix)
+
         valid = _record_audit(
             audit_models_table({} if models is None else {"models": models}),
             passed=passes.append,
             warned=lambda msg, fix="": warns.append(msg),
-            failed=lambda msg, fix="": fails.append(msg),
+            failed=record_fail,
         )
         return valid, passes, warns, fails
 
@@ -274,9 +304,22 @@ class TestDoctorModelsTable:
         assert valid and not passes and not warns and not fails
 
     def test_fails_on_unknown_role(self):
-        valid, _passes, _warns, fails = self._run({"roles": {"reviwer": "claude-opus-4-8"}})
+        fixes: list[str] = []
+        valid, _passes, _warns, fails = self._run({"roles": {"reviwer": "claude-opus-4-8"}}, fixes)
         assert not valid
         assert any("reviwer" in m for m in fails)
+        assert fixes == ["use one of: coverage_analyst, mutation_tester, reviewer"]
+
+    def test_fails_on_retired_role(self):
+        for role in RETIRED_ROLE_NAMES:
+            fixes: list[str] = []
+            valid, passes, _warns, fails = self._run(
+                {"roles": {"reviewer": "claude-opus-4-8", role: "heavy"}}, fixes
+            )
+            assert not valid
+            assert len(fails) == 1 and role in fails[0] and "retired" in fails[0]
+            assert fixes == [f"delete the {role} line from [models.roles]"]
+            assert not any("[models.roles] pins" in m for m in passes)
 
     def test_fails_when_models_is_not_a_table(self):
         valid, _passes, _warns, fails = self._run("claude-opus-4-8")

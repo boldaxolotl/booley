@@ -310,8 +310,8 @@ document: Booley product datasheet
   <article class="an">
     <div class="an__txt">
       <p class="an__id">AN-001</p>
-      <h3 class="an__t"><a href="blog/harness-matters/">Same AI agent, same chip bug: 56 minutes with a shell, 21 with the right tools</a></h3>
-      <p>The same agent, the same Caliptra bug, with and without Booley. Both fixed it every time. Most of the difference came from the work around the fix: building a test that exposed the bug and seeing what happened inside the processor.</p>
+      <h3 class="an__t"><a href="blog/harness-matters/">Why AI agents struggle with RTL debugging, and what helps</a></h3>
+      <p>In <span class="term" tabindex="0">Caliptra<span class="term__tip" role="tooltip">A large open-source system on chip from CHIPS Alliance. It is a hardware root of trust: a security block with its own RISC-V processor and firmware.</span></span>, an agent found a RISC-V processor bug within minutes, then spent most of an hour reproducing it. Invisible internal signals and long-running simulations explain much of that time; tools aimed at them, plus a repeatable build, cut it from 56 minutes to 21.</p>
       <p class="an__meta">boldaxolotl, 16 October 2026. <a href="blog/harness-matters/">Read the application note</a></p>
     </div>
     <div class="an__fig" aria-label="Mean completion time per bug fix">
