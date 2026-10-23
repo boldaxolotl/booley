@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Goal entry and Goal changes now refuse a Goal that names a Test its Target
+  skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
+  status names a Test skipped after entry as skipped, not as gone. Remove the
+  Test from `skip` or drop the Goal.
 - Project Setup's Memory Timing Surrogate guidance now requires every
   read-data bit to depend, through registers only and bit-wise, on the
   memory's write data, address, write enables, and byte-enables, and adds a
