@@ -83,7 +83,7 @@ Comparability, checked per platform from the artifacts:
    `tests.timeout_evidence` / `tests.timeout_headroom` plugins loaded through
    `pytest_plugins`) and `--fixtures-per-test` on a sample of the setup
    outliers (phase of one second or more in at least three runs of a
-   platform). Fixture closures of all 22,311 collected nodes were dumped by a
+   platform). Fixture closures of all 22,311 nodes collected on current `main` were dumped by a
    collection-only scratch plugin.
 4. **Share of capacity** for a family = its summed seconds inside the slowest
    shard (Windows, coverage; largest `execution_seconds` of that run) or the
@@ -127,7 +127,7 @@ workers per job and ten concurrent Windows jobs.
   `ci-required` `completed_at`, the definition in
   [the Windows record](windows-shard-experiment.md)): 1,114.5 (944-1,657).
   `ci-metrics` `workflow_elapsed_seconds`: 1,168 (978-1,667). Run 39852297352
-  (1,657 s) queued its heavy jobs 525-780 s on runner availability (`ci-metrics`
+  (1,657 s) queued its heavy jobs 525-653 s on runner availability (`ci-metrics`
   maximum job queue 653 s); the other nine runs queued at most 89 s.
 - **Runner minutes** (`ci-metrics` `runner_minutes`, whole workflow):
   208.2 (199.6-220.0). Per-platform job minutes are the sum of job elapsed
@@ -197,8 +197,9 @@ with at least one node.
   same node set (for example `test_finish.py` 1,317 s versus 107 s). No single
   family exceeds 7.4% of a slowest Windows shard's capacity; the cost is
   spread across many modules.
-- **Ubuntu is flatter.** Its top families are 62-112 s each, 2-3% of the job.
-  `test_live_catalog.py` (in-process MCP server and client, no subprocess) and
+- **Ubuntu is flatter.** Its top families are 61-112 s each, 2-3% of the job.
+  `test_live_catalog.py` (in-process MCP server and client; custom endpoints are
+  discovered by a child interpreter) and
   `test_verilator_build_reuse_campaign.py` (fake Verilator toolchain; skipped
   on Windows by `pytestmark`) lead there but are small on Windows.
 - **Setup is concentrated in the Goal Mode `layout` fixture.** No setup or
@@ -207,7 +208,7 @@ with at least one node.
   (`tests/qa/test_coverage_fault_boundaries.py`). On Windows there are 549
   setup outlier nodes and no teardown outlier; on coverage, 63 setup outlier
   nodes and no teardown outlier. `--fixtures-per-test` on a 23-node sample of
-  those outliers (every 25th of 553) resolved 21 through
+  those outliers (every 25th of the 553 distinct nodes across the Windows and coverage outliers) resolved 21 through
   `tests/goals/conftest.py::layout` (line 103) or `::goal_mode` (line 263); the
   other two (`test_target_less_parent_ignore_does_not_hide_paired_constraint`,
   `test_actual_local_credential_transport`) have their own fixtures and are
@@ -221,16 +222,16 @@ with at least one node.
   family selected nothing. The cross-module cost is function-scoped:
   `layout` is built per test by 1,313 nodes in 60 modules (it includes nodes
   that reach it through `goal_mode` or other fixtures). Summed over those
-  nodes it is 3,105 s setup + 12,955 s call on Windows (75.2% of Windows summed
-  test time), 230 + 1,085 s on Ubuntu 3.11 (36.7%), and 295 + 1,515 s on
-  coverage (34.9%). `goal_mode` (348 nodes, 23 modules) adds 1,605 s of
-  Windows setup. These are not shared state, so they are listed as context for
+  nodes it is 3,105 s setup + 12,955 s call on Windows (about 75% of Windows summed
+  test time, from the medians), 230 + 1,085 s on Ubuntu 3.11 (36.7%), and 295 + 1,515 s on
+  coverage (34.9%). Of those, `goal_mode` (348 nodes, 23 modules, a subset of the `layout`
+  nodes) accounts for 1,605 s of Windows setup. These are not shared state, so they are listed as context for
   the candidates, not as a family.
 
 ## Coverage shards (Ubuntu 3.13, sum of three shards)
 
 Reported separately: coverage tracing inflates these times and the shards are
-balanced by the Windows timing model. Coverage totals run 1.4-1.8x Ubuntu 3.11
+balanced by the Windows timing model. Coverage totals run 1.3-1.8x Ubuntu 3.11
 for the same families.
 
 | Rank | Family (module) | Total s | Setup s | Call s | Teardown s | Nodes (runs present) | Share of slowest shard/job capacity % |
@@ -314,7 +315,7 @@ the `Popen` plugin; they are **local** values, not CI medians. Result per cell:
 | `test_r1_lifecycle.py` | found via `layout`; 651 launches in the heaviest node | found: owned summary, staging, and publication inodes (23 sites) | found: `test_hard_process_death_recovers_only_durably_owned_publication_inodes` runs `sys.executable -c` | not found |
 | `test_finish_authority.py` | found via `layout`; 392 launches in a mid node | found: persisted attempt records (20 sites) | not found | not found |
 | `test_goal_cli.py` | found: `goal_mode` enters Goal Mode per test (83 of 83 nodes), 323 launches in the heaviest node | not found | not found (the CLI `main()` is called in-process) | not found |
-| `test_live_catalog.py` | not found (0 launches) | not found | found, one node: `test_worker_timeout_reaps_importer_and_descendants` starts `sys.executable` plus a sleeping child, by design | found in effect: an in-process MCP server and client; local profile of the heaviest node: 10.2 s waiting on thread locks, 2,364 `compile` calls (AST discovery of built-in endpoints) |
+| `test_live_catalog.py` | not found | not found | found: custom endpoints are discovered by a child `python -B -P -m booley.mcp.catalog_worker` (`src/booley/mcp/live_catalog.py:209-214`, `catalog_worker.py:55-66`); the heaviest node (`test_config_only_refresh_reuses_unfiltered_discovery`) writes two custom endpoints and made 20 `Popen` launches in a local check; `test_worker_timeout_reaps_importer_and_descendants` starts `sys.executable` plus a sleeping child, by design | found in effect: an in-process MCP server and client; local profile of the heaviest node: 10.2 s waiting on thread locks (consistent with waiting on the worker thread and its child), 2,364 `compile` calls (AST discovery of built-in endpoints) |
 | `test_verilator_build_reuse_campaign.py` | not found | found: `build-execution.json` retained-image record | found: 6 `fusesoc` launches per node (2.4-2.6 s of 7.8-8.6 s local), a fake `verilator`, 76-114 fake compiler launches | found: real `SimulateFlow` path with a fake Verilator toolchain |
 
 What the measurements show:
@@ -332,9 +333,12 @@ What the measurements show:
 - Local launch-to-return time is small on Linux (2.0 s of a 3.8 s node for the
   heaviest `test_finish.py` node), so the same candidates barely register
   locally; the cost is Windows process creation.
-- `test_live_catalog.py` has no subprocess cost to remove in the profiled
-  nodes; its cost is in-process work, and it costs the same on Windows (120 s)
-  as on Ubuntu 3.11 (112 s).
+- `test_live_catalog.py` mixes in-process server work with child-interpreter
+  starts for custom-endpoint discovery. A first local profile missed those
+  launches (the review re-ran the heaviest node with a `Popen` counter and
+  saw 20). The family costs about the same on Windows (120 s) as on Ubuntu 3.11
+  (112 s), so interpreter starts are not the dominant cost there; how much of
+  the 10.2 s lock wait is the worker child is not separated.
 - `cProfile` alone sees only `fork_exec`/`poll` for launches (0.26 s and 1.1 s
   for the heaviest `test_finish.py` node), which is why launch counts come from
   the `Popen` plugin.
@@ -358,11 +362,11 @@ What the measurements show:
 - **Sample size.** Ten runs in a one-day window; the suite changed between SHAs
   (a few new nodes, 22,257-22,308). This profile ranks costs and claims no
   saving. The 20-run, queue-time-included rule for performance claims
-  (`.github/ci/README.md:119-121`) governs the follow-up measurements of the
+  ("Performance telemetry" in `.github/ci/README.md`) governs the follow-up measurements of the
   candidates, not this ranking.
 - **`main` pushes run everything.** Every job and every recovery permutation
   runs on a `main` push (`.github/workflows/test.yml:110-111`,
-  `.github/ci/README.md:103-104`), so recovery-family ranks, runner minutes,
+  "Exhaustive recovery policy" in `.github/ci/README.md`), so recovery-family ranks, runner minutes,
   and gate time are larger than on an ordinary pull request.
 - **Coverage tracing** inflates the coverage-shard times.
 - **No per-worker data.** `phases` is per shard or job; the non-test worker
@@ -377,27 +381,38 @@ What the measurements show:
 Each candidate is written so it can be pasted into an issue. The baseline is
 the table above; each saving is an **estimate** with the stated reasoning, not
 a measurement. The bound table converts an assumed family saving into a job
-saving the way the CI shape allows: a family saving `S` seconds (summed over
-workers) shortens a job by at most `S` divided by its four workers, and the
-gate only when that job is on its critical path.
+saving with an idealised rule: a family saving `S` seconds (summed over
+workers) shortens a job by about `S` divided by its four workers, as if the
+saving were spread evenly and the workers rebalanced. That is an estimate, not
+a bound. On Ubuntu and coverage, `loadscope` keeps a module's tests on one
+worker, so the whole `S` lands on that worker: the job shortens by up to `S`
+if that worker finishes last, and by less (possibly nothing) otherwise. The
+gate shortens only when the job is on its critical path.
 
 Gate relevance, from this sample: the two Ubuntu complete suites are the
-slowest job in all ten runs, so only a saving in **both** Ubuntu 3.11 and 3.14
-shortens the gate (by roughly the smaller of the two). Windows shards,
+slowest single job in all ten runs, comparing each job's own elapsed time. The
+record does not trace dependency chains: `ci-required` also waits on
+`test-verify` (after the whole `test` matrix), `coverage` (after the coverage
+shards), and `bwave-smoke` (not profiled here), and one run's queueing moved
+start times by hundreds of seconds. Read the gate figures below as the
+slowest-job reading, to be confirmed by the measurement conditions. Within it,
+a saving in the slowest Ubuntu suite shortens the gate up to its lead over the
+next-slowest job, so a saving in **both** Ubuntu 3.11 and 3.14 is needed for
+the full figure (roughly the smaller of the two). Windows shards,
 coverage shards, and the rest are not on the critical path (slowest Windows
 shard 849.5 s versus slowest job 1,074.0 s), so a Windows-only saving lowers
 runner minutes but not the gate unless Windows becomes the slowest job. The
 measured gate baseline is the `main` job set (forced); the before/after gate
 comparison uses the ordinary Python-change required-job set, run through the
 `windows_shard_benchmark` / `linux_shard_benchmark` dispatch inputs
-(`.github/ci/README.md:56-59,88-90`).
+(the Windows and Ubuntu experiment sections of `.github/ci/README.md`).
 
 **Common measurement conditions (every candidate).** Same runner OS and Python
 version, 4 workers, the platform's scheduler (`loadscope` on Ubuntu and
 coverage, `worksteal` on Windows), the production shard count and the
 checked-in timing model unchanged, the same eligible-test set verified by
 `test-verify`, and at least 20 ordinary code-changing runs before and after
-with queue time included (`.github/ci/README.md:119-121`) before a durable
+with queue time included ("Performance telemetry" in `.github/ci/README.md`) before a durable
 saving is claimed.
 
 **Common retained coverage (every candidate).** Real integration cases stay
@@ -431,9 +446,12 @@ family saving applied to the baseline medians):
   `git ls-tree`), local.
 - **Expected.** Family 30-50% faster on the assumption that launches halve
   (the 65-71 ms per launch inference). Windows slowest shard shorter by about
-  15-25 s; Ubuntu 3.11 job by 8-13 s, Ubuntu 3.14 by 7-12 s. Gate: on the
-  critical path (Ubuntu), so up to the smaller Ubuntu figure, about 7-12 s of a
-  1,114 s gate.
+  15-25 s; Ubuntu 3.11 job by 8-13 s, Ubuntu 3.14 by 7-12 s. The Ubuntu
+  figures apply the Windows-derived percentage and are upper estimates: locally
+  launch-to-return time is about half of a node (2.0 s of 3.8 s), so halving
+  launches saves about 26% there, roughly half the stated Ubuntu figure. Gate:
+  Ubuntu is the slowest-job reading, so up to the smaller Ubuntu figure, about
+  4-12 s of a 1,114 s gate, if the slowest-job reading holds.
 - **Conditions.** Common block; verify with `--durations` on the same node set
   on a Windows shard.
 - **Must stay real.** `test_nonexcluded_pair_finish_retry_and_next_entry_stay_local`
@@ -490,8 +508,9 @@ family saving applied to the baseline medians):
   `goal_mode`, which commits a core and enters Goal Mode for every test.
 - **Expected.** Cutting 30-50% of the setup half (where the repeated entry
   lives), about 112-187 s on Windows with the call phase unchanged, is 14-24%
-  of the family; the bound table uses that 14-24%. Gate: not on the critical
-  path (Windows mostly; the Ubuntu 3.11 family is 1.6% of the job).
+  of the family; the bound table uses that 14-24%. Gate: mostly Windows, which
+  is off the critical path; the small Ubuntu saving (2-4 s, 1.6% of the job)
+  counts toward the gate only if both Ubuntu suites gain it.
 - **Conditions.** Common block.
 - **Must stay real.** `test_goal_status_project_selection_no_option` (real
   Project and worktree selection), `test_goal_status_complete_bytes` (byte
@@ -503,12 +522,16 @@ family saving applied to the baseline medians):
   coverage 154.6 s; Windows 120.1 s. 21 nodes, no `layout`. 3.1% of the Ubuntu
   3.11 job, the largest single Ubuntu family. Heaviest node
   (`test_config_only_refresh_reuses_unfiltered_discovery`): 20.7 s on CI
-  Ubuntu 3.11, 21.3 s local, 10.2 s of it waiting on thread locks.
-- **Expected.** 20-40% by reusing built-in endpoint discovery across a
-  module's cases where the case is not about discovery (low confidence: the
-  profile shows wait time in an in-process server, not an obvious duplicate
-  scan). See the bound table for the Ubuntu job figures. Gate: on the critical path,
-  so the gate could shorten by the smaller Ubuntu figure.
+  Ubuntu 3.11, 21.3 s local, 10.2 s of it waiting on thread locks. The node
+  writes two custom endpoints, so each refresh starts a child interpreter
+  (20 `Popen` launches in a local check).
+- **Expected.** 20-40% by reusing discovery across a module's cases where the
+  case is not about discovery, built-in endpoints and the custom-endpoint
+  worker child alike (low confidence: the profile shows wait time in an
+  in-process server and its worker, not an obvious duplicate scan; the first
+  step is to split the lock wait between the two). See the bound table for the
+  Ubuntu job figures. Gate: the slowest-job reading puts it on the critical
+  path, so the gate could shorten by up to the smaller Ubuntu figure.
 - **Conditions.** Common block.
 - **Must stay real.** The live server and client round trip, plus
   `test_worker_timeout_reaps_importer_and_descendants` (child process
