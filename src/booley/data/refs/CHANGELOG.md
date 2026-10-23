@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Project Setup's Memory Timing Surrogate guidance now requires every
+  read-data bit to depend, through registers only and bit-wise, on the
+  memory's write data, address, write enables, and byte-enables, and adds a
+  no-pruning probe against a black-box synthesis. Surrogates built under the
+  earlier rule, with read data from the address or constants, may let
+  synthesis delete the surrounding logic and understate area and Fmax.
+  Projects with a surrogate should re-run setup's surrogate validation
+  (Project Configuration step) and fix any surrogate that fails the probe.
 - Parallel Simulation tests no longer show their progress lines under another test's
   stage or drop them, and one test starting a command no longer clears another test's
   recent output. Records and transcript labels now carry `lane=<tests>/<attempt>`

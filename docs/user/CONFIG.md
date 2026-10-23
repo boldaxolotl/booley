@@ -788,9 +788,15 @@ A memory timing surrogate is an ordinary Verilog/SystemVerilog source. Put it
 in a synthesis-only fileset and let the project's RTL select it through a typed
 `vlogdefine` owned by the synthesis Target, as above. Simulation and lint
 Targets keep the functional memory RTL by omitting both that fileset and that
-define. No manifest or custom FuseSoC file type is involved. The surrogate is a
-timing-boundary approximation: synthesis results exclude the memory's real
-capacity, contents, macro area, power, placement, and internal timing arcs.
+define. No manifest or custom FuseSoC file type is involved. Every read-data
+bit of the surrogate depends, through registers only, on the memory's write
+data, address, write enables, and byte-enables, combined bit-wise, with no
+combinational write-to-read arc. Read data driven only by the address or by
+constants lets synthesis delete the logic around the memory and understates
+area and Fmax; Project Setup checks each surrogate with a no-pruning probe
+against a black-box synthesis. The surrogate is a timing-boundary
+approximation: synthesis results exclude the memory's real capacity, contents,
+macro area, power, placement, and internal timing arcs.
 
 `logical` runs only Yosys mapping. It is much faster and gives a useful mapped
 area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped
