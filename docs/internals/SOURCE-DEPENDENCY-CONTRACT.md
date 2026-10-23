@@ -46,7 +46,7 @@ adapters; D32 prevents Runtime from depending on those script owners, while D34 
 the shared owner independent of Runtime, Harness, and Dev Support.
 
 Feedback owns report rendering from an explicit `Environment` value. Harness resolves
-the optional Doctor `deep` observation at report, export, and Project Setup cleanup
+the optional Doctor `deep` observation at report and export
 composition roots, validates it as a boolean, and passes one environment through each
 logical operation. Missing or invalid observations remain `not recorded`. D33 forbids
 Feedback from importing Harness in any static import location.
