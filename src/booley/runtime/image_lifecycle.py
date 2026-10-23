@@ -1154,6 +1154,7 @@ def plan(
     root = scope.project_root.resolve()
     selected = _selected_reference(root)
     nodes = _planned_nodes(root, selected, resolved_docker, artifact_policy)
+    snapshot = _input_snapshot(nodes, resolved_docker)
     steps = _plan_steps(nodes, resolved_docker, intent)
     parent_source = steps[-1].source_reference or nodes[-1].reference
     parent_id = resolved_docker.image_id(parent_source)
@@ -1166,18 +1167,21 @@ def plan(
             (replace(layout, parent=parent_source),), resolved_docker, intent
         )
         steps = (*steps, *layout_steps)
-    snapshot = _snapshot(nodes)
-    identities = tuple(
-        (
-            ref,
-            inputs,
-            recipe,
-            resolved_docker.image_id(ref) if ref == STABLE_RUNTIME_BASE_IMAGE else parent,
+    return LifecyclePlan(nodes, steps, selected, snapshot, root, artifact_policy, topology)
+
+
+def _input_snapshot(nodes: tuple[ImageNode, ...], docker: DockerPort) -> InputSnapshot:
+    """Snapshot the mutable upstream inputs, resolving the runtime base to its current ID."""
+    return InputSnapshot(
+        tuple(
+            (
+                ref,
+                inputs,
+                recipe,
+                docker.image_id(ref) if ref == STABLE_RUNTIME_BASE_IMAGE else parent,
+            )
+            for ref, inputs, recipe, parent in _snapshot(nodes).identities
         )
-        for ref, inputs, recipe, parent in snapshot.identities
-    )
-    return LifecyclePlan(
-        nodes, steps, selected, InputSnapshot(identities), root, artifact_policy, topology
     )
 
 
@@ -1475,10 +1479,7 @@ def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_bui
             assert layout_prior is not None
             prepared.append(layout_image)
             candidate_references.extend(layout_candidates)
-            prior_tags = (
-                *(row for row in prior_tags if row.reference != layout_prior.reference),
-                layout_prior,
-            )
+            prior_tags = (*prior_tags, layout_prior)
     except BaseException:
         _discard_candidate_references(candidate_references, resolved_docker, owned.refs)
         raise
@@ -1546,24 +1547,22 @@ def validate(
 ) -> None:
     """Revalidate inputs and candidate identities before external downtime."""
     resolved_docker = docker or _docker_adapter()
-    current = plan(
-        ProjectImageScope(prepared.plan.project_root),
-        docker=resolved_docker,
-        artifact_policy=prepared.plan.acquisition_policy,
+    root = prepared.plan.project_root
+    nodes = _planned_nodes(
+        root, _selected_reference(root), resolved_docker, prepared.plan.acquisition_policy
     )
-    if (
-        prepared.plan.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
-        or current.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
-    ):
-        _validate_layout_preparation(prepared, current, resolved_docker)
-        return
-    if current.input_snapshot != prepared.input_snapshot:
+    current = _input_snapshot(nodes, resolved_docker)
+    if current != prepared.input_snapshot:
         raise ImageLifecycleError(
             "image inputs changed while candidates were being prepared: "
             + format_differences(
                 _input_snapshot_mapping(prepared.input_snapshot),
-                _input_snapshot_mapping(current.input_snapshot),
+                _input_snapshot_mapping(current),
             )
+        )
+    if project_image.layout_topology(root) != prepared.plan.layout_topology:
+        raise ImageLifecycleError(
+            "Booley Directory topology or layout recipe changed while candidates were prepared"
         )
     for image in prepared.candidates:
         if image.candidate_reference == image.reference:
@@ -2499,7 +2498,9 @@ def _prepare_layout_child(
         steps = tuple(
             step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT
         )
-        updated = _prepared_layout_plan(original, upstream, steps)
+        updated = replace(
+            original, nodes=upstream, steps=steps, selected_reference=upstream[-1].reference
+        )
         return updated, None, (), None
     node = _layout_node(topology, upstream[-1], parent_image.image_id)
     reason = _planned_reason(node, docker, parent_invalid=False)
@@ -2516,61 +2517,13 @@ def _prepare_layout_child(
         *tuple(step for step in original.steps if step.role is not ImageRole.PROJECT_DATA_LAYOUT),
         step,
     )
-    updated = _prepared_layout_plan(original, nodes, steps)
+    updated = replace(original, nodes=nodes, steps=steps, selected_reference=node.reference)
     return (
         updated,
         acquired,
         candidates,
         TagSnapshot(node.reference, docker.image_id(node.reference)),
     )
-
-
-def _prepared_layout_plan(original, nodes, steps):
-    upstream_refs = {
-        node.reference for node in nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
-    }
-    identities = tuple(
-        row for row in original.input_snapshot.identities if row[0] in upstream_refs
-    )
-    if nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT:
-        identities = (*identities, *_snapshot((nodes[-1],)).identities)
-    return replace(
-        original,
-        nodes=nodes,
-        steps=steps,
-        selected_reference=nodes[-1].reference,
-        input_snapshot=InputSnapshot(identities),
-    )
-
-
-def _validate_layout_preparation(
-    prepared: PreparedConvergence, current: LifecyclePlan, docker: DockerPort
-) -> None:
-    before = tuple(
-        node for node in prepared.plan.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT
-    )
-    now = tuple(node for node in current.nodes if node.role is not ImageRole.PROJECT_DATA_LAYOUT)
-    if _snapshot(before) != _snapshot(now) or current.layout_topology is None:
-        raise ImageLifecycleError(
-            "upstream image or Booley Directory topology inputs changed during layout preparation"
-        )
-    has_layout = prepared.plan.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
-    parent = prepared.candidates[-2 if has_layout else -1]
-    if docker.image_id(parent.candidate_reference) != parent.image_id:
-        raise ImageLifecycleError(
-            "Booley Directory layout immutable prepared parent was substituted"
-        )
-    if has_layout:
-        expected = _layout_node(current.layout_topology, before[-1], parent.image_id)
-        if _snapshot((expected,)) != _snapshot((prepared.plan.nodes[-1],)):
-            raise ImageLifecycleError(
-                "Booley Directory layout recipe or parent identity changed during preparation"
-            )
-    elif _layout_alias_capable(parent.image_id):
-        raise ImageLifecycleError("prepared alias image is missing its required layout derivative")
-    for image in prepared.candidates:
-        if docker.image_id(image.candidate_reference) != image.image_id:
-            raise ImageLifecycleError("prepared image identity changed before layout adoption")
 
 
 def _reconcile_layout_tag_cleanup(

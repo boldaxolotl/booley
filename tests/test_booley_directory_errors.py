@@ -13,7 +13,7 @@ from booley.eda.provisioning.authority import AuthorityError, _canonical_project
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows import baseline_worktree as baseline
 from booley.harness import doctor, init_cmd
-from booley.harness.setup import cleanup, docker_image, guidance_links, readiness
+from booley.harness.setup import docker_image, guidance_links, readiness
 from booley.harness.setup.common import InitContext
 from booley.projects import inventory
 from booley.runtime import project_worktree_pairing
@@ -131,29 +131,6 @@ def test_interactive_init_banner_names_selected_project_root(tmp_path, monkeypat
     init_cmd._print_init_banner(InitContext(project_root=tmp_path))
     output = capsys.readouterr().out
     assert "Project Root" in output and str(tmp_path) in output
-
-
-def test_cleanup_resolution_failure_is_typed_and_preserves_files(tmp_path, monkeypatch):
-    sentinel = tmp_path / "keep.txt"
-    sentinel.write_text("keep", encoding="utf-8")
-    monkeypatch.setattr(
-        cleanup, "resolve_checkout_booley_dir", Mock(side_effect=PermissionError("denied"))
-    )
-    with pytest.raises(cleanup.CleanupError, match="cannot resolve the Booley Directory"):
-        cleanup._project_root(tmp_path)
-    assert sentinel.read_text(encoding="utf-8") == "keep"
-
-
-@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires host privilege")
-def test_cleanup_refuses_a_substituted_directory_symlink(tmp_path):
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    root = tmp_path / "root"
-    root.mkdir()
-    (root / ".booley").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(cleanup.CleanupError, match="Booley Directory must not be a symlink"):
-        cleanup._safe_relative(root, ".booley/report.json")
-    assert outside.is_dir() and not list(outside.iterdir())
 
 
 def test_local_image_build_reports_missing_source_checkout(tmp_path, capsys):

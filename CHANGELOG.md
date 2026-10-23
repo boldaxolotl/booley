@@ -17,6 +17,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   synthesis delete the surrounding logic and understate area and Fmax.
   Projects with a surrogate should re-run setup's surrogate validation
   (Project Configuration step) and fix any surrogate that fails the probe.
+- Parallel Simulation tests no longer show their progress lines under another test's
+  stage or drop them, and one test starting a command no longer clears another test's
+  recent output. Records and transcript labels now carry `lane=<tests>/<attempt>`
+  while tests run at once; a single test at a time prints as before.
 - `tests.toml` sections now match Targets by identity. In a Project with several
   cores that declare the same Target name, a Target no longer picks up another
   core's section: a qualified key (`["vendor:lib:core#sim"]`) serves only the

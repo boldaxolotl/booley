@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.templates import eligible_eda_tool_criterion_families
+from booley.feedback import materialize
+from booley.runtime import process_group
 from booley.targets.domain import TargetRef, flow_can_drive
 
 _FORBIDDEN_MODULES = ("booley.host_mcp", "booley.mcp_tools", "booley.tools")
@@ -42,6 +44,14 @@ def test_retired_host_execution_files_are_absent() -> None:
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "booley-host-mcp" not in pyproject
     assert "host_mcp/templates" not in pyproject
+
+
+def test_retired_setup_cleanup_transaction_is_absent() -> None:
+    """Setup cleanup is the run-root cleanup only; the manifest transaction stays deleted."""
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "src/booley/harness/setup/cleanup.py").exists()
+    assert not hasattr(process_group, "is_process_group_alive")
+    assert not hasattr(materialize, "referenced_sources")
 
 
 def test_production_has_no_retired_host_execution_symbols() -> None:

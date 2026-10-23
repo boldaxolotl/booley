@@ -149,8 +149,10 @@ def test_input_drift_aborts_commit_without_moving_managed_tags(tmp_path, monkeyp
     if drift == "after-prepare":
         change_runtime_base()
     docker.mutations.clear()
-    with pytest.raises(lifecycle.ImageLifecycleError, match="changed while candidates"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="changed while candidates") as caught:
         lifecycle.commit(prepared, docker=docker)
+    assert ".parent_compatibility_key" in str(caught.value)  # names the changed input
+    assert "sha256:changed" in str(caught.value)
     assert {ref: docker.image_id(ref) for ref in managed} == managed
     assert not any(row[0] == "tag" and row[-1] in managed for row in docker.mutations)
     assert not any(ref.startswith("booley-lifecycle-") for ref in docker.images)
