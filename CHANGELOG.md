@@ -9,12 +9,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- A `[flows.sim].pre_run_commands` that is not a list of strings (a bare string, a
-  table, a number, or a list with a non-string entry) now makes `booley flow sim`
-  refuse with Doctor's message before anything runs, instead of being split into
-  single characters or coerced. A `[feedback].redact_extra` of the same shape now
-  fails `booley feedback report`, `export` and `redact` with exit 2
-  instead of silently skipping the term.
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
@@ -273,6 +267,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
   so resuming a Campaign planned with a list or string `flow_options.defines`
   reports a workload change that names the cause; re-plan it.
+- A `[flows.sim].pre_run_commands` that is not a list of strings (a bare string, a
+  table, a number, or a list with a non-string entry) now makes `booley flow sim`
+  refuse with Doctor's message before anything runs, instead of being split into
+  single characters or coerced. A `[feedback].redact_extra` of the same shape now
+  fails `booley feedback report`, `export` and `redact` with exit 2
+  instead of silently skipping the term.
 
 ## 0.3.1 - 05 OCT 2026
 
