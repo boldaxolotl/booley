@@ -37,7 +37,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from booley.audit.project_schema import REDACT_EXTRA_PROBLEM
 from booley.commit_policy.policy import banned_spans, parse_stealth_vocabulary
+from booley.core.boundary import BoundaryError, is_str_list
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +229,14 @@ def _extra_terms(booley_toml: dict) -> set[str]:
     feedback = booley_toml.get("feedback")
     if isinstance(feedback, dict):
         extra = feedback.get("redact_extra")
-        if isinstance(extra, list):
-            terms.update(str(t).strip() for t in extra if str(t).strip())
+        if extra is None:
+            return terms
+        if not is_str_list(extra):
+            # A bare string or coerced entry would silently leave a term
+            # unredacted, so refuse with Doctor's diagnosis instead.
+            message, fix = REDACT_EXTRA_PROBLEM
+            raise BoundaryError(f"{message}; {fix}")
+        terms.update(term.strip() for term in extra if term.strip())
     return terms
 
 

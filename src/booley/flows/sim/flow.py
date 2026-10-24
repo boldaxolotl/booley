@@ -73,6 +73,7 @@ from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
+    resolve_pre_sim_commands,
     resolve_run_cwd,
     resolve_sim_build_timeout_ms,
 )
@@ -1780,27 +1781,6 @@ def parse_sva_errors(output: str) -> int:
         return count
 
 
-def _resolve_pre_sim_commands(work_dir: Path | None = None) -> list[str]:
-    """Project shell lines run before each sim run.
-
-    ``[flows.sim].pre_run_commands`` (ADR 0039) carries a per-test
-    non-RTL build step — e.g. compiling the selected test's firmware image
-    with a cross-GCC — which the once-per-worktree post-setup hook cannot
-    express. The execution boundary assembles the ``BOOLEY_*`` environment
-    before each run. Empty when unset.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            val = config_section(cfg.get("flows", {}), "sim").get("pre_run_commands")
-            return as_str_list(val)
-    except ImportError:
-        pass
-    return []
-
-
 def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     """Per-run disk budget for the sim run directory, from booley.toml.
 
@@ -2780,6 +2760,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 if resume_error is not None:
                     return resume_error
             self._effective_build_timeout_ms()
+            # A malformed Pre-Sim Commands knob must refuse here, before any
+            # authorization, admission, build or Pre-Sim spawn.
+            resolve_pre_sim_commands(self.args.work_dir)
             if resume is None and getattr(self.args, "coverage", False):
                 coverage_error = self._prepare_coverage()
                 if coverage_error is not None:
@@ -4447,7 +4430,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         execution = self._coverage_campaign_execution(
             plan,
             options,
-            tuple(_resolve_pre_sim_commands(self.args.work_dir)),
+            tuple(resolve_pre_sim_commands(self.args.work_dir)),
             resolve_pre_sim_build_access(self.args.work_dir),
         )
         return run_coverage_target(plan, execution, progress)
@@ -6454,7 +6437,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             normalized_run_cwd = "<outside-worktree>"
         controls = {
             "cycle_sentinels": _resolve_cycle_sentinels(self.args.work_dir),
-            "pre_run_commands": _resolve_pre_sim_commands(self.args.work_dir),
+            "pre_run_commands": resolve_pre_sim_commands(self.args.work_dir),
             "run_cwd": normalized_run_cwd,
             "environment": self._target_sim_env(result.target),
             "select": lookup_target_section(

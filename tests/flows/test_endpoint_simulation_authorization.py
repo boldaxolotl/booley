@@ -106,6 +106,52 @@ def test_selection_rejection_precedes_target_authorization(
     assert build_timeout_resolutions == []
 
 
+@pytest.mark.parametrize(
+    "value",
+    ['"make -C tests build"', '["make", 3]'],
+    ids=["bare-string", "non-string-entry"],
+)
+def test_invalid_pre_run_commands_refuse_before_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A malformed Pre-Sim Commands knob fails the preflight with Doctor's message."""
+    from booley.audit.flow_schema import audit_flow_tables
+
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(
+        f"[flows.sim]\npre_run_commands = {value}\n", encoding="utf-8"
+    )
+    handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
+    flow = SimulateFlow()
+    flow._state = DevelopmentState()
+    flow._args = SimpleNamespace(
+        mode=SimulationMode.SIMULATE, work_dir=tmp_path, coverage=False, resume_from=None
+    )
+    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
+    monkeypatch.setattr(
+        flow,
+        "_prepare_campaign_targets",
+        lambda: ((handle,), None, ("sim",), {"sim": ["smoke"]}),
+    )
+    monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
+    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 1000)
+    authorized: list[tuple[TargetHandle, ...]] = []
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        lambda _context, targets: authorized.append(targets),
+    )
+    audit = audit_flow_tables({"flows": {"sim": {"pre_run_commands": "x"}}}, ())
+    (doctor_finding,) = audit.findings
+
+    outcome = flow.prepare_simulation_endpoint()
+
+    assert isinstance(outcome, EndpointOutcome)
+    assert outcome.exit_code == 2
+    assert doctor_finding.message in outcome.report_text
+    assert doctor_finding.fix in outcome.report_text
+    assert authorized == []
+
+
 def test_unfinished_coverage_refusal_precedes_target_authorization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

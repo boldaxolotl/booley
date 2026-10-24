@@ -163,6 +163,7 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     assert "WARNING: usable host removal commands are unavailable" in output.err
     assert "preserve" in output.err and "docs/user/USAGE.md" in output.err
     assert output.err.count("git -C") == 1 and "branch -D" not in output.err
+    assert "populated submodules" in output.err and "--force" in output.err
     assert (worktree / ".git").is_file()
     assert (worktree / "README.md").read_text(encoding="utf-8") == "hello\n"
     assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").returncode != 0
@@ -1336,3 +1337,234 @@ def test_responsible_canonical_negation_keeps_per_path_input(
     assert "inputs: authored.json;" in error
     assert "booley init" not in error
     _assert_creation_absent(root, "responsible")
+
+
+# ---------------------------------------------------------------------------
+# Git submodules in a created worktree and in Goal entry (#1960)
+# ---------------------------------------------------------------------------
+
+
+def _sub_git(cwd: Path, *args: str) -> str:
+    """Run git with the file protocol allowed (fixture-only) and return stripped stdout."""
+    result = _git(
+        cwd,
+        "-c",
+        "protocol.file.allow=always",
+        "-c",
+        "user.name=Sub Test",
+        "-c",
+        "user.email=sub@test.invalid",
+        *args,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def _commit_source(repo: Path, text: str) -> str:
+    _write(repo / "source.sv", text)
+    _sub_git(repo, "add", "-A")
+    _sub_git(repo, "commit", "-qm", text.strip())
+    return _sub_git(repo, "rev-parse", "HEAD")
+
+
+def _new_repo(path: Path) -> Path:
+    path.mkdir()
+    _sub_git(path, "init", "-q", "-b", "main")
+    return path
+
+
+@pytest.fixture
+def submodule_project(versioned_project, tmp_path):
+    """A versioned Project with selected, nested, unselected and paired submodules.
+
+    The outer repository pins ``vendor/ip`` to the older of two commits, so a
+    populated copy that merely follows the source HEAD would be visibly wrong.
+    """
+    root = versioned_project
+    dependency = _new_repo(tmp_path / "dependency")
+    pinned = _commit_source(dependency, "old\n")
+    _commit_source(dependency, "new\n")
+    leaf = _new_repo(tmp_path / "leaf")
+    _commit_source(leaf, "leaf\n")
+    middle = _new_repo(tmp_path / "middle")
+    _commit_source(middle, "middle\n")
+    _sub_git(middle, "submodule", "add", str(leaf), "deps/leaf")
+    _sub_git(middle, "commit", "-qm", "leaf")
+    for path in ("vendor/ip", "vendor/big"):
+        _sub_git(root, "submodule", "add", str(dependency), path)
+    _sub_git(root / "vendor/ip", "checkout", "-q", pinned)
+    _sub_git(root, "submodule", "add", str(middle), "vendor/middle")
+    _sub_git(root / "vendor/middle", "submodule", "update", "--init")
+    _sub_git(root, "add", "-A")
+    _sub_git(root, "commit", "-qm", "submodules")
+    control = root / ".booley"
+    _sub_git(control, "submodule", "add", "-f", str(dependency), "vendor/paired")
+    with (control / "booley.toml").open("a", encoding="utf-8") as config:
+        config.write('[submodules]\npaths = ["vendor/ip", "vendor/middle"]\n')
+    _sub_git(control, "add", "-A")
+    _sub_git(control, "commit", "-qm", "paired submodule")
+    return root
+
+
+def _pin(root: Path) -> str:
+    """The commit the outer repository pins ``vendor/ip`` to."""
+    return _sub_git(root, "rev-parse", "HEAD:vendor/ip")
+
+
+def _head(path: Path) -> str:
+    return _sub_git(path, "rev-parse", "HEAD")
+
+
+def test_worktree_new_populates_selected_and_nested_submodules(
+    submodule_project, python_outer, monkeypatch
+):
+    monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
+
+    assert _new("sub", submodule_project) == 0
+
+    worktree = worktree_cmd.worktree_path(submodule_project, "sub")
+    assert _head(worktree / "vendor/ip") == _pin(submodule_project)
+    assert (worktree / "vendor/ip/source.sv").read_text(encoding="utf-8") == "old\n"
+    assert (worktree / "vendor/middle/deps/leaf/source.sv").is_file()
+    assert not any((worktree / "vendor/big").iterdir())
+    assert _sub_git(worktree / "vendor/ip", "remote") == ""
+
+
+def test_worktree_new_populates_paired_checkout_gitlinks(submodule_project, python_outer):
+    assert _new("sub", submodule_project) == 0
+
+    paired = worktree_cmd.worktree_path(submodule_project, "sub") / ".booley"
+    assert _head(paired / "vendor/paired") == _sub_git(paired, "rev-parse", "HEAD:vendor/paired")
+    assert (paired / "vendor/paired/source.sv").is_file()
+
+
+@pytest.mark.parametrize(
+    ("problem", "message"),
+    [
+        pytest.param("missing", "initialize it first", id="missing"),
+        pytest.param("dirty", "is dirty", id="dirty"),
+        pytest.param("shallow", "is shallow", id="shallow"),
+        pytest.param("incomplete", "incomplete", id="incomplete"),
+    ],
+)
+def test_worktree_new_invalid_submodule_source_rolls_back(
+    submodule_project, python_outer, capsys, problem, message
+):
+    root = submodule_project
+    source = root / "vendor/ip"
+    if problem == "missing":
+        shutil.rmtree(source)
+        source.mkdir()
+    elif problem == "dirty":
+        _write(source / "scratch.txt", "untracked\n")
+    elif problem == "shallow":
+        git_dir = Path(_sub_git(source, "rev-parse", "--absolute-git-dir"))
+        _write(git_dir / "shallow", _head(source) + "\n")
+    else:
+        _sub_git(root, "update-index", "--cacheinfo", f"160000,{'1' * 40},vendor/ip")
+        _sub_git(root, "commit", "-qm", "unreachable pin")
+
+    assert _new("sub", root) == 1
+
+    error = capsys.readouterr().err
+    assert "Submodule setup failed offline:" in error
+    assert message in error
+    _assert_creation_absent(root, "sub")
+    assert (
+        _git(root / ".booley", "config", "--get", "branch.booley-worktree/sub.booleyBase").stdout
+        == ""
+    )
+
+
+def _enter_goal(worktree: Path, control: Path, on_boundary=None, slug: str = "sub-goal"):
+    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
+    from booley.goals.model import parse_goal_args
+
+    request = EntryRequest(worktree, slug, parse_goal_args([{"family": "LINT", "target": "top"}]))
+    environment = EntryEnvironment(
+        control, routing_guidance="Explicit test routing guidance.", on_boundary=on_boundary
+    )
+    return enter_goal_mode(request, environment)
+
+
+@pytest.fixture
+def goal_project(submodule_project, monkeypatch):
+    """The submodule Project with the real worktree script and its Booley Directory selected."""
+    from booley.runtime.booley_dir import reset_cache
+
+    control = submodule_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(control))
+    reset_cache()
+    yield submodule_project
+    reset_cache()
+
+
+def _new_goal_worktree(root: Path) -> Path:
+    from booley.fusesoc.core_projection import reconcile_projected_cores
+
+    assert _new("sub-goal", root) == 0
+    worktree = worktree_cmd.worktree_path(root, "sub-goal")
+    reconcile_projected_cores(worktree)
+    return worktree
+
+
+def _empty(directory: Path) -> None:
+    shutil.rmtree(directory)
+    directory.mkdir()
+
+
+@_real_script
+def test_goal_entry_populates_empty_submodules_idempotently(goal_project):
+    root, control = goal_project, goal_project / ".booley"
+    worktree = _new_goal_worktree(root)
+    _empty(worktree / "vendor/ip")
+
+    class Interrupted(BaseException):
+        pass
+
+    def interrupt(boundary: str) -> None:
+        if boundary == "created":
+            raise Interrupted
+
+    with pytest.raises(Interrupted):
+        _enter_goal(worktree, control, interrupt)
+    assert _head(worktree / "vendor/ip") == _pin(root)
+    populated = ((worktree / "vendor/ip/.git").stat().st_ino, _head(worktree / "vendor/ip"))
+    status = _sub_git(worktree, "status", "--porcelain", "--ignore-submodules=none")
+
+    _enter_goal(worktree, control, slug="sub-goal-resumed")
+
+    assert (
+        (worktree / "vendor/ip/.git").stat().st_ino,
+        _head(worktree / "vendor/ip"),
+    ) == populated
+    assert _sub_git(worktree, "status", "--porcelain", "--ignore-submodules=none") == status
+
+
+@_real_script
+def test_goal_entry_invalid_submodule_source_leaves_no_partial_state(goal_project):
+    from booley.goals.entry import GoalEntryError
+
+    root, control = goal_project, goal_project / ".booley"
+    worktree = _new_goal_worktree(root)
+    _empty(worktree / "vendor/ip")
+    _empty(worktree / ".booley/vendor/paired")
+    _write(root / ".booley/vendor/paired/scratch.txt", "untracked\n")
+
+    with pytest.raises(GoalEntryError, match=r"Submodule setup failed offline:.*is dirty"):
+        _enter_goal(worktree, control)
+
+    assert not any((worktree / "vendor/ip").iterdir())
+    assert not any((worktree / ".booley/vendor/paired").iterdir())
+
+
+@_real_script
+def test_goal_worktree_baseline_finds_submodules(goal_project):
+    from booley.flows.baseline_worktree import baseline_worktree
+
+    root, control = goal_project, goal_project / ".booley"
+    worktree = _new_goal_worktree(root)
+    _enter_goal(worktree, control)
+
+    with baseline_worktree(worktree, "HEAD") as baseline:
+        assert (baseline / "vendor/ip/source.sv").read_text(encoding="utf-8") == "old\n"
