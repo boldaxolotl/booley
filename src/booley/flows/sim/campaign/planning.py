@@ -120,6 +120,8 @@ def _region(pointer: str) -> tuple[str, ...] | None:
     match pointer.split("/")[1:]:
         case ["workload", "source_recipe", ("sources" | "parameters") as name, *_]:
             region = (name,)
+        case ["workload", "source_recipe", "defines", *_]:
+            region = ("defines",)
         case ["workload", "runtime_inputs", position, "declaration_id"]:
             region = ("runtime_inputs", position)
         case ["workload", "runtime_inputs", *_]:
@@ -208,6 +210,19 @@ def _project_parameters(projection: _Projection) -> None:
     if not lines and tuple(old_map) != tuple(new_map):
         lines.append("parameter order changed")
     projection.explain(("parameters",), lines)
+
+
+def _project_defines(projection: _Projection) -> None:
+    """Explain a legacy Campaign that recorded the unsupported `flow_options.defines`."""
+    if ("defines",) not in projection.regions:
+        return
+    projection.explain(
+        ("defines",),
+        (
+            "recorded flow_options.defines is no longer recorded (no Flow applies it); "
+            "re-plan the Campaign",
+        ),
+    )
 
 
 def _known_preparation_pair(old, new) -> bool:
@@ -413,6 +428,7 @@ def _project_command_model(projection: _Projection) -> None:
 _PROJECTORS = (
     _project_sources,
     _project_parameters,
+    _project_defines,
     _project_runtime,
     _project_suite,
     _project_prepared_sources,
