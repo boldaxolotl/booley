@@ -7,9 +7,10 @@ ledger rows, whether the frozen runs let the Goal be met, and names the
 reason when they do not:
 
 - a slot still pending, or no Test Run required at all;
-- a frozen run whose Test or Test Variant is gone from the Target, or whose
-  declared arguments or environment changed: only an approved retarget
-  freezes the Goal again;
+- a frozen run whose Test or Test Variant is gone from the Target, whose Test
+  the Target now skips, or whose declared arguments or environment changed:
+  only an approved Goal change (or, for a skip, removing the Test from
+  ``skip``) lets the Goal be met;
 - a required run that failed, or has not passed yet. Not for a coverage
   Goal: it is judged by its coverage floors alone
   (:func:`~booley.goals.test_run_evidence.outcomes_decide`).
@@ -168,6 +169,23 @@ def _views(
     )
 
 
+def _missing_text(gone: Sequence[str], skipped: Sequence[str], target: str) -> str:
+    """The status text for frozen runs the Target no longer has or now skips."""
+    clauses: list[str] = []
+    if gone:
+        clauses.append(
+            f"Test Runs {', '.join(gone)} no longer exist on Target {target!r}; "
+            "the Goal stays unmet until a human approves a retarget"
+        )
+    if skipped:
+        clauses.append(
+            f"Test Runs {', '.join(skipped)} are of Tests skipped in tests.toml on Target "
+            f"{target!r}; the Goal stays unmet until they are removed from skip or a human "
+            "approves a Goal change that no longer requires them"
+        )
+    return "; ".join(clauses)
+
+
 def _declaration_defect(
     required: Sequence[TestRun], target: str, plans: TargetPlans
 ) -> tuple[str, str] | None:
@@ -176,12 +194,18 @@ def _declaration_defect(
         plan = plans.plan(target)
     except TargetPlanError as exc:
         return REASON_MISSING, str(exc)
-    gone = [run.name for run in required if current_declaration(plan, run) is None]
-    if gone:
-        return REASON_MISSING, (
-            f"Test Runs {', '.join(gone)} no longer exist on Target {target!r}; "
-            "the Goal stays unmet until a human approves a retarget"
-        )
+    skipped = [
+        run.name
+        for run in required
+        if plan is not None and run.test in plan.skipped and run.test in plan.tests
+    ]
+    gone = [
+        run.name
+        for run in required
+        if run.name not in skipped and current_declaration(plan, run) is None
+    ]
+    if gone or skipped:
+        return REASON_MISSING, _missing_text(gone, skipped, target)
     changed = [run.name for run in required if current_declaration(plan, run) != run]
     if changed:
         return REASON_CHANGED, (

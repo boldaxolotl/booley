@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Goal entry and Goal changes now refuse a Goal that names a Test its Target
+  skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
+  status names a Test skipped after entry as skipped, not as gone. Remove the
+  Test from `skip` or drop the Goal.
 - The mutation tester now exposes a Target's `copyto` runtime inputs in the
   configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
   does, and removes them afterwards. A testbench that opens a data file no longer
