@@ -24,6 +24,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from booley.core.boundary import BoundaryError
 from booley.feedback import redact as redact_mod
 from booley.feedback import render
 from booley.feedback.findings import (
@@ -611,6 +612,12 @@ _ENVIRONMENT_HANDLERS = {
 }
 
 
+def _report_boundary_error(exc: BoundaryError) -> int:
+    """Print a malformed ``booley.toml`` value as a plain error; exit status 2."""
+    print(f"Error: {exc}", file=sys.stderr)
+    return 2
+
+
 def requires_environment(args: argparse.Namespace) -> bool:
     """Return whether a Feedback command renders environment observations."""
     return getattr(args, "feedback_command", None) in _ENVIRONMENT_HANDLERS
@@ -635,10 +642,15 @@ def run(
         return 2
     booley_dir = feedback_storage_dir(project_root)
     if environment_handler is not None:
-        return environment_handler(args, project_root, booley_dir, env=env)
+        try:
+            return environment_handler(args, project_root, booley_dir, env=env)
+        except BoundaryError as exc:
+            return _report_boundary_error(exc)
     assert handler is not None
     try:
         return handler(args, project_root, booley_dir)
+    except BoundaryError as exc:
+        return _report_boundary_error(exc)
     except (FindingsLockTimeoutError, CorruptFindingsLogError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

@@ -98,6 +98,23 @@ class TestScrubbing:
         out, _ = redact("part of the Skunkworks program", project)
         assert "Skunkworks" not in out
 
+    @pytest.mark.parametrize(
+        "value",
+        ['"Skunkworks"', '["Skunkworks", 7]'],
+        ids=["bare-string", "non-string-entry"],
+    )
+    def test_invalid_redact_extra_fails_with_doctors_message(self, project, value):
+        """An ignored or coerced term would leak, so a bad knob must stop the plan."""
+        toml = project / ".booley" / "booley.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8") + f"\n[feedback]\nredact_extra = {value}\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(
+            ValueError, match=r"\[feedback\]\.redact_extra must be a list of strings"
+        ):
+            build_plan(project)
+
     def test_overridden_stealth_banned_words_are_replaced(self, project):
         toml = project / ".booley" / "booley.toml"
         toml.write_text(
