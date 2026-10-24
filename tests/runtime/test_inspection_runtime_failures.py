@@ -231,7 +231,14 @@ def _build_ssh_layout(scratch, layout):
     elif layout == "authorized_keys-directory":
         keys.mkdir()
         offending = keys
-    elif layout in {"authorized_keys", "id_ed25519", "known_hosts", "config", "root-id_ed25519"}:
+    elif layout in {
+        "authorized_keys",
+        "id_ed25519",
+        "known_hosts",
+        "config",
+        "root-id_ed25519",
+        ".hidden_key",
+    }:
         keys.write_text("ssh-ed25519 AAAA inbound\n")
         offending = scratch / layout.removeprefix("root-")
         offending.write_text("outbound authority")
@@ -246,6 +253,8 @@ def _build_ssh_layout(scratch, layout):
         ("/home/agent/.ssh", "id_ed25519"),
         ("/home/agent/.ssh", "known_hosts"),
         ("/home/agent/.ssh", "config"),
+        # Sorts before authorized_keys: a loop that stops at the first good entry misses it.
+        ("/home/agent/.ssh", ".hidden_key"),
         ("/home/agent/.ssh", "symlinked-ssh"),
         ("/home/agent/.ssh", "symlinked-authorized_keys"),
         ("/home/agent/.ssh", "authorized_keys-directory"),
@@ -267,7 +276,7 @@ def test_runtime_ssh_directory_admits_only_inbound_authorized_keys(
         assert len(calls) == 1
         return
     assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    assert str(offending) in report.findings[0].message
+    assert report.findings[0].message.endswith(f": {offending}")
     assert not calls
 
 
@@ -286,7 +295,7 @@ def test_unlistable_ssh_directory_stays_exposed(mounted_runtime, monkeypatch, tm
     monkeypatch.setattr(Path, "iterdir", iterdir)
     report = inspection.inspect_runtime(request).issuance
     assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    assert str(scratch) in report.findings[0].message
+    assert report.findings[0].message.endswith(f": {scratch}")
     assert not calls
 
 
