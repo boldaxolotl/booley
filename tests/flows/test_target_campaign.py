@@ -40,6 +40,20 @@ def test_resolves_typed_criteria_scope_and_test_suite() -> None:
     assert campaign.suite.skipped == ("corner",)
 
 
+def test_qualified_target_resolves_target_name_criteria() -> None:
+    """A ``vlnv#name`` selector reads the criterion keyed by the Target name."""
+    campaign = resolve_target_campaign(
+        "acme:lib:dut:1#sim",
+        ("mutation_score",),
+        {"mutation_score_sim": _entry(scope=["rtl/dut.sv"], total=7)},
+        explicit_scope="rtl/dut.sv",
+        identity="acme:lib:dut:1#sim",
+        test_names={"acme:lib:dut:1#sim": ["smoke"]},
+    )
+
+    assert campaign.params_for("mutation_score").get("total") == 7
+
+
 def test_rejects_missing_and_conflicting_criterion_scope() -> None:
     with pytest.raises(CampaignScopeError, match="missing"):
         resolve_target_campaign(

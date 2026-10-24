@@ -11,6 +11,7 @@ from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import selector_names_match
 from booley.targets.domain import criterion_matches_target
+from booley.targets.selection import selectors_name_distinct_cores
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -222,12 +223,17 @@ def _fallback_keys(endpoint, token: str, families: set[str], conventional: set[s
             continue
         if params.get("_target_selector") != token and params.get("target") != token:
             expected = params.get("_target_selector", params.get("target"))
+            bound = params.get("target")
+            if not isinstance(bound, str):
+                bound = expected
             if (
                 key not in keys
                 and isinstance(expected, str)
                 and selector_names_match(expected, token)
+                and not selectors_name_distinct_cores(bound, token)
             ):
-                # Name inequality rules a Target out; equality cannot resolve its core.
+                # A name or core inequality rules a Target out; equal names with
+                # compatible cores cannot be resolved without the catalog.
                 # Actual evaluation resolves only this key, not other potential keys.
                 endpoint._report_criteria.uncertain |= {key}
             continue

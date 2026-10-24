@@ -100,7 +100,7 @@ from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
-from booley.targets.selection import TargetSectionConflictError
+from booley.targets.selection import TargetSectionConflictError, selector_target_name
 
 from .specialist import Specialist
 
@@ -868,7 +868,7 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _apply_campaign_defaults(self) -> McpToolResult | None:
         """Default mutation controls from this Target's criterion parameters."""
-        key = f"mutation_score_{self.args.target}"
+        key = f"mutation_score_{selector_target_name(self.args.target)}"
         try:
             campaign = resolve_target_campaign(
                 self.args.target,
