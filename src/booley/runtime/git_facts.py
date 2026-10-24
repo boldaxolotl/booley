@@ -33,7 +33,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 _IDENTITY_OPTIONS = frozenset(
     {
@@ -46,6 +46,8 @@ _IDENTITY_OPTIONS = frozenset(
     }
 )
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+Output = TypeVar("Output")
 
 _Key = tuple[tuple[str, ...], str, tuple[tuple[str, str], ...], bool, str]
 
@@ -93,7 +95,7 @@ def is_rememberable(args: Sequence[str]) -> bool:
     return False
 
 
-def run_remembered[Output](
+def run_remembered(
     argv: Sequence[str],
     cwd: Path | str,
     env: Mapping[str, str] | None,
