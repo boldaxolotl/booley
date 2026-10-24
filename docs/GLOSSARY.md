@@ -119,7 +119,7 @@ An advisory cluster of Developer Agent activity, useful Specialists, Booley Flow
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
-The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**; there is no per-Flow network boundary.
+The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**; there is no per-Flow network boundary. Host authority (Docker sockets, SSH credentials, host EDA configuration) is never present in a Sandbox; an SSH directory holding only an `authorized_keys` file grants inbound access to the Sandbox, not host authority.
 _Avoid_: per-Flow network policy
 
 **Host-Provisioned Sandbox EDA Tool**:

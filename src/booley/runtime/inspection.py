@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -495,8 +496,6 @@ def _check_runtime_isolation(report: Findings) -> bool:
     forbidden = (
         Path("/var/run/docker.sock"),
         Path("/run/docker.sock"),
-        Path("/root/.ssh"),
-        Path("/home/agent/.ssh"),
         Path("/root/.config/booley/eda"),
         Path("/home/agent/.config/booley/eda"),
     )
@@ -506,8 +505,55 @@ def _check_runtime_isolation(report: Findings) -> bool:
             session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
+    for ssh_dir in (Path("/root/.ssh"), Path("/home/agent/.ssh")):
+        entry = _ssh_authority_entry(ssh_dir)
+        if entry is not None:
+            report.fail(
+                f"Sandbox exposes a forbidden host-authority surface: {entry}",
+                session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            )
+            return False
     report.pass_("Sandbox Booley Directory and host-authority isolation verified")
     return True
+
+
+def _ssh_authority_entry(ssh_dir: Path) -> Path | None:
+    """Return the first SSH entry granting outbound authority, or None.
+
+    Inbound-only access (a real directory that is empty or holds just a
+    regular ``authorized_keys``) is not host authority. All checks use lstat
+    semantics so a symlink never stands in for a permitted file or directory.
+    A mounted ``.ssh`` or ``authorized_keys`` is host authority: a host file
+    bound in looks like a plain file, and a writable one lets a Sandbox
+    process add its own key to log into the host.
+    """
+    try:
+        mode = ssh_dir.lstat().st_mode
+    except (FileNotFoundError, PermissionError):
+        return None  # absent or agent-inaccessible path: isolated
+    if not stat.S_ISDIR(mode):
+        return ssh_dir  # symlink (even dangling) or non-directory
+    try:
+        mount_points = _runtime_mount_points()
+        if str(ssh_dir) in mount_points:
+            return ssh_dir  # mounted in from outside the Sandbox
+        for entry in sorted(ssh_dir.iterdir()):
+            if (
+                entry.name != "authorized_keys"
+                or not stat.S_ISREG(entry.lstat().st_mode)
+                or str(entry) in mount_points
+            ):
+                return entry
+    except OSError:
+        return ssh_dir  # unlistable directory or unreadable mountinfo: fail closed
+    return None
+
+
+def _runtime_mount_points() -> frozenset[str]:
+    """Return this process's mount points; raise OSError when mountinfo is unreadable."""
+    mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    fields = (line.split(" - ", 1)[0].split() for line in mountinfo.splitlines())
+    return frozenset(parts[4] for parts in fields if len(parts) > 4)
 
 
 def _runtime_path_exposed(path: Path) -> bool:
