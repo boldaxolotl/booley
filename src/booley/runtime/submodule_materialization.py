@@ -6,11 +6,18 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import NamedTuple
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
-from booley.runtime.booley_dir import checkout_booley_dir_relative_to
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME, checkout_booley_dir_relative_to
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
+from booley.runtime.project_repositories import (
+    RepositoryCheckoutError,
+    common_git_dir,
+    is_standalone_git_repository,
+    paired_project_repository,
+    project_topology,
+)
 
 _TIMEOUT_S = 300
 _GIT_CONFIG = ("-c", "protocol.allow=never", "-c", "submodule.recurse=false")
@@ -40,6 +47,15 @@ def materialize_submodules(
     _materialize_selection(source_root, destination_root, selected)
 
 
+class _Selection(NamedTuple):
+    """One repository's top-level gitlinks to fill from a same-path source repository."""
+
+    source_root: Path | None
+    destination_root: Path
+    selected: list[Path]
+    excluded_paths: frozenset[str] = frozenset()
+
+
 def _materialize_selection(
     source_root: Path,
     destination_root: Path,
@@ -47,26 +63,63 @@ def _materialize_selection(
     excluded_paths: frozenset[str] = frozenset(),
 ) -> None:
     """Populate one already-resolved top-level selection with rollback."""
+    _materialize_selections(
+        destination_root, [_Selection(source_root, destination_root, selected, excluded_paths)]
+    )
+
+
+def _materialize_selections(
+    rollback_root: Path, selections: list[_Selection], *, missing_only: bool = False
+) -> None:
+    """Populate every selection; one failure removes everything any selection created."""
     created: list[tuple[Path, bool]] = []
     try:
-        _materialize_tree(
-            source_root,
-            destination_root,
-            destination_root,
-            Path(),
-            created,
-            selected,
-            excluded_paths,
-        )
+        for selection in selections:
+            _materialize_tree(
+                selection.source_root,
+                selection.destination_root,
+                selection.destination_root,
+                Path(),
+                created,
+                selection.selected,
+                selection.excluded_paths,
+                missing_only=missing_only,
+            )
     except SubmoduleMaterializationError:
-        _rollback(destination_root, created)
+        _rollback(rollback_root, created)
         raise
     except (OSError, subprocess.TimeoutExpired) as exc:
-        _rollback(destination_root, created)
+        _rollback(rollback_root, created)
         raise SubmoduleMaterializationError(f"local submodule operation failed: {exc}") from exc
     except BaseException:
-        _rollback(destination_root, created)
+        _rollback(rollback_root, created)
         raise
+
+
+def materialize_worktree_submodules(worktree: Path, *, missing_only: bool = False) -> None:
+    """Populate a linked worktree's gitlinks, and its Paired Checkout's, from the main checkout.
+
+    Sources are the same paths in the repository's main checkout (and its
+    Versioned Booley Directory). ``missing_only`` fills absent or empty gitlink
+    directories and accepts a populated one unchanged: Goal entry's clean check
+    judges its HEAD and dirt. Either selection failing removes everything this call created.
+    """
+    worktree = worktree.resolve()
+    try:
+        paired = paired_project_repository(worktree)
+    except RepositoryCheckoutError as exc:
+        raise SubmoduleMaterializationError(str(exc)) from exc
+    common = common_git_dir(worktree)
+    main = common.parent if common is not None and common.name == ".git" else None
+    selections = [_Selection(main, worktree, _selected_top_level_paths(worktree))]
+    if paired is not None:
+        paired_source = main / BOOLEY_DIR_NAME if main is not None else None
+        if paired_source is not None and not is_standalone_git_repository(paired_source):
+            paired_source = None
+        selections.append(
+            _Selection(paired_source, paired.worktree.resolve(), submodule_paths(paired.worktree))
+        )
+    _materialize_selections(worktree, selections, missing_only=missing_only)
 
 
 def materialize_project_submodules(
@@ -129,36 +182,29 @@ def _standalone_project_exclusion(source_root: Path, project: Path) -> frozenset
 
 
 def _materialize_tree(
-    source_root: Path,
+    source_root: Path | None,
     destination_repo: Path,
     destination_root: Path,
     prefix: Path,
     created: list[tuple[Path, bool]],
     selected: list[Path] | None = None,
     excluded_paths: frozenset[str] = frozenset(),
+    *,
+    missing_only: bool = False,
 ) -> None:
     for relative in selected if selected is not None else submodule_paths(destination_repo):
         full_relative = prefix / relative
         if full_relative.as_posix() in excluded_paths:
             continue
-        source = source_root / full_relative
         destination = destination_root / full_relative
         commit = _gitlink_commit(destination_repo, relative)
         _assert_link_free_path(destination, destination_root, "destination")
-        _validate_source(source, source_root, full_relative)
-        if _accept_existing(destination, commit):
-            _materialize_tree(
-                source_root,
-                destination,
-                destination_root,
-                full_relative,
-                created,
-                excluded_paths=excluded_paths,
+        # Under missing_only a populated destination is accepted unchanged; only
+        # nested gitlinks inside it may still be missing.
+        if not (missing_only and _is_populated(destination)):
+            _ensure_repository(
+                source_root, destination, destination_root, full_relative, commit, created
             )
-            continue
-        had_placeholder = _remove_empty_placeholder(destination, destination_root)
-        created.append((destination, had_placeholder))
-        _create_repository(source, destination, commit, full_relative)
         _materialize_tree(
             source_root,
             destination,
@@ -166,7 +212,40 @@ def _materialize_tree(
             full_relative,
             created,
             excluded_paths=excluded_paths,
+            missing_only=missing_only,
         )
+
+
+def _ensure_repository(
+    source_root: Path | None,
+    destination: Path,
+    destination_root: Path,
+    full_relative: Path,
+    commit: str,
+    created: list[tuple[Path, bool]],
+) -> None:
+    """Leave a matching destination as is, else create it from the validated source."""
+    if source_root is None:
+        raise SubmoduleMaterializationError(
+            f"submodule {full_relative.as_posix()} cannot be copied: the main checkout "
+            "and its Versioned Booley Directory must both be initialized repositories"
+        )
+    source = source_root / full_relative
+    _validate_source(source, source_root, full_relative)
+    if _accept_existing(destination, commit):
+        return
+    had_placeholder = _remove_empty_placeholder(destination, destination_root)
+    created.append((destination, had_placeholder))
+    _create_repository(source, destination, commit, full_relative)
+
+
+def _is_populated(destination: Path) -> bool:
+    """Return whether a gitlink directory holds a repository; stray files are an error."""
+    if not destination.is_dir() or not any(destination.iterdir()):
+        return False
+    if not (destination / ".git").exists():
+        raise SubmoduleMaterializationError(f"submodule destination is not empty: {destination}")
+    return True
 
 
 def _selected_top_level_paths(destination_root: Path) -> list[Path]:
