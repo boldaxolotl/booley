@@ -9,10 +9,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- Doctor inside a Sandbox no longer FAILs when the platform adds an SSH directory
-  for inbound access, as GitHub Codespaces does. An empty `.ssh`, or one with only
-  a regular `authorized_keys` file, passes unless either is mounted into the
-  Sandbox; any other SSH entry still FAILs, and the message now names it.
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
