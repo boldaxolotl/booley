@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- With `[jobs] max_heavy` above 1, a test that loses the lease on its
+  additional heavy slot no longer stops the Simulation tests running beside it:
+  they finish, and the run then reports the lost lease. That test stays
+  interrupted and reruns on resume. Losing the Simulation Job's own slot still
+  cancels the whole run.
 - On Windows, cancelling a queued Job no longer reports it as running when the
   withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
   stays locked, the Job is still cancelled and reported as running, and the refused

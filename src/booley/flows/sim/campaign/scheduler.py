@@ -20,7 +20,7 @@ from booley.runtime.supervised_execution import (
     supervised_execution_scope,
 )
 
-from .capacity import ChildHeavyPermit, HeavyCapacity, HeavyCapacityError
+from .capacity import ChildHeavyPermit, HeavyCapacity, HeavyCapacityError, LeaseLostError
 from .child_protocol import ChildExecutionRegistry
 
 
@@ -75,6 +75,11 @@ class BoundedCampaignScheduler:
         self._prepare_child = prepare_child or (lambda _attempt, _child, _digest: None)
         self._stop = threading.Event()
         self._errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
+        # A lost child lease interrupts one lane's item without stopping the campaign.
+        self._interruptions: queue.SimpleQueue[LeaseLostError] = queue.SimpleQueue()
+        self._lane_gate = threading.Lock()
+        self._live = 0
+        self._lanes_exited = threading.Event()
         self._allocation_gate = threading.Lock()
         self._collision_condition = threading.Condition()
         self._active_collisions: set[str] = set()
@@ -93,26 +98,40 @@ class BoundedCampaignScheduler:
             else 0
         )
         self._lanes_concurrent = child_count > 0
+        self._lanes_exited.clear()
         with self._capacity.outer_permit():
-            if child_count == 0:
-                workers = [self._thread(self._worker, (ready, True), "outer")]
-            else:
-                first = ready.get_nowait()
-                workers = [self._thread(self._outer_worker, (first, ready), "outer")]
-                workers.extend(
-                    self._thread(self._worker, (ready, False), f"child-{index + 1}")
-                    for index in range(child_count)
-                )
-            for worker in workers:
-                worker.start()
-            monitor = threading.Thread(target=self._monitor_cancellation, daemon=True)
-            monitor.start()
-            self._join_workers(workers)
+            lanes = self._start_lanes(ready, child_count)
+            self._await_lanes(lanes, self._lanes_exited)
             self._stop.set()
-            monitor.join(timeout=1)
         self._registry.recover_unretired(self._capacity.slot_store)
         if not self._errors.empty():
             raise self._errors.get()
+        if not self._interruptions.empty():
+            raise self._interruptions.get()
+
+    def _start_lanes(
+        self, ready: queue.Queue[Mapping[str, object]], child_count: int
+    ) -> list[threading.Thread]:
+        """Start the outer lane (first item taken in manifest order) and the child lanes."""
+        first = ready.get_nowait() if child_count else None
+        specs = [("outer", True, first)]
+        specs.extend((f"child-{index + 1}", False, None) for index in range(child_count))
+        self._live = len(specs)
+        lanes: list[threading.Thread] = []
+        try:
+            for suffix, outer, first_item in specs:
+                lane = self._thread(self._lane, (ready, outer, first_item), suffix)
+                lane.start()
+                lanes.append(lane)
+        except BaseException:
+            # Lanes that never started cannot report their exit.
+            for _ in range(len(specs) - len(lanes)):
+                self._lane_exited()
+            self._stop.set()
+            self._capacity.cancel_waiters()
+            self._await_lanes(lanes, self._lanes_exited)
+            raise
+        return lanes
 
     @staticmethod
     def _thread(target, args, suffix: str) -> threading.Thread:
@@ -123,65 +142,83 @@ class BoundedCampaignScheduler:
             daemon=True,
         )
 
-    def _monitor_cancellation(self) -> None:
-        while not self._stop.wait(0.02):
-            if self._capacity.shutdown_requested:
-                self._capacity.cancel_waiters()
-                self._stop.set()
-                return
+    def _lane_exited(self) -> None:
+        with self._lane_gate:
+            self._live -= 1
+            if self._live == 0:
+                self._lanes_exited.set()
 
-    def _join_workers(self, workers: list[threading.Thread]) -> None:
+    def _await_lanes(self, lanes: Sequence[threading.Thread], exited: threading.Event) -> None:
+        """Supervise the pool until every lane exits, or bound the wait after cancellation.
+
+        This owner loop is the pool's only supervisor: it withdraws queued claims on
+        cancellation and starts exact recovery of a child whose lease was lost.
+        """
         deadline: float | None = None
-        while any(worker.is_alive() for worker in workers):
+        while not exited.wait(0.02):
+            if self._capacity.managed:
+                self._capacity.recover_lost_children()
             if deadline is None and (self._stop.is_set() or self._capacity.shutdown_requested):
                 self._stop.set()
                 self._capacity.cancel_waiters()
                 deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
-            for worker in workers:
-                worker.join(timeout=0.02)
-            alive = tuple(worker for worker in workers if worker.is_alive())
-            if not alive:
-                # Every worker exited during this join: a clean shutdown, even if
-                # the deadline passed meanwhile. Raising here would also skip the
-                # caller's recover_unretired() safety net (#977).
-                return
             if deadline is not None and time.monotonic() >= deadline:
+                if exited.is_set():
+                    # Every lane exited during the last wait: a clean shutdown. Raising
+                    # here would also skip the caller's recover_unretired() net (#977).
+                    return
                 self._capacity.cancel_waiters()
-                self._capacity.retain_outer_until(alive)
+                self._capacity.hold_outer_until(exited)
+                alive = ", ".join(lane.name for lane in lanes if lane.is_alive())
                 raise CampaignSchedulingError(
-                    "campaign workers exceeded bounded shutdown: "
-                    + ", ".join(worker.name for worker in alive)
+                    f"campaign workers exceeded bounded shutdown: {alive}"
                 )
 
-    def _worker(self, ready: queue.Queue[Mapping[str, object]], outer: bool) -> None:
-        while not self._stop.is_set() and not self._capacity.shutdown_requested:
-            try:
-                item = ready.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                self._run_item(item, outer)
-            except BaseException as exc:  # noqa: BLE001 -- ferry worker failures to owner
-                self._errors.put(exc)
-                self._capacity.cancel_waiters(_worker_failure_cause(exc))
-                self._stop.set()
-                return
-            finally:
-                ready.task_done()
-
-    def _outer_worker(
-        self, first: Mapping[str, object], ready: queue.Queue[Mapping[str, object]]
+    def _lane(
+        self,
+        ready: queue.Queue[Mapping[str, object]],
+        outer: bool,
+        first: Mapping[str, object] | None,
     ) -> None:
+        """Run ``first`` then ready items until the queue drains or the campaign stops."""
         try:
-            self._run_item(first, True)
-        except BaseException as exc:  # noqa: BLE001 -- ferry worker failures to owner
-            self._errors.put(exc)
-            self._capacity.cancel_waiters(_worker_failure_cause(exc))
-            self._stop.set()
+            item = first
+            while True:
+                if item is None:
+                    if self._stop.is_set() or self._capacity.shutdown_requested:
+                        return
+                    try:
+                        item = ready.get_nowait()
+                    except queue.Empty:
+                        return
+                if not self._run_lane_item(item, outer):
+                    return
+                item = None
         finally:
-            ready.task_done()
-        if not self._stop.is_set():
-            self._worker(ready, True)
+            self._lane_exited()
+
+    def _run_lane_item(self, item: Mapping[str, object], outer: bool) -> bool:
+        """Run one item; ``False`` retires the lane because the item failed."""
+        try:
+            self._run_item(item, outer)
+        except LeaseLostError as exc:
+            if self._capacity.shutdown_requested:
+                self._fail_campaign(exc)
+            else:
+                # Only this lane's lease is gone. Its old token may still be a
+                # cancelling holder, so the lane takes no further item; the others
+                # drain the queue.
+                self._interruptions.put(exc)
+            return False
+        except BaseException as exc:  # noqa: BLE001 -- ferry lane failures to owner
+            self._fail_campaign(exc)
+            return False
+        return True
+
+    def _fail_campaign(self, exc: BaseException) -> None:
+        self._errors.put(exc)
+        self._capacity.cancel_waiters(_worker_failure_cause(exc))
+        self._stop.set()
 
     def _run_item(self, item: Mapping[str, object], outer: bool) -> None:
         with self._allocation_gate:
@@ -274,6 +311,10 @@ class BoundedCampaignScheduler:
                     and permit.lease_health.lost.is_set()
                 ):
                     state.terminal_cause = "lease_lost"
+                if permit.lease_health.lost.is_set() and not self._capacity.shutdown_requested:
+                    raise LeaseLostError(
+                        f"heavy lease lost for child execution {child_id}"
+                    ) from exc
                 raise
             if permit.lease_health.lost.is_set():
                 state.terminal_cause = "lease_lost"
