@@ -623,6 +623,7 @@ class TestProjectGitHookMigration:
         outside.write_text("# someone else's hook\n", encoding="utf-8")
         (git_hooks_dir / "commit-msg").unlink()
         symlink_or_skip(git_hooks_dir / "commit-msg", outside)
+        planted_target = (git_hooks_dir / "commit-msg").readlink()
         (git_hooks_dir / "pre-push").write_text("# stale\n", encoding="utf-8")
 
         check = _ctx(tmp_path, check_only=True)
@@ -635,7 +636,7 @@ class TestProjectGitHookMigration:
 
         assert ctx.results[-1].status == "err"
         assert "commit-msg adapter: refused" in ctx.results[-1].detail
-        assert (git_hooks_dir / "commit-msg").readlink().resolve() == outside.resolve()
+        assert (git_hooks_dir / "commit-msg").readlink() == planted_target
         assert outside.read_text(encoding="utf-8") == "# someone else's hook\n"
         assert "pre_push_hook.py" in (git_hooks_dir / "pre-push").read_text(encoding="utf-8")
 

@@ -381,13 +381,14 @@ def test_agent_config_refuses_symlinked_booley_toml(tmp_path, check_only):
     destination.write_bytes(b"# elsewhere\n")
     config = booley_dir / "booley.toml"
     symlink_or_skip(config, destination)
+    planted_target = config.readlink()
     selection = init_cmd.AgentSelection("claude", "api_key", True, True)
     ctx = InitContext(project_root=tmp_path, check_only=check_only)
 
     assert init_cmd._step_agent_config(ctx, selection, config) is False
 
     assert destination.read_bytes() == b"# elsewhere\n"
-    assert config.readlink().resolve() == destination.resolve()
+    assert config.readlink() == planted_target
     assert ctx.results[-1].status == "err"
 
 

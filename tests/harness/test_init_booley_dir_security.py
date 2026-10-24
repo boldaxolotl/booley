@@ -51,10 +51,11 @@ def test_symlinked_project_gitignore_is_refused(tmp_path: Path) -> None:
     destination = tmp_path / "outside-ignore"
     destination.write_bytes(b"# user rules\n")
     symlink_or_skip(booley_dir / ".gitignore", destination)
+    planted_target = (booley_dir / ".gitignore").readlink()
     ctx = InitContext(project_root=tmp_path)
 
     init_cmd._backfill_project_gitignore(booley_dir, ctx)
 
     assert destination.read_bytes() == b"# user rules\n"
-    assert (booley_dir / ".gitignore").readlink().resolve() == destination.resolve()
+    assert (booley_dir / ".gitignore").readlink() == planted_target
     assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")

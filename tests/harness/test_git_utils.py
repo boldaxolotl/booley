@@ -374,11 +374,12 @@ class TestAddGitExcludes:
         destination.write_bytes(b"# elsewhere\n")
         exclude.unlink()
         symlink_or_skip(exclude, destination)
+        planted_target = exclude.readlink()
 
         assert add_git_excludes(repo, [".booley"]) is False
 
         assert destination.read_bytes() == b"# elsewhere\n"
-        assert exclude.readlink().resolve() == destination.resolve()
+        assert exclude.readlink() == planted_target
         assert git_excludes_pending(repo, [".booley"])
 
     def test_main_worktree_excludes_and_is_honored(self, tmp_path):

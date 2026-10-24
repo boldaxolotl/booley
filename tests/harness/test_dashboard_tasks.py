@@ -358,12 +358,13 @@ def test_symlinked_devcontainer_spec_is_refused_before_issuance(project, tmp_pat
     spec_path = devcontainer.devcontainer_path(project.root)
     spec_path.parent.mkdir()
     symlink_or_skip(spec_path, destination)
+    planted_target = spec_path.readlink()
 
     with pytest.raises(session_issuance.RuntimeSpecError, match="symlinked"):
         session_issuance._persist_prepared(project.root, prepared, requirements=SimpleNamespace())
 
     assert destination.read_bytes() == b"{}\n"
-    assert spec_path.readlink().resolve() == destination.resolve()
+    assert spec_path.readlink() == planted_target
     assert not project.file.exists()
 
 

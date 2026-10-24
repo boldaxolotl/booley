@@ -89,6 +89,7 @@ def test_symlinked_target_is_refused_and_untouched(tmp_path: Path, kind: str, dr
         destination.write_text("someone else's file\n", encoding="utf-8")
     link = hooks / "commit-msg"
     symlink_or_skip(link, destination)
+    planted_target = link.readlink()
     before = destination.read_bytes() if destination.exists() else None
     # A missing destination is the create-only case: no marker, no backup suffix.
     policy = {} if kind == "missing" else {"owner_marker": MARKER, "backup_suffix": ".pre-booley"}
@@ -97,7 +98,7 @@ def test_symlinked_target_is_refused_and_untouched(tmp_path: Path, kind: str, dr
 
     assert outcome is WriteOutcome.REFUSED
     assert link.is_symlink()
-    assert link.readlink().resolve() == destination.resolve()
+    assert link.readlink() == planted_target
     assert (destination.read_bytes() if destination.exists() else None) == before
     assert sorted(p.name for p in hooks.iterdir()) == ["commit-msg"]
     assert sorted(p.name for p in destination.parent.iterdir()) == (
@@ -134,11 +135,12 @@ def test_backup_skips_a_symlinked_backup_name(tmp_path: Path):
     target = hooks / "commit-msg"
     target.write_text("foreign\n", encoding="utf-8")
     symlink_or_skip(hooks / "commit-msg.pre-booley", outside)  # dangling
+    planted_target = (hooks / "commit-msg.pre-booley").readlink()
 
     guarded_write(target, f"{MARKER}\nours\n", owner_marker=MARKER, backup_suffix=".pre-booley")
 
     assert not outside.exists()
-    assert (hooks / "commit-msg.pre-booley").readlink().resolve() == outside.resolve()
+    assert (hooks / "commit-msg.pre-booley").readlink() == planted_target
     assert (hooks / "commit-msg.pre-booley.1").read_text(encoding="utf-8") == "foreign\n"
 
 

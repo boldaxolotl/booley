@@ -1132,6 +1132,7 @@ def test_recipe_write_never_follows_a_planted_link(
     destination.write_text("user file", encoding="utf-8")
     (tmp_path / "docker").mkdir()
     symlink_or_skip(tmp_path / "docker/Dockerfile", destination)
+    planted_target = (tmp_path / "docker/Dockerfile").readlink()
     # Model the race: the link appears after the ownership check has passed.
     monkeypatch.setattr(project_image, "is_managed_generated_file", lambda _path: True)
 
@@ -1139,7 +1140,7 @@ def test_recipe_write_never_follows_a_planted_link(
         adapter._materialize_managed_project_recipe(project)
 
     assert destination.read_text(encoding="utf-8") == "user file"
-    assert (tmp_path / "docker/Dockerfile").readlink().resolve() == destination.resolve()
+    assert (tmp_path / "docker/Dockerfile").readlink() == planted_target
 
 
 def test_incremental_adapter_handles_noop_build_and_unsupported_role(
