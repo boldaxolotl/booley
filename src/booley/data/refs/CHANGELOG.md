@@ -272,6 +272,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   they finish, and the run then reports the lost lease. An interrupted test
   whose result was not yet published reruns on resume. Losing the Simulation
   Job's own slot still cancels the whole run.
+- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
+  hooks or Dashboard extension are missing or out of date, or when a simulation
+  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
+  check ID: `sandbox.activity-hooks-unavailable`,
+  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
+  the Target name).
 
 ## 0.3.1 - 05 OCT 2026
 

@@ -106,3 +106,4 @@ def test_doctor_warns_rather_than_fails_when_hooks_are_missing(monkeypatch):
     assert len(passed) == 1
     assert "activity will show as unknown: Codex activity hooks missing" in warned[0]
     assert "rebuild the sandbox image" in warned[0]
+    assert warned[0].check_id == "sandbox.activity-hooks-unavailable"
