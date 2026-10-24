@@ -51,6 +51,32 @@ def replace_file(
     source.replace(destination)
 
 
+def unlink_file(
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Remove ``path``, tolerating a concurrent reader on Windows.
+
+    Counterpart of :func:`replace_file`: a reader holding the file open without
+    FILE_SHARE_DELETE makes the unlink fail transiently. Retries only those
+    transient Windows sharing errors with the same bounded backoff (about 1.1 s
+    in total); the last transient error, ``FileNotFoundError`` and every other
+    ``OSError`` propagate unchanged. POSIX unlinks never hit the retry path.
+    """
+    for delay in _SHARING_RETRY_DELAYS_SECONDS:
+        try:
+            path.unlink()
+        except PermissionError as exc:
+            if not _is_transient_windows_sharing_error(exc):
+                raise
+            logger.debug("Retrying unlink of %s after %s", path, exc)
+            sleep(delay)
+        else:
+            return
+    path.unlink()
+
+
 def read_file_bytes(
     path: Path,
     *,
