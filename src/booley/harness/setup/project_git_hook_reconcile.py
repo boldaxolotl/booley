@@ -6,7 +6,6 @@ import os
 import shlex
 import stat
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +25,7 @@ from booley.harness.setup.project_git_hook_bundle import (
     _source_package_root,
     build_project_git_hook_bundle,
 )
+from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.git_environment import inherited_git_environment
 
@@ -228,22 +228,7 @@ def _bundle_pending(path: Path, content: bytes) -> bool:
 
 def _publish_bundle(path: Path, content: bytes) -> None:
     """Publish a complete non-executable bundle atomically."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=f".{BUNDLE_NAME}.", delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.chmod(0o644)
-        temporary.replace(path)
-        temporary = None
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    atomic_replace_bytes(path, content, mode=0o644)
 
 
 def _canonical_source(name: str) -> bytes:
@@ -280,20 +265,11 @@ def _legacy_action(path: Path) -> _Action | None:
     return _Action("keep", path, f"keep divergent {path.name}: {backup.name} already exists")
 
 
-def _plan(ctx: InitContext, locations: _Locations, bundle: bytes) -> list[_Action]:
-    """Return every pending change in apply order: bundle, adapters, legacy files."""
-    actions = []
-    if _bundle_pending(locations.bundle_path, bundle):
-        actions.append(_Action("publish", locations.bundle_path, f"publish {BUNDLE_NAME}"))
-    for adapter in _adapters(ctx, locations):
-        if adapter.outcome is WriteOutcome.WRITTEN:
-            actions.append(_Action("adapter", adapter.target, f"update {adapter.name}", adapter))
-        elif adapter.outcome is WriteOutcome.BACKED_UP:
-            detail = f"back up existing {adapter.name} adapter"
-            actions.append(_Action("adapter", adapter.target, detail, adapter))
+def _legacy_actions(locations: _Locations) -> list[_Action]:
+    """Return pending retired-hook migration changes: legacy files, bytecode, cache dir."""
     hooks = locations.booley_dir / "hooks"
     legacy = (_legacy_action(hooks / name) for name in _LEGACY_MANAGED_HOOKS)
-    actions.extend(action for action in legacy if action is not None)
+    actions = [action for action in legacy if action is not None]
     cache = hooks / "__pycache__"
     bytecode = _managed_bytecode(cache)
     actions.extend(
@@ -301,6 +277,32 @@ def _plan(ctx: InitContext, locations: _Locations, bundle: bytes) -> list[_Actio
     )
     if bytecode and set(cache.iterdir()) <= set(bytecode):
         actions.append(_Action("rmdir", cache, "remove empty hooks/__pycache__"))
+    return actions
+
+
+def _plan(ctx: InitContext, locations: _Locations, bundle: bytes) -> list[_Action]:
+    """Return every pending change in apply order.
+
+    Order: bundle, adapters, legacy files, then refused (symlinked) adapters. A
+    refused adapter fails the step only after every other change is applied, so
+    one bad link never blocks the other adapter or the migration.
+    """
+    actions = []
+    if _bundle_pending(locations.bundle_path, bundle):
+        actions.append(_Action("publish", locations.bundle_path, f"publish {BUNDLE_NAME}"))
+    adapters = _adapters(ctx, locations)
+    for adapter in adapters:
+        if adapter.outcome is WriteOutcome.WRITTEN:
+            actions.append(_Action("adapter", adapter.target, f"update {adapter.name}", adapter))
+        elif adapter.outcome is WriteOutcome.BACKED_UP:
+            detail = f"back up existing {adapter.name} adapter"
+            actions.append(_Action("adapter", adapter.target, detail, adapter))
+    actions.extend(_legacy_actions(locations))
+    actions.extend(
+        _Action("adapter", adapter.target, f"refuse symlinked {adapter.name} adapter", adapter)
+        for adapter in adapters
+        if adapter.outcome is WriteOutcome.REFUSED
+    )
     return actions
 
 
@@ -317,7 +319,7 @@ def _write_adapter(adapter: _Adapter) -> None:
     if outcome not in (WriteOutcome.WRITTEN, WriteOutcome.UNCHANGED, WriteOutcome.BACKED_UP):
         raise RuntimeError(f"could not install {adapter.name} adapter: {outcome.value}")
     if outcome is WriteOutcome.BACKED_UP:
-        warn(f"backed up existing {adapter.name} adapter to {adapter.name}.pre-booley")
+        warn(f"backed up existing {adapter.name} adapter to {adapter.name}.pre-booley*")
 
 
 def _apply(action: _Action, bundle: bytes) -> None:

@@ -772,6 +772,9 @@ def _persist_prepared(
 
     project = project_root.resolve(strict=True)
     path = devcontainer.devcontainer_path(project)
+    if path.is_symlink():
+        # Checked before the snapshot so rollback never replaces or unlinks the link.
+        raise RuntimeSpecError(f"refusing to write through symlinked {path}")
     previous = path.read_bytes() if path.is_file() else None
     previous_mode = stat.S_IMODE(path.stat().st_mode) if previous is not None else 0o644
     stamp_paths = (stamp_path_for_identity(str(project)), _legacy_stamp_path(str(project)))

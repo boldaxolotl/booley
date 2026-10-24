@@ -40,6 +40,7 @@ from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
+from tests.conftest import symlink_or_skip
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -1333,3 +1334,17 @@ def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys):
         assert init_cmd.run_init(args, repo) == 0
         numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
         assert numbers == list(range(1, len(numbers) + 1))
+
+
+def test_refused_fusesoc_ignore_marker_warns(tmp_path, capsys):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    destination = tmp_path / "outside-marker"
+    symlink_or_skip(booley_dir / "FUSESOC_IGNORE", destination)
+    ctx = InitContext(project_root=tmp_path)
+
+    init_cmd._backfill_fusesoc_ignore(booley_dir, ctx)
+
+    assert not destination.exists()
+    assert "refusing symlinked" in capsys.readouterr().out
+    assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")
