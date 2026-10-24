@@ -9,12 +9,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
-  hooks or Dashboard extension are missing or out of date, or when a simulation
-  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
-  check ID: `sandbox.activity-hooks-unavailable`,
-  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
-  the Target name).
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
@@ -273,6 +267,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
   so resuming a Campaign planned with a list or string `flow_options.defines`
   reports a workload change that names the cause; re-plan it.
+- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
+  hooks or Dashboard extension are missing or out of date, or when a simulation
+  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
+  check ID: `sandbox.activity-hooks-unavailable`,
+  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
+  the Target name).
 
 ## 0.3.1 - 05 OCT 2026
 
