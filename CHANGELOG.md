@@ -13,6 +13,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
   Test from `skip` or drop the Goal.
+- The mutation tester now exposes a Target's `copyto` runtime inputs in the
+  configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
+  does, and removes them afterwards. A testbench that opens a data file no longer
+  fails its baseline, and a declared `$readmemh` input that was not staged makes
+  the run inconclusive instead of a detected mutant.
 - On Windows, cancelling a queued Job no longer reports it as running when the
   withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
   stays locked, the Job is still cancelled and reported as running, and the refused
