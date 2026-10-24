@@ -134,12 +134,6 @@ Packaged release history starts at 0.2.7. For older changes, see
   delete it by hand before retrying: a retry no longer looks there and records
   `pruned`, and `--full` refuses the leftover directory.
 
-- Goal worktrees now get their git submodules. `booley worktree new` populates the
-  selected submodules (and the Paired Checkout's) offline from the main checkout, and
-  Goal entry fills any that are still empty, so a baseline checkout taken in a Goal
-  worktree no longer fails with "not found in source Project". An uninitialized,
-  dirty, shallow, or incomplete source submodule now stops worktree creation or Goal
-  entry with a clear message and leaves nothing behind.
 - Verilator `make_options` and ambient Make variables (`OBJCACHE`, `CCACHE_*`,
   `MAKEFLAGS`, and the like) are no longer rejected. Booley passes them through
   to Make and its managed compiler-cache environment is unchanged; a Make
