@@ -200,6 +200,7 @@ def _isolate_runtime_files(monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", "/booley-project")
     is_dir = Path.is_dir
     exists = Path.exists
+    lstat = Path.lstat
     hidden = {
         Path(name)
         for name in (
@@ -215,3 +216,13 @@ def _isolate_runtime_files(monkeypatch):
         Path, "is_dir", lambda p: True if p == Path("/booley-project") else is_dir(p)
     )
     monkeypatch.setattr(Path, "exists", lambda p: False if p in hidden else exists(p))
+
+    ssh_dirs = {Path("/root/.ssh"), Path("/home/agent/.ssh")}
+
+    def hidden_lstat(path, *args, **kwargs):
+        """Make the host's SSH directories look absent to the lstat-based SSH check."""
+        if path in ssh_dirs:
+            raise FileNotFoundError(path)
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", hidden_lstat)

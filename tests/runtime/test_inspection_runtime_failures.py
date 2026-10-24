@@ -143,7 +143,9 @@ def test_mounted_runtime_rejects_external_license_pointer_before_execution(
     assert not calls
 
 
-@pytest.mark.parametrize("failure", ["identity", "missing-project", "exposed-authority"])
+@pytest.mark.parametrize(
+    "failure", ["identity", "missing-project", "exposed-authority", "exposed-eda-config"]
+)
 def test_runtime_rejects_broken_isolation_before_vivado_probe(
     mounted_runtime, monkeypatch, failure
 ):
@@ -156,10 +158,13 @@ def test_runtime_rejects_broken_isolation_before_vivado_probe(
             Path, "is_dir", lambda p: False if p == Path("/booley-project") else original(p)
         )
     else:
-        original = Path.exists
-        monkeypatch.setattr(
-            Path, "exists", lambda p: True if p == Path("/var/run/docker.sock") else original(p)
+        exposed = Path(
+            "/var/run/docker.sock"
+            if failure == "exposed-authority"
+            else "/home/agent/.config/booley/eda"
         )
+        original = Path.exists
+        monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
     report = inspection.inspect_runtime(request).issuance
     assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
     if failure == "identity":
@@ -173,17 +178,116 @@ def test_agent_inaccessible_authority_paths_do_not_break_runtime_inspection(
     mounted_runtime, monkeypatch
 ):
     request, _, calls = mounted_runtime
-    original = Path.exists
+    original_exists = Path.exists
+    original_lstat = Path.lstat
 
     def exists(path):
         if path == Path("/root/.ssh"):
             raise PermissionError("agent cannot traverse root home")
-        return original(path)
+        return original_exists(path)
+
+    def lstat(path, *args, **kwargs):
+        if path == Path("/root/.ssh"):
+            raise PermissionError("agent cannot traverse root home")
+        return original_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(Path, "lstat", lstat)
     report = inspection.inspect_runtime(request).issuance
     assert all(f.severity is Severity.PASS for f in report.findings)
     assert len(calls) == 1
+
+
+def _redirect_ssh_directory(monkeypatch, tmp_path, target):
+    """Point the runtime check's ``target`` SSH path at a scratch location; return it."""
+    scratch = tmp_path / "agent-ssh"
+    real_path = Path
+
+    def redirected(value, *args):
+        return scratch if str(value) == target else real_path(value, *args)
+
+    monkeypatch.setattr(inspection, "Path", redirected)
+    return scratch
+
+
+def _build_ssh_layout(scratch, layout):
+    """Create the named SSH directory layout at ``scratch``; return the offending path or None."""
+    outside = scratch.parent / "outside"
+    outside.mkdir()
+    (outside / "authorized_keys").write_text("ssh-ed25519 AAAA inbound\n")
+    keys = scratch / "authorized_keys"
+    if layout == "dangling-ssh-symlink":
+        scratch.symlink_to(scratch.parent / "missing")
+    elif layout == "ssh-regular-file":
+        scratch.write_text("not a directory")
+    elif layout == "symlinked-ssh":
+        scratch.symlink_to(outside)
+    else:
+        scratch.mkdir()
+    offending = scratch
+    if layout == "symlinked-authorized_keys":
+        keys.symlink_to(outside / "authorized_keys")
+        offending = keys
+    elif layout == "authorized_keys-directory":
+        keys.mkdir()
+        offending = keys
+    elif layout in {"authorized_keys", "id_ed25519", "known_hosts", "config", "root-id_ed25519"}:
+        keys.write_text("ssh-ed25519 AAAA inbound\n")
+        offending = scratch / layout.removeprefix("root-")
+        offending.write_text("outbound authority")
+    return None if layout in {"empty", "authorized_keys"} else offending
+
+
+@pytest.mark.parametrize(
+    "target,layout",
+    [
+        ("/home/agent/.ssh", "empty"),
+        ("/home/agent/.ssh", "authorized_keys"),
+        ("/home/agent/.ssh", "id_ed25519"),
+        ("/home/agent/.ssh", "known_hosts"),
+        ("/home/agent/.ssh", "config"),
+        ("/home/agent/.ssh", "symlinked-ssh"),
+        ("/home/agent/.ssh", "symlinked-authorized_keys"),
+        ("/home/agent/.ssh", "authorized_keys-directory"),
+        ("/home/agent/.ssh", "dangling-ssh-symlink"),
+        ("/home/agent/.ssh", "ssh-regular-file"),
+        ("/root/.ssh", "root-id_ed25519"),
+    ],
+)
+def test_runtime_ssh_directory_admits_only_inbound_authorized_keys(
+    mounted_runtime, monkeypatch, tmp_path, target, layout
+):
+    """Inbound-only SSH state passes; every outbound-capable entry FAILs naming it."""
+    request, _, calls = mounted_runtime
+    scratch = _redirect_ssh_directory(monkeypatch, tmp_path, target)
+    offending = _build_ssh_layout(scratch, layout)
+    report = inspection.inspect_runtime(request).issuance
+    if offending is None:
+        assert [f.message for f in report.findings if f.severity is not Severity.PASS] == []
+        assert len(calls) == 1
+        return
+    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
+    assert str(offending) in report.findings[0].message
+    assert not calls
+
+
+def test_unlistable_ssh_directory_stays_exposed(mounted_runtime, monkeypatch, tmp_path):
+    """A visible SSH directory that cannot be listed fails closed, as before."""
+    request, _, calls = mounted_runtime
+    scratch = _redirect_ssh_directory(monkeypatch, tmp_path, "/home/agent/.ssh")
+    scratch.mkdir()
+    original_iterdir = Path.iterdir
+
+    def iterdir(path):
+        if path == scratch:
+            raise PermissionError("cannot list")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    report = inspection.inspect_runtime(request).issuance
+    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
+    assert str(scratch) in report.findings[0].message
+    assert not calls
 
 
 def test_retained_resources_separate_current_project_from_other_project_keepers(

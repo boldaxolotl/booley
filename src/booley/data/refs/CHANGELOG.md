@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Doctor inside a Sandbox no longer FAILs when the platform adds an SSH directory
+  for inbound access, as GitHub Codespaces does. An empty `.ssh`, or one with only
+  a regular `authorized_keys` file, passes; any other SSH entry still FAILs, and
+  the message now names it.
 - On Windows, cancelling a queued Job no longer reports it as running when the
   withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
   stays locked, the Job is still cancelled and reported as running, and the refused
