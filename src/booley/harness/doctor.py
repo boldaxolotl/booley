@@ -2208,7 +2208,7 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
 
     error = hooks_error()
     if error:
-        _warn(
+        _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
             f"Dashboard session activity will show as unknown: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
@@ -2222,7 +2222,9 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 
     error = installed_error()
     if error:
-        _warn(f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox")
+        _warning_sink(_warn, "sandbox.dashboard-extension-unavailable")(
+            f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox"
+        )
         return
     _pass("Dashboard workspace extension bundled in the Sandbox Image")
 
@@ -4162,7 +4164,7 @@ def _check_sim_target_setup(
             not in explicit.tb_files
         )
         if inferred:
-            _warn(
+            _warning_sink(_warn, "sim.harness-untagged", subject=name)(
                 f"sim Target '{name}' untagged C/C++ harness files: {', '.join(inferred)}; add tags:[tb] to their fileset"
             )
         if ref.flow != "sim":

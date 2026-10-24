@@ -18,6 +18,7 @@ import pytest
 from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
 from booley.runtime import runtime_context
+from tests.diagnostic_helpers import _require_doctor_warning
 
 
 class _Rec:
@@ -27,7 +28,8 @@ class _Rec:
     def p(self, msg):
         self.events.append(("pass", msg))
 
-    def w(self, msg):
+    def w(self, msg, fix: str = ""):
+        _require_doctor_warning(msg)
         self.events.append(("warn", msg))
 
     def s(self, msg):
