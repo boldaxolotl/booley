@@ -464,7 +464,9 @@ seeds.
 Goals that resolve to the same Test Runs merge at entry, like other duplicate
 Goals. Of two `@xN` Goals on the same Test Variant, the larger N remains. A
 Goal with a pinned seed and an `@xN` Goal stay separate Goals. A Goal that
-names a seed on an unseeded Target is refused at entry.
+names a seed on an unseeded Target is refused at entry. So is a Goal that names
+a Test its Target skips in `tests.toml`, and so is a Goal change that would
+freeze one: remove the Test from `skip` or drop the Goal.
 
 **Targets and Tests that do not exist yet.** A Goal can name a Target, Test or
 Test Variant that the work will add. That part of the Goal is *pending* and
@@ -514,9 +516,12 @@ before the simulator writes its coverage data makes collection incomplete, so
 that run measures nothing either. With no earlier measurement at those
 contents, the Goal stays unmet as not measured.
 
-If a frozen Test Run's Test or Test Variant is removed or skipped, or its
-declared arguments or environment change, the Goal stays unmet until you
-approve a retarget. See
+If a frozen Test Run's Test or Test Variant is removed, or its declared
+arguments or environment change, the Goal stays unmet until you approve a
+retarget. If its Test is skipped in `tests.toml`, the Goal stays unmet until
+the Test leaves `skip` or you approve a Goal change that drops it; a retarget of
+a Goal that names the skipped Test is refused, while a retarget of a Goal on the
+whole Target freezes its suite again without that Test. See
 [A Goal that names Test Runs stays unmet](TROUBLESHOOTING.md#a-goal-that-names-test-runs-stays-unmet)
 for each reason `goal_status` can show.
 
@@ -623,6 +628,9 @@ Changing which Test Runs a Goal requires is a Goal change like any other:
 | Pin a seed, name another Test Variant, or raise N | `retarget` | Raising N keeps the frozen seeds and draws only the difference. |
 | Lower N | `relax` | The Goal keeps its first N frozen seeds. |
 | Retarget a Goal without changing how it is written | `retarget` | Frozen again from the Target as it is now. Use this when a frozen Test Run is gone or its declaration changed. |
+
+A change that would freeze a Test Run of a Test the Target skips in `tests.toml`
+is refused.
 
 After any of these changes the Goal's Test Run outcomes start again.
 

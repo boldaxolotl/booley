@@ -228,3 +228,15 @@ def test_nothing_is_resolved_over_a_really_interrupted_apply(layout: SimpleNames
     resolved = ensure_test_run_resolutions(store, mode.record.id, mode.worktree)
     assert [run.name for run in resolved.test_run_resolution(later).test_runs] == ["later@1"]
     assert "sim_pass_top_run_736d6f6b65_s7" in resolved.test_run_resolutions
+
+
+def test_a_target_removed_after_entry_reports_its_runs_as_gone(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Status of a Goal whose Target vanished says the runs are gone; it must not crash."""
+    from tests.goals import conftest
+
+    mode = _mode(layout, [{"family": "SIM", "target": "top", "test": "a"}], tests_toml=TWO_TESTS)
+    monkeypatch.setattr(conftest, "KNOWN_TARGETS", frozenset({"base"}))
+    reason = _status(mode, "sim_pass_top_run_61_d").reason  # key of Test ``a``
+    assert reason.startswith("goal-test-run-missing: ") and "no longer exist" in reason

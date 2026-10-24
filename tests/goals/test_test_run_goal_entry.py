@@ -187,3 +187,23 @@ def test_cycle_count_and_coverage_goals_name_test_runs_and_their_criteria_name_t
     detail = _record(mode, "run-2", [pinned], key=cycle, extra=cycles)
     assert [row["name"] for row in detail["test_runs"]] == ["smoke@7"]
     assert status() == "met"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        {"family": "SIM", "target": "top", "test": "stress+soak@x2"},
+        {
+            "family": "COVERAGE",
+            "target": "top",
+            "tests": ["smoke", "stress"],
+            "metrics": {"line": 90},
+        },
+    ],
+    ids=["sim", "coverage"],
+)
+def test_entry_refuses_a_goal_on_a_skipped_test(layout: SimpleNamespace, goal: dict) -> None:
+    skipping = VARIANTS.replace(b"[top.variants", b'skip = ["stress"]\n[top.variants', 1)
+    with pytest.raises(GoalEntryError, match="Test 'stress' of Target 'top' is skipped"):
+        enter_goals(layout, [goal], tests_toml=skipping)
+    assert GoalStore(layout.control).active_for_worktree(layout.worktree) is None

@@ -4238,9 +4238,37 @@ def _check_target_metadata(
         audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
     )
     _check_synth_recipe_migrations(refs, audit.warn)
+    _check_target_flow_option_defines(audit.root, audit.fail)
     _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
     _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
     _check_cocotb_targets(audit.project, refs, audit.pass_, audit.warn, audit.skip, audit.fail)
+
+
+def _check_target_flow_option_defines(root: Path, _fail: Fail) -> None:
+    """FAIL a Doctor-selected Target whose `flow_options` sets `defines`.
+
+    No Flow applies the key, so it would be silently ignored. Presence is
+    tested rather than truthiness so an empty value is caught too.
+    """
+    from booley.core.boundary import as_dict
+
+    for handle in TargetCatalog.build(root).list():
+        if not handle.doctor_flows:
+            continue
+        try:
+            document = fusesoc_registry.read_core(handle.core_file)
+        except fusesoc_registry.FuseSocError:
+            continue  # The owning core audit reports unreadable declarations.
+        targets = as_dict(document.get("targets"), default={}) or {}
+        target = as_dict(targets.get(handle.name), default={}) or {}
+        options = as_dict(target.get("flow_options"), default={}) or {}
+        if "defines" in options:
+            _fail(
+                f"Target {handle.identity!r} sets flow_options.defines, which no Flow applies "
+                f"({handle.core_file.name})",
+                "delete flow_options.defines and declare each define as a vlogdefine "
+                "parameter on the Target",
+            )
 
 
 def _check_synth_recipe_migrations(refs: dict[str, TargetHandle], warn: Check) -> None:

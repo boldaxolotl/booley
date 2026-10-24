@@ -2331,6 +2331,38 @@ class TestCoreAudit:
         rec = _audit(tmp_path)
         assert any("project has no .core" in m for m in rec.fails())
 
+    @pytest.mark.parametrize(
+        "shape",
+        ["{A: 1}", "[A, B=2]", "A", ""],
+        ids=["map", "list", "string", "null"],
+    )
+    def test_flow_options_defines_fails_with_vlogdefine_hint(self, tmp_path: Path, shape: str):
+        # No Flow applies Target `flow_options.defines`; the key must FAIL by
+        # presence (even null) and point at `vlogdefine` parameters.
+        core = _CLEAN_SIM_CORE.replace(
+            "      tool: verilator\n",
+            f"      tool: verilator\n      defines: {shape}\n",
+        )
+        (tmp_path / "design.core").write_text(core, encoding="utf-8")
+        failures: list[tuple[str, str]] = []
+        project = doctor.ProjectAudit(
+            project_root=tmp_path,
+            booley_dir=tmp_path / ".booley",
+            booley_toml={},
+            configs_toml={"x": {}},
+            first_target="x",
+        )
+        (tmp_path / ".booley").mkdir()
+        rec = _Rec()
+        doctor._run_core_audit(
+            project, rec.p, rec.w, rec.s, lambda msg, fix="": failures.append((msg, fix))
+        )
+        matches = [item for item in failures if "flow_options.defines" in item[0]]
+        assert len(matches) == 1
+        message, fix = matches[0]
+        assert "::demo:0#sim" in message
+        assert "vlogdefine" in fix
+
     def test_clean_core_passes(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
         rec = _audit(tmp_path)
