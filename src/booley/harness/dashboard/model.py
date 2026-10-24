@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.goals import quiet_after
-from booley.core.boundary import require_dict
+from booley.core.boundary import as_dict, require_dict
 from booley.criteria.evidence_ledger import validated_evidence_records
-from booley.criteria.presentation import CriterionPresentation
+from booley.criteria.presentation import (
+    CriterionPresentation,
+    implementation_baseline_comparison,
+)
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
 from booley.goals.format import test_run_lines
@@ -25,7 +28,7 @@ from booley.goals.proposals import digest
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.review_package import original_observations
 from booley.goals.state_store import load_goal_state
-from booley.goals.status import GoalStatusView, build_status
+from booley.goals.status import GoalStatus, GoalStatusView, build_status
 from booley.goals.store import GoalStore
 from booley.harness import upgrade_review
 from booley.harness.dashboard.jobs import JobReader, JobSnapshot, target_arg
@@ -90,6 +93,29 @@ class DashboardSnapshot:
     session_handles: Mapping[str, str] = field(default_factory=dict)
 
 
+def _live_baseline_comparison(goal: GoalStatus, entry: Any) -> tuple[str, ...]:
+    """SYNTH/FPGA baseline line for a live Goal, silent where Status reports stale evidence."""
+    if entry is None or goal.status == "stale":
+        return ()
+    comparison = implementation_baseline_comparison(goal.key, entry.params, entry.detail)
+    return (comparison,) if comparison else ()
+
+
+def _terminal_test_runs(row: Mapping[str, Any]) -> tuple[str, ...]:
+    """Baseline lines recorded in a frozen package row: SIM summary and SYNTH/FPGA comparison."""
+    lines = []
+    if "simulation_baseline" in row:
+        lines.append("Baseline -> final: " + row["simulation_baseline"]["summary"])
+    comparison = implementation_baseline_comparison(
+        row["key"],
+        as_dict(row["spec"], default={}).get("params") or {},
+        as_dict(row["selected_observation"].get("detail"), default={}),
+    )
+    if comparison:
+        lines.append(comparison)
+    return tuple(lines)
+
+
 def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
     root = record_paths(store.booley_dir, record.id).root
     packages = (
@@ -112,9 +138,7 @@ def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
             _terminal_presentation(row, names),
             row["selected_observation"],
             tuple(row["original_observations"]),
-            test_runs=("Baseline -> final: " + row["simulation_baseline"]["summary"],)
-            if "simulation_baseline" in row
-            else (),
+            test_runs=_terminal_test_runs(row),
             artifacts=available_paths(
                 row["selected_observation"], (Path(record.worktree_path), store.booley_dir)
             ),
@@ -225,7 +249,10 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
                     )
                     if goal.key in selected
                     else (),
-                    test_runs=tuple(test_run_lines(goal)),
+                    test_runs=(
+                        *test_run_lines(goal),
+                        *_live_baseline_comparison(goal, entry),
+                    ),
                 )
             )
         return GoalView(current.id, current, status, _goal_artifacts(details, current, store))

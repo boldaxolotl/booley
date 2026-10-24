@@ -8,11 +8,12 @@ corresponding evaluation evidence into concise UI text.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from booley.core.boundary import as_dict, as_float, as_int, as_str
 from booley.criteria.thresholds import ThresholdDescriptor, describe_threshold
+from booley.evidence.fields import BASELINE_REF_DETAIL
 from booley.evidence.timing import worst_fmax_from_json
 
 if TYPE_CHECKING:
@@ -409,6 +410,70 @@ def _check_for(detail: dict, param: str) -> dict:
         if as_str(check.get("param")) == param:
             return check
     return {}
+
+
+_BASELINE_REVISION_CHARS = 12
+
+
+def _baseline_revision(detail: dict) -> str:
+    """Recorded baseline revision, shortened when it is a full commit hash."""
+    comparison = as_dict(
+        as_dict(detail.get("implementation"), default={}).get("comparison"), default={}
+    )
+    revision = (
+        as_str(detail.get(BASELINE_REF_DETAIL))
+        or as_str(comparison.get("resolved_ref"))
+        or as_str(comparison.get("requested_ref"))
+    )
+    is_hash = len(revision) > _BASELINE_REVISION_CHARS and all(
+        char in "0123456789abcdef" for char in revision
+    )
+    return revision[:_BASELINE_REVISION_CHARS] if is_hash else revision
+
+
+def _baseline_part(scope: str, descriptor: ThresholdDescriptor, check: dict, detail: dict) -> str:
+    """``metric baseline → current unit (delta, pct%)`` for one recorded check, or ``""``."""
+    baseline = as_float(check.get("baseline"))
+    current = as_float(check.get("current"))
+    if baseline is None or current is None:
+        return ""
+    # A unit-agnostic metric (``area``) shows the unit the flow actually compared.
+    resolved = as_str(as_dict(detail.get("_metric_map"), default={}).get(descriptor.metric))
+    label_metric = resolved if resolved in _METRIC_LABELS else descriptor.metric
+    metric, suffix = _metric_parts(scope, replace(descriptor, metric=label_metric))
+    delta = current - baseline
+    sign = "-" if delta < 0 else "+"
+    # _check_delta never records current/baseline for a zero baseline.
+    percent = delta / baseline * 100
+    return (
+        f"{metric} {_format_number(baseline)} → {_format_number(current)}{suffix} "
+        f"({sign}{_format_number(abs(delta))}, {percent:+.1f}%)"
+    )
+
+
+def implementation_baseline_comparison(key: str, params: dict, detail: dict) -> str:
+    """Baseline revision and baseline → current (delta) for relative SYNTH/FPGA thresholds.
+
+    Empty when *key* is not a synthesis/FPGA criterion, when no relative
+    threshold is declared, or when no recorded check carries both numbers.
+    Reads recorded evidence only.
+    """
+    family = _family_for(key)
+    if family is None or family.prefix not in {"synthesis_ok", "fpga_impl_ok"}:
+        return ""
+    parts: dict[tuple[str, str], str] = {}
+    for scope, descriptor, _ in _thresholds(params):
+        if not descriptor.relative or (scope, descriptor.metric) in parts:
+            continue
+        full_param = f"{scope}.{descriptor.param}" if scope else descriptor.param
+        part = _baseline_part(scope, descriptor, _check_for(detail, full_param), detail)
+        if part:
+            parts[(scope, descriptor.metric)] = part
+    if not parts:
+        return ""
+    revision = _baseline_revision(detail)
+    heading = f"baseline {revision} → current" if revision else "baseline → current"
+    return f"{heading}: {' · '.join(parts.values())}"
 
 
 def _relative_observation(

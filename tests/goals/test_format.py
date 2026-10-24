@@ -10,6 +10,78 @@ from rich.table import Table
 from booley.goals.format import format_criterion_metric, render_status, test_run_lines
 from booley.goals.status import GoalStatus, GoalStatusView
 
+REVISION = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _delta_check(param, baseline, current):
+    """A relative check exactly as ``DevelopmentState._check_delta`` records it."""
+    return {
+        "param": param,
+        "pass": True,
+        "pct": (current - baseline) / baseline * 100,
+        "threshold": 5,
+        "current": current,
+        "baseline": baseline,
+    }
+
+
+RELATIVE_CASES = {
+    "synth": (
+        "synthesis_ok_top",
+        {"area_reduce_at_least": 8},
+        {
+            "cells": 2500,
+            "per_clock": {"clk": {"fmax_mhz": 100}},
+            "_metric_map": {"area": "area_um2"},
+            "checks": [_delta_check("area_reduce_at_least", 1200, 1050)],
+        },
+        "2.5k cells · 100MHz; baseline 0123456789ab → current: "
+        "area 1,200 → 1,050 μm² (-150, -12.5%)",
+    ),
+    "fpga": (
+        "fpga_impl_ok_top",
+        {"lut_count_increase_at_most": 5, "clk_i.critical_path_ps_increase_at_most": 10},
+        {
+            "lut_count": 1500,
+            "checks": [
+                _delta_check("lut_count_increase_at_most", 1400, 1500),
+                _delta_check("clk_i.critical_path_ps_increase_at_most", 4000, 4200),
+            ],
+        },
+        "1.5k LUTs; baseline 0123456789ab → current: LUTs 1,400 → 1,500 (+100, +7.1%) · "
+        "clk_i critical path 4,000 → 4,200 ps (+200, +5.0%)",
+    ),
+}
+
+
+@pytest.mark.parametrize("family", RELATIVE_CASES)
+def test_relative_implementation_metric_shows_baseline_current_and_delta(family):
+    key, params, detail, expected = RELATIVE_CASES[family]
+    entry = SimpleNamespace(
+        detail={**detail, "_baseline_ref": REVISION}, params=params, stale=False
+    )
+    assert format_criterion_metric(key, entry) == expected
+
+
+@pytest.mark.parametrize(
+    ("params", "checks"),
+    [
+        ({"lut_count_max": 2000}, [{"param": "lut_count_max", "pass": True, "value": 1500}]),
+        (
+            {"area_reduce_at_least": 8},
+            [{"param": "area_reduce_at_least", "skipped": True, "reason": "no baseline for area"}],
+        ),
+    ],
+    ids=["absolute", "skipped"],
+)
+def test_implementation_metric_without_relative_baseline_is_unchanged(params, checks):
+    entry = SimpleNamespace(
+        detail={"lut_count": 1500, "_baseline_ref": REVISION, "checks": checks},
+        params=params,
+        stale=False,
+    )
+    assert format_criterion_metric("fpga_impl_ok_top", entry) == "1.5k LUTs"
+
 
 @pytest.mark.parametrize(
     ("key", "detail", "stale", "expected"),

@@ -421,6 +421,14 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
+For a SYNTH or FPGA Goal with a relative threshold (`*_increase_at_most`,
+`*_reduce_at_least`) whose evidence includes a baseline, `booley goal status`,
+the `goal_status` tool, the Dashboard's Goal details and the Review Package also
+show the baseline revision and, per thresholded metric, `baseline → current`
+with the signed change and percentage, for example
+`baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)`.
+Absolute Goals and Goals without baseline evidence show their usual metrics.
+
 ### Goals that name Test Runs
 
 A **Test Run** is one Test Variant simulated with one seed, written
