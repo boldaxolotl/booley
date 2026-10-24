@@ -373,7 +373,8 @@ def test_persist_selection_writes_project_data_with_lf(tmp_path):
     assert b"\r\n" not in config.read_bytes()
 
 
-def test_agent_config_refuses_symlinked_booley_toml(tmp_path):
+@pytest.mark.parametrize("check_only", [False, True])
+def test_agent_config_refuses_symlinked_booley_toml(tmp_path, check_only):
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     destination = tmp_path / "outside.toml"
@@ -381,7 +382,7 @@ def test_agent_config_refuses_symlinked_booley_toml(tmp_path):
     config = booley_dir / "booley.toml"
     symlink_or_skip(config, destination)
     selection = init_cmd.AgentSelection("claude", "api_key", True, True)
-    ctx = InitContext(project_root=tmp_path)
+    ctx = InitContext(project_root=tmp_path, check_only=check_only)
 
     assert init_cmd._step_agent_config(ctx, selection, config) is False
 

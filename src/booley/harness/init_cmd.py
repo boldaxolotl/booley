@@ -687,6 +687,11 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         skip(f"using existing [agent] {selection.provider}/{selection.auth}")
         ctx.record("agent_config", "skip", f"{selection.provider}/{selection.auth}")
         return True
+    if path.is_symlink():
+        # Same verdict for a dry run and a real run: a link is never written through.
+        err(f"cannot persist agent selection: refusing symlinked {path}")
+        ctx.record("agent_config", "err", "symlinked booley.toml")
+        return False
     if ctx.check_only:
         warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
         ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
