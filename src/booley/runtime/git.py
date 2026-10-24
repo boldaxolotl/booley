@@ -115,6 +115,7 @@ def _git_common_dir(wt: Path) -> Path | None:
             wt,
             environment,
             text=True,
+            decoding="replace",
             run=lambda: subprocess.run(
                 ["git", "rev-parse", "--git-common-dir"],
                 cwd=str(wt),

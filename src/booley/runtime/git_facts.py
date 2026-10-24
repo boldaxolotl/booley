@@ -46,7 +46,7 @@ _IDENTITY_OPTIONS = frozenset(
 )
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
-_Key = tuple[tuple[str, ...], str, tuple[tuple[str, str], ...], bool]
+_Key = tuple[tuple[str, ...], str, tuple[tuple[str, str], ...], bool, str]
 
 
 @dataclass
@@ -54,6 +54,7 @@ class _Memo:
     """The remembered answers of one scope and the thread allowed to use them."""
 
     owner: int
+    closed: bool = False
     answers: dict[_Key, subprocess.CompletedProcess] = field(default_factory=dict)
 
 
@@ -70,10 +71,12 @@ def repository_facts() -> Generator[None]:
     if _active.get() is not None:
         yield
         return
-    token = _active.set(_Memo(threading.get_ident()))
+    memo = _Memo(threading.get_ident())
+    token = _active.set(memo)
     try:
         yield
     finally:
+        memo.closed = True  # a context copied inside the scope must not reuse it
         _active.reset(token)
 
 
@@ -95,22 +98,25 @@ def run_remembered(
     env: Mapping[str, str] | None,
     *,
     text: bool,
+    decoding: str = "",
     run: Callable[[], subprocess.CompletedProcess],
 ) -> subprocess.CompletedProcess:
     """Return ``run()``, remembering a successful answer inside an active scope.
 
     *argv* is the full ``git ...`` command line, *cwd* and *env* are exactly
     what *run* passes to Git (``None`` env means the process environment), and
-    *text* says whether *run* captures text or bytes. The raw result is shared,
+    *text* says whether *run* captures text or bytes, and *decoding* names a
+    decoding that differs between callers asking the same question (their
+    answers are never exchanged). The raw result is shared,
     so each caller post-processes it into its own type.
     """
     if not is_rememberable(argv[1:]):
         raise ValueError(f"git {' '.join(argv[1:])} is not a rememberable repository fact")
     memo = _active.get()
-    if memo is None or memo.owner != threading.get_ident():
+    if memo is None or memo.closed or memo.owner != threading.get_ident():
         return run()
     environment = os.environ if env is None else env
-    key: _Key = (tuple(argv), str(cwd), tuple(sorted(environment.items())), text)
+    key: _Key = (tuple(argv), str(cwd), tuple(sorted(environment.items())), text, decoding)
     answer = memo.answers.get(key)
     if answer is None:
         answer = run()

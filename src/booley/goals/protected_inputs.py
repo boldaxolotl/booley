@@ -620,7 +620,8 @@ class _HeadView:
                 found = self._repository(location)
             except ProtectedInputError:
                 continue  # reported by the path's own read
-            if found is not None:
+            if found is not None and not found[1].startswith(":"):
+                # A leading ":" is Git pathspec magic: that path is listed on its own.
                 checkout, relative = found
                 wanted.setdefault(checkout.root, (checkout, []))[1].append(relative)
         for checkout, relatives in wanted.values():

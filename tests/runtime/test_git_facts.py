@@ -64,3 +64,24 @@ def test_repository_facts_inactive_on_other_threads() -> None:
 def test_repository_facts_rejects_queries_that_can_change() -> None:
     with pytest.raises(ValueError, match="not a rememberable repository fact"):
         run_remembered(["git", "rev-parse", "HEAD"], "/x", None, text=True, run=Fact())
+
+
+def test_repository_facts_closed_scope_is_not_reused_by_a_copied_context() -> None:
+    import contextvars
+
+    fact = Fact()
+    with repository_facts():
+        ask(fact)
+        survivor = contextvars.copy_context()
+    survivor.run(ask, fact)
+    survivor.run(ask, fact)
+    assert fact.calls == 3  # the copy outlived its scope, so it remembers nothing
+
+
+def test_repository_facts_keeps_differently_decoded_answers_apart() -> None:
+    fact = Fact()
+    argv = ["git", "rev-parse", "--git-dir"]
+    with repository_facts():
+        for decoding in ("", "replace", ""):
+            run_remembered(argv, "/x", {"A": "1"}, text=True, decoding=decoding, run=fact)
+    assert fact.calls == 2
