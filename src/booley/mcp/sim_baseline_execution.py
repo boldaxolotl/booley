@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,14 +36,15 @@ from booley.goals.freshness import DEFAULT_RESOLVERS, goal_required_categories
 from booley.goals.model import GoalRecord
 from booley.goals.sim_baseline_store import (
     SCHEMA,
+    BaselineFamily,
     baseline_root,
     cache_path,
     cached_result,
     content_digest,
+    family_for_schema,
     read_document,
     relative_path,
     request_runs,
-    result_key,
     write_document,
 )
 from booley.goals.test_run_evidence import freshness_stamp
@@ -63,9 +65,22 @@ EMPTY_CATEGORY_DIGEST = hashlib.sha256(b"[]").hexdigest()
 Execute = Callable[[Path, str, tuple[TestRun, ...], Path], dict[str, Any]]
 
 
-def contents_stamp(fingerprint: Mapping[str, Any]) -> str:
-    """Use the same dependent-content categories as candidate SIM evidence."""
-    stamp = freshness_stamp(SIM_KEY, {"_source_fingerprint": {"fingerprint": fingerprint}})
+@dataclass(frozen=True)
+class BaselineExecutor:
+    """The executing half of a family adapter (its store half is ``BaselineFamily``)."""
+
+    #: ``(checkout, request, units)`` -> ``(Target identity, graded rows, runnable units)``.
+    classify: Callable[
+        [Path, Mapping[str, Any], tuple[Any, ...]],
+        tuple[str | None, list[dict[str, Any]], tuple[Any, ...]],
+    ]
+    #: Runs inside the watchdog child; returns ``{"rows", "stamps", "reason", ...}``.
+    measure: Callable[[Mapping[str, Any]], dict[str, Any]]
+
+
+def contents_stamp(fingerprint: Mapping[str, Any], key: str = SIM_KEY) -> str:
+    """Use the same dependent-content categories as candidate evidence for *key*."""
+    stamp = freshness_stamp(key, {"_source_fingerprint": {"fingerprint": fingerprint}})
     if stamp is None:
         raise ValueError("baseline dependent contents cannot be fingerprinted")
     return stamp
@@ -116,12 +131,13 @@ def prove_base_contents(
 ) -> dict[str, Any]:
     """Check dependency bytes against pinned Git objects or entry configuration bytes."""
     record = GoalRecord.from_json(request["record"])
+    key = family_for_schema(request["schema"]).freshness_key
     if GoalCheckout(root).head_sha() != record.base_sha:
         raise ValueError("baseline checkout is not at the Goal base commit")
     captured = require_dict(request["inputs"]["files"], field="entry input files")
     projections: dict[Path, Any] = {}
     proof: dict[str, str] = {}
-    for name in _dependent_files(fingerprint):
+    for name in _dependent_files(fingerprint, key):
         relative = relative_path(name)
         path = root / relative
         if not path.resolve().is_relative_to(root.resolve()):
@@ -152,14 +168,14 @@ def prove_base_contents(
         "base_sha": record.base_sha,
         "protected_digest": record.protected_digest,
         "paired_base_sha": record.paired_project_base_sha,
-        "contents": contents_stamp(fingerprint),
+        "contents": contents_stamp(fingerprint, key),
         "dependencies": proof,
     }
 
 
-def _dependent_files(fingerprint: Mapping[str, Any]) -> set[str]:
+def _dependent_files(fingerprint: Mapping[str, Any], key: str) -> set[str]:
     names: set[str] = set()
-    for category in goal_required_categories(SIM_KEY):
+    for category in goal_required_categories(key):
         group = require_dict(fingerprint[category], field="baseline fingerprint category")
         names.update(
             require_str_value(name, field="baseline dependency")
@@ -262,6 +278,7 @@ def run_baseline(
 ) -> list[dict[str, Any]]:
     """Resolve the base's own declarations, reuse contents evidence, then run missing work."""
     record = GoalRecord.from_json(request["record"])
+    family = family_for_schema(request["schema"])
     root = Path(request["source_repository"])
     _ignored_destination(root, record.base_sha)
     paired = (
@@ -277,18 +294,19 @@ def run_baseline(
             str(resolve_checkout_booley_dir(checkout)) if record.paired_project_base_sha else None
         )
         write_document(path, request)
-        plans = TargetPlans(checkout)
-        plan = plans.plan(request["identity"]["target"])
-        runs = request_runs(request)
-        results, applicable = _classify_runs(plan, runs)
+        units = tuple(family.parse_unit(row) for row in request["identity"]["runs"])
+        target_identity, results, applicable = EXECUTORS[family.name].classify(
+            checkout, request, units
+        )
         declaration = DEFAULT_RESOLVERS.surface_fingerprint(checkout, None)
         empty = {"digest": EMPTY_CATEGORY_DIGEST, "files": []}
         declaration_proof = prove_base_contents(
-            checkout, request, {"rtl": empty, "tb": empty, "target_surface": declaration}
+            checkout,
+            request,
+            dict.fromkeys(goal_required_categories(family.freshness_key), empty)
+            | {"target_surface": declaration},
         )
-        declaration_proof["target_identity"] = (
-            plans.identity(request["identity"]["target"]) if plan is not None else None
-        )
+        declaration_proof["target_identity"] = target_identity
         for result in results:
             result["proof"] = declaration_proof
         if not applicable:
@@ -296,10 +314,21 @@ def run_baseline(
         target = request["identity"]["target"]
         fingerprint = DEFAULT_RESOLVERS.fingerprint(checkout, target=target)
         proof = prove_base_contents(checkout, request, fingerprint)
-        proof["target_identity"] = plans.identity(target)
+        proof["target_identity"] = target_identity
         return results + _observe_missing(
             checkout, path, request, applicable, proof, execute or execute_child
         )
+
+
+def classify_sim_runs(
+    checkout: Path, request: Mapping[str, Any], runs: tuple[TestRun, ...]
+) -> tuple[str | None, list[dict[str, Any]], tuple[TestRun, ...]]:
+    """The SIM adapter's classification of the base's own Test Run declarations."""
+    plans = TargetPlans(checkout)
+    target = request["identity"]["target"]
+    plan = plans.plan(target)
+    results, applicable = _classify_runs(plan, runs)
+    return (plans.identity(target) if plan is not None else None), results, applicable
 
 
 def _classify_runs(
@@ -315,13 +344,13 @@ def _classify_runs(
     return results, tuple(applicable)
 
 
-def _cache_lock_path(project: Path, proof: Mapping[str, Any]) -> Path:
+def _cache_lock_path(project: Path, proof: Mapping[str, Any], family: BaselineFamily) -> Path:
     key = {
         "target": proof["target_identity"],
         "contents": proof["contents"],
         "protected_inputs": proof["protected_digest"],
     }
-    return baseline_root(project) / "locks" / (content_digest(key) + ".lock")
+    return baseline_root(project, family) / "locks" / (content_digest(key) + ".lock")
 
 
 def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict[str, Any]]:
@@ -330,19 +359,25 @@ def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict
         request["identity"]["target"],
         proof["contents"],
     )
+    family = family_for_schema(request["schema"])
     cache_target = proof["target_identity"]
-    lock_path = _cache_lock_path(project, proof)
+    lock_path = _cache_lock_path(project, proof, family)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
         wait_for_file_lock(handle, timeout_s=_remaining_seconds(path.parent))
         try:
-            cached = {
-                run.name: cached_result(
-                    project, result_key(cache_target, run, stamp, proof["protected_digest"])
+            lookups = [
+                (
+                    run,
+                    cached_result(
+                        project,
+                        family.result_key(cache_target, run, stamp, proof["protected_digest"]),
+                        family,
+                    ),
                 )
                 for run in runs
-            }
-            missing = tuple(run for run in runs if cached[run.name] is None)
+            ]
+            missing = tuple(run for run, hit in lookups if hit is None)
             observed = (
                 execute(checkout, target, missing, path.parent)
                 if missing
@@ -350,7 +385,7 @@ def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict
             )
             after = DEFAULT_RESOLVERS.fingerprint(checkout, target=target)
             if (
-                contents_stamp(after) != stamp
+                contents_stamp(after, family.freshness_key) != stamp
                 or any(value != stamp for value in observed.get("stamps", []))
                 or (
                     not observed.get("stamps")
@@ -362,24 +397,26 @@ def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict
                 )
             prove_base_contents(checkout, request, after)
             return [
-                _publish_run(project, cache_target, run, proof, cached[run.name], observed)
-                for run in runs
+                _publish_run(project, family, cache_target, run, proof, hit, observed)
+                for run, hit in lookups
             ]
         finally:
             release_file_lock(handle)
 
 
-def _publish_run(project, target, run, proof, cached, observed) -> dict[str, Any]:
+def _publish_run(project, family, target, run, proof, cached, observed) -> dict[str, Any]:
+    document = family.unit_document(run)
     if cached is not None:
-        return {**test_run_document(run), "grade": cached["grade"], "proof": cached["proof"]}
+        return {**document, "grade": cached["grade"], "proof": cached["proof"]}
     matching = [
         row
         for row in observed["rows"]
-        if row.get("name") == run.name and row.get("fingerprint") == run.fingerprint
+        if row.get("name") == document["name"]
+        and row.get("fingerprint") == document["fingerprint"]
     ]
     grades = {row.get("grade") for row in matching}
     grade = "fail" if "fail" in grades else "pass" if grades == {"pass"} else "unavailable"
-    result = {**test_run_document(run), "grade": grade, "proof": proof}
+    result = {**document, "grade": grade, "proof": proof}
     if grade == "unavailable":
         reason = (
             "; ".join(str(row["reason"]) for row in matching if row.get("reason"))
@@ -388,10 +425,10 @@ def _publish_run(project, target, run, proof, cached, observed) -> dict[str, Any
         )
         result["reason"] = " ".join(str(reason).split())[:300]
     else:
-        key = result_key(target, run, proof["contents"], proof["protected_digest"])
+        key = family.result_key(target, run, proof["contents"], proof["protected_digest"])
         write_document(
-            cache_path(project, key),
-            {"schema": SCHEMA, "key": key, "grade": grade, "proof": proof},
+            cache_path(project, key, family),
+            {"schema": family.schema, "key": key, "grade": grade, "proof": proof},
         )
     return result
 
@@ -402,14 +439,17 @@ def execute_child(
     """A watchdog survives MCP exit and cleans the whole simulator process group."""
     from booley.mcp.sim_baseline_jobs import baseline_environment
 
-    document = output / "simulation-request.json"
+    request_path = output / "request.json"
+    owner = read_document(request_path, None)
+    family = family_for_schema(owner["schema"])
+    document = output / f"{family.child_stem}-request.json"
     write_document(
         document,
         {
-            "schema": SCHEMA,
+            "schema": family.schema,
             "checkout": str(checkout),
             "target": target,
-            "identity": {"runs": [test_run_document(run) for run in runs]},
+            "identity": {"runs": [family.unit_document(run) for run in runs]},
             "output": str(output),
         },
     )
@@ -418,8 +458,6 @@ def execute_child(
     group = capture_process_group(process)
     from booley.runtime.pid import capture_process_identity
 
-    request_path = output / "request.json"
-    owner = read_document(request_path)
     identity = capture_process_identity(process.pid)
     write_document(
         request_path,
@@ -427,7 +465,7 @@ def execute_child(
     )
     try:
         process.wait(timeout=_remaining_seconds(output))
-        return read_document(output / "simulation-result.json")
+        return read_document(output / f"{family.child_stem}-result.json", family)
     finally:
         terminate_process_group(process, group)
 
@@ -486,7 +524,7 @@ def _remaining_seconds(output: Path) -> float:
     from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
     from booley.runtime import job_records
 
-    request = read_document(output / "request.json")
+    request = read_document(output / "request.json", None)
     job = job_records.read_record(request["job_id"], Path(request["jobs_root"]))
     started = None if job is None else job_records.parse_stamp(job.started_at)
     if started is None:
@@ -589,20 +627,33 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) != 1:
         return 2
-    request = read_document(Path(args[0]))
-    output = Path(request["output"]) / "simulation-result.json"
+    request = read_document(Path(args[0]), None)
+    family = family_for_schema(request["schema"])
+    output = Path(request["output"]) / f"{family.child_stem}-result.json"
     previous = signal.signal(signal.SIGTERM, _child_deadline)
     timer = _child_watchdog(Path(request["output"]))
     try:
-        write_document(output, simulate(request))
+        write_document(output, EXECUTORS[family.name].measure(request))
     except (OSError, ValueError, RuntimeError) as exc:
-        write_document(output, {"schema": SCHEMA, "rows": [], "stamps": [], "reason": str(exc)})
+        write_document(
+            output, {"schema": family.schema, "rows": [], "stamps": [], "reason": str(exc)}
+        )
         return 2
     finally:
         timer.cancel()
         signal.signal(signal.SIGTERM, previous)
     return 0
 
+
+def _measure_sim(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve ``simulate`` at call time so the Simulation Flow seam stays patchable."""
+    return simulate(request)
+
+
+#: Executor half of each registered family, keyed by ``BaselineFamily.name``.
+EXECUTORS: dict[str, BaselineExecutor] = {
+    "sim": BaselineExecutor(classify=classify_sim_runs, measure=_measure_sim)
+}
 
 if __name__ == "__main__":
     raise SystemExit(main())
