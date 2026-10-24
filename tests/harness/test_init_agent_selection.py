@@ -14,6 +14,7 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
+from tests.conftest import symlink_or_skip
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -370,6 +371,23 @@ def test_persist_selection_writes_project_data_with_lf(tmp_path):
     assert init_cmd._step_agent_config(InitContext(project_root=tmp_path), selection, config)
 
     assert b"\r\n" not in config.read_bytes()
+
+
+def test_agent_config_refuses_symlinked_booley_toml(tmp_path):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    destination = tmp_path / "outside.toml"
+    destination.write_bytes(b"# elsewhere\n")
+    config = booley_dir / "booley.toml"
+    symlink_or_skip(config, destination)
+    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_agent_config(ctx, selection, config) is False
+
+    assert destination.read_bytes() == b"# elsewhere\n"
+    assert config.readlink() == destination
+    assert ctx.results[-1].status == "err"
 
 
 def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeypatch):

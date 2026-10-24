@@ -346,6 +346,27 @@ def test_issuance_success_path_reconciles_dashboard_tasks(project, monkeypatch):
     assert not project.file.exists()
 
 
+def test_symlinked_devcontainer_spec_is_refused_before_issuance(project, tmp_path):
+    prepared = session_issuance.PreparedSessionSpec(
+        {"image": "sha256:fixture"},
+        "digest",
+        session_issuance.SessionSpecInputs(project.data, (), (), None, None),
+        None,
+    )
+    destination = tmp_path / "outside-devcontainer.json"
+    destination.write_bytes(b"{}\n")
+    spec_path = devcontainer.devcontainer_path(project.root)
+    spec_path.parent.mkdir()
+    symlink_or_skip(spec_path, destination)
+
+    with pytest.raises(session_issuance.RuntimeSpecError, match="symlinked"):
+        session_issuance._persist_prepared(project.root, prepared, requirements=SimpleNamespace())
+
+    assert destination.read_bytes() == b"{}\n"
+    assert spec_path.readlink() == destination
+    assert not project.file.exists()
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_issuance_failure_after_task_publication_restores_previous_files(
     project, monkeypatch, legacy

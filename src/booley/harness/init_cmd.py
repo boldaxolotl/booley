@@ -149,6 +149,7 @@ from booley.runtime.booley_dir import (
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.git import add_git_excludes
+from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_lifecycle import (
     ImageLifecycleError,
     ImageRole,
@@ -266,6 +267,11 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
     """
     gitignore = booley_dir / ".gitignore"
 
+    if gitignore.is_symlink():
+        warn(f"refusing symlinked {gitignore}; ignore patterns not reconciled")
+        ctx.record("booley_dir", "warn", "refuse symlinked .gitignore")
+        return
+
     if not gitignore.exists():
         if ctx.check_only:
             warn(f"would add {gitignore.name} (covers {', '.join(PROJECT_GITIGNORE_PATTERNS)})")
@@ -296,7 +302,7 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
         + "\n# Added by booley init — transient Booley state.\n"
         + "".join(f"{p}\n" for p in missing)
     )
-    gitignore.write_text(existing + addition, encoding="utf-8", newline="\n")
+    replace_regular_file(gitignore, (existing + addition).encode("utf-8"))
     ok(f"added {len(missing)} missing ignore pattern(s) to {gitignore}: {', '.join(missing)}")
 
 
@@ -326,6 +332,11 @@ def _backfill_fusesoc_ignore(booley_dir: Path, ctx: InitContext) -> None:
     """
     marker = booley_dir / "FUSESOC_IGNORE"
     outcome = guarded_write(marker, FUSESOC_IGNORE_BODY, dry_run=ctx.check_only, newline="\n")
+    if outcome is WriteOutcome.REFUSED:
+        # Without the marker FuseSoC would scan worktree .core copies and could build stale RTL.
+        warn(f"refusing symlinked {marker}; FuseSoC may scan worktree cores")
+        ctx.record("booley_dir", "warn", "refuse symlinked FUSESOC_IGNORE")
+        return
     if outcome is not WriteOutcome.WRITTEN:
         return
     if ctx.check_only:
@@ -686,7 +697,12 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         return False
     content = path.read_text(encoding="utf-8") if path.is_file() else ""
     updated = _insert_agent_fields(content, fields)
-    path.write_text(updated, encoding="utf-8", newline="\n")
+    try:
+        replace_regular_file(path, updated.encode("utf-8"))
+    except SymlinkTargetError:
+        err(f"cannot persist agent selection: refusing symlinked {path}")
+        ctx.record("agent_config", "err", "symlinked booley.toml")
+        return False
     ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
     ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
     return True

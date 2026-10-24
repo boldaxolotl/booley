@@ -21,6 +21,7 @@ from booley.config.agent import SANDBOX_IMAGE
 from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
+from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
     GitIdentityError,
@@ -1150,9 +1151,9 @@ def write_devcontainer(folder: Path, spec: dict) -> Path:
 
     Overwrites Booley's own generated spec (it is regenerated, treated read-only
     within a session). Refusing a *tracked* ``.devcontainer/`` is the caller's
-    job (``booley init`` / ``booley doctor``), not this writer's.
+    job (``booley init`` / ``booley doctor``), not this writer's. The write is
+    atomic and raises ``SymlinkTargetError`` for a symlinked spec file.
     """
     path = devcontainer_path(folder)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_devcontainer_json(spec), encoding="utf-8")
+    replace_regular_file(path, render_devcontainer_json(spec).encode("utf-8"))
     return path

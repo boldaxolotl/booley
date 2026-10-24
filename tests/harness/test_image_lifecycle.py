@@ -19,6 +19,7 @@ from booley.runtime.docker_capacity import (
     DockerBuildPlan,
     DockerBuildRequest,
 )
+from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
@@ -1116,6 +1117,29 @@ def test_incremental_adapter_release_pull_and_project_recipe_paths(
     project = replace(project, generated_files=(("Dockerfile", "generated recipe"),))
     adapter._materialize_managed_project_recipe(project)
     assert (tmp_path / "docker/Dockerfile").read_text() == "generated recipe"
+
+
+def test_recipe_write_never_follows_a_planted_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    project = replace(
+        _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_SUBSTRATE),
+        generated_files=(("Dockerfile", "generated recipe"),),
+    )
+    monkeypatch.setattr(harness_lifecycle, "resolve_checkout_booley_dir", lambda _root: tmp_path)
+    destination = tmp_path / "outside-recipe"
+    destination.write_text("user file", encoding="utf-8")
+    (tmp_path / "docker").mkdir()
+    symlink_or_skip(tmp_path / "docker/Dockerfile", destination)
+    # Model the race: the link appears after the ownership check has passed.
+    monkeypatch.setattr(project_image, "is_managed_generated_file", lambda _path: True)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="symlink"):
+        adapter._materialize_managed_project_recipe(project)
+
+    assert destination.read_text(encoding="utf-8") == "user file"
+    assert (tmp_path / "docker/Dockerfile").readlink() == destination
 
 
 def test_incremental_adapter_handles_noop_build_and_unsupported_role(

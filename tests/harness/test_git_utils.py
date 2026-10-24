@@ -26,6 +26,7 @@ from booley.runtime.git import (
     git_run,
     is_linked_worktree,
 )
+from tests.conftest import symlink_or_skip
 
 # ---------------------------------------------------------------------------
 # Helpers — tiny git repo factory
@@ -365,6 +366,20 @@ class TestAddGitExcludes:
         current = exclude.read_bytes()
         assert not git_excludes_pending(repo, [".devcontainer", ".booley"])
         assert exclude.read_bytes() == current
+
+    def test_add_git_excludes_refuses_symlinked_exclude(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        exclude = repo / ".git" / "info" / "exclude"
+        destination = tmp_path / "outside-exclude"
+        destination.write_bytes(b"# elsewhere\n")
+        exclude.unlink()
+        symlink_or_skip(exclude, destination)
+
+        assert add_git_excludes(repo, [".booley"]) is False
+
+        assert destination.read_bytes() == b"# elsewhere\n"
+        assert exclude.readlink() == destination
+        assert git_excludes_pending(repo, [".booley"])
 
     def test_main_worktree_excludes_and_is_honored(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")

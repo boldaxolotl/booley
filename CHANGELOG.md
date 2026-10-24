@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley init` no longer writes through a symlink when it creates or updates its
+  files (Git hook adapters, `.booley/` config and ignore files, the Git exclude file,
+  the Sandbox spec, generated image recipes): it leaves the link and its target
+  untouched and reports the refusal. Replacing a foreign Git hook keeps every earlier
+  `.pre-booley` backup (later ones are `.pre-booley.1`, `.pre-booley.2`, and so on)
+  instead of overwriting it, a failed write leaves the previous file intact, and a
+  rewritten hook adapter keeps its permissions (it only gains execute where it is
+  already readable).
 - On Windows, cancelling a queued Job no longer reports it as running when the
   withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
   stays locked, the Job is still cancelled and reported as running, and the refused

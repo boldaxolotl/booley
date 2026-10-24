@@ -30,6 +30,7 @@ from booley.runtime.docker_capacity import (
     DockerCacheEvidence,
     ensure_docker_build_capacity,
 )
+from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.image_lifecycle import (
     BASE_IMAGE,
@@ -381,7 +382,10 @@ class _IncrementalBuildAdapter:
         for name, body in node.generated_files:
             target = docker_dir / name
             if project_image.is_managed_generated_file(target):
-                target.write_text(body, encoding="utf-8")
+                try:
+                    replace_regular_file(target, body.encode("utf-8"))
+                except SymlinkTargetError as exc:
+                    raise ImageLifecycleError(str(exc)) from exc
 
     def _build_role(
         self,

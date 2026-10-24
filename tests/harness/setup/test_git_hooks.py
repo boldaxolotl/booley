@@ -56,6 +56,7 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks,
 )
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
+from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
@@ -614,6 +615,29 @@ class TestProjectGitHookMigration:
 
         assert ctx.results[-1].detail == "update pre-push"
         assert hook.stat().st_mode & 0o111 == 0
+
+    def test_symlinked_adapter_is_refused(self, tmp_path: Path):
+        self._seed(tmp_path, {})  # installs both adapters
+        git_hooks_dir = tmp_path / ".git" / "hooks"
+        outside = tmp_path / "outside-commit-msg"
+        outside.write_text("# someone else's hook\n", encoding="utf-8")
+        (git_hooks_dir / "commit-msg").unlink()
+        symlink_or_skip(git_hooks_dir / "commit-msg", outside)
+        (git_hooks_dir / "pre-push").write_text("# stale\n", encoding="utf-8")
+
+        check = _ctx(tmp_path, check_only=True)
+        step_project_git_hooks(check)
+        assert "refuse symlinked commit-msg adapter" in check.results[-1].detail
+        assert "back up existing pre-push adapter" in check.results[-1].detail
+
+        ctx = _ctx(tmp_path)
+        step_project_git_hooks(ctx)
+
+        assert ctx.results[-1].status == "err"
+        assert "commit-msg adapter: refused" in ctx.results[-1].detail
+        assert (git_hooks_dir / "commit-msg").readlink() == outside
+        assert outside.read_text(encoding="utf-8") == "# someone else's hook\n"
+        assert "pre_push_hook.py" in (git_hooks_dir / "pre-push").read_text(encoding="utf-8")
 
     def test_non_git_project_skips_project_hook_reconciliation(self, tmp_path: Path) -> None:
         ctx = _ctx(tmp_path)
