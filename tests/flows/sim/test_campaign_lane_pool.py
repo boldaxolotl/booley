@@ -163,16 +163,24 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: P
     child_running = threading.Event()
     release_child = threading.Event()
 
+    holder_counts: list[int] = []
+
     def execute(_attempt, child_id, _digest) -> None:
         if child_id is None:
             assert cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            # Sampled while the child lane is still running past the cancel.
+            holder_counts.append(len(campaign.slots.snapshot(CLASS_HEAVY)[0]))
             return
         child_running.set()
+        holder_counts.append(len(campaign.slots.snapshot(CLASS_HEAVY)[0]))
         # This lane ignores cancellation until the test releases it.
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
     scheduler = campaign.scheduler(execute, timeout_seconds=0.05, cancellation=cancelled.is_set)
-    trigger = threading.Thread(target=lambda: (child_running.wait(), cancelled.set()))
+    trigger = threading.Thread(
+        target=lambda: (child_running.wait(_PARALLEL_SYNC_TIMEOUT_S), cancelled.set()),
+        daemon=True,
+    )
     trigger.start()
     competitors: list = []
     earlier_threads = set(threading.enumerate())
@@ -194,7 +202,8 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: P
             )
         holders, _waiters = campaign.slots.snapshot(CLASS_HEAVY)
         assert campaign.outer.lease_id in {token.lease_id for token in holders}
-        assert len(holders) <= campaign.max_heavy
+        holder_counts.append(len(holders))
+        assert holder_counts and max(holder_counts) <= campaign.max_heavy
         assert campaign.slots.refresh(competitors[1]).state == QUEUED
         # The finished outer lane leaves; only the stuck child lane (and its scope's
         # process killer) remain: retention lives inside the pool, not in a thread.
@@ -212,6 +221,39 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: P
     )
     for competitor in competitors:
         campaign.slots.release(competitor)
+    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    child_running = threading.Event()
+    release_child = threading.Event()
+
+    def execute(_attempt, child_id, _digest) -> None:
+        if child_id is None:
+            return
+        child_running.set()
+        assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
+
+    scheduler = campaign.scheduler(execute, timeout_seconds=0.05)
+
+    def failing_recovery() -> None:
+        # The owner loop must survive a recovery error (for example a file error).
+        if child_running.is_set():
+            raise OSError("recovery write failed")
+
+    monkeypatch.setattr(campaign.capacity, "recover_lost_children", failing_recovery)
+    try:
+        with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
+            scheduler.run(campaign.items)
+        campaign.slots.release(campaign.outer)  # the endpoint's admission finally
+        holders, _waiters = campaign.slots.snapshot(CLASS_HEAVY)
+        assert campaign.outer.lease_id in {token.lease_id for token in holders}
+    finally:
+        release_child.set()
+    _wait_until(lambda: campaign.slots.token_absent(campaign.outer), _PARALLEL_SYNC_TIMEOUT_S)
     assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
 
 

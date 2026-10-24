@@ -157,7 +157,14 @@ class BoundedCampaignScheduler:
         deadline: float | None = None
         while not exited.wait(0.02):
             if self._capacity.managed:
-                self._capacity.recover_lost_children()
+                try:
+                    self._capacity.recover_lost_children()
+                except Exception as exc:  # noqa: BLE001 -- keep the supervisor alive
+                    # A failed recovery (for example a file error) must still stop the
+                    # pool through the bounded-shutdown path below; leaving the loop
+                    # here would free the outer slot under running lanes.
+                    self._errors.put(exc)
+                    self._stop.set()
             if deadline is None and (self._stop.is_set() or self._capacity.shutdown_requested):
                 self._stop.set()
                 self._capacity.cancel_waiters()

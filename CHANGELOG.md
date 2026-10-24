@@ -11,8 +11,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - With `[jobs] max_heavy` above 1, a test that loses the lease on its
   additional heavy slot no longer stops the Simulation tests running beside it:
-  they finish, and the run then reports the lost lease. That test stays
-  interrupted and reruns on resume. Losing the Simulation Job's own slot still
+  they finish, and the run then reports the lost lease. An interrupted test
+  whose result was not yet published reruns on resume. Losing the Simulation Job's own slot still
   cancels the whole run.
 - The mutation tester now exposes a Target's `copyto` runtime inputs in the
   configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
