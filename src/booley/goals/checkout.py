@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.git_facts import run_remembered
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     is_paired_root_change,
@@ -73,7 +74,14 @@ class GoalCheckout:
         A nested repository (a Paired Checkout) wins over the one
         around it, as it does for Git itself.
         """
-        result = self._git("rev-parse", "--show-toplevel", "--show-prefix", check=False)
+        argv = ["git", "rev-parse", "--show-toplevel", "--show-prefix"]
+        result = run_remembered(
+            argv,
+            self.root,
+            inherited_git_environment(),
+            text=True,
+            run=lambda: self._git(*argv[1:], check=False),
+        )
         if result.returncode != 0:
             return None
         lines = result.stdout.splitlines()

@@ -9,8 +9,10 @@ from booley.goals.protected_inputs import (
     ProtectedInputRoots,
     protected_input_violations,
 )
+from booley.runtime.git_facts import repository_facts
 
 
+@repository_facts()
 def protected_warnings(record: GoalRecord, booley_dir: Path, work_dir: Path) -> tuple[str, ...]:
     """Compare resolver paths, working contents, then tracked HEAD contents."""
     if not work_dir.is_dir():

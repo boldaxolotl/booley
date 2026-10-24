@@ -116,6 +116,7 @@ from booley.goals.declared_inputs import (
 )
 from booley.goals.input_identity import capture_roots, require_bindings
 from booley.runtime.git import git_common_dir
+from booley.runtime.git_facts import repository_facts
 
 # The protected set as the rules text names it (ADR 0067 "Protected inputs").
 PROTECTED_INPUT_NAMES: tuple[str, ...] = (
@@ -183,6 +184,7 @@ class ProtectedInputRoots:
     logical_paths: tuple[tuple[Path, Path], ...] = ()
     checkout_label: tuple[RootKind, str] | None = None
 
+    @repository_facts()
     def with_input_paths(self, saved: Mapping[str, Any] | None) -> ProtectedInputRoots:
         """Physical proof preserves D7 labels and resolves them through the current mount."""
         if saved is None:
@@ -335,6 +337,7 @@ def _join(directory: str, name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@repository_facts()
 def snapshot_protected_inputs(
     roots: ProtectedInputRoots, *, entering: bool = False
 ) -> ProtectedSnapshot:
@@ -349,6 +352,7 @@ def snapshot_protected_inputs(
     )
 
 
+@repository_facts()
 def digest_protected_inputs(
     paths: Sequence[ProtectedPath], roots: ProtectedInputRoots, *, head: bool
 ) -> str:
@@ -384,6 +388,7 @@ def _digest_inputs(
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+@repository_facts()
 def protected_input_violations(
     recorded_paths: Sequence[str],
     working_digest: str,

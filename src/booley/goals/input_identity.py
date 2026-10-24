@@ -9,6 +9,7 @@ from typing import Any
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
 from booley.runtime.booley_dir import contains, resolve_checkout_booley_dir
 from booley.runtime.git import git_common_dir
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.project_repositories import paired_project_repository
 
 
@@ -110,6 +111,7 @@ def tests_label(saved: Mapping[str, Any]) -> str:
     return (tests.relative_to(rtl) if tests.is_relative_to(rtl) else tests).as_posix()
 
 
+@repository_facts()
 def capture_roots(root: Path, control_project: Path) -> dict[str, Any]:
     """The input and control roots, including Git's actual primary checkout."""
     roots = {
