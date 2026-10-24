@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 _IDENTITY_OPTIONS = frozenset(
     {
@@ -55,7 +56,7 @@ class _Memo:
 
     owner: int
     closed: bool = False
-    answers: dict[_Key, subprocess.CompletedProcess] = field(default_factory=dict)
+    answers: dict[_Key, subprocess.CompletedProcess[Any]] = field(default_factory=dict)
 
 
 _active: ContextVar[_Memo | None] = ContextVar("repository_facts", default=None)
@@ -92,15 +93,15 @@ def is_rememberable(args: Sequence[str]) -> bool:
     return False
 
 
-def run_remembered(
+def run_remembered[Output](
     argv: Sequence[str],
     cwd: Path | str,
     env: Mapping[str, str] | None,
     *,
     text: bool,
     decoding: str = "",
-    run: Callable[[], subprocess.CompletedProcess],
-) -> subprocess.CompletedProcess:
+    run: Callable[[], subprocess.CompletedProcess[Output]],
+) -> subprocess.CompletedProcess[Output]:
     """Return ``run()``, remembering a successful answer inside an active scope.
 
     *argv* is the full ``git ...`` command line, *cwd* and *env* are exactly
@@ -117,9 +118,10 @@ def run_remembered(
         return run()
     environment = os.environ if env is None else env
     key: _Key = (tuple(argv), str(cwd), tuple(sorted(environment.items())), text, decoding)
-    answer = memo.answers.get(key)
-    if answer is None:
-        answer = run()
-        if answer.returncode == 0:
-            memo.answers[key] = answer
+    remembered = memo.answers.get(key)
+    if remembered is not None:
+        return cast("subprocess.CompletedProcess[Output]", remembered)
+    answer = run()
+    if answer.returncode == 0:
+        memo.answers[key] = answer
     return answer
