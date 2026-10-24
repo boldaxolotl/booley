@@ -56,5 +56,5 @@ def test_symlinked_project_gitignore_is_refused(tmp_path: Path) -> None:
     init_cmd._backfill_project_gitignore(booley_dir, ctx)
 
     assert destination.read_bytes() == b"# user rules\n"
-    assert (booley_dir / ".gitignore").readlink() == destination
+    assert (booley_dir / ".gitignore").readlink().resolve() == destination.resolve()
     assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")

@@ -378,7 +378,7 @@ class TestAddGitExcludes:
         assert add_git_excludes(repo, [".booley"]) is False
 
         assert destination.read_bytes() == b"# elsewhere\n"
-        assert exclude.readlink() == destination
+        assert exclude.readlink().resolve() == destination.resolve()
         assert git_excludes_pending(repo, [".booley"])
 
     def test_main_worktree_excludes_and_is_honored(self, tmp_path):

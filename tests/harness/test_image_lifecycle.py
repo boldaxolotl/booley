@@ -1139,7 +1139,7 @@ def test_recipe_write_never_follows_a_planted_link(
         adapter._materialize_managed_project_recipe(project)
 
     assert destination.read_text(encoding="utf-8") == "user file"
-    assert (tmp_path / "docker/Dockerfile").readlink() == destination
+    assert (tmp_path / "docker/Dockerfile").readlink().resolve() == destination.resolve()
 
 
 def test_incremental_adapter_handles_noop_build_and_unsupported_role(

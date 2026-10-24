@@ -635,7 +635,7 @@ class TestProjectGitHookMigration:
 
         assert ctx.results[-1].status == "err"
         assert "commit-msg adapter: refused" in ctx.results[-1].detail
-        assert (git_hooks_dir / "commit-msg").readlink() == outside
+        assert (git_hooks_dir / "commit-msg").readlink().resolve() == outside.resolve()
         assert outside.read_text(encoding="utf-8") == "# someone else's hook\n"
         assert "pre_push_hook.py" in (git_hooks_dir / "pre-push").read_text(encoding="utf-8")
 

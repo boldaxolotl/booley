@@ -97,7 +97,7 @@ def test_symlinked_target_is_refused_and_untouched(tmp_path: Path, kind: str, dr
 
     assert outcome is WriteOutcome.REFUSED
     assert link.is_symlink()
-    assert link.readlink() == destination
+    assert link.readlink().resolve() == destination.resolve()
     assert (destination.read_bytes() if destination.exists() else None) == before
     assert sorted(p.name for p in hooks.iterdir()) == ["commit-msg"]
     assert sorted(p.name for p in destination.parent.iterdir()) == (
@@ -138,7 +138,7 @@ def test_backup_skips_a_symlinked_backup_name(tmp_path: Path):
     guarded_write(target, f"{MARKER}\nours\n", owner_marker=MARKER, backup_suffix=".pre-booley")
 
     assert not outside.exists()
-    assert (hooks / "commit-msg.pre-booley").readlink() == outside
+    assert (hooks / "commit-msg.pre-booley").readlink().resolve() == outside.resolve()
     assert (hooks / "commit-msg.pre-booley.1").read_text(encoding="utf-8") == "foreign\n"
 
 

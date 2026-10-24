@@ -363,7 +363,7 @@ def test_symlinked_devcontainer_spec_is_refused_before_issuance(project, tmp_pat
         session_issuance._persist_prepared(project.root, prepared, requirements=SimpleNamespace())
 
     assert destination.read_bytes() == b"{}\n"
-    assert spec_path.readlink() == destination
+    assert spec_path.readlink().resolve() == destination.resolve()
     assert not project.file.exists()
 
 

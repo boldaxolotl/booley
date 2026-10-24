@@ -387,7 +387,7 @@ def test_agent_config_refuses_symlinked_booley_toml(tmp_path, check_only):
     assert init_cmd._step_agent_config(ctx, selection, config) is False
 
     assert destination.read_bytes() == b"# elsewhere\n"
-    assert config.readlink() == destination
+    assert config.readlink().resolve() == destination.resolve()
     assert ctx.results[-1].status == "err"
 
 
