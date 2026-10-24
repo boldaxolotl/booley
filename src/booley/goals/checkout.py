@@ -10,10 +10,12 @@ moved since entry created it is never deleted.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.git_facts import run_remembered
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     is_paired_root_change,
@@ -73,7 +75,14 @@ class GoalCheckout:
         A nested repository (a Paired Checkout) wins over the one
         around it, as it does for Git itself.
         """
-        result = self._git("rev-parse", "--show-toplevel", "--show-prefix", check=False)
+        argv = ["git", "rev-parse", "--show-toplevel", "--show-prefix"]
+        result = run_remembered(
+            argv,
+            self.root,
+            inherited_git_environment(),
+            text=True,
+            run=lambda: self._git(*argv[1:], check=False),
+        )
         if result.returncode != 0:
             return None
         lines = result.stdout.splitlines()
@@ -133,7 +142,11 @@ class GoalCheckout:
 
     def head_tree(self, relative: str) -> list[TreeEntry]:
         """HEAD's entries at or under *relative* (a POSIX path inside the worktree)."""
-        output = self._git_bytes("ls-tree", "-r", "-z", "HEAD", "--", relative)
+        return self.head_rows([relative])
+
+    def head_rows(self, relatives: Sequence[str]) -> list[TreeEntry]:
+        """HEAD's entries at or under any of *relatives*, in one listing."""
+        output = self._git_bytes("ls-tree", "-r", "-z", "HEAD", "--", *relatives)
         entries: list[TreeEntry] = []
         for record in output.split(b"\0"):
             if not record:

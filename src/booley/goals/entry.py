@@ -102,6 +102,7 @@ from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
 from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.git import is_linked_worktree
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     paired_project_repository,
@@ -325,6 +326,7 @@ class _EntryPlan:
     warnings: tuple[str, ...] = ()
 
 
+@repository_facts()
 def _plan_entry(
     request: EntryRequest,
     checkout: GoalCheckout,

@@ -12,6 +12,7 @@ from pathlib import Path
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.git_facts import run_remembered
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 
 from .agent_errors import BlockingError
@@ -108,16 +109,23 @@ def _git_common_dir(wt: Path) -> Path | None:
     are actually honored from every worktree.
     """
     try:
-        result = subprocess.run(
+        environment = inherited_git_environment()
+        result = run_remembered(
             ["git", "rev-parse", "--git-common-dir"],
-            cwd=str(wt),
-            env=inherited_git_environment(),
-            capture_output=True,
+            wt,
+            environment,
             text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
+            run=lambda: subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=str(wt),
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=False,
+            ),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         result = None

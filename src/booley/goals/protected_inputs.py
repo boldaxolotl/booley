@@ -97,7 +97,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -116,6 +116,7 @@ from booley.goals.declared_inputs import (
 )
 from booley.goals.input_identity import capture_roots, require_bindings
 from booley.runtime.git import git_common_dir
+from booley.runtime.git_facts import repository_facts
 
 # The protected set as the rules text names it (ADR 0067 "Protected inputs").
 PROTECTED_INPUT_NAMES: tuple[str, ...] = (
@@ -183,6 +184,7 @@ class ProtectedInputRoots:
     logical_paths: tuple[tuple[Path, Path], ...] = ()
     checkout_label: tuple[RootKind, str] | None = None
 
+    @repository_facts()
     def with_input_paths(self, saved: Mapping[str, Any] | None) -> ProtectedInputRoots:
         """Physical proof preserves D7 labels and resolves them through the current mount."""
         if saved is None:
@@ -335,6 +337,7 @@ def _join(directory: str, name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@repository_facts()
 def snapshot_protected_inputs(
     roots: ProtectedInputRoots, *, entering: bool = False
 ) -> ProtectedSnapshot:
@@ -349,6 +352,7 @@ def snapshot_protected_inputs(
     )
 
 
+@repository_facts()
 def digest_protected_inputs(
     paths: Sequence[ProtectedPath], roots: ProtectedInputRoots, *, head: bool
 ) -> str:
@@ -365,9 +369,15 @@ def _digest_inputs(
 ) -> str:
     main = roots.main_checkout()
     head_view = _HeadView() if head else None
+    locations = [roots.absolute(path, main) for path in paths]
+    if head_view is not None:
+        head_view.prefetch(
+            location
+            for path, location in zip(paths, locations, strict=True)
+            if path.root is RootKind.WORKTREE and location is not None
+        )
     entries: list[Entry] = []
-    for path in paths:
-        location = roots.absolute(path, main)
+    for path, location in zip(paths, locations, strict=True):
         tree = {} if location is None else _disk_tree(location)
         if head_view is not None and path.root is RootKind.WORKTREE and location is not None:
             tree = head_view.committed_tree(location, tree, frozenset())
@@ -384,6 +394,7 @@ def _digest_inputs(
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+@repository_facts()
 def protected_input_violations(
     recorded_paths: Sequence[str],
     working_digest: str,
@@ -593,6 +604,39 @@ class _HeadView:
 
     def __init__(self, *, include_mode: bool = False) -> None:
         self.include_mode = include_mode
+        self._repositories: dict[Path, tuple[GoalCheckout, str] | None] = {}
+        self._listed: dict[tuple[Path, str], list[TreeEntry]] = {}
+        self._blobs: dict[tuple[Path, str], bytes] = {}
+
+    def prefetch(self, locations: Iterable[Path]) -> None:
+        """List HEAD once per repository for all *locations*, instead of once per path.
+
+        A listing that fails is left to :meth:`_tracked`, which asks again for
+        the one location and reports it by name.
+        """
+        wanted: dict[Path, tuple[GoalCheckout, list[str]]] = {}
+        for location in locations:
+            try:
+                found = self._repository(location)
+            except ProtectedInputError:
+                continue  # reported by the path's own read
+            if found is not None:
+                checkout, relative = found
+                wanted.setdefault(checkout.root, (checkout, []))[1].append(relative)
+        for checkout, relatives in wanted.values():
+            try:
+                rows = checkout.head_rows(relatives)
+            except CheckoutError:
+                continue
+            for relative in relatives:
+                self._listed[checkout.root, relative] = [
+                    row for row in rows if _under(row.path, relative)
+                ]
+
+    def _repository(self, location: Path) -> tuple[GoalCheckout, str] | None:
+        if location not in self._repositories:
+            self._repositories[location] = _repository_of(location)
+        return self._repositories[location]
 
     def committed_tree(self, location: Path, disk: Tree, seen: frozenset[str]) -> Tree:
         """*disk* with each entry marked tracked or not, tracked ones as HEAD holds them."""
@@ -609,12 +653,14 @@ class _HeadView:
         return tree
 
     def _tracked(self, location: Path, seen: frozenset[str]) -> Tree:
-        found = _repository_of(location)
+        found = self._repository(location)
         if found is None:
             return {}  # outside every repository: nothing is committed
         checkout, relative = found
         try:
-            rows = checkout.head_tree(relative)
+            rows = self._listed.get((checkout.root, relative))
+            if rows is None:
+                rows = checkout.head_tree(relative)
         except CheckoutError as exc:
             raise ProtectedInputError(f"cannot list HEAD for {location}: {exc}") from exc
         entries: Tree = {}
@@ -636,7 +682,9 @@ class _HeadView:
         if mode == "160000":
             return {"kind": "submodule", "commit": object_id, "tracked": True}
         try:
-            content = checkout.blob(object_id)
+            if (checkout.root, object_id) not in self._blobs:
+                self._blobs[checkout.root, object_id] = checkout.blob(object_id)
+            content = self._blobs[checkout.root, object_id]
         except CheckoutError as exc:
             raise ProtectedInputError(f"cannot read HEAD object {object_id}: {exc}") from exc
         if mode == "120000":
@@ -664,6 +712,11 @@ class _HeadView:
             return {"kind": "cycle"}
         tree = self.committed_tree(resolved, _disk_tree(resolved), seen | {key})
         return {"kind": "head-view", "tree": tree} if tree else {"kind": "dangling"}
+
+
+def _under(path: str, relative: str) -> bool:
+    """Whether the HEAD entry *path* is *relative* or lies below it (``.`` is everything)."""
+    return relative in (".", path) or path.startswith(relative + "/")
 
 
 def _repository_of(location: Path) -> tuple[GoalCheckout, str] | None:

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.git_facts import is_rememberable, run_remembered
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.publication_ownership import PublicationOwnership
 
@@ -40,8 +41,9 @@ def raw_git(
         "GIT_NO_LAZY_FETCH": "1",
     }
     environment.update(env or {})
-    try:
-        result = subprocess.run(
+
+    def run() -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
             ["git", *args],
             cwd=repository,
             env=environment,
@@ -50,6 +52,12 @@ def raw_git(
             timeout=60,
             check=False,
         )
+
+    try:
+        if input_bytes is None and is_rememberable(args):
+            result = run_remembered(["git", *args], repository, environment, text=False, run=run)
+        else:
+            result = run()
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise FileCommitError(f"Git publication command failed: {exc}") from exc
     if result.returncode:

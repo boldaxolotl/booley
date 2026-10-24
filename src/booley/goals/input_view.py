@@ -46,6 +46,7 @@ from booley.runtime.booley_dir import (
     contains,
     resolve_checkout_booley_dir,
 )
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
@@ -111,6 +112,7 @@ class InputSelectionError(LifecycleError):
     """Live participant topology cannot represent the recorded input selection."""
 
 
+@repository_facts()
 def select_inputs(record: GoalRecord, root: Path) -> InputSelection:
     """Classify participant availability separately from persisted artifact integrity."""
     try:
@@ -215,8 +217,9 @@ def topology_digest(root: Path, project: Path, paired: Path | None) -> str:
             value[label + "_git"] = None
             continue
         identities: list[list[int]] = []
-        for option in ("--git-common-dir", "--git-dir"):
-            directory = Path(os.fsdecode(raw_git(path, "rev-parse", option).rstrip(b"\n")))
+        answer = raw_git(path, "rev-parse", "--git-common-dir", "--git-dir")
+        for line in os.fsdecode(answer).split("\n")[:2]:
+            directory = Path(line)
             directory = (path / directory) if not directory.is_absolute() else directory
             identities.append(directory_identity(directory))
         value[label + "_git"] = identities
