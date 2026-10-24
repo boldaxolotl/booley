@@ -31,7 +31,7 @@ from booley.dev_support.demo_contract_codec import load_contract
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
 from booley.goals.naming import resolve_spelling
 from booley.goals.presentation import goal_presentation
-from booley.goals.sim_baseline_store import baseline_jobs_dir
+from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 from booley.runtime import job_records
@@ -365,19 +365,20 @@ def _resolved_targets(
 
 
 def stop_baseline_jobs(booley_dir: Path, *, timeout_s: float = BASELINE_STOP_SECONDS) -> None:
-    """Cancel detached report-only SIM baseline Jobs before the workspace is deleted.
+    """Cancel detached report-only baseline Jobs before the workspace is deleted.
 
-    Active SIM calls schedule baseline Jobs that outlive the MCP server. They
-    write under the disposable Project, so deleting it while they run races
-    their writes. A Job still inside its spawn grace (no PID yet) is awaited
+    Active baseline calls schedule Jobs, under every registered family's root,
+    that outlive the MCP server. They write under the disposable Project, so
+    deleting it while they run races their writes. A Job still inside its spawn grace (no PID yet) is awaited
     until it stamps a PID and can be signalled.
     """
-    jobs = baseline_jobs_dir(booley_dir)
+    job_roots = [baseline_jobs_dir(booley_dir, family) for family in BASELINE_FAMILIES]
     deadline = time.monotonic() + timeout_s
     signalled: set[int] = set()
     while True:
         active = [
             record
+            for jobs in job_roots
             for record in job_records.list_records(jobs)
             if job_records.is_active(record, is_pid_alive)
         ]
