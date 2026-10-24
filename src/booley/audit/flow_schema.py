@@ -64,6 +64,19 @@ _MOVED_TARGET_RECIPE_KEYS = frozenset(
 )
 
 
+def pre_run_commands_problem(flow_name: str) -> tuple[str, str]:
+    """Return the ``(message, fix)`` for a malformed ``pre_run_commands`` knob.
+
+    Doctor and the run-time readers share this text so a Project sees one
+    diagnosis wherever the knob is rejected.
+    """
+    return (
+        f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
+        "list of strings (shell lines run before each sim run)",
+        f"fix [flows.{flow_name}].pre_run_commands",
+    )
+
+
 def audit_flow_tables(
     data: Mapping[str, Any],
     required_flows: Sequence[str],
@@ -267,13 +280,7 @@ def _flow_shape_findings(
             )
     pre_sim_commands = section.get("pre_run_commands")
     if pre_sim_commands is not None and not is_str_list(pre_sim_commands):
-        findings.append(
-            fail_finding(
-                f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
-                "list of strings (shell lines run before each sim run)",
-                f"fix [flows.{flow_name}].pre_run_commands",
-            )
-        )
+        findings.append(fail_finding(*pre_run_commands_problem(flow_name)))
     standalone_frontend = section.get("standalone_frontend")
     if standalone_frontend is not None and standalone_frontend not in {
         "auto",
