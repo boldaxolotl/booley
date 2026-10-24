@@ -2173,7 +2173,7 @@ replacement must differ, and every proposal must remain a single source edit.
         build_path: Path,
         tb_top: str,
         *,
-        pinned: _PinnedBuild | None = None,
+        pinned: _PinnedBuild,
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
@@ -2183,7 +2183,6 @@ replacement must differ, and every proposal must remain a single source edit.
         Declared ``copyto`` inputs are passed as ``--runtime-input`` so the run
         half classifies a missing ``$readmemh`` file as the Flow does.
         """
-        pinned = pinned or self._pinned_build(target, work_dir, build_path)
         command, launch = self._pinned_adapter_command(
             target, work_dir, build_path, tb_top, pinned.rel, timeout, test_name, cocotb_tests
         )
