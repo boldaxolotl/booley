@@ -926,10 +926,12 @@ as its first lane; it does not acquire a second slot for the same work. At
 `max_heavy = 1`, Campaign work is serial. With a larger cap, ready independent
 work items may acquire child heavy slots up to that same Project-wide cap.
 Literal `run_cwd` collisions still serialize locally, while distinct templated
-attempt directories may overlap. Cancellation and lease loss withdraw queued
-child claims and keep each occupied slot until the matching supervised process
-tree is terminal, so stale capacity is never treated as free while an EDA child
-is still alive.
+attempt directories may overlap. Cancellation withdraws queued child claims.
+Losing the lease on one of the additional child slots stops only the test using
+it; the other tests finish, and the run then reports the lost lease. Losing the
+Simulation Job's own slot still cancels the whole run. Each occupied slot stays
+held until the matching supervised process tree is terminal, so stale capacity
+is never treated as free while an EDA child is still alive.
 
 Each admitted holder has a renewable recovery lease that is separate from its
 optional work timeout. A Job launched through an explicit Sandbox Attachment
