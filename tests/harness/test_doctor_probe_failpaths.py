@@ -32,6 +32,7 @@ from booley.runtime import agent_config as runtime_agent_config
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.diagnostic_helpers import (
     _record_environment,
+    _require_doctor_warning,
 )
 from tests.target_test_support import write_two_core_sim_project
 
@@ -52,6 +53,7 @@ class _Rec:
         self.events.append(("pass", m))
 
     def w(self, m: str, fix: str = "") -> None:
+        _require_doctor_warning(m)
         self.events.append(("warn", m))
 
     def n(self, m: str) -> None:
