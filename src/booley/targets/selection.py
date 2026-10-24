@@ -21,12 +21,34 @@ def split_selector(token: str) -> tuple[str | None, str]:
     return qualifier or None, name
 
 
+def selector_target_name(selector: str) -> str:
+    """Return the Target name of a bare or ``vlnv#name`` selector."""
+    return split_selector(selector)[1]
+
+
 def vlnv_matches(query: str, vlnv: str) -> bool:
     """Return whether *query* is a segment suffix of *vlnv*'s identity."""
     key_segments = vlnv_key(vlnv).split(":")
     query_segments = vlnv_key(query).split(":")
     return len(query_segments) <= len(key_segments) and (
         key_segments[-len(query_segments) :] == query_segments
+    )
+
+
+def selectors_name_distinct_cores(first: str, second: str) -> bool:
+    """Whether two selectors provably name different cores, without a catalog.
+
+    Both must be qualified, and neither qualifier may be a segment suffix of the
+    other: two suffix patterns can match one core only when one contains the
+    other. Unqualified selectors and version-only differences stay unproven.
+    """
+    first_qualifier = split_selector(first)[0]
+    second_qualifier = split_selector(second)[0]
+    if first_qualifier is None or second_qualifier is None:
+        return False
+    return not (
+        vlnv_matches(first_qualifier, second_qualifier)
+        or vlnv_matches(second_qualifier, first_qualifier)
     )
 
 

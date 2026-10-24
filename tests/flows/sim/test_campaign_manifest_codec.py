@@ -1043,6 +1043,28 @@ def _project_diagnostics(old, new):
     return exc.value.diagnostic
 
 
+def test_manifest_with_recorded_flow_option_defines_still_decodes_and_compares():
+    """A Campaign stored with `source_recipe.defines` stays readable; resume names the cause."""
+    import copy
+
+    legacy_doc = _diagnostic_document()
+    legacy_doc["workload"]["source_recipe"]["defines"] = ["LEGACY=1"]
+    current_doc = _diagnostic_document()
+
+    stored = _finalize_diagnostic_document(copy.deepcopy(legacy_doc))
+    encoded = encode_simulation_campaign_manifest(stored)
+    assert encode_simulation_campaign_manifest(decode_simulation_campaign_manifest(encoded)) == (
+        encoded
+    )
+    assert compare_manifests(stored, stored) == ()
+
+    diagnostic = _project_diagnostics(legacy_doc, current_doc)
+    assert diagnostic.mismatch_summary == (
+        "recorded flow_options.defines is no longer recorded (no Flow applies it); "
+        "re-plan the Campaign",
+    )
+
+
 @pytest.mark.parametrize(
     ("old_paths", "new_paths", "lines"),
     [

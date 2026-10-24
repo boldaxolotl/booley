@@ -15,6 +15,15 @@ Packaged release history starts at 0.2.7. For older changes, see
   worktree no longer fails with "not found in source Project". An uninitialized,
   dirty, shallow, or incomplete source submodule now stops worktree creation or Goal
   entry with a clear message and leaves nothing behind.
+- The mutation tester now exposes a Target's `copyto` runtime inputs in the
+  configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
+  does, and removes them afterwards. A testbench that opens a data file no longer
+  fails its baseline, and a declared `$readmemh` input that was not staged makes
+  the run inconclusive instead of a detected mutant.
+- On Windows, cancelling a queued Job no longer reports it as running when the
+  withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
+  stays locked, the Job is still cancelled and reported as running, and the refused
+  withdrawal is logged.
 - Project Setup's Memory Timing Surrogate guidance now requires every
   read-data bit to depend, through registers only and bit-wise, on the
   memory's write data, address, write enables, and byte-enables, and adds a
@@ -254,6 +263,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   Goal arguments now require uppercase capabilities (`family: "SIM"`). Existing
   Goal Records and pending proposals retain their stored identities. Project-owned
   Goalsets stay untouched; translate their intent using the current tool schema.
+
+- `booley doctor` now fails a Doctor-selected Target whose `.core`
+  `flow_options` sets `defines`. No Flow ever applied that key; declare defines
+  as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
+  so resuming a Campaign planned with a list or string `flow_options.defines`
+  reports a workload change that names the cause; re-plan it.
 
 ## 0.3.1 - 05 OCT 2026
 

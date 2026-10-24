@@ -315,6 +315,23 @@ def classify_readmemh_termination(
     )
 
 
+_UNSTAGED_INPUT_RE = re.compile(
+    r"^ERROR: (declared runtime input '.+' was not staged before \$readmem[hb].*)$",
+    re.MULTILINE,
+)
+
+
+def unstaged_runtime_input_diagnostic(output: str) -> str:
+    """The detail of a declared-but-unstaged ``$readmem`` input in run-half *output*.
+
+    Reads back the ``ERROR:`` line the run halves print for the
+    ``infrastructure`` termination :func:`classify_readmemh_termination` builds;
+    ``""`` when the output holds none.
+    """
+    match = _UNSTAGED_INPUT_RE.search(output)
+    return match.group(1) if match else ""
+
+
 def dir_size_bytes(path: Path) -> int:
     """Best-effort recursive on-disk byte size of *path* (symlinks not followed).
 

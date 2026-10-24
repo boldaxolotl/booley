@@ -73,15 +73,25 @@ October 9, 2026 to ten. See [the experiment record](windows-shard-experiment.md)
 for the raw comparison, the changes, and the post-change validation
 requirement.
 
+## Test-cost profile
+
+[The test-cost profile](test-cost-profile.md) ranks test families and fixture
+phases per platform from ten complete `main` runs (SHAs `0c4b5acbe..4fe5edfe7`,
+October 22-23, 2026). It lists setup, call, and teardown medians and ranges,
+keeps summed test time, job elapsed time, required-gate elapsed time, and runner
+minutes as separate quantities, states its sampling limitations, and proposes
+optimization candidates with the integration coverage each must keep.
+
 ## Ubuntu shard-count and scheduler experiment
 
 Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 
 - `linux_shard_count` (1, 2, or 3; default 1). One keeps a complete-suite job
   per Python version. Two or three shard each of Python 3.11 and 3.14 into group
-  `linux-<python>`, balanced by `linux-test-timings.json`; a test missing from that model weighs
-  its `default_seconds`, so until a measured model lands the shards are
-  count-balanced only and timing comparisons are indicative.
+  `linux-<python>`, balanced by `linux-test-timings.json`, a model of measured
+  call-time medians for tests above one second; any other test weighs its
+  `default_seconds`. The measurement behind the model and the shard and
+  scheduler comparison are in [linux-shard-experiment.md](linux-shard-experiment.md).
 - `linux_scheduler` (`loadscope` or `worksteal`; default `loadscope`). It sets
   `--dist` for the Ubuntu legs only. Windows keeps its work-stealing scheduler.
 - `linux_shard_benchmark` selects the same required jobs as an ordinary Python
@@ -90,9 +100,10 @@ Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 
 A non-default count or scheduler is rejected outside `workflow_dispatch`, so
 pull requests, pushes, and reusable-workflow calls keep one complete-suite job
-per Python version with `loadscope`. When Ubuntu is sharded, `test-verify` also
-verifies each Linux group with the dispatched count, using the same exact-union
-check as the Windows shards.
+per Python version with `loadscope`; that default is unchanged pending the
+maintainer's decision on the experiment's recommendation. When Ubuntu is
+sharded, `test-verify` also verifies each Linux group with the dispatched
+count, using the same exact-union check as the Windows shards.
 
 ## Exhaustive recovery policy
 
@@ -109,6 +120,18 @@ Goal and review code select standard and RISC-V image validation. Goal tests
 `src/booley/review/`, `src/booley/evidence/`, and
 `tests/fixtures/goal_mode_smoke/`. These paths do not independently select
 exhaustive Ticket Board recovery permutations.
+
+## Expensive test inventory
+
+[The expensive test inventory](expensive-test-inventory.md) is a measured
+record of costly repository-wide scans, duplicate scenarios, and recovery
+permutation families, from 20 successful `main` push runs between
+`17a2f1800` and `4fe5edfe7` (October 21 to 23, 2026). Its dispositions are
+proposals; each approved one is implemented by its own issue with its own
+before/after measurement. The exhaustive-recovery selection described in the
+previous section was removed with the Ticket Board in `1460ad065`, so every
+Goal recovery case currently runs on every code pull request; the record
+describes the mechanism as it was and proposes how a tier would restore it.
 
 ## Performance telemetry
 
