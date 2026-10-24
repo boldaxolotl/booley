@@ -67,7 +67,7 @@ class _Campaign:
                     time.sleep(0.01)
                 return
             trigger()
-            # The scheduler's monitor has now run its argument-less cancel_waiters,
+            # The scheduler's await loop has now run its argument-less cancel_waiters,
             # which must not mask the cause that triggered the cancellation.
             deadline = time.monotonic() + 5.0
             while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:

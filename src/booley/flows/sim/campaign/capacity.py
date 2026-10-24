@@ -1,4 +1,4 @@
-"""Borrow one admitted heavy lane and acquire bounded per-item child lanes."""
+"""Borrow the admitted outer heavy lane and acquire bounded per-item child lanes."""
 
 from __future__ import annotations
 
@@ -24,6 +24,10 @@ _SHUTDOWN_POLL_SLICES = 10
 
 class HeavyCapacityError(RuntimeError):
     """The campaign can no longer safely use heavy capacity."""
+
+
+class LeaseLostError(HeavyCapacityError):
+    """One child lane lost its lease; the other lanes can still finish."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +63,9 @@ class HeavyCapacity:
         self._shutdown = threading.Event()
         self._outer_entered = False
         self._waiting: dict[str, SlotToken] = {}
+        # Child permits inside their work, and those whose lost lease was handled.
+        self._held: dict[str, ChildHeavyPermit] = {}
+        self._recovered_lost: set[str] = set()
         self._gate = threading.Lock()
         self._cause: str | None = None
 
@@ -111,27 +118,19 @@ class HeavyCapacity:
             raise ClaimAbortedError("campaign shutdown requested")
         token = self._acquire_child(store, child_execution_id)
         permit = ChildHeavyPermit(work_item_id, child_execution_id, token, token.lease_health)
-        watch_stop = threading.Event()
-        watcher = threading.Thread(
-            target=self._watch_lease,
-            args=(permit, watch_stop),
-            name=f"booley-campaign-lease-{token.lease_id[:8]}",
-            daemon=True,
-        )
-        watcher.start()
+        with self._gate:
+            self._held[token.lease_id] = permit
         try:
             yield permit
             if permit.lease_health.lost.is_set() or not store.renew(permit.token):
-                raise HeavyCapacityError(
-                    f"heavy lease lost for child execution {child_execution_id}"
-                )
+                raise LeaseLostError(f"heavy lease lost for child execution {child_execution_id}")
             if self._cancelled():
                 raise ClaimAbortedError("campaign cancellation requested")
         finally:
-            watch_stop.set()
-            watcher.join(timeout=1)
             with self._gate:
                 self._waiting.pop(token.lease_id, None)
+                self._held.pop(token.lease_id, None)
+                self._recovered_lost.discard(token.lease_id)
             self._release_after_terminal(store, permit)
 
     def _acquire_child(self, store, child_execution_id: ExecutionId) -> SlotToken:
@@ -208,29 +207,33 @@ class HeavyCapacity:
             return True
         return store.execution_token_absent(CLASS_HEAVY, execution_id)
 
-    def retain_outer_until(self, workers: tuple[threading.Thread, ...]) -> None:
-        """Transfer outer release to a terminal monitor for escaped workers."""
+    def hold_outer_until(self, exited: threading.Event) -> None:
+        """Keep the outer slot held until ``exited`` is set (the last lane left)."""
         store = self._admission.slot_store
         token = self._admission.outer_token
         if store is None or not isinstance(token, SlotToken):
             return
-        terminal = threading.Event()
-        store.defer_release_until(token, terminal)
-        monitor = threading.Thread(
-            target=self._wait_for_workers,
-            args=(workers, terminal),
-            name="booley-campaign-deferred-outer",
-            daemon=True,
-        )
-        monitor.start()
+        store.defer_release_until(token, exited)
 
-    @staticmethod
-    def _wait_for_workers(
-        workers: tuple[threading.Thread, ...], terminal: threading.Event
-    ) -> None:
-        for worker in workers:
-            worker.join()
-        terminal.set()
+    def recover_lost_children(self) -> None:
+        """Start exact recovery of each held child whose lease was lost, once.
+
+        Called from the scheduler's await loop, so recovery begins while the lane's
+        work is still running. It never stops the campaign: a lost child lease is
+        scoped to that lane's item.
+        """
+        store = self._admission.slot_store
+        with self._gate:
+            lost = [
+                permit
+                for lease_id, permit in self._held.items()
+                if permit.lease_health.lost.is_set() and lease_id not in self._recovered_lost
+            ]
+            self._recovered_lost.update(permit.token.lease_id for permit in lost)
+        for permit in lost:
+            if store is not None:
+                store.begin_token_recovery(permit.token)
+            self._recover_child(permit.child_execution_id)
 
     def _cancelled(self) -> bool:
         if self._shutdown.is_set():
@@ -241,22 +244,6 @@ class HeavyCapacity:
             self._admission.cancellation_cause() or "admission cancellation requested"
         )
         return True
-
-    def _watch_lease(self, permit: ChildHeavyPermit, stop: threading.Event) -> None:
-        while not stop.wait(0.01):
-            if not permit.lease_health.lost.is_set():
-                continue
-            token = permit.token
-            self._latch_cause(
-                f"Job Slot lease lost for child execution {permit.child_execution_id}: "
-                f"{token.job_class}/{token.path.name}"
-            )
-            self._shutdown.set()
-            store = self._admission.slot_store
-            if store is not None:
-                store.begin_token_recovery(permit.token)
-            self._recover_child(permit.child_execution_id)
-            return
 
     def _release_after_terminal(self, store, permit: ChildHeavyPermit) -> None:
         execution_id = permit.child_execution_id
@@ -272,4 +259,5 @@ __all__ = [
     "HeavyCapacity",
     "HeavyCapacityError",
     "HeavyPermit",
+    "LeaseLostError",
 ]
