@@ -9,14 +9,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- `booley init` no longer writes through a symlink when it creates or updates its
-  files (Git hook adapters, `.booley/` config and ignore files, the Git exclude file,
-  the Sandbox spec, generated image recipes): it leaves the link and its target
-  untouched and reports the refusal. Replacing a foreign Git hook keeps every earlier
-  `.pre-booley` backup (later ones are `.pre-booley.1`, `.pre-booley.2`, and so on)
-  instead of overwriting it, a failed write leaves the previous file intact, and a
-  rewritten hook adapter keeps its permissions (it only gains execute where it is
-  already readable).
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
