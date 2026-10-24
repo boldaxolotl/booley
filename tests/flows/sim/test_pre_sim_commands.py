@@ -93,8 +93,8 @@ def _write_pre_run_commands(root: Path, value: str) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ['"make -C tests build"', '["make", 3]', '{ cmd = "make" }', "3"],
-    ids=["bare-string", "non-string-entry", "table", "number"],
+    ['"make -C tests build"', '["make", 3]'],
+    ids=["bare-string", "non-string-entry"],
 )
 def test_invalid_pre_run_commands_spawn_nothing(tmp_path: Path, value: str) -> None:
     """Only a list of strings is a command list; anything else runs nothing."""

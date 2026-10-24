@@ -13,7 +13,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   table, a number, or a list with a non-string entry) now makes `booley flow sim`
   refuse with Doctor's message before anything runs, instead of being split into
   single characters or coerced. A `[feedback].redact_extra` of the same shape now
-  fails `booley feedback` with exit 2 instead of silently skipping the term.
+  fails `booley feedback report`, `export` and `redact` with exit 2
+  instead of silently skipping the term.
 - On Windows, cancelling a queued Job no longer reports it as running when the
   withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
   stays locked, the Job is still cancelled and reported as running, and the refused

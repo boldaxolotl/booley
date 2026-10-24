@@ -534,6 +534,21 @@ def test_redact_reports_invalid_redact_extra(run, project, tmp_path, capsys):
     assert "Error: booley.toml [feedback].redact_extra must be a list of strings" in captured.err
 
 
+def test_report_with_invalid_redact_extra_writes_no_user_report(run, project, capsys):
+    toml = project / ".booley" / "booley.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8") + '\n[feedback]\nredact_extra = "Skunkworks"\n',
+        encoding="utf-8",
+    )
+    before = sorted(path.name for path in (project / ".booley").iterdir())
+
+    assert run("report", "--project-name", "demo") == 2
+
+    captured = capsys.readouterr()
+    assert "redact_extra must be a list of strings" in captured.err
+    assert sorted(path.name for path in (project / ".booley").iterdir()) == before
+
+
 @pytest.mark.parametrize("command", ["filed", "triage", "export"])
 def test_missing_explicit_id_does_not_write_log_or_export(
     run, project, legacy_duplicate_log, tmp_path, capsys, command
