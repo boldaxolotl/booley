@@ -11,8 +11,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Doctor inside a Sandbox no longer FAILs when the platform adds an SSH directory
   for inbound access, as GitHub Codespaces does. An empty `.ssh`, or one with only
-  a regular `authorized_keys` file, passes; any other SSH entry still FAILs, and
-  the message now names it.
+  a regular `authorized_keys` file, passes unless either is mounted into the
+  Sandbox; any other SSH entry still FAILs, and the message now names it.
 - The mutation tester now exposes a Target's `copyto` runtime inputs in the
   configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
   does, and removes them afterwards. A testbench that opens a data file no longer

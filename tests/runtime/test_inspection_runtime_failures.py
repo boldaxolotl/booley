@@ -299,6 +299,34 @@ def test_unlistable_ssh_directory_stays_exposed(mounted_runtime, monkeypatch, tm
     assert not calls
 
 
+@pytest.mark.parametrize(
+    "case", ["ssh-mount", "authorized_keys-mount", "mountinfo-unreadable", "parent-mount-only"]
+)
+def test_ssh_mount_point_is_host_authority(mounted_runtime, monkeypatch, tmp_path, case):
+    """A mounted ``.ssh`` or ``authorized_keys`` FAILs; an ancestor mount does not."""
+    request, state, calls = mounted_runtime
+    scratch = _redirect_ssh_directory(monkeypatch, tmp_path, "/home/agent/.ssh")
+    _build_ssh_layout(scratch, "authorized_keys")
+    extra = {
+        "ssh-mount": scratch,
+        "authorized_keys-mount": scratch / "authorized_keys",
+        "parent-mount-only": tmp_path,
+    }.get(case)
+    offending = scratch / "authorized_keys" if case == "authorized_keys-mount" else scratch
+    if case == "mountinfo-unreadable":
+        state["mountinfo"] = OSError("unreadable")
+    elif extra is not None:
+        state["mountinfo"] += f"37 25 0:33 / {extra} rw,relatime - ext4 /dev/host rw\n"
+    report = inspection.inspect_runtime(request).issuance
+    if case == "parent-mount-only":
+        assert [f.message for f in report.findings if f.severity is not Severity.PASS] == []
+        assert len(calls) == 1
+        return
+    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
+    assert report.findings[0].message.endswith(f": {offending}")
+    assert not calls
+
+
 def test_retained_resources_separate_current_project_from_other_project_keepers(
     tmp_path, monkeypatch
 ):
