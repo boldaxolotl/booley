@@ -422,10 +422,11 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 <!-- END GENERATED: criteria-params -->
 
 For a SYNTH or FPGA Goal with a relative threshold (`*_increase_at_most`,
-`*_reduce_at_least`) whose evidence includes a baseline, `booley goal status`,
-the `goal_status` tool, the Dashboard's Goal details and the Review Package also
-show the baseline revision and, per thresholded metric, `baseline → current`
-with the signed change and percentage, for example
+`*_reduce_at_least`) whose evidence includes a baseline, the long
+`booley goal status` view (one Goal), the `goal_status` tool, the Dashboard's
+Goal details and the Review Package also show the baseline revision and, per
+thresholded metric, `baseline → current` with the signed change and percentage,
+for example
 `baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)`.
 Absolute Goals and Goals without baseline evidence show their usual metrics.
 

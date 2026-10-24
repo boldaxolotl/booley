@@ -95,7 +95,8 @@ class DashboardSnapshot:
 
 def _live_baseline_comparison(goal: GoalStatus, entry: Any) -> tuple[str, ...]:
     """SYNTH/FPGA baseline line for a live Goal, silent where Status reports stale evidence."""
-    if entry is None or goal.status == "stale":
+    # entry.stale also covers a category reset, which Status reports as "unmet" with "?".
+    if entry is None or entry.stale or goal.status == "stale":
         return ()
     comparison = implementation_baseline_comparison(goal.key, entry.params, entry.detail)
     return (comparison,) if comparison else ()

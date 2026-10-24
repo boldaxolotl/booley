@@ -460,9 +460,11 @@ def test_relative_implementation_package_shows_baseline(layout, monkeypatch, cas
 
 
 def test_relative_implementation_baseline_on_live_status_and_dashboard(layout):
-    from booley.criteria.state import DevelopmentState
+    from booley.criteria.state import CriterionChange, DevelopmentState
+    from booley.evidence.fields import SOURCE_INVALIDATED_REASON
     from booley.goals.flow_execution import GoalFlowExecution
     from booley.goals.format import render_status
+    from booley.goals.state_store import load_goal_state
     from booley.goals.status import build_status
     from booley.goals.store import GoalStore
     from booley.harness.dashboard.model import project_goal
@@ -486,6 +488,14 @@ def test_relative_implementation_baseline_on_live_status_and_dashboard(layout):
     assert expected in status.goals[0].evidence_summary
     assert "12.5%" in render_status((status,))  # the table wraps long cells
     assert expected in project_goal(store, layout.record).goals[0].test_runs
+
+    live = load_goal_state(store, layout.record).criteria[case[1]]
+    # A source change invalidates the evidence: Status shows "?", so must the Dashboard.
+    stale_change = CriterionChange(
+        case[1], False, SOURCE_INVALIDATED_REASON, dict(changes[0].detail), True, dict(live.params)
+    )
+    adapter.record_changes(state, [stale_change], invocation_id="edit", producer="synth")
+    assert project_goal(store, layout.record).goals[0].test_runs == ()
 
 
 def test_historical_inventory_body_omission_preserves_original_digest_and_references(tmp_path):
