@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
+  hooks or Dashboard extension are missing or out of date, or when a simulation
+  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
+  check ID: `sandbox.activity-hooks-unavailable`,
+  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
+  the Target name).
 - On Windows, cancelling a queued Job no longer reports it as running when the
   withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
   stays locked, the Job is still cancelled and reported as running, and the refused
