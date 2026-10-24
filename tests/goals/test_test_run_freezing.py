@@ -19,6 +19,7 @@ from booley.goals.test_run_freezing import (
     freeze_goals,
     goal_slots,
     refreeze_changed_goal,
+    resolution_obstacle,
     resolve_pending,
     unresolved,
 )
@@ -390,6 +391,55 @@ def test_freeze_goals_is_strict_at_entry_and_lenient_when_deferred() -> None:
     assert lenient["sim_pass_tb_run_737472657373_x"].pending == ("stress@x2",)
     with pytest.raises(TargetPlanError, match="cannot be resolved"):
         plans.plan("broken")
+
+
+SKIPPED_GOALS = {
+    "test": {"family": "SIM", "test": "stress"},
+    "variant": {"family": "SIM", "test": "stress+soak"},
+    "pinned-seed": {"family": "SIM", "test": "stress@7"},
+    "seed-count": {"family": "SIM", "test": "stress@x2"},
+    "coverage-list": {
+        "family": "COVERAGE",
+        "tests": ["reset", "stress"],
+        "metrics": {"line": 90},
+    },
+    "cycle-count": {
+        "family": "CYCLE_COUNT",
+        "test": "stress@7",
+        "thresholds": {"cycle_count_max": 900},
+    },
+}
+
+
+@pytest.mark.parametrize("form", SKIPPED_GOALS)
+def test_a_goal_on_a_skipped_test_is_refused_strictly_and_stays_pending_when_deferred(
+    form: str,
+) -> None:
+    """tests.toml skips the Test: its runs never count, so a Goal naming it is never frozen."""
+    skipping = plan(skip=["stress"])
+    # A Goal on the whole Target is unchanged: the skipped Test is simply not in the suite.
+    assert names(freeze(goal(family="SIM"), skipping)) == ["reset@1"]
+    spec = goal(**SKIPPED_GOALS[form])
+    plans = TargetPlans(Path("unused"), loader=lambda _dir, _target: skipping)
+    with pytest.raises(
+        GoalResolutionError, match=r"Goal .*: Test 'stress' of Target 'tb' is skipped"
+    ):
+        freeze_goals((RecordedGoal(spec, 1),), {}, plans, request(), strict=True)
+    lenient = freeze_goals((RecordedGoal(spec, 1),), {}, plans, request("deferred"), strict=False)
+    assert lenient[spec.key].runs == ()
+    assert lenient[spec.key].pending == goal_slots(spec)
+    obstacle = resolution_obstacle(spec, lenient[spec.key], plans)
+    assert "Test 'stress' of Target 'tb' is skipped" in obstacle
+
+
+def test_raising_n_of_a_test_skipped_since_entry_is_refused() -> None:
+    before = goal(family="SIM", test="stress@x2")
+    held = freeze(before, plan(), draw=fixed_draw(11, 12))
+    after = goal(family="SIM", test="stress@x3")
+    with pytest.raises(
+        GoalResolutionError, match=r"Goal SIM:tb .*: Test 'stress' of Target 'tb' is skipped"
+    ):
+        _changed(before, held, after, plan(skip=["stress"]), draw=fixed_draw(21))
 
 
 # --- What a save may change ------------------------------------------------------

@@ -22,6 +22,7 @@ an approved Goal change all use it:
 - the suite slot becomes the default Test Variant of every Test of the
   Target at the Default Seed, and later gains the Tests added to the Target;
 - a slot whose Test or Test Variant does not exist yet stays pending;
+- a slot whose Test the Target skips is refused: a skipped Test's runs never count;
 - two multi-seed slots with the same Target, Test Variant and N share one
   set of seeds, whichever Goals name them, so ``--test test+variant@xN``
   names one set of Test Runs.
@@ -224,7 +225,8 @@ def resolve_pending(
     registered no Test is superseded by the Tests the Target registers now.
     Raises :class:`~booley.flows.test_runs.UnseededTargetError` for a seed
     the Target cannot apply, and ``ValueError`` (the Test Run error types)
-    for a selector the Target refuses for another reason than a missing Test.
+    for a selector the Target refuses for another reason than a missing Test,
+    a skipped Test included.
     """
     if plan is None:
         return current
@@ -283,6 +285,7 @@ def _slot_runs(
         base = plan.run(selector.test, selector.variant)
     except (UnknownTestError, UnknownVariantError):
         return None
+    _refuse_skipped(plan, selector.test)
     form = selector.seed_form
     if isinstance(form, PinnedSeed):
         return [plan.run(selector.test, selector.variant, form.seed)]
@@ -294,6 +297,15 @@ def _slot_runs(
     if not seeds or taken & set(seeds):
         seeds = request.draw(form.count, exclude=taken)
     return [plan.run(selector.test, selector.variant, seed) for seed in seeds]
+
+
+def _refuse_skipped(plan: TargetTestPlan, test: str | None) -> None:
+    """Refuse to freeze a run of *test* while tests.toml skips it: its runs never count."""
+    if test is not None and test in plan.skipped:
+        raise GoalResolutionError(
+            f"Test {test!r} of Target {plan.target!r} is skipped: tests.toml lists it "
+            "in the Target's skip. Remove it from skip, or drop the Goal"
+        )
 
 
 def _pinned_seeds(plan: TargetTestPlan, slots: Sequence[str], base: TestRun) -> set[int]:
@@ -400,7 +412,7 @@ def resolution_obstacle(goal: GoalSpec, held: TestRunResolution, plans: TargetPl
 
     Empty while the Target, Test or Test Variant is simply not there. Says
     what the Target refuses otherwise: a ``tests.toml`` that cannot be read
-    or applied, or a seed on a Target that cannot apply seeds.
+    or applied, a seed on a Target that cannot apply seeds, or a Test the Target skips.
     """
     assert goal.target is not None
     try:
@@ -440,7 +452,7 @@ def refreeze_changed_goal(
     try:
         if before is not None and not refreeze and before[0].target == target:
             start = _carried(start, before, plans.plan(target), request)
-    except TargetPlanError as exc:
+    except (TargetPlanError, GoalResolutionError) as exc:
         raise GoalResolutionError(f"Goal {goal_presentation(goal.spec).text}: {exc}") from exc
     others = dict(siblings or {})
     others.pop(key, None)
@@ -524,6 +536,7 @@ def _more_seeds(
             f"the seed count of {name} cannot be raised: its frozen Test Run {first.name} no "
             f"longer exists on the Target; {again}"
         )
+    _refuse_skipped(plan, first.test)
     if current != first:
         raise GoalResolutionError(
             f"the seed count of {name} cannot be raised: the declared arguments or environment "
