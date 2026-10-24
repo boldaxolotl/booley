@@ -465,6 +465,31 @@ def test_stop_baseline_jobs_cancels_detached_job_before_workspace_cleanup(tmp_pa
     assert process.wait(timeout=5) != 0
 
 
+def test_stop_baseline_jobs_covers_every_registered_family_root(tmp_path, monkeypatch) -> None:
+    """A Job under a non-SIM family's root is cancelled too."""
+    import dataclasses
+
+    from booley.goals.sim_baseline_store import SIM_BASELINE, baseline_jobs_dir
+    from booley.runtime import job_records
+
+    other = dataclasses.replace(SIM_BASELINE, name="other")
+    monkeypatch.setattr(driver, "BASELINE_FAMILIES", (SIM_BASELINE, other))
+    project = tmp_path / ".booley"
+    job_records.write_record(
+        job_records.JobRecord("other-baseline-x", "other_baseline", "now", 60, pid=4242),
+        baseline_jobs_dir(project, other),
+    )
+    stopped: list[int] = []
+    monkeypatch.setattr(driver.job_records, "is_active", lambda *_a: not stopped)
+    monkeypatch.setattr(
+        driver, "request_group_termination", lambda group: stopped.append(group.id)
+    )
+
+    driver.stop_baseline_jobs(project, timeout_s=5)
+
+    assert stopped == [4242]
+
+
 def test_stop_baseline_jobs_without_jobs_returns_immediately(tmp_path) -> None:
     driver.stop_baseline_jobs(tmp_path / ".booley", timeout_s=0)
 

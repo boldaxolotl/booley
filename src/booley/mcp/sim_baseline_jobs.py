@@ -20,13 +20,13 @@ from booley.core.file_lock import nonblocking_file_lock
 from booley.goals.model import GoalRecord, GoalState, RecordedGoal
 from booley.goals.protected_inputs import ProtectedInputRoots
 from booley.goals.sim_baseline_store import (
-    SCHEMA,
+    SIM_BASELINE,
+    BaselineFamily,
     baseline_jobs_dir,
     entry_inputs,
     read_document,
     request_identity,
     request_path,
-    sim_goals,
     write_document,
 )
 from booley.runtime import job_records
@@ -64,7 +64,9 @@ def _supervisor_command(path: Path) -> list[str]:
     return [sys.executable, "-m", "booley.mcp.sim_baseline_jobs", str(path)]
 
 
-def _publish_job_record(path: Path, request: dict[str, Any]) -> None:
+def _publish_job_record(
+    path: Path, request: dict[str, Any], family: BaselineFamily = SIM_BASELINE
+) -> None:
     """Register and durably write the Job record, raising ``OSError`` if it cannot land.
 
     Runs before the request is published as ``pending`` so a reader that sees
@@ -72,7 +74,7 @@ def _publish_job_record(path: Path, request: dict[str, Any]) -> None:
     """
     rec = job_records.JobRecord(
         request["job_id"],
-        "sim_baseline",
+        family.endpoint,
         utc_now_rfc3339(),
         BASELINE_TIMEOUT_S,
         argv=_supervisor_command(path),
@@ -119,7 +121,7 @@ def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
     """Publish startup errors immediately after the child exits, without PID write races."""
     code = process.wait()
     try:
-        request = read_document(path)
+        request = read_document(path, None)
         jobs = Path(request["jobs_root"])
         job = job_records.read_record(request["job_id"], jobs)
         if job is not None and job.pid is None and job.status == job_records.STATUS_RUNNING:
@@ -144,6 +146,13 @@ def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
 def schedule_sim_baselines(
     project: Path, record: GoalRecord, *, launch: Launch | None = None
 ) -> None:
+    """Schedule the SIM family's baselines; the active-call adapters' entry point."""
+    schedule_family_baselines(project, record, SIM_BASELINE, launch=launch)
+
+
+def schedule_family_baselines(
+    project: Path, record: GoalRecord, family: BaselineFamily, *, launch: Launch | None = None
+) -> None:
     """Idempotent active-call scheduling; failure never changes lifecycle success.
 
     *launch* defaults to :func:`launch_baseline`, looked up at call time. One
@@ -154,13 +163,13 @@ def schedule_sim_baselines(
     launcher = launch_baseline if launch is None else launch
     try:
         inputs = entry_inputs(project, record)
-        goals = sim_goals(record)
+        goals = family.goals(record)
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
         return
     for goal in goals:
         try:
-            _schedule_goal(project, record, goal, inputs, launcher)
+            _schedule_goal(project, record, goal, inputs, launcher, family)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
 
@@ -171,21 +180,22 @@ def _schedule_goal(
     goal: RecordedGoal,
     inputs: dict[str, Any],
     launcher: Launch,
+    family: BaselineFamily,
 ) -> None:
     """Reconcile or create one Goal's request under its launch lock.
 
     The Job record is written before the request is published as ``pending``,
     so no reader observes ``pending`` without the Job it waits for.
     """
-    identity = request_identity(record, goal, inputs)
-    path = request_path(project, identity)
+    identity = request_identity(record, goal, inputs, family)
+    path = request_path(project, identity, family)
     path.parent.mkdir(parents=True, exist_ok=True)
     with (path.parent / "launch.lock").open("a+b") as handle, nonblocking_file_lock(handle):
         if path.exists():
             _reconcile_request(path)
             return
         request = {
-            "schema": SCHEMA,
+            "schema": family.schema,
             "identity": identity,
             "inputs": inputs,
             "booley_dir": str(project),
@@ -196,11 +206,11 @@ def _schedule_goal(
             ),
             "status": "pending",
             "results": [],
-            "job_id": f"sim-baseline-{path.parent.name}",
-            "jobs_root": str(baseline_jobs_dir(project)),
+            "job_id": f"{family.job_prefix}{path.parent.name}",
+            "jobs_root": str(baseline_jobs_dir(project, family)),
         }
         try:
-            _publish_job_record(path, request)
+            _publish_job_record(path, request, family)
             write_document(path, request)
             launcher(path, request)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -213,7 +223,7 @@ def _schedule_goal(
 
 def _reconcile_request(path: Path) -> None:
     """An interrupted Job is unavailable; reap only its proven, idle scratch checkout."""
-    request = read_document(path)
+    request = read_document(path, None)
     job = job_records.read_record(request["job_id"], Path(request["jobs_root"]))
     if job is not None and job_records.is_active(job, is_pid_alive):
         return
@@ -242,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 1:
         return 2
     path = Path(args[0])
-    request = read_document(path)
+    request = read_document(path, None)
     jobs = Path(request["jobs_root"])
     job = job_records.read_record(request["job_id"], jobs)
     if job is None:

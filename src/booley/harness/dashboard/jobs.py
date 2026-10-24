@@ -89,12 +89,13 @@ def retained_job_roots(
     root, then every Goal Record, then older interactive sessions newest first.
     """
     roots = [] if interactive_root is None else [interactive_root]
-    from booley.goals.sim_baseline_store import baseline_jobs_dir
+    from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
 
     roots.extend(record_paths(booley_dir, rec.id).jobs_dir for rec in records)
-    baseline = baseline_jobs_dir(booley_dir)
-    if baseline.is_dir():
-        roots.append(baseline)
+    for family in BASELINE_FAMILIES:
+        baseline = baseline_jobs_dir(booley_dir, family)
+        if baseline.is_dir():
+            roots.append(baseline)
     history = []
     for path in islice(
         booley_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_SCANNED_INTERACTIVE_ROOTS
