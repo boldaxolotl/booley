@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -132,6 +133,22 @@ def _plan(handle, inspection, preview, required, *, catalog_backed=None):
         execution_id="",
         trace=False,
     ).manifest.document
+
+
+def test_source_recipe_ignores_flow_options_defines(tmp_path):
+    """No Flow applies `flow_options.defines`, so the recipe must not record it."""
+    _project, handle, inspection, preview = _planning_fixture(tmp_path)
+    baseline = _plan(handle, inspection, preview, ("reset", "count"))
+    baseline_recipe = baseline["workload"]["source_recipe"]
+    assert baseline_recipe["defines"] == ()
+    baseline_command = baseline["workload"]["build_recipe"]["command_model_sha256"]
+    for shape in ({"A": 1}, ["A", "B=2"], "A"):
+        planned = dataclasses.replace(inspection, flow_options={"defines": shape})
+        document = _plan(handle, planned, preview, ("reset", "count"))
+        assert document["workload"]["source_recipe"] == baseline_recipe
+        assert document["workload"]["source_recipe"]["defines"] == ()
+        # The opaque whole-mapping identity still covers every flow_options key.
+        assert document["workload"]["build_recipe"]["command_model_sha256"] != baseline_command
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
