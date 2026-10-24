@@ -10,6 +10,7 @@ moved since entry created it is never deleted.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -141,7 +142,11 @@ class GoalCheckout:
 
     def head_tree(self, relative: str) -> list[TreeEntry]:
         """HEAD's entries at or under *relative* (a POSIX path inside the worktree)."""
-        output = self._git_bytes("ls-tree", "-r", "-z", "HEAD", "--", relative)
+        return self.head_rows([relative])
+
+    def head_rows(self, relatives: Sequence[str]) -> list[TreeEntry]:
+        """HEAD's entries at or under any of *relatives*, in one listing."""
+        output = self._git_bytes("ls-tree", "-r", "-z", "HEAD", "--", *relatives)
         entries: list[TreeEntry] = []
         for record in output.split(b"\0"):
             if not record:
