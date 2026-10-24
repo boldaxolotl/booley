@@ -233,6 +233,9 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
 
     def execute(_attempt, child_id, _digest) -> None:
         if child_id is None:
+            # The outer lane stays busy until the child lane has taken the second
+            # item; otherwise the outer lane could drain both items itself.
+            assert child_running.wait(_PARALLEL_SYNC_TIMEOUT_S)
             return
         child_running.set()
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
