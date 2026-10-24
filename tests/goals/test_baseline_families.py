@@ -74,7 +74,9 @@ def _probe_executor() -> Any:
             "reason": "",
         }
 
-    return execution.BaselineExecutor(classify=classify, measure=measure)
+    return execution.BaselineExecutor(
+        classify=classify, measure=measure, job_class=lambda: "heavy"
+    )
 
 
 def _register_probe(monkeypatch):

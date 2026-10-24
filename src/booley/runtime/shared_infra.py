@@ -130,9 +130,22 @@ def _load_rtl_config(project_root: Path | None = None) -> dict | None:
     return _TOML_CACHE
 
 
-def load_job_budget_config(project_root: Path | None = None) -> dict:
-    """Load the Project configuration that owns the shared Job Slot budget."""
+def load_job_budget_config(
+    project_root: Path | None = None, *, booley_dir: Path | None = None
+) -> dict:
+    """Load the Project configuration that owns the shared Job Slot budget.
+
+    *booley_dir* reads that Booley Directory's ``booley.toml`` (what a Flow run
+    with ``BOOLEY_DIR`` set to it reads first), for callers without that
+    environment such as the detached baseline supervisor.
+    """
     try:
+        if booley_dir is not None:
+            toml_path = resolve_toml(booley_dir)
+            if not toml_path.exists():
+                return {}
+            with toml_path.open("rb") as handle:
+                return tomllib.load(handle)
         return _load_rtl_config(project_root) or {}
     except (OSError, tomllib.TOMLDecodeError) as exc:
         logger.warning("Failed to load the shared Project job budget: %s", exc)

@@ -31,7 +31,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.runtime import job_records
 from booley.runtime.handles import register_job
-from booley.runtime.pid import is_pid_alive
+from booley.runtime.pid import capture_process_identity, is_pid_alive
 from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -258,6 +258,10 @@ def main(argv: list[str] | None = None) -> int:
     if job is None:
         return 2
     job.pid = os.getpid()
+    # Linux-only like the MCP Job lifecycle: status readers match the
+    # supervisor's slot claim to this identity to report the Job as queued.
+    identity = capture_process_identity(job.pid) if sys.platform == "linux" else None
+    job.process_identity = None if identity is None else identity.to_payload()
     job_records.write_record(job, jobs)
     signal.signal(signal.SIGTERM, _cancel)
     try:

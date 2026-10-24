@@ -89,9 +89,15 @@ JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT)
 # Requester roles → queue priority (lower sorts first). Interactive work
 # jumps ahead of other queued work; holders are never displaced.
 ROLE_INTERACTIVE = "interactive"
-# Only orders claims written by older versions.
-_ROLE_BACKGROUND = "background"
-_ROLE_PRIORITY = {ROLE_INTERACTIVE: 0, _ROLE_BACKGROUND: 1}
+# Background baseline Jobs: queued interactive claims overtake them, and a
+# holder is never displaced (ADR 0028 Decision 6).
+ROLE_BACKGROUND = "background"
+_ROLE_PRIORITY = {ROLE_INTERACTIVE: 0, ROLE_BACKGROUND: 1}
+
+# Set by a process that already holds a Job Class slot for the child it spawns,
+# as ``<class>/<entry name>``. The child's Flow admission then claims nothing:
+# a second claim would double-count the run and deadlock at a cap of 1.
+INHERITED_SLOT_ENV = "BOOLEY_INHERITED_SLOT"
 
 # Entry-name state prefixes. 'h' < 'w' lexicographically, so holders always
 # rank ahead of every waiter regardless of priority — that ordering is what
@@ -409,14 +415,22 @@ class SlotStore:
         self.reap(job_class)
 
         # Refuse before creating: a full queue must not grow further. The
-        # bound is total live entries (slots + queue) — an entry that has not
-        # promoted yet still occupies capacity, not queue. The count can race
-        # a concurrent submit; the post-create rank check catches whatever
-        # slips through.
-        if len(self._live_entry_names(job_class)) >= cap + self.caps.queue_max:
+        # bound counts the live entries that can rank ahead of this claim
+        # (every holder, plus waiters of equal or higher priority), so waiting
+        # background work never makes an interactive claim BLOCKED. An entry
+        # that has not promoted yet still occupies capacity, not queue. The
+        # count can race a concurrent submit; the post-create rank check
+        # catches whatever slips through.
+        priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
+        ahead = [
+            name
+            for name in self._live_entry_names(job_class)
+            if (entry := _parse_entry_name(name)) is not None
+            and (entry[0] == _HOLDER or entry[1] <= priority)
+        ]
+        if len(ahead) >= cap + self.caps.queue_max:
             raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
 
-        priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[_ROLE_BACKGROUND])
         created = self._now()
         if execution_id is not None:
             linked_execution = ExecutionId(execution_id)
