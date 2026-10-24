@@ -872,6 +872,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
             toplevel="tb",
             eda_tool=eda_tool,
             configured_eda_tool=eda_tool,
+            files=(),
         )
         return PreparedSimulationBuild(
             target=handle.selector,
@@ -985,7 +986,7 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
     prepared = PreparedSimulationBuild(
         target="default",
         target_identity=handle.identity,
-        resolved=SimpleNamespace(build_root=build_dir / "nested"),
+        resolved=SimpleNamespace(build_root=build_dir / "nested", files=()),
         work_root=build_dir,
         build_root=build_dir / "nested",
         eda_tool="verilator",
@@ -1082,7 +1083,7 @@ def test_mutant_build_uses_managed_compiler_cache(tmp_path: Path, monkeypatch):
         return PreparedSimulationBuild(
             target=handle.selector,
             target_identity=handle.identity,
-            resolved=SimpleNamespace(build_root=Path(build_root), toplevel="tb"),
+            resolved=SimpleNamespace(build_root=Path(build_root), toplevel="tb", files=()),
             work_root=Path(build_root),
             build_root=Path(build_root),
             eda_tool="verilator",
@@ -2307,6 +2308,11 @@ def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocot
     if cached:
         monkeypatch.setattr(
             endpoint,
+            "_pinned_build",
+            lambda *_args: SimpleNamespace(rel=".", runtime_inputs=()),
+        )
+        monkeypatch.setattr(
+            endpoint,
             "_pinned_sim_command",
             lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={})),
         )
@@ -2317,7 +2323,12 @@ def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocot
             "booley.specialists.mutation_tester.launch_environment", lambda *_args: {}
         )
     else:
-        prepared = SimpleNamespace(eda_tool=tool, build_root=build, make_argv=("fake-build",))
+        prepared = SimpleNamespace(
+            eda_tool=tool,
+            build_root=build,
+            make_argv=("fake-build",),
+            resolved=SimpleNamespace(files=()),
+        )
         monkeypatch.setattr(endpoint, "_resolve_elab_target", lambda *_args: (object(), prepared))
         monkeypatch.setattr(
             "booley.specialists.mutation_tester.simulation_build_environment", lambda *_args: {}
