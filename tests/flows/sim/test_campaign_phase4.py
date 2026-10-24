@@ -278,9 +278,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     assert registry.is_terminal(child_id)
 
 
-def test_child_permit_checks_lease_loss_before_return(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     child_id = ExecutionId("b" * 32)
@@ -289,7 +287,6 @@ def test_child_permit_checks_lease_loss_before_return(
         terminal_proof=lambda _execution_id: True,
         recover_child=lambda _id: True,
     )
-    monkeypatch.setattr(HeavyCapacity, "_watch_lease", lambda _self, _permit, stop: stop.wait())
     try:
         with (
             capacity.outer_permit(),
@@ -508,9 +505,13 @@ def test_lease_loss_starts_exact_child_recovery_before_work_returns(
         ):
             permit.token.path.unlink()
             _wait_until(permit.lease_health.lost.is_set)
-            _wait_until(lambda: recovered == [child_id])
+            # The scheduler's await loop makes this call while the work still runs.
+            _wait_until(lambda: (capacity.recover_lost_children(), recovered == [child_id])[1])
     finally:
         store.release(outer)
+    # A lost child lease is lane-scoped: it neither stops nor taints the campaign.
+    assert capacity.shutdown_requested is False
+    assert capacity.cancellation_cause() is None
 
 
 def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) -> None:
@@ -841,25 +842,18 @@ def test_cancel_recovery_never_rewrites_a_retired_child_terminal_record(
     assert retired["execution_terminal_sha256"] == digest
 
 
-class _ExitsDuringJoin:
-    """Worker stand-in that is alive when the join loop starts and exits during join."""
+class _ExitsDuringFinalWait(threading.Event):
+    """Lane-exit event that is set just as the owner's timed wait gives up."""
 
-    name = "booley-campaign-outer"
-
-    def __init__(self) -> None:
-        self._alive = True
-
-    def is_alive(self) -> bool:
-        return self._alive
-
-    def join(self, timeout: float | None = None) -> None:
-        self._alive = False
+    def wait(self, timeout: float | None = None) -> bool:
+        self.set()
+        return False
 
 
 def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     tmp_path: Path,
 ) -> None:
-    """Regression for #977: a worker that exits in the final join is a clean shutdown."""
+    """Regression for #977: a lane that exits in the final wait is a clean shutdown."""
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
     campaign_store.publish_manifest(manifest)
@@ -867,12 +861,13 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     project.mkdir()
     (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
-    # A zero budget means the shutdown deadline has always passed after the join.
+    # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
+        managed=False,
         shutdown_requested=True,
         shutdown_timeout_seconds=0.0,
         cancel_waiters=lambda: None,
-        retain_outer_until=lambda alive: pytest.fail(f"retained outer for {alive}"),
+        hold_outer_until=lambda _exited: pytest.fail("held the outer slot after a clean exit"),
     )
     scheduler = BoundedCampaignScheduler(
         capacity,  # type: ignore[arg-type]
@@ -881,7 +876,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
         execute=lambda *_args: None,
     )
 
-    scheduler._join_workers([_ExitsDuringJoin()])  # type: ignore[list-item]
+    scheduler._await_lanes([], _ExitsDuringFinalWait())
 
 
 def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
