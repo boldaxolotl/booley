@@ -258,6 +258,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   Goal Records and pending proposals retain their stored identities. Project-owned
   Goalsets stay untouched; translate their intent using the current tool schema.
 
+- `booley doctor` now fails a Doctor-selected Target whose `.core`
+  `flow_options` sets `defines`. No Flow ever applied that key; declare defines
+  as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
+  so resuming a Campaign planned with a list or string `flow_options.defines`
+  reports a workload change that names the cause; re-plan it.
+
 ## 0.3.1 - 05 OCT 2026
 
 ### Major features

@@ -223,7 +223,9 @@ def _recipes(
     source_recipe = {
         "sources": sources,
         "parameters": parameters,
-        "defines": _defines(inspection.flow_options),
+        # Kept for the stored schema. Target `flow_options.defines` is
+        # unsupported (Doctor FAILs it); defines travel as `vlogdefine` parameters.
+        "defines": [],
         "pre_sim_commands": list(resolve_pre_sim_commands(root)),
     }
     command_model = {
@@ -354,15 +356,6 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             }
         )
     return entries
-
-
-def _defines(options: Mapping[str, object]) -> list[str]:
-    raw = options.get("defines", ())
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, Sequence):
-        return [str(item) for item in raw]
-    return []
 
 
 def _eda_identity(kind: str | None) -> str:
