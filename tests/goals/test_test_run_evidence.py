@@ -423,6 +423,22 @@ def test_removed_test_and_changed_variant_inputs_need_a_retarget(layout: SimpleN
     assert "retarget" in status.reason
 
 
+def test_a_test_skipped_after_entry_is_named_as_skipped(layout: SimpleNamespace) -> None:
+    key = "sim_pass_top_run_61_d"
+    record = enter_goals(
+        layout, [{"family": "SIM", "target": "top", "test": "a"}], tests_toml=TWO_TESTS
+    )
+    mode = SimpleNamespace(**vars(layout), record=record)
+    write_tests_toml(mode, b'[top]\ntests = ["a", "b"]\nskip = ["a"]\n')
+    reason = _status(mode, key).reason
+    assert reason.startswith("goal-test-run-missing: ")
+    assert "a@1" in reason and "skipped in tests.toml" in reason
+    assert "no longer exist" not in reason and "retarget" not in reason
+    # Removed from the Target but still listed in skip: it is gone, not skipped.
+    write_tests_toml(mode, b'[top]\ntests = ["b"]\nskip = ["a"]\n')
+    assert "no longer exist" in _status(mode, key).reason
+
+
 def test_evidence_recorded_before_this_change_does_not_count(goal_mode: SimpleNamespace) -> None:
     """An observation without Test Run rows meets nothing."""
     path = _state_file(goal_mode)

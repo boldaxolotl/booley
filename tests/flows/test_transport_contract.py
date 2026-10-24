@@ -1059,7 +1059,12 @@ def test_custom_fallback_excludes_only_proven_other_target(
         strict=False,
         criterion_params={"drc_rules_policy73": {"target": f"acme:lib:dut:1#{other_target}"}},
     )
-    expected = ("drc_clean_first", True) if other_target == "second" else ("", None)
+    # ``other:lib:x`` and ``acme:lib:dut:1`` cannot be one core, so only the
+    # bare ``first`` selector (whose core is unknown) keeps the sibling uncertain.
+    proven_other_core = target == "other:lib:x#first"
+    expected = (
+        ("drc_clean_first", True) if other_target == "second" or proven_other_core else ("", None)
+    )
     endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
@@ -1202,6 +1207,60 @@ def test_specialist_public_completion_projects_actual_evaluations(
     )
     expected = ("mutation_score_first", False) if name == "mutation_tester" else ("", None)
     _assert_headline(result, runtime / "reports", name, expected)
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected"),
+    [
+        pytest.param("vendor:b:y:1.0#first", ("mutation_score_first", False), id="other-core"),
+        pytest.param("y#first", ("mutation_score_first", False), id="other-core-partial"),
+        pytest.param("x#first", ("", None), id="same-core-partial"),
+        pytest.param("vendor:a:x:2.0#first", ("", None), id="other-version"),
+        pytest.param("first", ("", None), id="bare"),
+    ],
+)
+def test_mutation_tester_qualified_target_keeps_headline(
+    external_acceptance_owner, runtime, monkeypatch, binding, expected
+):
+    """A qualified ``--target`` excludes a same-name Criterion bound to another core."""
+    from booley.mcp.base import EXIT_FAILURE, McpToolResult
+    from booley.specialists.mutation_tester import MutationTesterSpecialist
+    from tests.target_test_support import write_two_core_sim_project
+
+    write_two_core_sim_project(
+        runtime,
+        '["vendor:a:x:1.0#first"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n',
+        target="first",
+    )
+    _headline_state(
+        runtime,
+        monkeypatch,
+        {"mutation_score_first": False, "mutation_score_otherfirst": False},
+        strict=False,
+        criterion_params={"mutation_score_otherfirst": {"target": binding}},
+    )
+    target = "vendor:a:x:1.0#first"
+
+    def run_cold(self, _plan):
+        self.set_criterion(f"mutation_score_{target}", False, source_target=target)
+        return McpToolResult(exit_code=EXIT_FAILURE)
+
+    monkeypatch.setattr(MutationTesterSpecialist, "_prepare_run_plan", lambda _self: object())
+    monkeypatch.setattr(MutationTesterSpecialist, "_load_reusable_lock", lambda _self, _plan: None)
+    monkeypatch.setattr(MutationTesterSpecialist, "_run_cold", run_cold)
+    result = MutationTesterSpecialist().execute_cli(
+        [
+            "--work-dir",
+            str(runtime),
+            "--report-dir",
+            str(runtime / "reports"),
+            "--target",
+            target,
+            "--scope",
+            "x.v",
+        ]
+    )
+    _assert_headline(result, runtime / "reports", "mutation_tester", expected)
 
 
 @pytest.mark.parametrize("mode", ["dry_run", "diagnostic"])
