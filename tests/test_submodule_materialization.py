@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
@@ -822,7 +822,8 @@ def test_missing_only_fills_nested_gitlink_inside_populated_destination(tmp_path
     _source, worktree = _worktree_of_nested_source(tmp_path)
     materialize_worktree_submodules(worktree)
     leaf = worktree / "vendor/middle/deps/leaf"
-    shutil.rmtree(leaf)
+    # Git object files are read-only on Windows; plain rmtree cannot delete them.
+    safe_rmtree(leaf, protect_git_root=False)
     leaf.mkdir()
 
     materialize_worktree_submodules(worktree, missing_only=True)
