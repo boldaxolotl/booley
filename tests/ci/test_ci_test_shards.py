@@ -170,6 +170,14 @@ def _verify_download(download: Path, group: str) -> int:
     )
 
 
+def test_linux_timing_model_holds_measured_weights_above_the_default() -> None:
+    """The checked-in model stores measured medians, each above the default weight."""
+    timings = load_timings(_LINUX_TIMING_MODEL)
+
+    assert timings.tests, "the Linux timing model holds no measured weights"
+    assert all(weight > timings.default_seconds for weight in timings.tests.values())
+
+
 def test_linux_group_assigns_tests_absent_from_the_linux_timing_model(tmp_path: Path) -> None:
     assert _LINUX_TIMING_MODEL.is_file()
     model = json.loads(_LINUX_TIMING_MODEL.read_text(encoding="utf-8"))
