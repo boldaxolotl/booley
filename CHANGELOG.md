@@ -267,11 +267,6 @@ Packaged release history starts at 0.2.7. For older changes, see
   as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
   so resuming a Campaign planned with a list or string `flow_options.defines`
   reports a workload change that names the cause; re-plan it.
-- With `[jobs] max_heavy` above 1, a test that loses the lease on its
-  additional heavy slot no longer stops the Simulation tests running beside it:
-  they finish, and the run then reports the lost lease. An interrupted test
-  whose result was not yet published reruns on resume. Losing the Simulation
-  Job's own slot still cancels the whole run.
 - `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
   hooks or Dashboard extension are missing or out of date, or when a simulation
   Target has untagged C/C++ harness files. It now reports a WARN with a waivable
