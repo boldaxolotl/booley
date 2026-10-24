@@ -529,10 +529,8 @@ def _ssh_authority_entry(ssh_dir: Path) -> Path | None:
     """
     try:
         mode = ssh_dir.lstat().st_mode
-    except FileNotFoundError:
-        return None
-    except PermissionError:
-        return None  # agent-inaccessible path: isolated
+    except (FileNotFoundError, PermissionError):
+        return None  # absent or agent-inaccessible path: isolated
     if not stat.S_ISDIR(mode):
         return ssh_dir  # symlink (even dangling) or non-directory
     try:
