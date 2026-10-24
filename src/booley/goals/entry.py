@@ -8,7 +8,9 @@ Order (each numbered step is a durable boundary; :func:`rollback_entering`
 undoes whatever the boundaries reached):
 
 0. Outside any lock: validate the arguments, require ``work_dir`` to be the
-   root of a linked worktree (never the main checkout), translate the Goals.
+   root of a linked worktree (never the main checkout), populate any missing
+   selected submodules offline (Targets may come from cores inside them),
+   translate the Goals.
 1. Take the worktree lock. Roll back an ``entering`` occupant; refuse an
    ``active`` or ``finishing`` one.
 2. Under the lock: read HEAD and its branch, refuse a dirty tree, check the
@@ -105,6 +107,10 @@ from booley.runtime.git import is_linked_worktree
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     paired_project_repository,
+)
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_worktree_submodules,
 )
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -279,6 +285,7 @@ def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResul
     work_dir = _require_linked_worktree_root(request.work_dir)
     booley_dir = env.booley_dir.absolute()
     _refuse_worktree_copy(booley_dir, work_dir)
+    _populate_submodules(work_dir)
     plans = TargetPlans(work_dir)
     translation = _translate(request.goals, plans, work_dir)
     checkout = GoalCheckout(work_dir)
@@ -455,6 +462,14 @@ def _refuse_worktree_copy(booley_dir: Path, work_dir: Path) -> None:
         f"the Worktree Booley Directory {booley_dir} cannot own Goal Records; they "
         "must live in the Main Booley Directory"
     )
+
+
+def _populate_submodules(work_dir: Path) -> None:
+    """Fill absent or empty selected submodules; a populated one is left as it is."""
+    try:
+        materialize_worktree_submodules(work_dir, missing_only=True)
+    except SubmoduleMaterializationError as exc:
+        raise GoalEntryError(f"Submodule setup failed offline: {exc}") from exc
 
 
 def _translate(goals: Sequence[GoalArg], plans: TargetPlans, work_dir: Path) -> Translation:

@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
     materialize_submodules,
+    materialize_worktree_submodules,
 )
 
 
@@ -795,3 +797,56 @@ def test_standalone_baseline_excludes_project_inside_outer_submodule(tmp_path: P
     ) == "outer dependency\n"
     assert not (destination / "vendor/ip/.booley/.git").exists()
     assert (source / "vendor/ip/.booley/.git").is_dir()
+
+
+def _worktree_of_nested_source(tmp_path: Path) -> tuple[Path, Path]:
+    source, _baseline, _middle, _leaf = _nested_source_repositories(tmp_path)
+    worktree = tmp_path / "worktree"
+    _add_worktree(source, worktree)
+    return source, worktree
+
+
+def test_missing_only_accepts_populated_destination_without_source_checks(tmp_path: Path) -> None:
+    source, worktree = _worktree_of_nested_source(tmp_path)
+    materialize_worktree_submodules(worktree)
+    (source / "vendor/middle/stray.txt").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(SubmoduleMaterializationError, match="is dirty"):
+        materialize_worktree_submodules(worktree)
+    materialize_worktree_submodules(worktree, missing_only=True)
+
+    assert not (worktree / "vendor/middle/stray.txt").exists()
+
+
+def test_missing_only_fills_nested_gitlink_inside_populated_destination(tmp_path: Path) -> None:
+    _source, worktree = _worktree_of_nested_source(tmp_path)
+    materialize_worktree_submodules(worktree)
+    leaf = worktree / "vendor/middle/deps/leaf"
+    # Git object files are read-only on Windows; plain rmtree cannot delete them.
+    safe_rmtree(leaf, protect_git_root=False)
+    leaf.mkdir()
+
+    materialize_worktree_submodules(worktree, missing_only=True)
+
+    assert (leaf / "source.sv").is_file()
+
+
+def test_missing_only_rejects_non_repository_content(tmp_path: Path) -> None:
+    _source, worktree = _worktree_of_nested_source(tmp_path)
+    (worktree / "vendor/middle/stray.txt").write_text("not a repository\n", encoding="utf-8")
+
+    with pytest.raises(SubmoduleMaterializationError, match="not empty"):
+        materialize_worktree_submodules(worktree, missing_only=True)
+
+
+def test_worktree_materialization_needs_main_checkout_only_when_filling(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "--separate-git-dir", str(tmp_path / "gitdir"))
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _commit_file(repo, "rtl\n", "initial")
+    worktree = tmp_path / "worktree"
+    _add_worktree(repo, worktree)
+
+    materialize_worktree_submodules(worktree)
