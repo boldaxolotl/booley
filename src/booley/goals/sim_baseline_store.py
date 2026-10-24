@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -27,14 +28,94 @@ SCHEMA = "booley.sim-baseline/v1"
 INPUTS_FILE = "sim-baseline-inputs.json"
 
 
-def baseline_root(booley_dir: Path) -> Path:
+def sim_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
+    """Only simulation Goals have baseline reports."""
+    return tuple(goal for goal in record.goals if goal.spec.family is GoalFamily.SIM)
+
+
+def sim_runs(record: GoalRecord, goal: RecordedGoal) -> tuple[TestRun, ...]:
+    """The Test Runs a SIM Goal's baseline measures."""
+    resolution = record.test_run_resolution(goal.spec.key)
+    return resolution.test_runs if resolution else ()
+
+
+def result_key(target: str, run: TestRun, stamp: str, protected_digest: str) -> dict[str, str]:
+    """Contents-addressed evidence key; seeds and declared arguments are exact."""
+    return {
+        "target": target,
+        "name": run.name,
+        "fingerprint": run.fingerprint,
+        "contents": stamp,
+        "protected_inputs": protected_digest,
+    }
+
+
+@dataclass(frozen=True)
+class BaselineFamily:
+    """One Goal family's baseline store adapter; the engine never names a family.
+
+    ``name`` derives the on-disk layout (``goals/<name>-baselines``), the schema
+    (``booley.<name>-baseline/v1``), Job ids (``<name>-baseline-<digest>``) and
+    the Job endpoint (``<name>_baseline``). The executing half of an adapter
+    lives in the MCP layer (``BaselineExecutor``), keyed by the same name.
+    """
+
+    name: str
+    child_stem: str  # watchdog child documents: <stem>-request.json, <stem>-result.json
+    freshness_key: str  # criterion key naming the dependent-content categories
+    goals: Callable[[GoalRecord], tuple[RecordedGoal, ...]]
+    runs: Callable[[GoalRecord, RecordedGoal], tuple[Any, ...]]  # measured units of a Goal
+    unit_document: Callable[[Any], dict[str, Any]]  # carries "name" and "fingerprint"
+    parse_unit: Callable[[Mapping[str, Any]], Any]
+    result_key: Callable[[str, Any, str, str], dict[str, str]]
+
+    @property
+    def schema(self) -> str:
+        return f"booley.{self.name}-baseline/v1"
+
+    @property
+    def root_name(self) -> str:
+        return f"{self.name}-baselines"
+
+    @property
+    def job_prefix(self) -> str:
+        return f"{self.name}-baseline-"
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.name}_baseline"
+
+
+SIM_BASELINE = BaselineFamily(
+    name="sim",
+    child_stem="simulation",
+    freshness_key="sim_pass_baseline",
+    goals=sim_goals,
+    runs=sim_runs,
+    unit_document=test_run_document,
+    parse_unit=test_run_from_document,
+    result_key=result_key,
+)
+#: Every family the baseline engine serves; read at call time.
+BASELINE_FAMILIES: tuple[BaselineFamily, ...] = (SIM_BASELINE,)
+
+
+def family_for_schema(schema: object) -> BaselineFamily:
+    """The registered family a baseline document's schema names."""
+    for family in BASELINE_FAMILIES:
+        if schema == family.schema:
+            return family
+    raise ValueError("unsupported simulation baseline schema")
+
+
+def baseline_root(booley_dir: Path, family: BaselineFamily = SIM_BASELINE) -> Path:
     """Shared baseline requests, evidence and Jobs, outside Goal Record roots."""
-    return booley_dir / "goals" / "sim-baselines"
+    return booley_dir / "goals" / family.root_name
 
 
-def baseline_jobs_dir(booley_dir: Path) -> Path:
+def baseline_jobs_dir(booley_dir: Path, family: BaselineFamily = SIM_BASELINE) -> Path:
     """Jobs that Finish must never read or fence."""
-    return baseline_root(booley_dir) / ".runtime" / "jobs"
+    return baseline_root(booley_dir, family) / ".runtime" / "jobs"
 
 
 def content_digest(value: Mapping[str, Any]) -> str:
@@ -47,10 +128,12 @@ def write_document(path: Path, value: Mapping[str, Any]) -> None:
     atomic_replace_bytes(path, canonical_json(dict(value)))
 
 
-def read_document(path: Path) -> dict[str, Any]:
-    """Validate the document envelope at its filesystem boundary."""
+def read_document(path: Path, family: BaselineFamily | None = SIM_BASELINE) -> dict[str, Any]:
+    """Validate the envelope at its filesystem boundary; ``None`` accepts any registered family."""
     raw = require_dict(json.loads(read_file_bytes(path)), field="simulation baseline")
-    if raw.get("schema") != SCHEMA:
+    if family is None:
+        family_for_schema(raw.get("schema"))
+    elif raw.get("schema") != family.schema:
         raise ValueError("unsupported simulation baseline schema")
     return raw
 
@@ -166,52 +249,46 @@ def entry_inputs(booley_dir: Path, record: GoalRecord) -> dict[str, Any]:
 
 
 def request_identity(
-    record: GoalRecord, goal: RecordedGoal, inputs: Mapping[str, Any]
+    record: GoalRecord,
+    goal: RecordedGoal,
+    inputs: Mapping[str, Any],
+    family: BaselineFamily = SIM_BASELINE,
 ) -> dict[str, Any]:
     """Index one base selection; a second session needs no checkout or simulation Job."""
-    resolution = record.test_run_resolution(goal.spec.key)
     return {
         "base_sha": record.base_sha,
         "paired_base_sha": record.paired_project_base_sha,
         "protected_digest": record.protected_digest,
         "target": goal.spec.target,
         "inputs_digest": content_digest(inputs),
-        "runs": [test_run_document(run) for run in resolution.test_runs] if resolution else [],
+        "runs": [family.unit_document(unit) for unit in family.runs(record, goal)],
     }
 
 
-def request_path(booley_dir: Path, identity: Mapping[str, Any]) -> Path:
+def request_path(
+    booley_dir: Path, identity: Mapping[str, Any], family: BaselineFamily = SIM_BASELINE
+) -> Path:
     """Stable shared request directory, confined by a canonical digest."""
-    return baseline_root(booley_dir) / "requests" / content_digest(identity) / "request.json"
+    return (
+        baseline_root(booley_dir, family) / "requests" / content_digest(identity) / "request.json"
+    )
 
 
-def sim_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
-    """Only simulation Goals have baseline reports."""
-    return tuple(goal for goal in record.goals if goal.spec.family is GoalFamily.SIM)
+def cache_path(
+    booley_dir: Path, key: Mapping[str, str], family: BaselineFamily = SIM_BASELINE
+) -> Path:
+    """The per-unit evidence document."""
+    return baseline_root(booley_dir, family) / "evidence" / (content_digest(key) + ".json")
 
 
-def result_key(target: str, run: TestRun, stamp: str, protected_digest: str) -> dict[str, str]:
-    """Contents-addressed evidence key; seeds and declared arguments are exact."""
-    return {
-        "target": target,
-        "name": run.name,
-        "fingerprint": run.fingerprint,
-        "contents": stamp,
-        "protected_inputs": protected_digest,
-    }
-
-
-def cache_path(booley_dir: Path, key: Mapping[str, str]) -> Path:
-    """The per-Test-Run evidence document."""
-    return baseline_root(booley_dir) / "evidence" / (content_digest(key) + ".json")
-
-
-def cached_result(booley_dir: Path, key: Mapping[str, str]) -> dict[str, Any] | None:
+def cached_result(
+    booley_dir: Path, key: Mapping[str, str], family: BaselineFamily = SIM_BASELINE
+) -> dict[str, Any] | None:
     """A validated successful observation; unavailable outcomes are never cached."""
-    path = cache_path(booley_dir, key)
+    path = cache_path(booley_dir, key, family)
     if not path.exists():
         return None
-    raw = read_document(path)
+    raw = read_document(path, family)
     if raw.get("key") != dict(key) or raw.get("grade") not in {"pass", "fail"}:
         raise ValueError("simulation baseline cache identity or grade differs")
     proof = require_dict(raw.get("proof"), field="baseline source proof")
