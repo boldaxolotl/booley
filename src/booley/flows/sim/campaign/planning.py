@@ -214,6 +214,8 @@ def _project_parameters(projection: _Projection) -> None:
 
 def _project_defines(projection: _Projection) -> None:
     """Explain a legacy Campaign that recorded the unsupported `flow_options.defines`."""
+    if ("defines",) not in projection.regions:
+        return
     projection.explain(
         ("defines",),
         (
