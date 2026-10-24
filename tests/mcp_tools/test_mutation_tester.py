@@ -25,7 +25,7 @@ from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_arg
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
     MutationRunPlan,
@@ -242,6 +242,103 @@ def test_two_keys_for_one_target_refuse_naming_both(tmp_path: Path, monkeypatch)
 
     assert result is not None and result.exit_code == EXIT_ERROR
     assert "[vendor:b:y#sim] and [y#sim]" in result.report_text
+
+
+_SETTINGS = {"scope": ["x.v"], "total": 7, "min_detected": 5}
+_CORE_A_FIRST = "vendor:a:x:1.0#first"
+_TWO_CORE_TESTS = (
+    f'["{_CORE_A_FIRST}"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n'
+)
+
+
+def _two_core_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+    criteria: dict[str, dict[str, Any]],
+    *,
+    target: str = _CORE_A_FIRST,
+    scope: str = "x.v",
+    strict: bool = False,
+) -> MutationTesterSpecialist:
+    """Endpoint on a two-core Project (both declare ``first``) holding *criteria*."""
+    write_two_core_sim_project(tmp_path, _TWO_CORE_TESTS, target="first")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target=target, scope=scope, count=None)
+    endpoint.state.init_criteria(
+        dict.fromkeys(criteria, False), criterion_params=criteria, strict=strict
+    )
+    return endpoint
+
+
+@pytest.mark.parametrize("scope", ["x.v", ""], ids=["explicit-scope", "criterion-scope"])
+def test_qualified_target_applies_criterion_settings(
+    tmp_path: Path, monkeypatch, scope: str
+) -> None:
+    """``--target vlnv#name`` reads the Target-name criterion, not a core-bound sibling."""
+    endpoint = _two_core_endpoint(
+        tmp_path,
+        monkeypatch,
+        {
+            "mutation_score_first": dict(_SETTINGS),
+            "mutation_score_otherfirst": {
+                "target": "vendor:b:y:1.0#first",
+                "scope": ["y.v"],
+                "total": 3,
+            },
+        },
+        scope=scope,
+    )
+
+    assert endpoint._apply_campaign_defaults() is None
+    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == (
+        "x.v",
+        7,
+        5,
+    )
+
+
+@pytest.mark.parametrize("case", ["exact-key", "other-core-binding"])
+def test_qualified_target_criterion_resolution_guards(
+    tmp_path: Path, monkeypatch, case: str
+) -> None:
+    """The exact spelling still wins; a criterion bound to another core is skipped."""
+    if case == "exact-key":
+        endpoint = _two_core_endpoint(
+            tmp_path,
+            monkeypatch,
+            {
+                f"mutation_score_{_CORE_A_FIRST}": {"target": "same", **_SETTINGS},
+                "mutation_score_first": {"scope": ["x.v"], "total": 3},
+            },
+            strict=True,
+        )
+        expected = ("x.v", 7, 5)
+    else:
+        endpoint = _two_core_endpoint(
+            tmp_path,
+            monkeypatch,
+            {"mutation_score_first": {"target": _CORE_A_FIRST, **_SETTINGS}},
+            target="vendor:b:y:1.0#first",
+            scope="y.v",
+            strict=True,
+        )
+        expected = ("y.v", 10, None)
+
+    assert endpoint._apply_campaign_defaults() is None
+    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == expected
+
+
+def test_qualified_target_missing_scope_names_target_criterion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The missing-scope error names the Target-name criterion, not the raw selector."""
+    endpoint = _two_core_endpoint(
+        tmp_path, monkeypatch, {"mutation_score_first": {"total": 7}}, scope=""
+    )
+
+    result = endpoint._apply_campaign_defaults()
+
+    assert result is not None and result.exit_code == EXIT_FAILURE
+    assert "mutation_score_first must declare scope" in result.report_text
 
 
 def _sample_creator_json(specs: list[MutationSpec]) -> str:
