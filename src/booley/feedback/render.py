@@ -505,14 +505,16 @@ def write_user_report(
     env = env or collect_environment()
     origin = report_origin(log)
 
+    # Build the redacted report first: a malformed redaction knob raises here,
+    # before any file is written, so a refused command leaves no new file behind.
+    report = render_booley_report(log, project_root, booley_dir=booley_dir, env=env, origin=origin)
+
     user_path = user_report_path or (booley_dir / user_report_name(origin))
     user_path.parent.mkdir(parents=True, exist_ok=True)
     user_path.write_text(
         render_user_report(log, project_name=project_name, env=env, origin=origin),
         encoding="utf-8",
     )
-
-    report = render_booley_report(log, project_root, booley_dir=booley_dir, env=env, origin=origin)
     return user_path, report
 
 

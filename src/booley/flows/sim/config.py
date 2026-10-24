@@ -8,8 +8,10 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Final
 
+from booley.audit.flow_schema import pre_run_commands_problem
 from booley.core.boundary import (
     BoundaryError,
+    is_str_list,
     require_bool,
     require_dict,
     require_int,
@@ -125,8 +127,24 @@ def resolve_trace_files(work_dir: Path | str | None = None) -> list[str]:
 
 
 def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
-    """Return Project-owned shell lines run before each Simulation work unit."""
-    return [str(command) for command in (_sim_config(work_dir).get("pre_run_commands") or [])]
+    """Return Project-owned shell lines run before each Simulation work unit.
+
+    This is the only reader of ``[flows.sim].pre_run_commands`` (ADR 0039), a
+    per-test non-RTL build step such as compiling a firmware image.  An unset
+    knob yields ``[]`` and a list of strings is returned unchanged.
+
+    Raises:
+        BoundaryError: The value is anything else (a bare string, a table, a
+            number, or a list with a non-string entry).  The message is
+            Doctor's, so run time and Doctor agree and no command runs.
+    """
+    value = _sim_config(work_dir).get("pre_run_commands")
+    if value is None:
+        return []
+    if not is_str_list(value):
+        message, fix = pre_run_commands_problem("sim")
+        raise BoundaryError(f"{message}; {fix}")
+    return list(value)
 
 
 def resolve_pre_sim_build_access(work_dir: Path | str | None = None) -> str:
