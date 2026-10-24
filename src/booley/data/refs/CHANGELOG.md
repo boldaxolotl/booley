@@ -9,12 +9,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- Goal worktrees now get their git submodules. `booley worktree new` populates the
-  selected submodules (and the Paired Checkout's) offline from the main checkout, and
-  Goal entry fills any that are still empty, so a baseline checkout taken in a Goal
-  worktree no longer fails with "not found in source Project". An uninitialized,
-  dirty, shallow, or incomplete source submodule now stops worktree creation or Goal
-  entry with a clear message and leaves nothing behind.
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
@@ -273,6 +267,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
   so resuming a Campaign planned with a list or string `flow_options.defines`
   reports a workload change that names the cause; re-plan it.
+- Goal worktrees now get their git submodules. `booley worktree new` populates the
+  selected submodules (and the Paired Checkout's) offline from the main checkout, and
+  Goal entry fills any that are still empty, so a baseline checkout taken in a Goal
+  worktree no longer fails with "not found in source Project". An uninitialized,
+  dirty, shallow, or incomplete source submodule now stops worktree creation or Goal
+  entry with a clear message and leaves nothing behind.
 
 ## 0.3.1 - 05 OCT 2026
 
