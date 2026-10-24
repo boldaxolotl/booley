@@ -273,6 +273,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   worktree no longer fails with "not found in source Project". An uninitialized,
   dirty, shallow, or incomplete source submodule now stops worktree creation or Goal
   entry with a clear message and leaves nothing behind.
+- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
+  hooks or Dashboard extension are missing or out of date, or when a simulation
+  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
+  check ID: `sandbox.activity-hooks-unavailable`,
+  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
+  the Target name).
 
 ## 0.3.1 - 05 OCT 2026
 

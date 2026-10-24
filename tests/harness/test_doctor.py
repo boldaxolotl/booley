@@ -45,6 +45,7 @@ from booley.targets.catalog import TargetCatalog
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
+    _require_doctor_warning,
 )
 from tests.harness import test_session_runtime as resolution_fixtures
 
@@ -3043,6 +3044,7 @@ class _Collector:
         self.passed.append(msg)
 
     def _warn(self, msg: str, fix: str = "") -> None:
+        _require_doctor_warning(msg)
         self.warned.append(msg)
 
     def _note(self, msg: str) -> None:

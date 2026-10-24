@@ -438,7 +438,7 @@ class TestStateVolumeCheck:
         _record_report(
             inspection.inspect_retained_resources(self._project(tmp_path).project_root, "docker"),
             passed=rec.p,
-            noted=rec.w,
+            noted=rec.n,
             skipped=rec.s,
         )
         return rec
@@ -448,7 +448,7 @@ class TestStateVolumeCheck:
         _record_report(
             inspection.inspect_retained_resources(self._project(tmp_path).project_root, None),
             passed=rec.p,
-            noted=rec.w,
+            noted=rec.n,
             skipped=rec.s,
         )
         assert rec.kinds() == {"skip"}
@@ -464,7 +464,7 @@ class TestStateVolumeCheck:
         rec = self._run(tmp_path, monkeypatch, [mine])
         assert rec.fails() == []
         assert any(mine in m for lvl, m in rec.events if lvl == "pass")
-        assert "warn" not in rec.kinds()
+        assert "note" not in rec.kinds()
 
     def test_flags_other_projects_as_prunable(self, tmp_path, monkeypatch):
         project_id = dc.canonical_project_id(tmp_path)
@@ -477,7 +477,7 @@ class TestStateVolumeCheck:
                 "booley-claude-state-anotherproject",  # orphan
             ],
         )
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
+        warns = [m for lvl, m in rec.events if lvl == "note"]
         assert len(warns) == 1
         assert "2 interactive state volume(s) from other projects" in warns[0]
         assert "docker volume rm" in warns[0]
