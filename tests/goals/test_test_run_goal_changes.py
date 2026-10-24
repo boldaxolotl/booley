@@ -347,3 +347,26 @@ def test_relaxation_does_not_carry_aggregate_across_revisions(layout):
     status = _status(layout, SEEDS_KEY)
     assert status.status == "unmet"
     assert status.reason.startswith("goal-test-run-incomplete:")
+
+
+@pytest.mark.parametrize("kind", ["retarget-same", "add"])
+def test_a_goal_change_cannot_freeze_a_skipped_test(layout: SimpleNamespace, kind: str) -> None:
+    env = _mode(layout, TARGET, _goal("smoke"), tests_toml=b'[top]\ntests = ["smoke", "b"]\n')
+    write_tests_toml(layout, b'[top]\ntests = ["smoke", "b"]\nskip = ["smoke"]\n')
+    # A Goal on the whole Target still retargets: its suite freezes again without the Test.
+    refrozen = _change(layout, env, "retarget", SIM_KEY, TARGET)
+    assert [run.name for run in refrozen.test_run_resolution(SIM_KEY).test_runs] == ["b@1"]
+    key = "sim_pass_top_run_736d6f6b65_d"
+    arguments: dict[str, Any] = (
+        {"kind": "retarget", "goal_key": key, "after": _goal("smoke")}
+        if kind == "retarget-same"
+        else {"kind": "add", "after": _goal("smoke@7")}
+    )
+    view = create_proposal(
+        env,
+        layout.record.id,
+        {**arguments, "rationale": "the human asked for this change"},
+        session_key="test-session",
+    )
+    with pytest.raises(ProposalError, match="Test 'smoke' of Target 'top' is skipped"):
+        approve(layout, env, view.proposal.id)
