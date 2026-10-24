@@ -52,6 +52,7 @@ def test_doctor_reports_missing_and_stale_extension_artifacts(tmp_path):
         doctor._check_current_runtime_dashboard_extension(passes.append, warnings.append)
     assert not passes
     assert "rebuild" in warnings[0]
+    assert warnings[0].check_id == "sandbox.dashboard-extension-unavailable"
 
 
 def test_every_sandbox_app_gets_the_image_local_extension():

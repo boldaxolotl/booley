@@ -13,6 +13,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   for inbound access, as GitHub Codespaces does. An empty `.ssh`, or one with only
   a regular `authorized_keys` file, passes unless either is mounted into the
   Sandbox; any other SSH entry still FAILs, and the message now names it.
+- Goal entry and Goal changes now refuse a Goal that names a Test its Target
+  skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
+  status names a Test skipped after entry as skipped, not as gone. Remove the
+  Test from `skip` or drop the Goal.
 - The mutation tester now exposes a Target's `copyto` runtime inputs in the
   configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
   does, and removes them afterwards. A testbench that opens a data file no longer
@@ -267,6 +271,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
   so resuming a Campaign planned with a list or string `flow_options.defines`
   reports a workload change that names the cause; re-plan it.
+- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
+  hooks or Dashboard extension are missing or out of date, or when a simulation
+  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
+  check ID: `sandbox.activity-hooks-unavailable`,
+  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
+  the Target name).
 
 ## 0.3.1 - 05 OCT 2026
 
