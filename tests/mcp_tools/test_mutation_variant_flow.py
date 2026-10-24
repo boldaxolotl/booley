@@ -283,7 +283,7 @@ def test_missing_variant_marker_cannot_restage_pristine_build(tmp_path, monkeypa
         endpoint, "_resolve_elab_target", lambda *_args: pytest.fail("restaged source")
     )
     with pytest.raises(UnsupportedSimTargetError, match="mutation build marker missing"):
-        endpoint._bin_dir_rel("sim", tmp_path, build_path)
+        endpoint._pinned_build("sim", tmp_path, build_path)
 
 
 def test_unsupported_variant_build_is_invalid_before_suite(tmp_path):
