@@ -9,11 +9,6 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- With `[jobs] max_heavy` above 1, a test that loses the lease on its
-  additional heavy slot no longer stops the Simulation tests running beside it:
-  they finish, and the run then reports the lost lease. An interrupted test
-  whose result was not yet published reruns on resume. Losing the Simulation Job's own slot still
-  cancels the whole run.
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the
@@ -272,6 +267,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
   so resuming a Campaign planned with a list or string `flow_options.defines`
   reports a workload change that names the cause; re-plan it.
+- With `[jobs] max_heavy` above 1, a test that loses the lease on its
+  additional heavy slot no longer stops the Simulation tests running beside it:
+  they finish, and the run then reports the lost lease. An interrupted test
+  whose result was not yet published reruns on resume. Losing the Simulation
+  Job's own slot still cancels the whole run.
 
 ## 0.3.1 - 05 OCT 2026
 
