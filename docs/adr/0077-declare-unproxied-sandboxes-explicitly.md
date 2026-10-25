@@ -29,9 +29,10 @@ servers inherit none.
   and names the fix. It checks resolution only, not reachability.
 - The variable is a declaration, not the security boundary. Any process in a
   Sandbox can set it for itself. In a Booley-issued Sandbox the internal egress
-  network still denies direct egress, so flipping it only drops that process's
-  proxy variables. The only effect on Doctor of a self-set value is turning the
-  unresolved-proxy FAIL into the waivable WARN for that run.
+  network still denies direct egress, and Booley never removes a proxy variable
+  the Sandbox delivered, so flipping it only stops Booley adding its own proxy
+  variables in that process. The only effect on Doctor of a self-set value is
+  turning the unresolved-proxy FAIL into the waivable WARN for that run.
 - The release Simulation self-test runs the image under `--network none` and
   requires zero Doctor failures, so it declares `BOOLEY_EGRESS=unproxied`;
   that container has no egress at all.

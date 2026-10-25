@@ -99,7 +99,10 @@ inferred from platform signals such as `CODESPACES`.
 
 It is a declaration, not a security boundary. Any process in a Sandbox can set
 it for itself; in a Booley-issued Sandbox the internal network still denies
-direct egress, so doing so only breaks that process's connectivity.
+direct egress, and Booley never removes a proxy variable the Sandbox
+delivered, so doing so only stops Booley adding its own proxy variables in that
+process and turns Doctor's unresolved-proxy FAIL into the waivable WARN for
+that run.
 
 Doctor reports the mode in the Sandbox checks:
 

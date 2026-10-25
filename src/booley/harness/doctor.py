@@ -2247,8 +2247,8 @@ def _check_current_runtime_egress(_pass: Check, _warn: Check, _fail: Fail) -> No
         return
     if mode == "unproxied":
         _warning_sink(_warn, "sandbox.unproxied")(
-            "Unproxied Sandbox (BOOLEY_EGRESS=unproxied): egress is not mediated by "
-            "Booley's egress proxy; agents and tools reach the network directly"
+            "Unproxied Sandbox (BOOLEY_EGRESS=unproxied): Booley does not force its "
+            "egress proxy, so egress is not mediated by Booley"
         )
         return
     # Doctor runs after the entry point forced the proxy variables, so the
@@ -2257,7 +2257,9 @@ def _check_current_runtime_egress(_pass: Check, _warn: Check, _fail: Fail) -> No
         os.environ.get(var) for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
     )
     proxy_url = next((url for url in proxy_urls if url), dc.PROXY_URL)
-    host = urlsplit(proxy_url).hostname or dc.PROXY_HOST
+    # A scheme-less value such as `corp:3128` parses with no hostname unless
+    # given the netloc marker.
+    host = urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}").hostname or dc.PROXY_HOST
     try:
         socket.getaddrinfo(host, None)
     except OSError:

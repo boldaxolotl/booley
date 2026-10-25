@@ -1926,7 +1926,9 @@ class TestMainProxySelfHeal:
 
         self.mcp_server.main()
 
-        assert not any(var in os.environ for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy"))
+        assert not any(
+            var in os.environ for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        )
 
     def test_main_refuses_invalid_egress_mode(self, monkeypatch, capsys):
         monkeypatch.setenv("BOOLEY_EGRESS", "bogus")

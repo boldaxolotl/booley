@@ -93,6 +93,27 @@ def test_resolved_proxy_passes(monkeypatch):
     assert passed.severity is Severity.PASS
 
 
+@pytest.mark.parametrize(
+    ("delivered", "host"),
+    [("http://proxy.corp:3128", "proxy.corp"), ("corp-gw:3128", "corp-gw")],
+    ids=["with-scheme", "scheme-less"],
+)
+def test_delivered_proxy_host_is_the_one_resolved(monkeypatch, delivered, host):
+    """A proxy the environment delivered (e.g. `booley shell`) is checked, not booley-proxy."""
+    monkeypatch.setenv("HTTPS_PROXY", delivered)
+    looked_up: list[str] = []
+
+    def record(name, *_args):
+        looked_up.append(name)
+        return _resolves(name)
+
+    reporter = doctor._Reporter.create()
+    _run_checks(monkeypatch, reporter, record)
+    assert looked_up == [host]
+    [passed] = _findings(reporter, host)
+    assert passed.severity is Severity.PASS
+
+
 def test_invalid_mode_fails_naming_values(monkeypatch):
     monkeypatch.setenv("BOOLEY_EGRESS", "bogus")
     reporter = doctor._Reporter.create()
