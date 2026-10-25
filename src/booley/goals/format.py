@@ -254,6 +254,16 @@ def test_run_lines(goal: GoalStatus) -> list[str]:
     return lines
 
 
+def synth_baseline_lines(goal: GoalStatus) -> list[str]:
+    """One line for a relative SYNTH Goal's baseline Job: pending, complete or unavailable."""
+    if goal.synth_baseline is None:
+        return []
+    name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+    reason = goal.synth_baseline["reason"]
+    detail = f" ({reason})" if reason and goal.synth_baseline["status"] == "unavailable" else ""
+    return [f"{name}: baseline: {goal.synth_baseline['status']}{detail}"]
+
+
 # Not a pytest test, although its name starts with ``test_``.
 test_run_lines.__test__ = False  # type: ignore[attr-defined]
 
@@ -291,6 +301,8 @@ def render_status(
             for goal in view.goals:
                 name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
                 console.print(f"  {name}: {goal.status}")
+                for line in synth_baseline_lines(goal):
+                    console.print(f"  {line}", soft_wrap=True)
                 if goal.sim_transitions is not None:
                     from booley.goals.sim_transitions import transition_summary
 
@@ -324,6 +336,8 @@ def _render_long_status(console: Console, view: GoalStatusView) -> None:
         )
     console.print(table)
     _print_test_runs(console, view)
+    for line in (line for goal in view.goals for line in synth_baseline_lines(goal)):
+        console.print(line, soft_wrap=True)
     console.print(f"Pending proposals: {view.pending_proposals}")
     conflicts = dict(view.proposal_conflicts)
     for proposal_view in view.proposals:

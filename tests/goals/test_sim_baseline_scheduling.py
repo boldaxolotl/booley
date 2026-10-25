@@ -32,7 +32,9 @@ def baseline(layout):
 def _request_file(baseline) -> Path:
     goal = sim_goals(baseline.record)[0]
     inputs = entry_inputs(baseline.control, baseline.record)
-    return request_path(baseline.control, request_identity(baseline.record, goal, inputs))
+    return request_path(
+        baseline.control, request_identity(baseline.control, baseline.record, goal, inputs)
+    )
 
 
 def test_unreadable_job_record_never_persists_unavailable_for_a_live_job(baseline, monkeypatch):

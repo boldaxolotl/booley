@@ -155,9 +155,9 @@ def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> C
         return None
     invocation = make_run_id("goal", compact_utc_now(), 0)
     binding = bind_run(store, explicit, invocation)
-    from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+    from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
-    schedule_sim_baselines(store.booley_dir, store.load(binding.record_id))
+    schedule_goal_baselines(store.booley_dir, store.load(binding.record_id))
     paths = record_paths(store.booley_dir, binding.record_id)
     overrides = {
         "BOOLEY_GOAL_FILE": str(paths.record_file),
