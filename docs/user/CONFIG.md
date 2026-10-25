@@ -1505,13 +1505,16 @@ Doctor run inside a Sandbox asks Git which identity it would use and warns:
   example only `user.name`), malformed, or different from `[agent.git]`. The
   warning names the value Git would use instead.
 - `sandbox.gitconfig-identity` when a system or global gitconfig sets
-  `user.name` or `user.email`, for example a host `~/.gitconfig` the editor
-  copies in. While the override is complete this identity is only a fallback,
-  so the warning is normally waived.
+  `user.name` or `user.email`. The Sandbox Image itself sets a neutral
+  `Dev <dev@localhost>` in `/etc/gitconfig`, and an editor may copy in a host
+  `~/.gitconfig`, so this warning is expected in a stock Sandbox. While the
+  override is complete the identity is only a fallback, so waive the check in
+  `doctor-waivers.toml` unless you want to remove the identity it names.
 
-Both checks pass when the override matches and no system or global gitconfig
-sets an identity. Both can be waived in `doctor-waivers.toml`; an active
-warning keeps Doctor from recording a clean run.
+The identity check passes when the override matches; the gitconfig check
+passes only when no system or global gitconfig sets an identity. An active
+warning keeps Doctor from recording a clean run; waive either in
+`doctor-waivers.toml`.
 
 
 

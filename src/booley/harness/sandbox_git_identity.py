@@ -34,8 +34,9 @@ _OVERRIDE_FIX = (
 )
 _GITCONFIG_FIX = (
     "while the override is complete this identity is only a fallback: waive "
-    f"{GITCONFIG_CHECK} in doctor-waivers.toml, or stop the editor copying a host "
-    "~/.gitconfig with user.* into the Sandbox"
+    f"{GITCONFIG_CHECK} in doctor-waivers.toml. Booley's Sandbox Image sets a neutral "
+    "Dev <dev@localhost> in /etc/gitconfig, and an editor may copy a host "
+    "~/.gitconfig with user.*; remove the identity from the one named above to clear it"
 )
 
 

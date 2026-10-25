@@ -7,6 +7,7 @@ Sandbox's ``GIT_CONFIG_COUNT`` override is set (or not) in the environment.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -78,7 +79,18 @@ class _SandboxGit:
 @pytest.fixture
 def sandbox_git(tmp_path, monkeypatch) -> _SandboxGit:
     """Isolate every ambient Git and Booley variable from the host running the suite."""
-    for name in ("GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "CLAUDECODE"):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    for name in (
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_CEILING_DIRECTORIES",
+        "CLAUDECODE",
+    ):
         monkeypatch.delenv(name, raising=False)
     for index in range(8):
         monkeypatch.delenv(f"GIT_CONFIG_KEY_{index}", raising=False)
