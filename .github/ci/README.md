@@ -107,19 +107,25 @@ count, using the same exact-union check as the Windows shards.
 
 ## Exhaustive recovery policy
 
-Every code pull request retains representative before/after, repository-role,
-and first/last checkpoint recovery cases. The full interruption permutation
-set runs when Ticket Board code or tests, shared Git infrastructure, test
-configuration, dependency configuration, or CI orchestration changes. Unknown
-paths fail safe to the exhaustive set. Main pushes and the full scheduled
-matrix also run every recovery permutation.
+No pytest marker or change-classifier category selects recovery tests.
+`pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`, and
+`slow` markers, and every complete-suite run uses `-m "not native_bwave"`.
+Whenever a pull request runs the `test` job, its complete Ubuntu 3.11 and 3.14
+suites run every Goal recovery and authority permutation, and its Windows 3.14
+shards together run the same set except POSIX-only cases; the `coverage-shards`
+jobs use the same mark expression. The Windows 3.11 and 3.13 compatibility legs
+run a fixed focused subset. The change classifier (`required_jobs` in
+`.github/scripts/ci_changes.py`) selects the `test` job for any path classified
+`python_source`, `python_tests` (which includes `website/`), `workflow`,
+`packaging`, or `release`, and for unclassified paths. `main` pushes select
+every job, and the weekly `full-python-matrix.yml` workflow runs the same mark
+expression.
 
 Goal and review code select standard and RISC-V image validation. Goal tests
 (`tests/goals/`) select standard image validation only. The RISC-V prefixes are
 `.github/actions/prepare-picorv32-demo/`, `demo/`, `src/booley/goals/`,
 `src/booley/review/`, `src/booley/evidence/`, and
-`tests/fixtures/goal_mode_smoke/`. These paths do not independently select
-exhaustive Ticket Board recovery permutations.
+`tests/fixtures/goal_mode_smoke/`.
 
 ## Expensive test inventory
 
@@ -128,10 +134,10 @@ record of costly repository-wide scans, duplicate scenarios, and recovery
 permutation families, from 20 successful `main` push runs between
 `17a2f1800` and `4fe5edfe7` (October 21 to 23, 2026). Its dispositions are
 proposals; each approved one is implemented by its own issue with its own
-before/after measurement. The exhaustive-recovery selection described in the
-previous section was removed with the Ticket Board in `1460ad065`, so every
-Goal recovery case currently runs on every code pull request; the record
-describes the mechanism as it was and proposes how a tier would restore it.
+before/after measurement. The path-triggered recovery selection that the
+previous section once described was removed with the Ticket Board in
+`1460ad065`; the record describes that mechanism as it was and proposes how a
+tier would restore it.
 
 ## Performance telemetry
 
