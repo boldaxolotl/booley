@@ -142,11 +142,11 @@ Both setups produced an accepted fix and a reproducing test in all ten trials, s
           <path d="M60 360 H420" stroke="var(--ink)" stroke-width="1.2"/>
 
           <!-- With Booley -->
-          <rect x="120" y="302.5" width="110" height="57.5" fill="#2f5d8a"/>
-          <rect x="120" y="279.5" width="110" height="23" fill="#7fbcb3"/>
-          <rect x="120" y="277.5" width="110" height="2" fill="#e3b23c"/>
-          <rect x="120" y="253.5" width="110" height="24" fill="#c9ced4"/>
-          <text class="v" x="175" y="336" text-anchor="middle" style="fill:#fff">11.5</text>
+          <rect x="120" y="302.5" width="110" height="57.5" class="sg build"/>
+          <rect x="120" y="279.5" width="110" height="23" class="sg obs"/>
+          <rect x="120" y="277.5" width="110" height="2" class="sg sleep"/>
+          <rect x="120" y="253.5" width="110" height="24" class="sg else"/>
+          <text class="v on-dark" x="175" y="336" text-anchor="middle">11.5</text>
           <text class="v" x="175" y="296" text-anchor="middle">4.6</text>
           <text class="v" x="175" y="270" text-anchor="middle">4.8</text>
           <path d="M120 278.5 H100" stroke="var(--ink-2)"/>
@@ -155,14 +155,14 @@ Both setups produced an accepted fix and a reproducing test in all ten trials, s
           <text class="bar" x="175" y="388" text-anchor="middle">With Booley</text>
 
           <!-- Claude Code alone -->
-          <rect x="300" y="261.5" width="110" height="98.5" fill="#2f5d8a"/>
-          <rect x="300" y="191.5" width="110" height="70" fill="#7fbcb3"/>
-          <rect x="300" y="178" width="110" height="13.5" fill="#b8402c"/>
-          <rect x="300" y="120" width="110" height="58" fill="#e3b23c"/>
-          <rect x="300" y="81.5" width="110" height="38.5" fill="#c9ced4"/>
-          <text class="v" x="355" y="315" text-anchor="middle" style="fill:#fff">19.7</text>
+          <rect x="300" y="261.5" width="110" height="98.5" class="sg build"/>
+          <rect x="300" y="191.5" width="110" height="70" class="sg obs"/>
+          <rect x="300" y="178" width="110" height="13.5" class="sg hung"/>
+          <rect x="300" y="120" width="110" height="58" class="sg sleep"/>
+          <rect x="300" y="81.5" width="110" height="38.5" class="sg else"/>
+          <text class="v on-dark" x="355" y="315" text-anchor="middle">19.7</text>
           <text class="v" x="355" y="231" text-anchor="middle">14.0</text>
-          <text class="v" x="355" y="189" text-anchor="middle" style="fill:#fff;font-size:12px">2.7</text>
+          <text class="v on-dark" x="355" y="189" text-anchor="middle" style="font-size:12px">2.7</text>
           <text class="v" x="355" y="153" text-anchor="middle">11.6</text>
           <text class="v" x="355" y="105" text-anchor="middle">7.7</text>
           <text class="tot" x="355" y="70" text-anchor="middle">55.8 min</text>
