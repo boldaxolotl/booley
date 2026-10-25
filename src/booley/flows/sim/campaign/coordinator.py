@@ -21,6 +21,7 @@ from booley.flows.sim.coverage_reference import (
     publish_coverage_campaign_reference,
 )
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
+from booley.runtime.execution_records import ExecutionId
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -201,7 +202,6 @@ class WorkExecutionRequest:
     project_root: Path
     target_handle: TargetHandle | None = None
     child_execution_id: str | None = None
-    child_entry_sha256: str | None = None
     pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
     pre_sim_decoder: PreSimFiringDecoder = field(init=False, repr=False, compare=False)
 
@@ -575,7 +575,7 @@ class SimulationCampaign:
         project_root = binding.project_root if binding is not None else request.project_root
         registry = ChildExecutionRegistry(store, manifest, project_root)
         registry.recover_unretired(request.admission.slot_store)
-        self._cleanup_interrupted_runs(store, recovery, project_root)
+        self._cleanup_interrupted_runs(store, recovery, project_root, registry)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
         invocation = _invocation_number(request.invocation_directory)
@@ -604,17 +604,11 @@ class SimulationCampaign:
             capacity,
             registry,
             allocate=lambda item: self._allocate_scheduled(store, manifest, project_root, item),
-            execute=lambda attempt, child_id, child_digest: self._execute_scheduled(
-                store,
-                manifest,
-                attempt,
-                invocation,
-                request,
-                child_id,
-                child_digest,
+            execute=lambda attempt, child_id: self._execute_scheduled(
+                store, manifest, attempt, invocation, request, child_id
             ),
-            prepare_child=lambda attempt, child_id, child_digest: self._prepare_child(
-                store, manifest, attempt, invocation, request, child_id, child_digest
+            prepare_child=lambda attempt, child_id: self._prepare_child(
+                store, manifest, attempt, invocation, request, child_id
             ),
         )
 
@@ -626,7 +620,6 @@ class SimulationCampaign:
         invocation: int,
         request: CampaignRunRequest,
         child_execution_id: str,
-        child_entry_sha256: str,
     ) -> None:
         executor = self._executor
         if executor is None or not hasattr(executor, "prepare_attempt"):
@@ -641,14 +634,17 @@ class SimulationCampaign:
                 invocation,
                 request,
                 child_execution_id,
-                child_entry_sha256,
             )
         )
 
     @staticmethod
     def _cleanup_interrupted_runs(
-        store: CampaignStore, recovery: CampaignRecovery, project_root: Path
+        store: CampaignStore,
+        recovery: CampaignRecovery,
+        project_root: Path,
+        registry: ChildExecutionRegistry,
     ) -> None:
+        """Cancel each interrupted lane, then remove its attempt's run directory."""
         for recovered in recovery.items:
             if recovered.state != "interrupted":
                 continue
@@ -656,6 +652,10 @@ class SimulationCampaign:
             if attempt is None:
                 continue
             document = attempt.document
+            lane_id = document.get("child_execution_id")
+            if lane_id is not None:
+                # Fail closed: never delete a run directory a live lane may still use.
+                registry.recover_lane(ExecutionId(cast(str, lane_id)))
             run = restore_run_directory(
                 cast(Mapping[str, object], document["run_directory"]),
                 project_root=project_root,
@@ -692,7 +692,6 @@ class SimulationCampaign:
         invocation: int,
         request: CampaignRunRequest,
         child_execution_id: str | None,
-        child_entry_sha256: str | None,
     ) -> None:
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
@@ -706,7 +705,6 @@ class SimulationCampaign:
                     invocation,
                     request,
                     child_execution_id,
-                    child_entry_sha256,
                 )
             )
         except PreSimScopeStoppedError as signal:
@@ -735,7 +733,6 @@ class SimulationCampaign:
         invocation,
         request,
         child_execution_id,
-        child_entry_sha256,
     ) -> WorkExecutionRequest:
         binding = (
             request.validated.binding_for(manifest)
@@ -755,7 +752,6 @@ class SimulationCampaign:
             binding.project_root if binding is not None else request.project_root,
             binding.handle if binding is not None else None,
             child_execution_id,
-            child_entry_sha256,
             request.pre_sim_firing_published,
         )
 

@@ -247,9 +247,15 @@ def test_common_timestamps_must_be_canonical_utc() -> None:
 
 
 def test_child_and_build_attempt_identities_must_be_coherent() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="both"):
+    # Current lanes name their execution with no entry digest; 0.3.0 attempts carry both.
+    codec._validate_child_identity({"child_execution_id": "e" * 32, "child_entry_sha256": None})
+    codec._validate_child_identity(
+        {"child_execution_id": "e" * 32, "child_entry_sha256": "sha256:" + "1" * 64}
+    )
+    codec._validate_child_identity({"child_execution_id": None, "child_entry_sha256": None})
+    with pytest.raises(SimulationCampaignIntegrityError, match="child_entry_sha256"):
         codec._validate_child_identity(
-            {"child_execution_id": "e" * 32, "child_entry_sha256": None}
+            {"child_execution_id": None, "child_entry_sha256": "sha256:" + "1" * 64}
         )
     with pytest.raises(SimulationCampaignIntegrityError, match="32 lowercase"):
         codec._validate_child_identity(

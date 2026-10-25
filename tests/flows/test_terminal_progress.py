@@ -751,10 +751,9 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
         managed=False,
         shutdown_requested=False,
         outer_permit=nullcontext,
-        slot_store=None,
         cancellation_cause=lambda: None,
     )
-    registry = SimpleNamespace(project_data=tmp_path, recover_unretired=lambda _: None)
+    registry = SimpleNamespace(project_data=tmp_path)
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
 

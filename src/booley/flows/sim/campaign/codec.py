@@ -492,10 +492,10 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
 
 def _validate_child_identity(value: Mapping[str, object]) -> None:
     child_id, child_digest = value["child_execution_id"], value["child_entry_sha256"]
-    if (child_id is None) != (child_digest is None):
-        raise SimulationCampaignIntegrityError(
-            "child execution fields must both be null or present"
-        )
+    # Booley 0.3.0 attempts carry a child entry digest; current ones name the lane
+    # execution with a null digest. A digest without a lane identity is invalid.
+    if child_digest is not None and child_id is None:
+        raise SimulationCampaignIntegrityError("child_entry_sha256 requires a child_execution_id")
     if child_id is not None:
         parsed_child_id = _bounded_string(child_id, "child_execution_id")
         if not _EXECUTION_ID_RE.fullmatch(parsed_child_id):

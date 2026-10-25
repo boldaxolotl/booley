@@ -489,7 +489,7 @@ named rule and gives no source module a blanket exemption.
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
-| C11 | D31 | `booley.flows.sim.campaign.child_protocol -> booley.flows.sim.campaign.store` | Campaign-owned child linkage validates and publishes durable Campaign paths. |
+| C11 | D31 | `booley.flows.sim.campaign.child_protocol -> booley.flows.sim.campaign.store` | Recovery of v0.3.0 Campaign child records reads and retires durable Campaign paths. |
 | C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | Public read capabilities inspect storage through the private Campaign store. |
 | C13 | D31 | `booley.flows.sim.campaign -> booley.flows.sim.campaign.inspection` | The Campaign package facade publishes the storage-backed read capabilities. |
 
