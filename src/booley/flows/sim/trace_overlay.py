@@ -25,6 +25,7 @@ from booley.flows.sim.trace_recipe import (
 )
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
+    lexical_stealth_path,
     native_cores_ignored,
     projected_core_path,
     projection_enabled,
@@ -376,7 +377,9 @@ def write_trace_overlay(
     if projection_enabled(project_root) and injected is not None:
         entry = overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"][0]
         attrs = next(iter(entry.values()))
-        relative = injected.relative_to(Path(project_root)).as_posix()
+        relative = (
+            lexical_stealth_path(project_root, injected).relative_to(Path(project_root)).as_posix()
+        )
         overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"] = [{relative: attrs}]
 
     overlay_path = handle.core_file.with_name(
