@@ -8,6 +8,7 @@ from pathlib import Path
 
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.git_facts import run_remembered
 
 
 @dataclass(frozen=True)
@@ -114,7 +115,7 @@ def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckou
     nested = checkout_root / BOOLEY_DIR_NAME
     if not (nested / ".git").is_file():
         return None
-    result = run_git(nested, "rev-parse", "--show-toplevel")
+    result = run_identity_query(nested, "rev-parse", "--show-toplevel")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RepositoryCheckoutError(f"Paired Checkout is unavailable at {nested}: {detail}")
@@ -141,7 +142,7 @@ def is_paired_root_change(
 
 
 def common_git_dir(worktree: Path) -> Path | None:
-    result = run_git(worktree, "rev-parse", "--git-common-dir")
+    result = run_identity_query(worktree, "rev-parse", "--git-common-dir")
     if result.returncode != 0 or not result.stdout.strip():
         return None
     path = Path(result.stdout.strip())
@@ -172,7 +173,9 @@ def git_directories(path: Path) -> GitDirectories:
     every spelling of one checkout yields the same resolved pair. Raises
     :class:`GitDirectoryInspectionError` when *path* is not inside a checkout.
     """
-    result = run_git(path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+    result = run_identity_query(
+        path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"
+    )
     detail = result.stderr.strip() or result.stdout.strip()
     if result.returncode != 0:
         raise GitDirectoryInspectionError(f"{path} is not a Git checkout: {detail}")
@@ -231,3 +234,14 @@ def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(["git", *args], 1, "", str(exc))
+
+
+def run_identity_query(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """:func:`run_git` for a checkout identity query a ``repository_facts`` scope remembers."""
+    return run_remembered(
+        ["git", *args],
+        cwd,
+        inherited_git_environment(),
+        text=True,
+        run=lambda: run_git(cwd, *args),
+    )

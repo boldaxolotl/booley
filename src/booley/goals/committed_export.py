@@ -22,6 +22,7 @@ from booley.goals.committed_bytes import (
 from booley.goals.input_identity import directory_identity, rebase_path
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.proposals import digest
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
@@ -228,6 +229,7 @@ def submodule_source(repository: Path, name: str) -> Path:
     return source
 
 
+@repository_facts()
 def materializations_unchanged(proof: dict[str, Any], current_roots: dict[str, Any]) -> bool:
     for row in proof.get("committed_materializations", []):
         path = rebase_path(Path(row["path"]), proof["path_roots"], current_roots)
@@ -256,8 +258,9 @@ def materializations_unchanged(proof: dict[str, Any], current_roots: dict[str, A
 
 def git_administration(repository: Path) -> list[list[int]]:
     directories: list[list[int]] = []
-    for option in ("--git-dir", "--git-common-dir"):
-        path = Path(os.fsdecode(raw_git(repository, "rev-parse", option).strip()))
+    answer = os.fsdecode(raw_git(repository, "rev-parse", "--git-dir", "--git-common-dir"))
+    for line in answer.split("\n")[:2]:
+        path = Path(line)
         directories.append(directory_identity(path if path.is_absolute() else repository / path))
     return directories
 
