@@ -323,6 +323,10 @@ _Avoid_: check, gate, acceptance test
 A Criterion requiring one **Test Run** to pass on one Target and its reported cycle count to meet one declared threshold.
 _Avoid_: cycle budget, synthesis criterion, benchmark score
 
+**Result Cache**:
+The per-Project store, in the **Main Booley Directory**, of graded `sim`, `synth`, and `fpga` passes and metrics from runs at a **clean commit** that stayed clean until the run ended. A stored result is served in place of a fresh run only when its Result Key matches. The key covers: the tracked bytes of the RTL repository and of the Booley Directory's repository, `booley.toml` minus its verdict-neutral sections, the resolved Target Test Plan, non-Booley ignored files, the Target and its resolved EDAM, the keyed environment, Booley's build, the Sandbox Image, any mounted EDA tool's manifest, and a Booley-generated identity of the same host. A hit is labelled as cached with its producing run. Sampled re-runs check hits, and a mismatch disables the cache for the Project. It stores results, never builds; that is what distinguishes it from a **Simulator Bundle** and from the compiler cache.
+_Avoid_: build cache, global build cache, binary cache, memoization
+
 **Escalation**:
 A signal that a decision exceeds the current authority level and must move from Specialist to Developer Agent to Human.
 _Avoid_: spec gap, blocker, impediment
