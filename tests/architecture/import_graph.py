@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 NAMED_HOTSPOTS = (
     "booley.harness.doctor",
@@ -94,17 +96,37 @@ class DependencyGraphDiff:
 
 
 @dataclass(frozen=True)
-class _ModuleSource:
+class SourceModule:
+    """One discovered module of an analyzed package tree."""
+
     name: str
     path: Path
     is_package: bool
 
 
-def analyze_imports(source_root: Path) -> tuple[Dependency, ...]:
-    """Return every static import that resolves within ``source_root``."""
+SourceScan = Callable[[SourceModule, ast.Module], Iterable[str]]
+
+
+@dataclass(frozen=True)
+class SourceTreeAnalysis:
+    """Immutable dependency facts and named scan findings from one parse of a tree."""
+
+    dependencies: tuple[Dependency, ...]
+    scan_findings: tuple[tuple[str, tuple[str, ...]], ...]
+
+    def findings(self, scan: str) -> tuple[str, ...]:
+        """Return one named scan's findings in module path order."""
+        return dict(self.scan_findings)[scan]
+
+
+def analyze_source_tree(
+    source_root: Path, scans: Mapping[str, SourceScan] = MappingProxyType({})
+) -> SourceTreeAnalysis:
+    """Parse each module once; derive dependencies and every scan's findings from that tree."""
     modules = _discover_modules(source_root)
     known_modules = frozenset(modules)
     dependencies: set[Dependency] = set()
+    findings: dict[str, list[str]] = {name: [] for name in scans}
     for source in modules.values():
         tree = ast.parse(source.path.read_text(encoding="utf-8"), filename=str(source.path))
         for node in ast.walk(tree):
@@ -113,7 +135,17 @@ def analyze_imports(source_root: Path) -> tuple[Dependency, ...]:
                 Dependency(source.name, target, source.path, node.lineno, node.col_offset)
                 for target in targets
             )
-    return tuple(sorted(dependencies, key=_dependency_key))
+        for name, scan in scans.items():
+            findings[name].extend(scan(source, tree))
+    return SourceTreeAnalysis(
+        tuple(sorted(dependencies, key=_dependency_key)),
+        tuple((name, tuple(found)) for name, found in findings.items()),
+    )
+
+
+def analyze_imports(source_root: Path) -> tuple[Dependency, ...]:
+    """Return every static import that resolves within ``source_root``."""
+    return analyze_source_tree(source_root).dependencies
 
 
 def dependency_graph_snapshot(
@@ -226,9 +258,9 @@ def file_fan_out(dependencies: tuple[Dependency, ...]) -> tuple[ModuleFanOut, ..
     )
 
 
-def _discover_modules(source_root: Path) -> dict[str, _ModuleSource]:
+def _discover_modules(source_root: Path) -> dict[str, SourceModule]:
     root = source_root.resolve()
-    modules: dict[str, _ModuleSource] = {}
+    modules: dict[str, SourceModule] = {}
     for path in sorted(root.rglob("*.py")):
         relative = path.relative_to(root)
         is_package = path.name == "__init__.py"
@@ -236,7 +268,7 @@ def _discover_modules(source_root: Path) -> dict[str, _ModuleSource]:
         name = ".".join((root.name, *suffix))
         if name in modules:
             raise ValueError(f"multiple source files resolve to module {name}")
-        modules[name] = _ModuleSource(name, path, is_package)
+        modules[name] = SourceModule(name, path, is_package)
     if root.name not in modules:
         raise ValueError(f"source root is not a Python package: {root}")
     return modules
@@ -244,7 +276,7 @@ def _discover_modules(source_root: Path) -> dict[str, _ModuleSource]:
 
 def _node_targets(
     node: ast.AST,
-    source: _ModuleSource,
+    source: SourceModule,
     known_modules: frozenset[str],
 ) -> tuple[str, ...]:
     if isinstance(node, ast.Import):
@@ -264,7 +296,7 @@ def _node_targets(
     return tuple(targets)
 
 
-def _from_base(node: ast.ImportFrom, source: _ModuleSource) -> str | None:
+def _from_base(node: ast.ImportFrom, source: SourceModule) -> str | None:
     if node.level == 0:
         return node.module
     package = source.name if source.is_package else source.name.rpartition(".")[0]
