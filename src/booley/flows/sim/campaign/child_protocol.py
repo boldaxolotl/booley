@@ -178,7 +178,7 @@ class ChildExecutionRegistry:
 
     def mark_terminal(
         self,
-        prepared: PreparedChild | _V030Child,
+        prepared: PreparedChild,
         terminal_cause: str,
     ) -> None:
         with self._record_lock(prepared.execution_id):
@@ -252,12 +252,13 @@ class ChildExecutionRegistry:
     def recover_lane(self, execution_id: ExecutionId) -> None:
         """Make an interrupted lane's execution terminal before its attempt is discarded.
 
-        A lane without a record never started (or its terminal record was
-        garbage-collected). Anything else must be cancelled and proven
-        tree-terminal; failing that, the caller must not delete the attempt.
+        A lane whose record file is absent never started (or its terminal
+        record was garbage-collected). An unreadable record is indeterminate,
+        not absent. Anything else must be cancelled and proven tree-terminal;
+        failing that, the caller must not delete the attempt.
         """
-        record = read_json(execution_paths(execution_id, booley_dir=self._project_data).record)
-        if record is None or self.is_terminal(execution_id):
+        record_path = execution_paths(execution_id, booley_dir=self._project_data).record
+        if not record_path.exists() or self.is_terminal(execution_id):
             return
         if not self.cancel(execution_id):
             raise SimulationCampaignIntegrityError(

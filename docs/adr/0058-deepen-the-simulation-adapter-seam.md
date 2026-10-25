@@ -120,8 +120,8 @@ files a completed attempt's result names and its Booley-written build trees.
 
 Recorded while implementing issue #1950. A parallel Campaign lane keeps its
 execution identity: an execution ID, a context sidecar, and a waiting then
-terminal execution record. The attempt names that ID. A Campaign writes no child
-entry, retirement or release record, and the attempt scan no longer reads or
+terminal execution record. The attempt names that ID. A Campaign it starts writes no
+child entry, retirement or release record, and the attempt scan no longer reads or
 digest-checks a child entry. Resume and full pruning cancel an interrupted
 attempt's lane execution before removing its run directory and fail closed when
 the lane cannot be proven terminal. `child_protocol` keeps store access only to

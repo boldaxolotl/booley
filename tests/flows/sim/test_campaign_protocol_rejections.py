@@ -10,7 +10,7 @@ import pytest
 from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError, canonical_json_bytes
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import ExecutionId
+from booley.runtime.execution_records import ExecutionId, execution_paths
 from tests.flows.sim.campaign_v030_support import publish_v030_child
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
 
@@ -347,3 +347,16 @@ def test_recover_lane_fails_closed_when_cancel_fails(tmp_path: Path, monkeypatch
     with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
         registry.recover_lane(lane.execution_id)
     assert cancelled == [lane.execution_id]
+
+
+def test_recover_lane_treats_an_unreadable_record_as_indeterminate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry, prepare = _lane_registry(tmp_path)
+    lane = prepare("f" * 32)
+    paths = execution_paths(lane.execution_id, booley_dir=tmp_path / "project" / ".booley")
+    paths.record.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(registry, "cancel", lambda execution_id: False)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
+        registry.recover_lane(lane.execution_id)
