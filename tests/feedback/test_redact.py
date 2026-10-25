@@ -79,7 +79,7 @@ class TestScrubbing:
         # The link text names the target through another link; resolve() would not.
         symlink_or_skip(project / ".booley", alias / "prj-booley")
 
-        out, _ = apply_plan(f"{alias}/prj-booley/x and {target}/y", build_plan(project))
+        out, _ = apply_plan(f"{alias / 'prj-booley'}/x and {target}/y", build_plan(project))
 
         assert out == "<repo>/.booley/x and <repo>/.booley/y"
 
