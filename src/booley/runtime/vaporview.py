@@ -9,6 +9,8 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
 
+from booley.runtime import vscode_server
+
 EXTENSION_ID = "lramseyer.vaporview"
 VERIFIED_VERSION = "1.5.4"
 RELEASES_URL = "https://github.com/Lramseyer/vaporview/releases"
@@ -45,14 +47,21 @@ def session_home() -> Path:
 
 
 def find_manifests(home: Path) -> list[Path]:
-    """Return installed VaporView manifests from the VS Code remote registry."""
-    root = home / ".vscode-server" / "extensions"
-    return sorted(root.glob(f"{EXTENSION_ID}-*/package.json"))
+    """Return installed VaporView manifests from every VS Code server root."""
+    return [
+        manifest
+        for root in vscode_server.extension_dirs(home)
+        for manifest in sorted(root.glob(f"{EXTENSION_ID}-*/package.json"))
+    ]
 
 
 def probe_home(home: Path) -> ExtensionState:
-    """Inspect a VS Code remote extension registry without guessing on I/O failure."""
-    root = home / ".vscode-server" / "extensions"
+    """Inspect every VS Code server root's registry; disagreeing roots are unknown."""
+    return aggregate_states(_probe_registry(root) for root in vscode_server.extension_dirs(home))
+
+
+def _probe_registry(root: Path) -> ExtensionState:
+    """Inspect one extension registry without guessing on I/O failure."""
     try:
         entries = list(root.iterdir())
     except OSError:

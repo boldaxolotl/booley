@@ -380,6 +380,18 @@ class TestMain:
         )
         assert "patched 1" in capsys.readouterr().out
 
+    def test_patches_install_under_codespaces_root(self, home, capsys):
+        manifest = home / ".vscode-remote" / "extensions" / "lramseyer.vaporview-1.5.4"
+        (manifest / "dist").mkdir(parents=True)
+        (manifest / "package.json").write_text(json.dumps(_vanilla_manifest()), encoding="utf-8")
+        (manifest / "dist" / "extension.js").write_text(_COMPLETE_VANILLA_BUNDLE, encoding="utf-8")
+
+        assert iv.main() == 0
+
+        payload = json.loads((manifest / "package.json").read_text(encoding="utf-8"))
+        assert payload["activationEvents"] == ["onStartupFinished"]
+        assert "patched 1" in capsys.readouterr().out
+
     def test_patches_theme_lookup_when_manifest_is_already_current(self, home, capsys):
         manifest = _vanilla_manifest()
         iv.patch_manifest(manifest)
@@ -568,6 +580,16 @@ class TestInstallRaceWait:
         properties = activation_payload["contributes"]["configuration"]["properties"]
         assert properties["vaporview.wcp.enabled"]["scope"] == "machine"
         assert properties["vaporview.wcp.port"]["scope"] == "machine"
+
+    def test_staged_manifests_cover_every_server_root(self, home):
+        for root_name in (".vscode-server", ".vscode-remote"):
+            staging = home / root_name / "extensions" / ".vscode-extraction"
+            staging.mkdir(parents=True)
+            (staging / "package.json").write_text(json.dumps(_vanilla_manifest()), "utf-8")
+
+        found = iv._staged_manifests(home)
+
+        assert {path.parents[2].name for path in found} == {".vscode-server", ".vscode-remote"}
 
     def test_incomplete_install_is_retried_until_verified(self, home):
         root = home / ".vscode-server" / "extensions"
