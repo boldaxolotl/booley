@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from rich.console import Console
 from rich.table import Table
 
+from booley.criteria.presentation import implementation_baseline_comparison
 from booley.evidence.timing import worst_fmax_from_json
 from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation, proposal_presentation
 from booley.goals.test_run_resolution import SUITE_SLOT
@@ -73,6 +74,22 @@ def _format_synthesis_metric(d: dict[str, Any], stale: bool) -> str | None:
     if parts:
         return " · ".join(parts)
     return None
+
+
+def _format_implementation_metric(
+    key: str, d: dict[str, Any], p: dict[str, Any], stale: bool
+) -> str | None:
+    """Format FPGA/synthesis usage and any relative baseline comparison, or None."""
+    if key.startswith("fpga_impl_ok"):
+        compact = _format_fpga_impl_metric(d, stale)
+    elif key.startswith("synthesis_ok"):
+        compact = _format_synthesis_metric(d, stale)
+    else:
+        return None
+    if stale:
+        return compact
+    comparison = implementation_baseline_comparison(key, p, d)
+    return "; ".join(part for part in (compact, comparison) if part) or None
 
 
 def _format_mutation_metric(d: dict[str, Any]) -> str | None:
@@ -156,17 +173,11 @@ def format_criterion_metric(key: str, entry: Any) -> str:  # noqa: PLR0911 — m
     if coverage is not None:
         return coverage
 
-    # FPGA implementation: LUT/FF usage + optional timing.
-    if key.startswith("fpga_impl_ok"):
-        fpga = _format_fpga_impl_metric(d, stale)
-        if fpga is not None:
-            return fpga
-
-    # Synthesis: cells + fmax
-    if key.startswith("synthesis_ok"):
-        synth = _format_synthesis_metric(d, stale)
-        if synth is not None:
-            return synth
+    # FPGA implementation / synthesis: compact usage summary plus, for relative
+    # thresholds with recorded baseline evidence, the baseline -> current change.
+    implementation = _format_implementation_metric(key, d, p, stale)
+    if implementation is not None:
+        return implementation
 
     # Mutation score
     if key.startswith("mutation_score"):
