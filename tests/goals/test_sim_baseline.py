@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -968,8 +969,6 @@ def _version_booley_directory(layout, excludes, tmp_path, *, submodules=False):
     worktree of it. With ``submodules`` the RTL repository also carries one
     submodule that only Goal entry populates in the worktree.
     """
-    import shutil
-
     control = layout.control
     git(layout.main, "config", "core.excludesFile", str(excludes))
     if submodules:
@@ -1038,9 +1037,11 @@ def test_versioned_booley_directory_baseline_classifies_at_entry_pinned_paired_r
 
     monkeypatch.delenv("BOOLEY_DIR")
     reset_cache()
-    rows = run_baseline(path, request, execute=execute)
-    monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
-    reset_cache()
+    try:
+        rows = run_baseline(path, request, execute=execute)
+    finally:
+        monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
+        reset_cache()
     write_document(path, request | {"status": "complete", "results": rows})
     _record(mode, "current", [run_row(grade="fail")])
     summary = transition_summary(
@@ -1076,10 +1077,12 @@ def test_interrupted_versioned_baseline_reap_removes_paired_registration(
 
     monkeypatch.delenv("BOOLEY_DIR")
     reset_cache()
-    with pytest.raises(KilledError):
-        run_baseline(path, request, execute=execute)
-    monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
-    reset_cache()
+    try:
+        with pytest.raises(KilledError):
+            run_baseline(path, request, execute=execute)
+    finally:
+        monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
+        reset_cache()
     assert not scratch[0].exists()
     assert ".baseline-wt-" not in git(layout.control, "worktree", "list", "--porcelain")
     assert ".baseline-wt-" not in git(layout.worktree, "worktree", "list", "--porcelain")
