@@ -178,7 +178,7 @@ def test_bare_host_help_precedes_project_and_runtime_work(
         "booley bootstrap",
         "booley init",
         "devcontainer",
-        "docs/user/SETUP.md",
+        "https://boldaxolotl.github.io/booley/docs/setup/",
     ):
         assert text in output.out
 

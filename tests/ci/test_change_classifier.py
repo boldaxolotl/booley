@@ -14,7 +14,7 @@ import yaml
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from ci_changes import build_test_matrix
+from ci_changes import ALL_JOBS, build_test_matrix
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
@@ -484,9 +484,14 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
 
 @pytest.mark.parametrize(
     "path",
-    ["website/docs/index.md", "website/docs/stylesheets/datasheet.css", "website/mkdocs.yml"],
+    [
+        "website/docs/index.md",
+        "website/docs/stylesheets/datasheet.css",
+        "website/mkdocs.yml",
+        "docs/user/USAGE.md",
+    ],
 )
-def test_project_site_changes_run_the_site_contract_tests(tmp_path: Path, path: str) -> None:
+def test_project_site_changes_run_the_site_tests_and_build(tmp_path: Path, path: str) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, path)
     head = _commit(repo, "project site change")
@@ -496,7 +501,14 @@ def test_project_site_changes_run_the_site_contract_tests(tmp_path: Path, path: 
     assert outputs["docs"] == "true"
     assert outputs["python_tests"] == "true"
     assert outputs["full"] == "false"
-    assert {"docs-check", "test"} <= _required(outputs)
+    assert {"docs-check", "site-build", "test"} <= _required(outputs)
+
+
+def test_aggregate_waits_for_every_conditional_job() -> None:
+    """ci-required must need each selectable job, or a selected job could be skipped unseen."""
+    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+
+    assert set(ALL_JOBS) <= set(workflow["jobs"]["ci-required"]["needs"])
 
 
 @pytest.mark.parametrize(
@@ -786,6 +798,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "changes",
         "release-semantic",
         "docs-check",
+        "site-build",
         "lint",
         "test",
         "test-verify",

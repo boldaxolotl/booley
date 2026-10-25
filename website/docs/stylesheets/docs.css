@@ -1,0 +1,104 @@
+/* ------------------------------------------------------------------
+   User docs (overrides/doc.html, wrapper .docs) and the header search
+   field. The docs pages are docs/user/*.md, published by
+   hooks/user_docs.py. Prose rules shared with the application notes live
+   in article.css as :is(.post .prose, .doc-prose); everything here is
+   scoped under .docs or .search. Reference mode: scannable, not literary.
+   ------------------------------------------------------------------ */
+
+/* three columns: docs list | prose | on this page */
+.docs { display: grid; grid-template-columns: 168px minmax(0, 1fr) 212px; gap: 0 40px; }
+.docs__head { grid-column: 1 / -1; }
+
+/* docs list: sticky on desktop, a collapsed menu on phones */
+.docs__nav { position: sticky; top: 24px; align-self: start; margin-top: 34px;
+  max-height: calc(100vh - 48px); overflow-y: auto; font: 400 15px/1.4 var(--sans); }
+.docs__menu > summary { display: none; }
+.docs__nav ol { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--rule-soft); }
+.docs__nav a { display: block; padding: 5px 0 5px 14px; margin-left: -1px; border-left: 2px solid transparent;
+  color: var(--ink-2); text-decoration: none; }
+.docs__nav a:hover { color: var(--ink); }
+.docs__nav a[aria-current] { color: var(--ink); font-weight: 600; border-left-color: var(--mask); }
+
+/* prose */
+.doc-prose { font: 400 17.5px/1.66 var(--serif); }
+.doc-prose h1 { max-width: none; }
+.doc-prose h2 { font: 700 25px/1.25 var(--sans); font-stretch: 90%; margin: 2.2em 0 0.6em; padding-top: 0.7em;
+  border-top: 1px solid var(--rule-soft); }
+.doc-prose h3 { margin-top: 1.8em; }
+.doc-prose h4 { font: 650 16.5px/1.35 var(--sans); margin: 1.6em 0 0.5em; }
+.doc-prose ol { padding-left: 1.6em; margin: 0 0 1.1em; }
+.doc-prose li > p { margin-bottom: 0.5em; }
+.doc-prose li > :is(ul, ol) { margin: 0.4em 0 0.6em; }
+.doc-prose .highlight { margin: 0 0 1.1em; }
+.doc-prose pre { font-size: 13.5px; }
+.doc-prose img { max-width: 100%; height: auto; border: 1px solid var(--rule-soft); }
+.doc-prose hr { border: 0; border-top: 1px solid var(--rule-soft); margin: 2em 0; }
+/* notes and warnings in the docs are blockquotes */
+.doc-prose blockquote { margin: 0 0 1.2em; padding: 12px 16px 2px; border-left: 4px solid var(--mask);
+  background: var(--fill-2); font-size: 16.5px; }
+.doc-prose blockquote p { margin-bottom: 0.7em; }
+/* wide tables scroll inside their own box (the hook adds the wrapper) */
+.doc-table { overflow-x: auto; margin: 0 0 1.3em; }
+.doc-table table { min-width: 32rem; }
+
+/* previous / next */
+.docs__pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 56px; padding-top: 16px;
+  border-top: 1px solid var(--rule-soft); font: 600 16px/1.35 var(--sans); }
+.docs__pager a { display: flex; flex-direction: column; gap: 2px; text-decoration: none; }
+.docs__pager a:hover { text-decoration: underline; }
+.docs__pager span { font-size: 13.5px; font-weight: 400; color: var(--ink-2); }
+.docs__pager a[rel="next"] { margin-left: auto; text-align: right; }
+
+/* on this page: h2 list; the scroll-spy (data-spy) shows only the current section's h3s */
+.docs .toc { position: sticky; top: 24px; align-self: start; margin-top: 34px; max-height: calc(100vh - 48px);
+  overflow-y: auto; font: 400 14px/1.4 var(--sans); }
+.docs .toc__h { font-weight: 650; margin: 0 0 10px; }
+.docs .toc ol { list-style: none; margin: 0; padding: 0; }
+.docs .toc > ol { border-left: 1px solid var(--rule-soft); }
+.docs .toc a { display: block; padding: 4px 0 4px 14px; margin-left: -1px; border-left: 2px solid transparent;
+  color: var(--ink-2); text-decoration: none; }
+.docs .toc ol ol a { padding-left: 26px; font-size: 13.5px; }
+.docs .toc a:hover { color: var(--ink); }
+.docs .toc a.on { color: var(--ink); border-left-color: var(--mask); }
+.docs .toc[data-spy] li:not(.open) > ol { display: none; }
+
+@media (max-width: 1100px) {
+  .docs { grid-template-columns: 168px minmax(0, 1fr); }
+  .docs .toc { display: none; }
+}
+@media (max-width: 860px) {
+  .docs { grid-template-columns: minmax(0, 1fr); }
+  .docs__nav { position: static; max-height: none; margin-top: 18px; }
+  .docs__menu { border: 1px solid var(--rule); }
+  .docs__menu > summary { display: block; cursor: pointer; padding: 10px 14px; background: var(--fill); font-weight: 650; }
+  .docs__menu[open] > summary { border-bottom: 1px solid var(--rule); }
+  .docs__nav ol { border-left: 0; padding: 6px 0; }
+  .docs__nav a { padding: 9px 14px; }
+}
+@media (max-width: 600px) {
+  .doc-prose { font-size: 17px; }
+  .doc-prose h2 { font-size: 22px; }
+}
+
+/* ---- Header search (Pagefind default UI, restyled through its variables) ---- */
+.search { position: relative; flex: none; width: 210px;
+  --pagefind-ui-scale: 0.6; --pagefind-ui-primary: var(--mask); --pagefind-ui-text: var(--ink);
+  --pagefind-ui-background: var(--paper); --pagefind-ui-border: var(--rule); --pagefind-ui-tag: var(--fill);
+  --pagefind-ui-border-width: 1px; --pagefind-ui-border-radius: 3px; --pagefind-ui-font: var(--sans); }
+.search[hidden] { display: none; }
+.search .pagefind-ui__search-input { font-weight: 400; }
+.search .pagefind-ui__search-input::placeholder { color: var(--ink-2); opacity: 1; }
+/* results drop down over the page instead of pushing it down */
+.search .pagefind-ui__drawer:not(.pagefind-ui__hidden) { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  width: min(36rem, calc(100vw - 24px)); max-height: 72vh; overflow-y: auto; padding: 0 18px 12px;
+  background: var(--paper); border: 1px solid var(--rule); box-shadow: 0 8px 24px var(--shadow); }
+.search .pagefind-ui__result-link { color: var(--ink); }
+.search .pagefind-ui__result-excerpt { color: var(--ink-2); }
+.search mark { background: var(--ok-fill); color: var(--ink); }
+
+@media (max-width: 860px) {
+  /* logo | search | theme toggle on the first row; the nav wraps below */
+  .search { order: 1; flex: 1; width: auto; max-width: 320px; margin-left: auto; }
+  .search ~ .theme { margin-left: 0; }
+}

@@ -16,6 +16,7 @@ from pathlib import Path
 from booley.goals.model import parse_goal_args
 from booley.goals.presentation import goal_presentation
 from booley.goals.translate import translate_goals
+from tests.docs.test_links import _destination_failure, _repository_path
 
 ROOT = Path(__file__).resolve().parent.parent
 WEBSITE = ROOT / "website"
@@ -104,19 +105,27 @@ def test_demo_link_uses_the_contract_pinned_revision():
 
 
 def test_readme_links_resolve_to_site_sections_and_pages():
-    """Every README link into the site names a home-page section or a page that exists."""
-    links = re.findall(
-        r"https://boldaxolotl\.github\.io/booley/([a-z-]*/?)(?:#([a-z-]+))?", README
-    )
-    anchors = {anchor for page, anchor in links if not page and anchor}
-    pages = {page.strip("/") for page, _ in links if page}
+    """Every README link into the site names a home-page section, user doc, or page."""
+    links = re.findall(r"https://boldaxolotl\.github\.io/booley/([\w./-]*)(?:#([\w-]+))?", README)
+    site_ids = set(re.findall(r'\bid="([a-z-]+)"', SITE))
+    failures = []
+    for page, anchor in links:
+        url = f"https://boldaxolotl.github.io/booley/{page}" + (f"#{anchor}" if anchor else "")
+        if not page:
+            if anchor and anchor not in site_ids:
+                failures.append(url)
+        elif page.startswith("docs/"):
+            # User docs: slug -> docs/user/<FILE>.md, anchor -> its GitHub heading IDs.
+            target = _repository_path(ROOT / "README.md", url)
+            if target is None or _destination_failure(target, url):
+                failures.append(url)
+        else:
+            docs = WEBSITE / "docs" / page.strip("/")
+            if not (docs.with_suffix(".md").is_file() or (docs / "index.md").is_file()):
+                failures.append(url)
 
-    assert anchors
-    assert anchors <= set(re.findall(r'\bid="([a-z-]+)"', SITE))
-    assert pages
-    for page in pages:
-        docs = WEBSITE / "docs" / page
-        assert docs.with_suffix(".md").is_file() or (docs / "index.md").is_file(), page
+    assert {page.split("/")[0] for page, _ in links} >= {"", "docs", "videos"}
+    assert not failures, failures
 
 
 def test_generated_illustration_is_up_to_date():
@@ -178,19 +187,26 @@ def test_colours_are_theme_tokens_only():
     assert offenders == []
 
 
-def test_dark_theme_blocks_match_and_cover_every_light_colour():
-    """The explicit and OS-preference dark blocks are identical and override every light colour."""
-    explicit = _token_block(':root[data-theme="dark"]')
-    by_os = _token_block(':root:not([data-theme="light"])')
+def test_dark_theme_overrides_every_light_colour():
+    """The dark block (chosen with the header toggle) overrides every themed light colour."""
+    dark = _token_block(':root[data-theme="dark"]')
     light_colours = {
         name
         for name, value in _token_block(":root").items()
         if re.search(_COLOUR, value) and not name.startswith(_SHARED_TOKEN_PREFIX)
     }
 
-    assert explicit == by_os
-    assert explicit["color-scheme"] == "dark"
-    assert {name for name in explicit if name.startswith("--")} == light_colours
+    assert dark["color-scheme"] == "dark"
+    assert {name for name in dark if name.startswith("--")} == light_colours
+
+
+def test_light_is_the_default_theme():
+    """Dark applies only when the reader picks it, never from the OS preference."""
+    shell = (WEBSITE / "overrides/base.html").read_text(encoding="utf-8")
+    styles = "".join(path.read_text(encoding="utf-8") for path in STYLESHEETS.glob("*.css"))
+
+    assert "prefers-color-scheme" not in shell + styles
+    assert 'theme === "dark" ? "dark" : "light"' in shell
 
 
 def _luminance(hex_colour: str) -> float:
