@@ -22,6 +22,7 @@ from typing import NotRequired, TypedDict, cast
 
 from booley.core.build_paths import work_root_for
 from booley.fusesoc import fusesoc_registry
+from booley.fusesoc.core_projection import lexical_stealth_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TARGET_AWARE_FLOWS, TargetHandle
 
@@ -194,7 +195,7 @@ def _vlnv_identity(vlnv: str) -> str:
 def _rel_to(path: Path, root: Path) -> str:
     """Project-relative POSIX display path (absolute when outside *root*)."""
     try:
-        return path.relative_to(root).as_posix()
+        return lexical_stealth_path(root, path).relative_to(root).as_posix()
     except ValueError:
         return str(path)
 
