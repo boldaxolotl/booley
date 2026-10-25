@@ -80,3 +80,26 @@ def test_git_version_transport_failure_keeps_absolute_fallback(
 
     monkeypatch.setattr(worktree_paths.subprocess, "run", unavailable)
     assert not worktree_paths._git_supports_relative_paths()
+
+
+@pytest.mark.parametrize("inside", [False, True], ids=["target_outside", "target_inside"])
+def test_symlinked_booley_dir_entry_uses_absolute_worktree_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside: bool
+) -> None:
+    """Git writes relative metadata from physical paths, so only an in-root target is portable."""
+    from booley.runtime import worktree_paths
+    from tests.conftest import symlink_or_skip
+
+    root = tmp_path / "project"
+    root.mkdir()
+    target = root / "control" if inside else tmp_path / "booley-state"
+    target.mkdir()
+    symlink_or_skip(root / ".booley", target)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
+    reset_cache()
+
+    assert worktree_paths.relative_worktree_paths(root) is inside
+    assert worktree_paths.worktree_creation_config(root) == (
+        () if inside else ("-c", "worktree.useRelativePaths=false")
+    )

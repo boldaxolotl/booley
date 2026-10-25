@@ -632,3 +632,22 @@ def test_logical_selection_fingerprint_chain_golden(with_nodes, parent, expected
         )
         == expected
     )
+
+
+def test_layout_topology_accepts_symlinked_booley_dir_entry(tmp_path, monkeypatch) -> None:
+    """A linked entry is checkout-local, like a plain ``.booley``; #2159 owns its Sandbox mount."""
+    from tests.conftest import symlink_or_skip
+
+    from booley.core.booley_dir import reset_cache
+    from booley.runtime import project_image
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+    data = tmp_path / "booley-data"
+    data.mkdir()
+    symlink_or_skip(root / ".booley", data)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+    assert project_image.layout_topology(root) is None

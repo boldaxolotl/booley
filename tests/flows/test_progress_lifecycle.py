@@ -18,6 +18,7 @@ from booley.flows.progress_lifecycle import (
     supersede_progress,
     validate_progress_shape,
 )
+from tests.conftest import symlink_or_skip
 
 
 def test_normal_completion_publishes_once() -> None:
@@ -186,12 +187,36 @@ def test_repair_after_reap_ignores_missing_and_terminal_progress(tmp_path: Path)
 def test_repair_after_reap_treats_lookup_error_as_best_effort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_lookup(*_args: object) -> None:
+    def fail_lookup(*_args: object, **_kwargs: object) -> None:
         raise OSError("report root disappeared")
 
     monkeypatch.setattr(progress_module, "read_progress_for_run", fail_lookup)
 
     assert not repair_progress_after_reap((tmp_path,), "sim", "run-1")
+
+
+def test_progress_reader_follows_only_the_booley_dir_entry(tmp_path: Path) -> None:
+    real = tmp_path / "real-booley-dir"
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    symlink_or_skip(entry, real)
+    reports = entry / "runtime" / "flow-reports"
+    path = real / "runtime" / "flow-reports" / "sim" / "1" / "progress.json"
+    _write_progress(path)
+
+    found = read_progress_for_run((reports,), "sim", "run-1", booley_dir=entry)
+    assert found is not None
+    assert found[1]["run_id"] == "run-1"
+    assert repair_progress_after_reap((reports,), "sim", "run-1", booley_dir=entry)
+    assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "aborted"
+
+    # A link below the entry stays refused even when the entry is named.
+    elsewhere = tmp_path / "elsewhere"
+    _write_progress(elsewhere / "sim" / "1" / "progress.json", run_id="run-2")
+    linked_reports = entry / "linked-reports"
+    symlink_or_skip(linked_reports, elsewhere)
+    assert read_progress_for_run((linked_reports,), "sim", "run-2", booley_dir=entry) is None
+    assert not repair_progress_after_reap((linked_reports,), "sim", "run-2", booley_dir=entry)
 
 
 def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
