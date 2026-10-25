@@ -136,7 +136,11 @@ def test_generated_illustration_is_up_to_date():
 # ---------------------------------------------------------------- theme tokens
 STYLESHEETS = WEBSITE / "docs/stylesheets"
 TOKENS_CSS = STYLESHEETS / "datasheet.css"
-_COLOUR = r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\("
+# Hex, functional and named colour literals (named: the common CSS ones).
+_COLOUR = (
+    r"#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl)a?\("
+    r"|\b(?:white|black|red|green|blue|yellow|orange|purple|gray|grey|silver|navy|teal|maroon)\b"
+)
 # Theme-independent tokens: AN-001 data series keep their meaning in both themes.
 _SHARED_TOKEN_PREFIX = "--series-"
 
@@ -146,11 +150,11 @@ def _without_css_comments(css: str) -> str:
 
 
 def _token_block(selector: str) -> dict[str, str]:
-    """Return the custom properties declared in one token rule of datasheet.css."""
+    """Return every declaration (tokens and color-scheme) in one token rule of datasheet.css."""
     css = _without_css_comments(TOKENS_CSS.read_text(encoding="utf-8"))
     match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css)
     assert match, f"datasheet.css has no {selector} token block"
-    return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+?)\s*;", match.group(1)))
+    return dict(re.findall(r"([\w-]+)\s*:\s*([^;]+?)\s*;", match.group(1)))
 
 
 def test_colours_are_theme_tokens_only():
@@ -162,14 +166,14 @@ def test_colours_are_theme_tokens_only():
             allowed = sheet == TOKENS_CSS and prop.startswith("--")
             if re.search(_COLOUR, value) and not allowed:
                 offenders.append(f"{sheet.name}: {prop}: {value.strip()}")
-    markup_colour = re.compile(
-        rf"(?:fill|stroke|stop-color|color|background(?:-color)?)\s*(?:=\s*\"|:\s*)(?:{_COLOUR})"
-    )
+    # Markup: SVG colour attributes and every inline style, in authored and generated HTML.
+    colour_attribute = re.compile(r'\b(fill|stroke|stop-color|color|style)="([^"]*)"')
     markup = [*WEBSITE.glob("snippets/*.html"), *WEBSITE.glob("overrides/*.html")]
-    markup += WEBSITE.glob("docs/**/*.md")
+    markup += [*WEBSITE.glob("illustration/*.html"), *WEBSITE.glob("docs/**/*.md")]
     for path in sorted(markup):
-        for hit in markup_colour.finditer(path.read_text(encoding="utf-8")):
-            offenders.append(f"{path.relative_to(WEBSITE)}: {hit.group(0)}")
+        for name, value in colour_attribute.findall(path.read_text(encoding="utf-8")):
+            if re.search(_COLOUR, value):
+                offenders.append(f'{path.relative_to(WEBSITE)}: {name}="{value}"')
 
     assert offenders == []
 
@@ -185,7 +189,8 @@ def test_dark_theme_blocks_match_and_cover_every_light_colour():
     }
 
     assert explicit == by_os
-    assert set(explicit) == light_colours
+    assert explicit["color-scheme"] == "dark"
+    assert {name for name in explicit if name.startswith("--")} == light_colours
 
 
 def _luminance(hex_colour: str) -> float:

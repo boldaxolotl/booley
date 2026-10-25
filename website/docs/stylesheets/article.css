@@ -46,7 +46,6 @@ html { scroll-padding-top: 24px; }
 .post .prose .cap--top { margin: 0 0 8px; }
 .post .chart text { font-family: var(--sans); fill: var(--ink); }
 .post .chart .ax { font-size: 14.5px; fill: var(--ink-2); }
-.post .chart .v { font-size: 15px; font-weight: 600; }
 .post .chart .k { font-size: 15.5px; }
 .post .chart .tot { paint-order: stroke; stroke: var(--paper); stroke-width: 6px; font-size: 23px; font-weight: 750; font-stretch: 85%; }
 .post .chart .bar { font-size: 16.5px; font-weight: 600; }
@@ -57,8 +56,9 @@ html { scroll-padding-top: 24px; }
 .post .chart .sg.else { fill: var(--series-else); }
 .post .chart .sg.hung { fill: var(--series-hung); }
 .post .chart .sg.sleep { fill: var(--series-sleep); }
-/* value labels sit on a segment: fixed ink, because the series colours are fixed */
-.post .chart .v { fill: var(--series-on-light); }
+/* value labels sit on a segment: fixed ink, because the series colours are fixed;
+   a label placed off the bars would need theme ink instead */
+.post .chart .v { font-size: 15px; font-weight: 600; fill: var(--series-on-light); }
 .post .chart .v.on-dark { fill: var(--series-on-dark); }
 
 /* Figures 2-4: per-trial timelines. HTML bars (not SVG) so labels keep their

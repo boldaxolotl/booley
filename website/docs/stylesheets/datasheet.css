@@ -34,7 +34,7 @@
   --fill-2: #f5f7f8;       /* code, notes */
   --mask: #0b5a43;         /* solder-mask green: the vendor colour, 8.2:1 on paper */
   --mask-ink: #ffffff;     /* text on --mask */
-  --ok-fill: #e2efe9;      /* pale solder-mask: Goals band, selection, bus highlight */
+  --ok-fill: #e2efe9;      /* pale solder-mask: Goals band, Figure 1 selected row and bus highlight */
   --gutter: #b9c2ca;       /* Figure 1: gap between IDE panes */
   --quote-ink: #2c333b;    /* quoted bug reports */
   --diff-add: #d9ebe4;     /* listing: added or highlighted line */
