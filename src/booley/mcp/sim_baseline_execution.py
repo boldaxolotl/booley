@@ -8,6 +8,7 @@ or campaign registration is reachable from it.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import shutil
 import signal
@@ -50,6 +51,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
+from booley.mcp.synth_baseline_execution import classify_synth, measure_synth, synth_job_class
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git_ignore import ignored_paths
@@ -277,8 +279,53 @@ def _ignored_destination(root: Path, base: str) -> None:
         )
 
 
+QUEUE_WAIT_LIMIT_S = 24 * 3600
+
+
+@contextmanager
+def _one_job_per_flow(request: Mapping[str, Any], family: BaselineFamily) -> Iterator[None]:
+    """Serialize a family's baseline Jobs; the queue wait never spends the Job's budget.
+
+    The waiting Job's recorded ``timeout_s`` grows by the time waited, so the
+    measurement budget and every reader's deadline guard stay in agreement.
+    """
+    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
+    from booley.runtime import job_records
+
+    jobs = Path(request["jobs_root"])
+    lock_path = baseline_root(Path(request["booley_dir"]), family) / ".runtime" / "flow.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+
+    def extend_budget() -> None:
+        job = job_records.read_record(request["job_id"], jobs)
+        if job is not None:
+            job.timeout_s = BASELINE_TIMEOUT_S + math.ceil(time.monotonic() - started)
+            job_records.write_record(job, jobs)
+
+    def narrate() -> None:
+        print(f"[flow] waiting for the running {family.name} baseline Job", flush=True)
+        extend_budget()
+
+    with lock_path.open("a+b") as handle:
+        wait_for_file_lock(handle, timeout_s=QUEUE_WAIT_LIMIT_S, on_wait=narrate)
+        try:
+            extend_budget()
+            yield
+        finally:
+            release_file_lock(handle)
+
+
 def run_baseline(
     path: Path, request: dict[str, Any], *, execute: Execute | None = None
+) -> list[dict[str, Any]]:
+    """Run one baseline Job, at most one per Flow family at a time."""
+    with _one_job_per_flow(request, family_for_schema(request["schema"])):
+        return _run_baseline_locked(path, request, execute)
+
+
+def _run_baseline_locked(
+    path: Path, request: dict[str, Any], execute: Execute | None
 ) -> list[dict[str, Any]]:
     """Resolve the base's own declarations, reuse contents evidence, then run missing work."""
     record = GoalRecord.from_json(request["record"])
@@ -411,7 +458,9 @@ def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict
 def _publish_run(project, family, target, run, proof, cached, observed) -> dict[str, Any]:
     document = family.unit_document(run)
     if cached is not None:
-        return {**document, "grade": cached["grade"], "proof": cached["proof"]}
+        return {**document, "grade": cached["grade"], "proof": cached["proof"]} | _measurement(
+            [cached]
+        )
     matching = [
         row
         for row in observed["rows"]
@@ -420,7 +469,7 @@ def _publish_run(project, family, target, run, proof, cached, observed) -> dict[
     ]
     grades = {row.get("grade") for row in matching}
     grade = "fail" if "fail" in grades else "pass" if grades == {"pass"} else "unavailable"
-    result = {**document, "grade": grade, "proof": proof}
+    result = {**document, "grade": grade, "proof": proof} | _measurement(matching)
     if grade == "unavailable":
         reason = (
             "; ".join(str(row["reason"]) for row in matching if row.get("reason"))
@@ -432,9 +481,15 @@ def _publish_run(project, family, target, run, proof, cached, observed) -> dict[
         key = family.result_key(target, run, proof["contents"], proof["protected_digest"])
         write_document(
             cache_path(project, key, family),
-            {"schema": family.schema, "key": key, "grade": grade, "proof": proof},
+            {"schema": family.schema, "key": key, "grade": grade, "proof": proof}
+            | _measurement(matching),
         )
     return result
+
+
+def _measurement(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The family's measured evidence (SIM rows carry none), kept with the result."""
+    return next(({"measurement": row["measurement"]} for row in rows if "measurement" in row), {})
 
 
 @contextmanager
@@ -585,7 +640,6 @@ def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None
 
 
 def _remaining_seconds(output: Path) -> float:
-    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
     from booley.runtime import job_records
 
     request = read_document(output / "request.json", None)
@@ -593,7 +647,7 @@ def _remaining_seconds(output: Path) -> float:
     started = None if job is None else job_records.parse_stamp(job.started_at)
     if started is None:
         raise ValueError("baseline Job has no valid watchdog start time")
-    remaining = started + BASELINE_TIMEOUT_S - time.time() - 180
+    remaining = started + job.timeout_s - time.time() - 180
     if remaining <= 0:
         raise TimeoutError("baseline Job exceeded its total execution budget")
     return min(3600, remaining)
@@ -725,7 +779,10 @@ def _sim_job_class() -> str:
 EXECUTORS: dict[str, BaselineExecutor] = {
     "sim": BaselineExecutor(
         classify=classify_sim_runs, measure=_measure_sim, job_class=_sim_job_class
-    )
+    ),
+    "synth": BaselineExecutor(
+        classify=classify_synth, measure=measure_synth, job_class=synth_job_class
+    ),
 }
 
 if __name__ == "__main__":

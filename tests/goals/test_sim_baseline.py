@@ -50,6 +50,7 @@ from tests.goals.conftest import (
     TESTS_TOML,
     enter_goals,
     git,
+    pending_baseline_launch,
     run_row,
     write_tests_toml,
 )
@@ -69,17 +70,13 @@ def _schedule(layout, record=None):
 
     def launch(path, request):
         layout.launches.append(path)
-        job_records.write_record(
-            job_records.JobRecord(
-                request["job_id"], "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid(), argv=[]
-            ),
-            Path(request["jobs_root"]),
-        )
+        pending_baseline_launch(path, request)
 
     schedule_sim_baselines(layout.control, record, launch=launch)
     goal = sim_goals(record)[0]
     path = request_path(
-        layout.control, request_identity(record, goal, entry_inputs(layout.control, record))
+        layout.control,
+        request_identity(layout.control, record, goal, entry_inputs(layout.control, record)),
     )
     return path, read_document(path)
 
@@ -436,7 +433,7 @@ def test_sim_goal_added_by_approved_change_schedules_at_original_base(layout, mo
     )
     scheduled = []
     monkeypatch.setattr(
-        "booley.mcp.sim_baseline_jobs.schedule_sim_baselines",
+        "booley.mcp.sim_baseline_jobs.schedule_goal_baselines",
         lambda project, rec: scheduled.append(rec),
     )
     result = asyncio.run(
@@ -663,7 +660,9 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
         report = baseline_observations(layout.control, record, goal)
     if report["status"] != "complete":
         diagnostic = json.dumps(report, indent=2)
-        identity = request_identity(record, goal, entry_inputs(layout.control, record))
+        identity = request_identity(
+            layout.control, record, goal, entry_inputs(layout.control, record)
+        )
         log = request_path(layout.control, identity).parent / "job.log"
         if log.is_file():
             with log.open("rb") as handle:

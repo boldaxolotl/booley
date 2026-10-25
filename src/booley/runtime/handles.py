@@ -21,6 +21,7 @@ JOB_TYPES = {
     "simulate": "SIM",
     "sim_baseline": "SIM",
     "synth": "SYN",
+    "synth_baseline": "SYN",
     "asic_synthesize": "SYN",
     "lint": "LINT",
     "lint_rtl": "LINT",

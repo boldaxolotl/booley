@@ -11,6 +11,8 @@ from booley.flows.test_runs import TestRun
 from booley.goals.freshness import GoalFreshnessResolvers
 from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.sim_baseline_store import (
+    SIM_BASELINE,
+    BaselineFamily,
     entry_inputs,
     read_document,
     request_identity,
@@ -100,18 +102,23 @@ def seen_failing(
     return False
 
 
-def baseline_observations(project: Path, record: GoalRecord, goal: RecordedGoal) -> dict[str, Any]:
+def baseline_observations(
+    project: Path,
+    record: GoalRecord,
+    goal: RecordedGoal,
+    family: BaselineFamily = SIM_BASELINE,
+) -> dict[str, Any]:
     """Read an independent request; dead Jobs never remain pending indefinitely."""
     try:
         inputs = entry_inputs(project, record)
-        identity = request_identity(record, goal, inputs)
-        path = request_path(project, identity)
+        identity = request_identity(project, record, goal, inputs, family)
+        path = request_path(project, identity, family)
         if not path.exists():
             return {"status": "pending", "reason": "baseline has not been scheduled yet"}
-        raw = read_document(path)
+        raw = read_document(path, family)
         if raw.get("identity") != identity:
             raise ValueError("baseline request identity differs")
-        validate_results(project, raw)
+        validate_results(project, raw, family)
         if raw.get("status") == "pending":
             job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))
             if job is None or not job_records.is_active(job, is_pid_alive):

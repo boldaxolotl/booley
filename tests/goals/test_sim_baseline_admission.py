@@ -256,7 +256,12 @@ def test_waiting_baseline_job_reads_as_queued_in_job_status(scene, foreign_owner
         "observe_process",
         lambda *_args, **_kwargs: ProcessObservation(ProcessState.RUNNING),
     )
-    monkeypatch.setattr(execution, "run_baseline", lambda *_args: _execute(scene))
+
+    def run_baseline(*_args):
+        _execute(scene)  # waits for the slot like a real Job, then measures
+        return []
+
+    monkeypatch.setattr(execution, "run_baseline", run_baseline)
     holder = _foreign_claim(scene, foreign_owner, job_slots.ROLE_INTERACTIVE)
     assert scene.store.refresh(holder).state == job_slots.HOLDING
     jobs_root = Path(scene.request["jobs_root"])
