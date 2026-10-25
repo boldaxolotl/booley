@@ -40,6 +40,7 @@ from booley.fusesoc.fusesoc_registry import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import UnknownTargetError
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.fusesoc_test_support import write_core as _write_core
 
 
@@ -531,6 +532,44 @@ class TestWriteTraceOverlay:
             doc = read_core(projected)
             entry = doc["filesets"]["booley_trace_dump"]["files"][0]
             assert next(iter(entry)).startswith(".booley/cores/")
+        finally:
+            overlay.cleanup()
+        assert not projected.exists()
+
+    @pytest.mark.parametrize("isolated", [False, True], ids=["projected", "isolated"])
+    def test_icarus_overlay_under_symlinked_booley_dir(self, tmp_path: Path, isolated: bool):
+        project = tmp_path / "project"
+        project.mkdir()
+        external = symlinked_booley_dir(project, tmp_path / "external-booley")
+        toggle = "ignore_native_cores = true\n" if isolated else ""
+        (external / "booley.toml").write_text(
+            f"[stealth]\nenabled = true\n{toggle}", encoding="utf-8"
+        )
+        (external / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        core = self._ICARUS_CORE.replace(
+            "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n", ""
+        )
+        _write_core(external / "cores", core, create_sources=False)
+        overlay = write_trace_overlay(TargetCatalog.build(project).select("sim"))
+        try:
+            projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
+            from booley.fusesoc.fusesoc_registry import _setup_command
+
+            _setup_command(
+                "sim",
+                project_root=project,
+                build_root=project / "build",
+                vlnv=overlay.vlnv,
+            )
+            entry = read_core(projected)["filesets"]["booley_trace_dump"]["files"][0]
+            declared = next(iter(entry))
+            # Projection roots the dump module under `.booley/cores/`; isolated
+            # mode declares the packaged source instead.
+            if isolated:
+                assert Path(declared).is_absolute()
+            else:
+                assert declared.startswith(".booley/cores/")
+            assert (project / declared).is_file()
         finally:
             overlay.cleanup()
         assert not projected.exists()
