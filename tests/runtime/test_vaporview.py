@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+
+import pytest
 
 from booley.runtime import vaporview
 
@@ -103,5 +106,41 @@ def test_home_probe_treats_mismatched_manifest_identity_as_unknown(tmp_path):
     )
     manifest.parent.mkdir(parents=True)
     manifest.write_text('{"publisher": "someone", "name": "different"}', encoding="utf-8")
+
+    assert vaporview.probe_home(tmp_path) is vaporview.ExtensionState.UNKNOWN
+
+
+def _write_install(home, root_name: str) -> None:
+    """Publish a valid VaporView manifest under ``home/<root_name>/extensions``."""
+    manifest = home / root_name / "extensions" / "lramseyer.vaporview-1.5.4" / "package.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"publisher": "Lramseyer", "name": "VaporView"}), "utf-8")
+
+
+def test_home_probe_reports_install_under_codespaces_root(tmp_path):
+    _write_install(tmp_path, ".vscode-remote")
+
+    assert vaporview.probe_home(tmp_path) is vaporview.ExtensionState.INSTALLED
+
+
+def test_find_manifests_covers_every_server_root(tmp_path):
+    _write_install(tmp_path, ".vscode-server")
+    _write_install(tmp_path, ".vscode-remote")
+
+    found = vaporview.find_manifests(tmp_path)
+
+    assert {path.parents[2].name for path in found} == {".vscode-server", ".vscode-remote"}
+
+
+@pytest.mark.parametrize("layout", ["conflicting-roots", "unknown-elsewhere"])
+def test_home_probe_combines_server_roots(tmp_path, layout):
+    """Registries that disagree leave the probe UNKNOWN instead of guessing."""
+    (tmp_path / ".vscode-server" / "extensions").mkdir(parents=True)
+    if layout == "conflicting-roots":
+        _write_install(tmp_path, ".vscode-remote")
+    else:
+        (tmp_path / ".vscode-remote" / "extensions" / "lramseyer.vaporview-1.5.4").mkdir(
+            parents=True
+        )
 
     assert vaporview.probe_home(tmp_path) is vaporview.ExtensionState.UNKNOWN
