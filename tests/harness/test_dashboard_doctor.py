@@ -200,7 +200,13 @@ def test_goal_evidence_states_checking_and_artifact_projection(tmp_path, monkeyp
         ),
     )
     entries = {
-        key: SimpleNamespace(ever_failed=index == 2, to_dict=lambda: {"params": {}})
+        key: SimpleNamespace(
+            ever_failed=index == 2,
+            stale=False,
+            params={},
+            detail={},
+            to_dict=lambda: {"params": {}},
+        )
         for index, key in enumerate(keys)
     }
     artifact = tmp_path / "lint.log"
