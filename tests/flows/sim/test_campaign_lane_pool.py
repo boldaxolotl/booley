@@ -82,7 +82,7 @@ def test_parallel_campaign_runs_only_bounded_lane_threads(
     arrivals = iter(range(3))
     arrival_gate = threading.Lock()
 
-    def execute(_attempt, _child_id, _digest) -> None:
+    def execute(_attempt, _child_id) -> None:
         # The first three items overlap, so every lane is alive at the same time.
         with arrival_gate:
             first_wave = next(arrivals, None) is not None
@@ -125,7 +125,7 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
     completed: list[str] = []
     outer_scope_cancelled: list[bool] = []
 
-    def execute(attempt, child_id, _digest) -> None:
+    def execute(attempt, child_id) -> None:
         scope = current_supervised_execution()
         assert scope is not None
         if child_id is None:
@@ -165,7 +165,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: P
 
     holder_counts: list[int] = []
 
-    def execute(_attempt, child_id, _digest) -> None:
+    def execute(_attempt, child_id) -> None:
         if child_id is None:
             assert cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S)
             # Sampled while the child lane is still running past the cancel.
@@ -231,7 +231,7 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
     child_running = threading.Event()
     release_child = threading.Event()
 
-    def execute(_attempt, child_id, _digest) -> None:
+    def execute(_attempt, child_id) -> None:
         if child_id is None:
             # The outer lane stays busy until the child lane has taken the second
             # item; otherwise the outer lane could drain both items itself.

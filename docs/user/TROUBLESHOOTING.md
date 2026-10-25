@@ -903,8 +903,8 @@ For a templated `run_cwd`, an interrupted attempt may leave its owned directory
 behind. Resume removes it only when the exact ownership marker matches. A
 missing/changed marker, symlink, reparse point, or foreign file tree requires
 human inspection; move that foreign data out of the configured path and retry.
-Never delete Project job-slot or child-execution records to force progress:
-their leases protect live EDA process trees, and normal recovery retires them
+Never delete Project job-slot or execution records to force progress:
+their leases protect live EDA process trees, and normal recovery releases them
 only after terminal proof.
 
 An authenticated abandoned Simulation Campaign can be discarded with exact
