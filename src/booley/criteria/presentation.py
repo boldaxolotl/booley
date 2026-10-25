@@ -451,7 +451,9 @@ def _baseline_part(scope: str, descriptor: ThresholdDescriptor, check: dict, det
     )
 
 
-def implementation_baseline_comparison(key: str, params: dict, detail: dict) -> str:
+def implementation_baseline_comparison(
+    key: str, params: dict[str, Any], detail: dict[str, Any]
+) -> str:
     """Baseline revision and baseline → current (delta) for relative SYNTH/FPGA thresholds.
 
     Empty when *key* is not a synthesis/FPGA criterion, when no relative
