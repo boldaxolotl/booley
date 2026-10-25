@@ -75,8 +75,8 @@ again before editing it. It uses one shared tools-only environment, never
 installs Booley from any checkout, and runs commands against the active
 worktree's source. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
-`native_bwave` test. It includes exhaustive recovery tests, as the complete
-Python compatibility workflow does; selective PR CI may exclude those tests.
+`native_bwave` test. It includes every Goal recovery and authority
+permutation, as every complete-suite CI run does.
 
 Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
 full test run. `full` covers all of `tests/`, including native integration; it
