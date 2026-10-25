@@ -211,6 +211,32 @@ def test_foreign_identity_warns_beside_image_default(sandbox_git):
     assert "'Dev'" not in finding.message
 
 
+def test_no_identity_anywhere_names_missing_values(sandbox_git, capsys):
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    finding = _single_warn(reporter, OVERRIDE_ID)
+    assert "git has no value" in finding.message
+    assert "set no identity other than" in capsys.readouterr().out
+
+
+def test_invalid_agent_git_warns_through_override_check(sandbox_git):
+    (sandbox_git.booley_dir / "booley.toml").write_text("[agent.git]\nname = 3\n")
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    assert "[agent.git] is invalid" in _single_warn(reporter, OVERRIDE_ID).message
+
+
+def test_unrunnable_git_warns_for_both_checks(sandbox_git):
+    def no_git(*_args, **_kwargs):
+        raise FileNotFoundError("git")
+
+    sandbox_git.monkeypatch.setattr("booley.harness.sandbox_git_identity.subprocess.run", no_git)
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    assert "could not be inspected" in _single_warn(reporter, OVERRIDE_ID).message
+    assert "could not be inspected" in _single_warn(reporter, GITCONFIG_ID).message
+
+
 @pytest.mark.parametrize("check_id", [OVERRIDE_ID, GITCONFIG_ID])
 def test_identity_warnings_are_waivable(sandbox_git, check_id):
     sandbox_git.write_identity("global", "Visitor", "v@example.com")
