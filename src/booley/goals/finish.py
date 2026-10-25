@@ -85,6 +85,7 @@ from booley.review.goal_package import (
     GoalReviewContext,
 )
 from booley.runtime.atomic_files import atomic_write_once
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.job_records import JobRecordError
 from booley.runtime.job_wait import active_jobs
@@ -656,6 +657,7 @@ def _revalidate_publication(
     return _revalidation(operation, record, reason)
 
 
+@repository_facts()
 def _original_input_bindings(operation: LifecycleOperation, frozen: dict[str, Any]) -> bool:
     """Content invalidation never substitutes for independent physical-root authority."""
     capture = frozen.get("private_capture", frozen["package"]["input_proof"])

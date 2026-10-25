@@ -33,6 +33,7 @@ from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resoluti
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
 from booley.goals.warnings import goal_warnings, protected_warnings
+from booley.runtime.git_facts import repository_facts
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class GoalStatusSelection:
     project_wide: bool
 
 
+@repository_facts()
 def checkout_violation(store: GoalStore, record: GoalRecord, work_dir: Path) -> str:
     """Require the Worktree Identity and symbolic Goal Branch recorded at entry."""
     try:
@@ -118,6 +120,7 @@ def build_status(
         )
 
 
+@repository_facts()
 def _build_status(
     store: GoalStore,
     record: GoalRecord,

@@ -55,9 +55,8 @@ def shadow_repository(repository: Path, managed: bool) -> Generator[tuple[Path, 
     with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
         shadow, template = Path(scratch) / "repository", Path(scratch) / "template"
         template.mkdir()
-        algorithm = (
-            raw_git(repository, "rev-parse", "--show-object-format").strip().decode("ascii")
-        )
+        identity = raw_git(repository, "rev-parse", "--show-object-format", "--git-common-dir")
+        algorithm, common_text = os.fsdecode(identity).split("\n")[:2]
         raw_git(
             repository,
             "init",
@@ -66,7 +65,7 @@ def shadow_repository(repository: Path, managed: bool) -> Generator[tuple[Path, 
             "--object-format=" + algorithm,
             str(shadow),
         )
-        common = Path(os.fsdecode(raw_git(repository, "rev-parse", "--git-common-dir").strip()))
+        common = Path(common_text)
         common = common if common.is_absolute() else repository / common
         env = {
             "GIT_OBJECT_DIRECTORY": str(common.resolve() / "objects"),
