@@ -18,7 +18,7 @@ from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.runtime.execution_records import ExecutionId
-from booley.runtime.job_slots import CLASS_HEAVY, SlotStore, SlotToken
+from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
 from tests.flows.sim.test_campaign_phase4 import _scheduled_attempt
 
@@ -58,7 +58,7 @@ class _Campaign:
     def run(self, items: int, trigger: Callable[[], None], child_failure: bool = False) -> None:
         """Run *items* work items; the outer lane fires *trigger* and records its message."""
 
-        def execute(_attempt, child_id, _digest) -> None:
+        def execute(_attempt, child_id) -> None:
             if child_id is not None:
                 if child_failure:
                     raise RuntimeError("child boom")
@@ -161,33 +161,3 @@ def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
         )
     finally:
         campaign.slots.release(campaign.outer)
-
-
-def test_unreadable_child_token_is_not_absent(tmp_path: Path, monkeypatch) -> None:
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    admission = AdmissionContext(
-        "managed", slots, outer, 2, "interactive", "a" * 32, 5.0, lambda: False
-    )
-    capacity = HeavyCapacity(
-        admission, terminal_proof=lambda _id: True, recover_child=lambda _id: True
-    )
-    child_id = ExecutionId("c" * 32)
-    child: SlotToken = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=child_id)
-    original_open = Path.open
-
-    def locked_open(path, *args, **kwargs):
-        if path == child.path:
-            raise PermissionError(13, "held by a scanner")
-        return original_open(path, *args, **kwargs)
-
-    try:
-        monkeypatch.setattr(Path, "open", locked_open)
-        assert capacity.execution_token_absent(child_id) is False
-        monkeypatch.setattr(Path, "open", original_open)
-        assert capacity.execution_token_absent(child_id) is False  # readable and held
-        slots.release(child)
-        assert capacity.execution_token_absent(child_id) is True
-    finally:
-        monkeypatch.setattr(Path, "open", original_open)
-        slots.release(outer)

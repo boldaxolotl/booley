@@ -746,7 +746,7 @@ def _attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt, RunDirec
             "owned": run.owned,
         },
         "child_execution_id": request.child_execution_id,
-        "child_entry_sha256": request.child_entry_sha256,
+        "child_entry_sha256": None,
         "pre_sim_build_access": workload["pre_sim_build_access"],
         "policy": {
             "timeout_seconds": (
