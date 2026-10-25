@@ -13,6 +13,7 @@ from pathlib import Path
 
 from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
 from booley.flows.run_log import RunLogIdentity, current_run_token
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _STAGES = frozenset({"preparing", "pre_sim", "building", "executing", "postprocessing"})
@@ -236,7 +237,9 @@ def prepare_attempt_log(
     if scope is not None and scope.ephemeral_root is not None:
         allowed.append(scope.ephemeral_root)
     try:
-        return RunLogIdentity.create(root, target, token, tuple(allowed))
+        return RunLogIdentity.create(
+            root, target, token, tuple(allowed), booley_dir=simulation_booley_dir(project)
+        )
     except OSError as error:
         if required:
             raise

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.campaign_reports import is_report_link, report_link_ancestor
 from booley.flows.sim.config import literal_run_cwd_error
 from booley.runtime.booley_dir import checkout_runtime_dir
 from booley.runtime.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
@@ -39,6 +39,8 @@ class RunDirectory:
     # Deepest directory above the attempt that no placeholder touches (kept, never
     # removed); None for literal directories.
     template_root: Path | None
+    # The one Booley Directory entry that may be a symlink (#2191); None keeps every link refused.
+    booley_dir: Path | None = None
 
 
 def _template_root(configured: str, resolved: Path) -> Path | None:
@@ -107,6 +109,7 @@ def expand_run_directory(
         owned=rendered != configured,
         lock_path=checkout_runtime_dir(project_root) / "simulation-run-locks" / lock_name,
         template_root=_template_root(configured, resolved) if rendered != configured else None,
+        booley_dir=checkout_runtime_dir(project_root).parent,
     )
 
 
@@ -133,7 +136,7 @@ def _claimed_run_directory(run: RunDirectory, *, identity: Mapping[str, str]) ->
         require_literal_run_directory(run.path)
         yield run.path
         return
-    _require_no_links(run.path)
+    _require_no_links(run.path, run.booley_dir)
     marker = run.path / _MARKER
     expected = canonical_json_bytes(dict(identity))
     created = False
@@ -209,6 +212,7 @@ def _restore_run_directory(document: Mapping[str, object], runtime: Path) -> Run
         template_root=(
             _template_root(str(document["configured"]), path) if bool(document["owned"]) else None
         ),
+        booley_dir=runtime.parent,
     )
 
 
@@ -370,13 +374,13 @@ def _remove_owned_tree(root: Path) -> None:
     root.rmdir()
 
 
-def _require_no_links(path: Path) -> None:
+def _require_no_links(path: Path, booley_dir: Path | None) -> None:
     existing = path
     while not existing.exists() and existing != existing.parent:
         existing = existing.parent
-    for parent in (existing, *existing.parents):
-        if is_report_link(parent):
-            raise SimulationCampaignIntegrityError(f"run-directory path contains a link: {parent}")
+    parent = report_link_ancestor(existing, booley_dir)
+    if parent is not None:
+        raise SimulationCampaignIntegrityError(f"run-directory path contains a link: {parent}")
 
 
 def _fsync_file(path: Path) -> None:

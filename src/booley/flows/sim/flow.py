@@ -69,7 +69,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
-from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.campaign_reports import simulation_booley_dir, target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
@@ -1160,6 +1160,9 @@ def _report_artifact_reference(
         base_name, base = "external_origin_target", external_origin_target
     else:
         return None
+    # Imported here: retention pulls in the whole pruning stack the flow rarely needs.
+    from .campaign_retention import invocation_booley_dir
+
     reference = build_artifact_reference(
         path,
         base_name=base_name,
@@ -1167,6 +1170,7 @@ def _report_artifact_reference(
         kind=kind,
         owner=owner,
         maximum=maximum,
+        booley_dir=invocation_booley_dir(report_invocation),
     )
     return encode_artifact_reference(reference)
 
@@ -2612,6 +2616,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Simulation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
+    @property
+    def _simulation_booley_dir(self) -> Path | None:
+        """The checkout's Booley Directory entry, which Simulation may follow if linked (#2191)."""
+        if not hasattr(self, "_cached_booley_dir"):
+            self._cached_booley_dir = simulation_booley_dir(Path(self.args.work_dir))
+        return self._cached_booley_dir
+
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""
         from .campaign_reports import campaign_invocation_lock
@@ -2630,7 +2641,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             # publish the directory: a raced number or any mkdir failure.
             with ExitStack() as attempt:
                 try:
-                    attempt.enter_context(campaign_invocation_lock(invocation))
+                    attempt.enter_context(
+                        campaign_invocation_lock(
+                            invocation, booley_dir=self._simulation_booley_dir
+                        )
+                    )
                     invocation.mkdir()
                 except (LockContentionError, FileExistsError):
                     number += 1
@@ -2893,12 +2908,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
         from .campaign import read_invocation_pre_sim_firings
+        from .campaign_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
             return result
         try:
-            firings = read_invocation_pre_sim_firings(invocation, origin_manifest)
+            firings = read_invocation_pre_sim_firings(
+                invocation, origin_manifest, booley_dir=invocation_booley_dir(invocation)
+            )
         except (OSError, ValueError) as exc:
             return self._retain_pre_sim_after_scan_error(result, exc)
         return self._project_published_pre_sim(result, firings, invocation)
@@ -2919,6 +2937,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
         from .campaign import reread_pre_sim_firings
+        from .campaign_retention import invocation_booley_dir
 
         firings = tuple(
             firing
@@ -2926,12 +2945,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             for firing in outcome.pre_sim_firings
         )
         retained = False
+        invocation = self._reserved_invocation_dir
         if firings:
             try:
                 result = self._project_published_pre_sim(
                     result,
-                    reread_pre_sim_firings(firings),
-                    self._reserved_invocation_dir,
+                    reread_pre_sim_firings(
+                        firings,
+                        booley_dir=None
+                        if invocation is None
+                        else invocation_booley_dir(invocation),
+                    ),
+                    invocation,
                 )
                 retained = True
             except (OSError, ValueError):
@@ -3627,7 +3652,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         # The destination lock is already held; also retain the resumed origin.
         try:
             self.publication_resources.enter_context(
-                campaign_invocation_lock(validated.path.parents[3])
+                campaign_invocation_lock(
+                    validated.path.parents[3], booley_dir=validated.booley_dir
+                )
             )
         except (OSError, ValueError) as exc:
             return EndpointOutcome(

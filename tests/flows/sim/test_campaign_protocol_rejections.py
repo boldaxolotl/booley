@@ -13,6 +13,7 @@ from booley.flows.sim.campaign.store import CampaignStore
 from booley.runtime.execution_records import ExecutionId, execution_paths
 from tests.flows.sim.campaign_v030_support import publish_v030_child
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 
 def _entry(execution_id: str = "e" * 32) -> dict[str, object]:
@@ -91,6 +92,50 @@ def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> 
         match="child entry parent execution identity is invalid",
     ):
         registry.recover_unretired(None)
+
+
+@pytest.mark.parametrize("layout", ["entry", "below"])
+def test_child_records_publish_and_verify_through_the_booley_dir_entry(
+    tmp_path: Path, layout: str
+) -> None:
+    """#2191: the symlinked ``.booley`` entry is followed; a link below it is refused."""
+    manifest = _two_item_manifest()
+    # The Campaign store is plain: only the Project-local child records cross the entry.
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    if layout == "below":
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (external / ".runtime").symlink_to(elsewhere, target_is_directory=True)
+    registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
+    item = manifest.document["work_items"][0]
+    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
+    ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
+    fields = {
+        "work_item_id": str(item["work_item_id"]),
+        "attempt_id": attempt_id,
+        "attempt_ordinal": ordinal,
+        "attempt_directory": attempt,
+        "parent_execution_id": ExecutionId("a" * 32),
+    }
+
+    def cycle() -> None:
+        # Publish, verify the identical records (second prepare), then recover a 0.3.0 entry.
+        publish_v030_child(registry, execution_id=ExecutionId("e" * 32), **fields)
+        registry.prepare(ExecutionId("e" * 32), **fields)
+        registry.recover_unretired(None)
+
+    if layout == "below":
+        with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+            cycle()
+        return
+    cycle()
+    retired = f"{'e' * 32}.json"
+    assert (external / ".runtime/campaign-child-executions/retired" / retired).is_file()
+    assert (store.root / "child-executions/retired" / retired).is_file()
 
 
 @pytest.mark.parametrize("value", [r"items\attempt", "/absolute", "../escape", "a/../b"])

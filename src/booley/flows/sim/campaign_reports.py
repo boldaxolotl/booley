@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.runtime.file_lock import nonblocking_file_lock
 
 
@@ -64,11 +66,34 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def simulation_booley_dir(project_root: Path) -> Path | None:
+    """Return the checkout's lexical Booley Directory entry, or ``None`` without one.
+
+    This is the one derivation every Simulation place uses to learn which single
+    symlinked component (#2191) it may follow. A checkout with no Booley Directory
+    has no entry to follow.
+    """
+    try:
+        return resolve_checkout_booley_dir(project_root)
+    except FileNotFoundError:
+        return None
+
+
+def report_link_ancestor(path: Path, booley_dir: Path | None = None) -> Path | None:
+    """Return the first of *path* and its parents that is a link other than the entry."""
+    for candidate in (path, *path.parents):
+        if is_report_link(candidate) and not is_booley_dir_entry(candidate, booley_dir):
+            return candidate
+    return None
+
+
 @contextmanager
-def campaign_invocation_lock(invocation: Path) -> Iterator[None]:
+def campaign_invocation_lock(
+    invocation: Path, *, booley_dir: Path | None = None
+) -> Iterator[None]:
     """Exclude pruning and execution; OS ownership ends automatically on interruption."""
     lock = invocation.with_name(f".invocation-{invocation.name}.lock")
-    if any(is_report_link(path) for path in (lock, *lock.parents)):
+    if report_link_ancestor(lock, booley_dir) is not None:
         raise ValueError("Invocation lock paths must not contain symlinks")
     with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
         yield

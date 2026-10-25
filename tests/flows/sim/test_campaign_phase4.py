@@ -601,8 +601,8 @@ def test_child_protocol_parses_the_same_bytes_it_authenticated(
     path.write_bytes(original)
     real_open = child_protocol.open_regular_nofollow
 
-    def open_then_replace(selected: Path) -> int:
-        descriptor = real_open(selected)
+    def open_then_replace(selected: Path, **kwargs: object) -> int:
+        descriptor = real_open(selected, **kwargs)
         selected.rename(selected.with_name("opened-original.json"))
         selected.write_bytes(replacement)
         return descriptor

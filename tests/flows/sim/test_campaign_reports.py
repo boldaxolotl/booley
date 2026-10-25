@@ -7,7 +7,9 @@ import pytest
 
 from booley.flows.sim import campaign_reports
 from booley.mcp.job_results import _read_report_json
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["flow_project", "project_alias"]
@@ -739,9 +741,9 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
         reads = []
         reader = campaign.read_invocation_pre_sim_firings
 
-        def read(invocation, *args):
+        def read(invocation, *args, **kwargs):
             reads.append(invocation)
-            return reader(invocation, *args)
+            return reader(invocation, *args, **kwargs)
 
         monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", read)
         if corrupt:
@@ -814,7 +816,7 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
     flow._reserved_invocation_dir = outcome.producer_invocation_directory
     flow._current_published_pre_sim_keys = set()
 
-    def unexpected_read(*_args):
+    def unexpected_read(*_args, **_kwargs):
         raise AssertionError("endpoint must not scan hook storage")
 
     monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", unexpected_read)
@@ -1082,3 +1084,29 @@ def test_campaign_card_renders_each_target_once(monkeypatch):
     text = "\n".join(flow._campaign_report_lines(outcomes))
     assert text.count("smoke: cycles=0") == 2
     assert calls == ["one", "two"]
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_invocation_lock_follows_only_the_booley_dir_entry(tmp_path, linked):
+    """#2191: the lock crosses the Booley Directory link, never a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (flow-reports) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        symlink_or_skip(entry / "flow-reports", outside, target_is_directory=True)
+    invocation = entry / "flow-reports" / "sim" / "1"
+    invocation.parent.mkdir(parents=True, exist_ok=True)
+
+    if linked == "below":
+        with (
+            pytest.raises(ValueError, match="must not contain symlinks"),
+            campaign_reports.campaign_invocation_lock(invocation, booley_dir=entry),
+        ):
+            pass
+        return
+    with campaign_reports.campaign_invocation_lock(invocation, booley_dir=entry):
+        assert (invocation.parent / ".invocation-1.lock").exists()

@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows.baseline_worktree import git_full_sha
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.targets.catalog import TargetCatalog
@@ -53,6 +55,8 @@ class ValidatedResumeManifest:
     prerequisites: tuple[ValidatedManifestNode, ...]
     target_handles: tuple[TargetHandle, ...]
     bindings: tuple[ValidatedTargetBinding, ...] = ()
+    # The one symlinked Booley Directory entry this manifest graph was read through (#2191).
+    booley_dir: Path | None = None
 
     @property
     def path(self) -> Path:
@@ -103,10 +107,14 @@ def validate_resume_manifest(
         raise SimulationCampaignIntegrityError(
             "--resume-from must name one exact campaign/manifest.json"
         )
-    candidate = _load_node(canonical)
+    booley_dir = simulation_booley_dir(project_root)
+    if booley_dir is not None:
+        # A copied physical path names the same lexical origin, so receipts stay consistent.
+        canonical = lexical_booley_path(booley_dir, canonical)
+    candidate = _load_node(canonical, booley_dir)
     invocation = _origin_invocation(canonical)
     prerequisites: list[ValidatedManifestNode] = []
-    _walk_prerequisites(candidate, invocation, frozenset({canonical}), prerequisites)
+    _walk_prerequisites(candidate, invocation, frozenset({canonical}), prerequisites, booley_dir)
     if len(prerequisites) > _MAX_PREREQUISITES:
         raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
     root_for = revision_root or (lambda _target: project_root)
@@ -128,7 +136,7 @@ def validate_resume_manifest(
             seen.add(identity)
         bindings.append(ValidatedTargetBinding(node, root, handle))
     return ValidatedResumeManifest(
-        candidate, tuple(prerequisites), tuple(handles), tuple(bindings)
+        candidate, tuple(prerequisites), tuple(handles), tuple(bindings), booley_dir
     )
 
 
@@ -148,6 +156,7 @@ def _walk_prerequisites(
     invocation: Path,
     ancestors: frozenset[Path],
     result: list[ValidatedManifestNode],
+    booley_dir: Path | None,
 ) -> None:
     """Authenticate every prerequisite link and collect each linked manifest once.
 
@@ -167,7 +176,7 @@ def _walk_prerequisites(
         if linked in ancestors:
             raise SimulationCampaignIntegrityError("cyclic prerequisite manifest")
         walked = next((item for item in result if item.path == linked), None)
-        loaded = walked or _load_node(linked)
+        loaded = walked or _load_node(linked, booley_dir)
         raw = encode_simulation_campaign_manifest(loaded.manifest)
         expected_digest = cast(str, reference["sha256"])
         if len(raw) != reference["bytes"] or loaded.sha256 != expected_digest:
@@ -183,7 +192,7 @@ def _walk_prerequisites(
         result.append(loaded)
         if len(result) > _MAX_PREREQUISITES:
             raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
-        _walk_prerequisites(loaded, invocation, ancestors | {linked}, result)
+        _walk_prerequisites(loaded, invocation, ancestors | {linked}, result, booley_dir)
 
 
 def _origin_invocation(path: Path) -> Path:
@@ -192,15 +201,15 @@ def _origin_invocation(path: Path) -> Path:
     return path.parents[3]
 
 
-def _load_node(path: Path) -> ValidatedManifestNode:
-    raw = _read_regular(path)
+def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
+    raw = _read_regular(path, booley_dir)
     manifest = decode_simulation_campaign_manifest(raw)
     return ValidatedManifestNode(path, manifest, manifest_digest(manifest))
 
 
-def _read_regular(path: Path) -> bytes:
+def _read_regular(path: Path, booley_dir: Path | None) -> bytes:
     try:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
     except OSError as exc:
         raise SimulationCampaignIntegrityError(
             f"cannot read resume manifest {path}: {exc}"

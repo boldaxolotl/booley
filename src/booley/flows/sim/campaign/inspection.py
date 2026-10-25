@@ -62,14 +62,16 @@ class RetainedCampaignStatus:
     coverage_directories: tuple[Path, ...]
 
 
-def read_pre_sim_firings(manifest_path: Path) -> tuple[PreSimFiring, ...]:
+def read_pre_sim_firings(
+    manifest_path: Path, *, booley_dir: Path | None = None
+) -> tuple[PreSimFiring, ...]:
     """Read authenticated firing evidence without exposing a mutable store to Flow."""
-    store = _store_for_manifest(manifest_path)
+    store = _store_for_manifest(manifest_path, booley_dir)
     return store.inspect_pre_sim_firings()
 
 
 def read_invocation_pre_sim_firings(
-    invocation: Path, resumed_origin: Path | None = None
+    invocation: Path, resumed_origin: Path | None = None, *, booley_dir: Path | None = None
 ) -> tuple[PreSimFiring, ...]:
     """Inspect Campaigns published in this invocation, including unfinished work.
 
@@ -80,7 +82,7 @@ def read_invocation_pre_sim_firings(
         raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
     if resumed_origin is not None:
         paths.append(resumed_origin)
-    return collect_pre_sim_firings(*paths)
+    return collect_pre_sim_firings(*paths, booley_dir=booley_dir)
 
 
 def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWorkItemEvidence:
@@ -119,9 +121,11 @@ def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWo
     )
 
 
-def inspect_retained_campaign(manifest_path: Path) -> RetainedCampaignStatus:
+def inspect_retained_campaign(
+    manifest_path: Path, *, booley_dir: Path | None = None
+) -> RetainedCampaignStatus:
     """Return authenticated recovery plus existing summary consistency, without writes."""
-    store = _store_for_manifest(manifest_path)
+    store = _store_for_manifest(manifest_path, booley_dir)
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
@@ -214,18 +218,20 @@ def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object])
 
 
 @contextmanager
-def retained_campaign_lock(manifest_path: Path) -> Iterator[None]:
+def retained_campaign_lock(
+    manifest_path: Path, *, booley_dir: Path | None = None
+) -> Iterator[None]:
     """Exclude mutation of one existing authenticated Campaign without recreating it."""
-    store = _store_for_manifest(manifest_path)
+    store = _store_for_manifest(manifest_path, booley_dir)
     with store.mutation_lock():
         yield
 
 
 def authenticate_retained_campaign_inventory(
-    status: RetainedCampaignStatus,
+    status: RetainedCampaignStatus, *, booley_dir: Path | None = None
 ) -> tuple[Path, ...]:
     """Authenticate shared-build files owned by one retained Campaign."""
-    store = _store_for_manifest(status.manifest_path)
+    store = _store_for_manifest(status.manifest_path, booley_dir)
     origin = cast(Mapping[str, object], status.manifest.document["origin"])
     variants = cast(tuple[Mapping[str, object], ...], status.manifest.document["build_variants"])
     for variant in variants:
@@ -237,7 +243,7 @@ def authenticate_retained_campaign_inventory(
 
 
 def recover_retained_campaign_resources(
-    status: RetainedCampaignStatus, project_data: Path | None
+    status: RetainedCampaignStatus, project_data: Path | None, *, booley_dir: Path | None = None
 ) -> None:
     """Recover child records, interrupted lanes and interrupted owned run directories."""
     from booley.runtime.job_slots import SlotStore
@@ -248,7 +254,7 @@ def recover_retained_campaign_resources(
         restore_run_directory_from_project_data,
     )
 
-    store = _store_for_manifest(status.manifest_path)
+    store = _store_for_manifest(status.manifest_path, booley_dir)
     children = store.root / "child-executions" / "entries"
     unretired = (
         tuple(
@@ -398,13 +404,13 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
     )
 
 
-def _store_for_manifest(manifest_path: Path) -> CampaignStore:
+def _store_for_manifest(manifest_path: Path, booley_dir: Path | None = None) -> CampaignStore:
     canonical = manifest_path.absolute()
     if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
         raise SimulationCampaignIntegrityError(
             "expected exact Simulation Campaign campaign/manifest.json path"
         )
-    return CampaignStore(canonical.parent)
+    return CampaignStore(canonical.parent, booley_dir=booley_dir)
 
 
 __all__ = [

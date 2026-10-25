@@ -23,6 +23,7 @@ from typing import IO, Any
 
 import yaml
 
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
 from booley.core.file_lock import (
@@ -40,6 +41,7 @@ from booley.targets.domain import TargetHandle
 from . import build_reuse
 from .build import PreparedSimulationBuild
 from .build_reuse import hash_file
+from .campaign_reports import simulation_booley_dir
 
 
 class SimulationBuildSlotError(RuntimeError):
@@ -331,7 +333,11 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
     if not isinstance(core, dict) or core.get("dependencies"):
         return None
     core_path = prepared.resolved.edam_path.parent / core["core_file"]
-    core_file = core_path.resolve()
+    # normpath applies FuseSoC's lexical ``..`` first; the re-spelling keeps a core
+    # behind a symlinked Booley Directory project-relative (#2191).
+    core_file = lexical_booley_path(
+        simulation_booley_dir(project_root), Path(os.path.normpath(core_path)).resolve()
+    )
     if core_path.is_symlink() or not core_file.is_relative_to(project_root.resolve()):
         return None
     core_data = yaml.safe_load(core_file.read_text(encoding="utf-8"))

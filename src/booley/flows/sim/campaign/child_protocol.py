@@ -171,7 +171,7 @@ class ChildExecutionRegistry:
         )
         context_raw = canonical_json_bytes(self._context(identity))
         paths = execution_paths(execution_id, booley_dir=self._project_data)
-        _publish_or_verify(paths.context, context_raw)
+        _publish_or_verify(paths.context, context_raw, booley_dir=self._project_data)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
         return PreparedChild(execution_id, paths.context)
@@ -224,8 +224,12 @@ class ChildExecutionRegistry:
             }
             raw = canonical_json_bytes(retirement)
             name = f"{child.execution_id}.json"
-            _publish_or_verify(self._project_root / "retired" / name, raw)
-            _publish_or_verify(self._campaign_root / "retired" / name, raw)
+            _publish_or_verify(
+                self._project_root / "retired" / name, raw, booley_dir=self._project_data
+            )
+            _publish_or_verify(
+                self._campaign_root / "retired" / name, raw, booley_dir=self._project_data
+            )
 
     def is_terminal(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
@@ -273,7 +277,7 @@ class ChildExecutionRegistry:
         recovered_ids: set[str] = set()
         paths = sorted(entries.glob("*.json")) if entries.is_dir() else []
         for path in paths:
-            raw, entry = _read_protocol_record(path, "child entry")
+            raw, entry = _read_protocol_record(path, "child entry", booley_dir=self._project_data)
             _validate_entry(path, entry)
             if (
                 entry.get("manifest_path") != expected_manifest
@@ -297,11 +301,13 @@ class ChildExecutionRegistry:
                 recovered_ids.add(campaign_path.name)
                 continue
             campaign_raw, campaign_entry = _read_protocol_record(
-                campaign_path, "campaign child entry"
+                campaign_path, "campaign child entry", booley_dir=self._project_data
             )
             _validate_entry(campaign_path, campaign_entry)
             project_path = self._project_root / "entries" / campaign_path.name
-            project_raw, entry = _read_protocol_record(project_path, "child entry")
+            project_raw, entry = _read_protocol_record(
+                project_path, "child entry", booley_dir=self._project_data
+            )
             if project_raw != campaign_raw or entry != campaign_entry:
                 raise SimulationCampaignIntegrityError(
                     "campaign child entry disagrees with Project-local authority"
@@ -325,7 +331,9 @@ class ChildExecutionRegistry:
         if not entries.is_dir():
             return
         for path in sorted(entries.glob("*.json")):
-            _raw, document = _read_protocol_record(path, "campaign child entry")
+            _raw, document = _read_protocol_record(
+                path, "campaign child entry", booley_dir=self._project_data
+            )
             if (
                 document.get("manifest_path") == manifest_path
                 and document.get("manifest_sha256") == manifest_sha256
@@ -357,13 +365,17 @@ class ChildExecutionRegistry:
             )
         attempt_path = expected / "attempt.json"
         if attempt_path.exists() or attempt_path.is_symlink():
-            self._validate_bound_attempt(attempt_path, entry, entry_sha256)
+            self._validate_bound_attempt(
+                attempt_path, entry, entry_sha256, booley_dir=self._project_data
+            )
 
     @staticmethod
-    def _validate_bound_attempt(path: Path, entry: dict, entry_sha256: str) -> None:
+    def _validate_bound_attempt(
+        path: Path, entry: dict, entry_sha256: str, *, booley_dir: Path | None = None
+    ) -> None:
         if path.is_symlink() or not path.is_file():
             raise SimulationCampaignIntegrityError("child-bound attempt is not regular")
-        raw = _read_protocol_bytes(path, "child-bound attempt")
+        raw = _read_protocol_bytes(path, "child-bound attempt", booley_dir=booley_dir)
         attempt = decode_simulation_attempt(raw).document
         expected = {
             "child_execution_id": entry["child_execution_id"],
@@ -382,11 +394,13 @@ class ChildExecutionRegistry:
     def _recover_entry(self, path, raw, entry, slot_store) -> None:
         execution_id = ExecutionId(entry.get("child_execution_id"))
         campaign_entry = self._campaign_root / "entries" / path.name
-        _publish_or_verify(campaign_entry, raw)
+        _publish_or_verify(campaign_entry, raw, booley_dir=self._project_data)
         project_retired = self._project_root / "retired" / path.name
         campaign_retired = self._campaign_root / "retired" / path.name
         if project_retired.exists():
-            retired_raw, _retirement = _read_protocol_record(project_retired, "child retirement")
+            retired_raw, _retirement = _read_protocol_record(
+                project_retired, "child retirement", booley_dir=self._project_data
+            )
             terminal = read_json(
                 execution_paths(execution_id, booley_dir=self._project_data).record
             )
@@ -401,7 +415,7 @@ class ChildExecutionRegistry:
                 _sha(canonical_json_bytes(terminal)),
             )
             self._assert_token_absent(slot_store, execution_id)
-            _publish_or_verify(campaign_retired, retired_raw)
+            _publish_or_verify(campaign_retired, retired_raw, booley_dir=self._project_data)
             return
         child = _V030Child(
             execution_id,
@@ -429,7 +443,7 @@ class ChildExecutionRegistry:
         raw = canonical_json_bytes(context)
         if _sha(raw) != entry.get("runtime_context_sha256"):
             raise SimulationCampaignIntegrityError("child context digest disagrees with entry")
-        _publish_or_verify(child.context_path, raw)
+        _publish_or_verify(child.context_path, raw, booley_dir=self._project_data)
         paths = execution_paths(child.execution_id, booley_dir=self._project_data)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
@@ -604,9 +618,9 @@ def _validate_retirement(
         raise SimulationCampaignIntegrityError(detail)
 
 
-def _publish_or_verify(path: Path, raw: bytes) -> None:
+def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None) -> None:
     if path.exists():
-        current = _read_protocol_bytes(path, "child protocol record")
+        current = _read_protocol_bytes(path, "child protocol record", booley_dir=booley_dir)
         if current != raw:
             raise SimulationCampaignIntegrityError(
                 f"child protocol record disagrees with durable identity: {path}"
@@ -615,14 +629,16 @@ def _publish_or_verify(path: Path, raw: bytes) -> None:
     try:
         durable_create(path, raw)
     except FileExistsError:
-        if _read_protocol_bytes(path, "child protocol record") != raw:
+        if _read_protocol_bytes(path, "child protocol record", booley_dir=booley_dir) != raw:
             raise SimulationCampaignIntegrityError(
                 f"child protocol publication raced with different bytes: {path}"
             ) from None
 
 
-def _read_protocol_record(path: Path, label: str) -> tuple[bytes, dict]:
-    raw = _read_protocol_bytes(path, label)
+def _read_protocol_record(
+    path: Path, label: str, *, booley_dir: Path | None = None
+) -> tuple[bytes, dict]:
+    raw = _read_protocol_bytes(path, label, booley_dir=booley_dir)
     try:
         document = json.loads(raw)
     except (UnicodeDecodeError, ValueError) as exc:
@@ -632,9 +648,9 @@ def _read_protocol_record(path: Path, label: str) -> tuple[bytes, dict]:
     return raw, document
 
 
-def _read_protocol_bytes(path: Path, label: str) -> bytes:
+def _read_protocol_bytes(path: Path, label: str, *, booley_dir: Path | None = None) -> bytes:
     try:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
     except OSError as exc:
         raise SimulationCampaignIntegrityError(
             f"{label} is not a link-free regular file: {path}"

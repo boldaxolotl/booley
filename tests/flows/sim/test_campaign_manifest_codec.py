@@ -23,6 +23,7 @@ from booley.flows.sim.campaign.codec import (
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     CampaignRecoveryStatus,
+    SimulationCampaign,
     WorkExecutionRequest,
     _new_store,
 )
@@ -46,6 +47,7 @@ from booley.flows.sim.execution.contract import SimulationTargetOutcome, Simulat
 from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
 from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
@@ -491,12 +493,14 @@ def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -
         SimpleNamespace(
             plan=create_simulation_campaign_plan(candidate),
             invocation_directory=invocation,
+            project_root=tmp_path,
         )
     )
     baseline_store = _new_store(
         SimpleNamespace(
             plan=create_simulation_campaign_plan(baseline),
             invocation_directory=invocation,
+            project_root=tmp_path,
         )
     )
 
@@ -588,6 +592,57 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
         validate_resume_manifest(view / "manifest.json", project_root=tmp_path / "source")
 
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
+@pytest.mark.parametrize("spelling", ["lexical", "physical", "below"])
+def test_resume_reads_through_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """#2191: resume follows a symlinked ``.booley`` entry, in either spelling, and no deeper."""
+    root = tmp_path.resolve()
+    project = root / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, root / "external-booley")
+    entry = project / ".booley"
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    # Publish through the physical spelling: only resume itself crosses the entry.
+    reports = external / "flow-reports"
+    if spelling == "below":
+        # ``flow-reports`` below the entry is a link: refused exactly as today.
+        (root / "real-reports").mkdir()
+        reports.symlink_to(root / "real-reports", target_is_directory=True)
+        reports = root / "real-reports"
+    published = CampaignStore(reports / "000001/targets/sim/campaign")
+    published.publish_manifest(manifest)
+    lexical = entry / "flow-reports" / published.manifest_path.relative_to(reports)
+    physical = external / "flow-reports" / published.manifest_path.relative_to(reports)
+    target = manifest.document["target"]
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.resume.git_full_sha", lambda _ref, _root: target["revision"]
+    )
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda checkout: SimpleNamespace(
+            select=lambda _selector, **_kwargs: SimpleNamespace(
+                identity=f"{target['vlnv']}#{target['name']}", project_root=Path(checkout)
+            )
+        ),
+    )
+
+    if spelling == "below":
+        with pytest.raises(SimulationCampaignIntegrityError, match="cannot read resume manifest"):
+            validate_resume_manifest(lexical, project_root=project)
+        return
+    validated = validate_resume_manifest(
+        lexical if spelling == "lexical" else physical, project_root=project
+    )
+
+    # A copied physical path yields the same lexical origin, and recovery reads through it.
+    assert validated.path == lexical
+    assert validated.booley_dir == entry
+    status = SimulationCampaign().inspect_resume(validated)
+    assert isinstance(status, CampaignRecoveryStatus)
 
 
 def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) -> None:

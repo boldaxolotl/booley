@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.campaign_reports import simulation_booley_dir, target_report_directory
 from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_reference import (
@@ -299,7 +299,7 @@ class SimulationCampaign:
     def _inspect_resume(
         validated: ValidatedResumeManifest,
     ) -> tuple[CampaignRecovery, CampaignRecoveryStatus]:
-        store = CampaignStore(validated.path.parent)
+        store = CampaignStore(validated.path.parent, booley_dir=validated.booley_dir)
         recovery = store.scan_validated(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
@@ -343,7 +343,9 @@ class SimulationCampaign:
             manifest = request.plan.manifest
             authenticated_manifest_sha256 = None
         else:
-            store = CampaignStore(request.validated.path.parent)
+            store = CampaignStore(
+                request.validated.path.parent, booley_dir=request.validated.booley_dir
+            )
             verify_workload(request.validated.manifest, request.current_plan.manifest)
             manifest = request.validated.manifest
             authenticated_manifest_sha256 = request.validated.sha256
@@ -849,7 +851,7 @@ def _new_store(request: NewCampaignRunRequest) -> CampaignStore:
     if target["role"] == "cycle_count_baseline":
         selector = f"{selector}@baseline-{target['revision'][:12]}"
     directory = target_report_directory(request.invocation_directory, selector) / "campaign"
-    return CampaignStore(directory)
+    return CampaignStore(directory, booley_dir=simulation_booley_dir(request.project_root))
 
 
 def _required_variants(
@@ -885,7 +887,7 @@ def _outcome(
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
         _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
-        pre_sim_firings=collect_pre_sim_firings(store.manifest_path),
+        pre_sim_firings=collect_pre_sim_firings(store.manifest_path, booley_dir=store.booley_dir),
     )
 
 
@@ -1092,7 +1094,12 @@ def _prerequisite_campaign(
         else None
     )
     path = node.path if node is not None else invocation / cast(str, reference["path"])
-    store = CampaignStore(path.parent)
+    booley_dir = (
+        request.validated.booley_dir
+        if isinstance(request, ResumeCampaignRunRequest)
+        else simulation_booley_dir(request.project_root)
+    )
+    store = CampaignStore(path.parent, booley_dir=booley_dir)
     return store, node.manifest if node is not None else store.load_manifest()
 
 
@@ -1105,7 +1112,10 @@ def _prerequisite_facts(
     invocation = owner_store.root.parents[2]
     for entry in entries:
         manifest_reference = cast(Mapping[str, object], entry["manifest"])
-        store = CampaignStore((invocation / cast(str, manifest_reference["path"])).parent)
+        store = CampaignStore(
+            (invocation / cast(str, manifest_reference["path"])).parent,
+            booley_dir=owner_store.booley_dir,
+        )
         linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
             store, entry, manifest_reference
         )
