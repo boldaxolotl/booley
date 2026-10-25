@@ -95,7 +95,7 @@ from pathlib import Path
 from typing import TextIO, TypeVar
 
 from booley.core.boundary import as_float
-from booley.runtime import file_lock, process_group, vaporview
+from booley.runtime import file_lock, process_group, vaporview, vscode_server
 from booley.runtime.vaporview import find_manifests
 
 # Activation event that fires once per window after startup finishes, without
@@ -644,9 +644,11 @@ def _manifest_identifies_vaporview(path: Path) -> bool:
 
 def _staged_manifests(home: Path) -> list[Path]:
     """Find VaporView inside VS Code's hidden pre-publication directories."""
-    root = home / ".vscode-server" / "extensions"
     return sorted(
-        path for path in root.glob(".*/package.json") if _manifest_identifies_vaporview(path)
+        path
+        for root in vscode_server.extension_dirs(home)
+        for path in root.glob(".*/package.json")
+        if _manifest_identifies_vaporview(path)
     )
 
 
