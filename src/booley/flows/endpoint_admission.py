@@ -253,7 +253,9 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     """Claim this run's admission slot, waiting in queue order if needed.
 
     Returns ``(store, token)`` to release in main()'s finally, or
-    ``(None, None)`` when no admission applies: the endpoint is unclassed, or
+    ``(None, None)`` when no admission applies: the endpoint is unclassed, the
+    parent process already holds this run's slot (``INHERITED_SLOT_ENV``;
+    claiming again would double-count it and deadlock at a cap of 1), or
     no runtime is configured (bare invocations outside a project keep
     working unguarded). Raises QueueFullError when the class queue is at
     ``queue_max`` — the only admission outcome surfaced as BLOCKED.
@@ -261,6 +263,10 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     job_class = endpoint._resolve_job_class()
     if job_class is None:
         return (None, None)  # unclassed: skip even the store lookup
+    inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
+    if inherited:
+        logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
+        return (None, None)
     root = job_slots.slots_dir()
     if root is None:
         return (None, None)
