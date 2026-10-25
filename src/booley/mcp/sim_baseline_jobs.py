@@ -52,6 +52,9 @@ def baseline_environment() -> dict[str, str]:
         "BOOLEY_RUN_ID",
         "BOOLEY_WORKTREE",
         "BOOLEY_EXECUTION_ID",
+        # Would link the supervisor's slot claim to the launching session's
+        # execution and get it reaped when that session ends, mid-measurement.
+        "BOOLEY_RUNTIME_EXECUTION_ID",
         "BOOLEY_TICKET_FILE",
         "BOOLEY_DIR",
         "BOOLEY_CONTROL_PROJECT_ROOT",

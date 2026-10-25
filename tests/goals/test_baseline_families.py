@@ -102,6 +102,8 @@ def _schedule(baseline, family, published):
 
 
 def test_sim_family_keeps_its_on_disk_layout(baseline, monkeypatch):
+    # The baseline now claims a real slot; keep it in the Project-scoped store.
+    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     family = store.SIM_BASELINE
     assert (family.schema, family.root_name, family.job_prefix, family.endpoint) == (
         "booley.sim-baseline/v1",

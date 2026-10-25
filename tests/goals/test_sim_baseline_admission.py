@@ -222,6 +222,11 @@ def _rewind_job_start(scene, remaining_s: float) -> None:
     job_records.write_record(record, jobs_root)
 
 
+def test_baseline_supervisor_does_not_inherit_the_launching_executions_identity(monkeypatch):
+    monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "launching-session-execution")
+    assert "BOOLEY_RUNTIME_EXECUTION_ID" not in jobs.baseline_environment()
+
+
 def test_baseline_gives_up_its_slot_wait_at_its_budget(scene, foreign_owner):
     holder = _foreign_claim(scene, foreign_owner, job_slots.ROLE_INTERACTIVE)
     assert scene.store.refresh(holder).state == job_slots.HOLDING

@@ -565,6 +565,10 @@ class TestSingleProcess:
         assert store.refresh(interactive).position == 0  # first of the waiters
         with pytest.raises(QueueFullError):
             store.submit(CLASS_HEAVY, pid=100, role="background")
+        # Interactive claims still hit their own bound: holder plus two waiters.
+        store.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
+        with pytest.raises(QueueFullError):
+            store.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
 
     def test_unknown_class_rejected(self, root, world):
         store = make_store(root, world)
