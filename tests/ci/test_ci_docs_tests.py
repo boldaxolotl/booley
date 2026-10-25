@@ -22,6 +22,8 @@ _NAMED_CONTENT_TESTS = (
     "tests/test_site_contract.py",
     "tests/docs/test_links.py",
     "tests/docs/test_current_version_docs.py",
+    "tests/runtime/test_docs_links.py",
+    "tests/test_paths.py",
 )
 
 _BASE_FILES = {
@@ -57,8 +59,7 @@ def test_repository_derivation_includes_the_named_content_tests() -> None:
     derived = set(_script().derive(_ROOT))
 
     assert set(_NAMED_CONTENT_TESTS) <= derived
-    # Readers found only through the derivation rules, not the named list.
-    assert "tests/test_paths.py" in derived
+    # A reader found only through the derivation rules, not the named list.
     assert "tests/qa/test_missions.py" in derived
 
 
@@ -96,7 +97,21 @@ def test_derivation_fails_outside_a_git_repository(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert _script().main(["--repo", str(tmp_path)]) == 2
-    assert capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert error
+    # A scratch directory inside some Git checkout would exit 2 through the
+    # missing-test floor instead, which would not prove the Git failure.
+    assert "not derived" not in error
+
+
+def test_unparsable_python_is_reported_not_silently_dropped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _tracked_repo(tmp_path, {"tests/test_broken.py": "def (:\n"})
+
+    _script().derive(repo)
+
+    assert "tests/test_broken.py" in capsys.readouterr().err
 
 
 _READ_DOC = 'from pathlib import Path\nROOT = Path(__file__).parents[1]\nTEXT = (ROOT / "{}").read_text()\n'

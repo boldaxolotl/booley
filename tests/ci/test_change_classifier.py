@@ -527,8 +527,8 @@ _NOT_SELECTED_BY_SOURCE = {
 @pytest.mark.parametrize(
     ("paths", "unselected"),
     [
-        # Characterization: these sets are what a3d1efea0 selected before the
-        # documentation job set was narrowed.
+        # Characterization: these sets are what was selected before the
+        # documentation job set was narrowed, and must stay unchanged.
         *(
             pytest.param([path], set(), id=path)
             for path in (

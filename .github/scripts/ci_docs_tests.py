@@ -32,6 +32,10 @@ REQUIRED_CONTENT_TESTS = (
     "tests/test_site_contract.py",
     "tests/docs/test_links.py",
     "tests/docs/test_current_version_docs.py",
+    # Found only through documentation paths they name; pinned so that a
+    # tighter reader rule cannot silently drop the docs/user guards.
+    "tests/runtime/test_docs_links.py",
+    "tests/test_paths.py",
 )
 # Conftests that write documentation into temporary projects instead of
 # reading this repository's documentation, with the reason each is exempt.
@@ -77,8 +81,7 @@ def narrow_names(files: Sequence[str]) -> set[str]:
 
 
 def _normalise(candidate: str) -> str:
-    candidate = candidate.removeprefix("./").strip("/")
-    return candidate
+    return candidate.removeprefix("./").strip("/")
 
 
 def _pieces(node: ast.expr, bindings: dict[str, ast.expr], expanding: frozenset[str]) -> list[str]:
@@ -169,25 +172,27 @@ def _is_test_module(path: str) -> bool:
     )
 
 
-def derive(repo: Path) -> list[str]:
-    """Return the sorted test modules a documentation-only change must run."""
-    files = _tracked_files(repo)
-    names = narrow_names(files)
-    documents = documentation_files(files)
-    python_files = [
-        path
-        for path in files
-        if path.endswith(".py") and path.startswith((_SOURCE_PREFIX + "booley/", _TESTS_PREFIX))
-    ]
+def _parse_python(repo: Path, files: Iterable[str]) -> dict[str, ast.Module]:
+    """Parse the repository's Python files; report each one that cannot be parsed."""
     trees: dict[str, ast.Module] = {}
-    for path in python_files:
+    for path in files:
+        if not path.endswith(".py") or not path.startswith(
+            (_SOURCE_PREFIX + "booley/", _TESTS_PREFIX)
+        ):
+            continue
         try:
             trees[path] = ast.parse((repo / path).read_text(encoding="utf-8"), filename=path)
-        except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
-            continue  # not importable, so it can neither read nor run tests
-    modules = {_module_name(path): path for path in trees}
+        except (OSError, SyntaxError, UnicodeDecodeError, ValueError) as error:
+            # Skipped, but visibly: a file that cannot be parsed cannot be derived.
+            print(f"warning: not parsed, skipped: {path}: {error}", file=sys.stderr)
+    return trees
 
-    direct_readers: set[str] = set()
+
+def _direct_readers(
+    trees: dict[str, ast.Module], names: set[str], documents: set[str]
+) -> set[str]:
+    """Return the Python files that themselves name documentation."""
+    readers: set[str] = set()
     for path, tree in trees.items():
         if path in _SYNTHETIC_CONFTESTS:
             continue
@@ -200,16 +205,23 @@ def derive(repo: Path) -> list[str]:
                 isinstance(node, ast.Name) and node.id == "__file__" for node in ast.walk(tree)
             )
             if anchored and candidates & documents:
-                direct_readers.add(path)
+                readers.add(path)
         elif candidates & names:
-            direct_readers.add(path)
+            readers.add(path)
+    return readers
 
-    # Readership propagates through tests/ imports only; src -> src imports are
-    # not followed because they pull most of the runtime suite into this job.
-    readers = set(direct_readers)
+
+def _propagate_through_tests(trees: dict[str, ast.Module], direct_readers: set[str]) -> set[str]:
+    """Add the tests that import a reader, until no more are found.
+
+    Readership propagates through tests/ imports only; src -> src imports are
+    not followed because they pull most of the runtime suite into this job.
+    """
+    modules = {_module_name(path): path for path in trees}
     imports = {path: _imports(path, trees[path], modules) for path in trees}
+    readers = set(direct_readers)
     changed = True
-    while changed:
+    while changed:  # terminates: `readers` only grows within a finite set
         changed = False
         for path in trees:
             if (
@@ -220,12 +232,21 @@ def derive(repo: Path) -> list[str]:
             ):
                 readers.add(path)
                 changed = True
+    return readers
+
+
+def derive(repo: Path) -> list[str]:
+    """Return the sorted test modules a documentation-only change must run."""
+    files = _tracked_files(repo)
+    trees = _parse_python(repo, files)
+    readers = _propagate_through_tests(
+        trees, _direct_readers(trees, narrow_names(files), documentation_files(files))
+    )
     reader_conftests = {
         str(PurePosixPath(path).parent)
         for path in readers
         if path.startswith(_TESTS_PREFIX) and PurePosixPath(path).name == "conftest.py"
     }
-
     selected = {
         path
         for path in trees
