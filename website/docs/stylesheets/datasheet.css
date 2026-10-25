@@ -20,21 +20,85 @@
 @font-face { font-family: "JetBrains Mono"; font-style: normal; font-display: swap; font-weight: 600;
   src: url("../assets/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2"); }
 
-/* ---- Design tokens ---- */
+/* ---- Design tokens ----
+   Every colour on the site is a token here; tests/test_site_contract.py
+   rejects colour literals anywhere else. Contrast ratios are WCAG 2.x. */
 :root {
+  color-scheme: light;
   --paper: #ffffff;
   --ink: #15191e;
-  --ink-2: #4a525c;        /* secondary text, 8.1:1 on white */
+  --ink-2: #4a525c;        /* secondary text, 7.9:1 on paper */
   --rule: #8e98a3;         /* table grid */
   --rule-soft: #d3d9df;
   --fill: #eaeef1;         /* table header band */
   --fill-2: #f5f7f8;       /* code, notes */
-  --mask: #0b5a43;         /* solder-mask green: the vendor colour */
-  --mask-ink: #ffffff;
+  --mask: #0b5a43;         /* solder-mask green: the vendor colour, 8.2:1 on paper */
+  --mask-ink: #ffffff;     /* text on --mask */
+  --ok-fill: #e2efe9;      /* pale solder-mask: Goals band, Figure 1 selected row and bus highlight */
+  --gutter: #b9c2ca;       /* Figure 1: gap between IDE panes */
+  --quote-ink: #2c333b;    /* quoted bug reports */
+  --diff-add: #d9ebe4;     /* listing: added or highlighted line */
+  --diff-del: #f6e1dc;     /* listing: removed line */
+  --hatch: #cfe3da;        /* AN-001 "hunting" segment stripes */
+  --shadow: rgb(0 0 0 / 0.18);
+  /* AN-001 data series: one palette for both themes, so a colour keeps its
+     meaning. Labels on dark series use --series-on-dark, on light series
+     --series-on-light; both fixed, because the series are. */
+  --series-build: #2f5d8a;
+  --series-obs: #7fbcb3;
+  --series-else: #c9ced4;
+  --series-hung: #b8402c;
+  --series-sleep: #e3b23c;
+  --series-on-dark: #ffffff;   /* 6.9:1 on build, 5.5:1 on hung */
+  --series-on-light: #15191e;  /* >= 8.2:1 on obs, else, sleep */
   --sans: "Archivo", "Arial Narrow", Arial, sans-serif;
   --serif: "Literata", Georgia, serif;
   --mono: "JetBrains Mono", ui-monospace, monospace;
   --page: 1120px;
+}
+/* Dark theme: the datasheet printed on dark board. Applied when the reader
+   picks it (the header toggle sets data-theme on <html>) or, without
+   JavaScript, when the OS prefers dark. The two blocks below must stay
+   identical; tests/test_site_contract.py checks that. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #121619;
+  --ink: #e4e8eb;          /* 14.8:1 on paper */
+  --ink-2: #a7b0b9;        /* 8.3:1 on paper */
+  --rule: #5d6873;
+  --rule-soft: #2f373e;
+  --fill: #1e2429;
+  --fill-2: #181d21;
+  --mask: #4fbf93;         /* 8.0:1 on paper */
+  --mask-ink: #08130e;     /* 8.3:1 on --mask */
+  --ok-fill: #173229;
+  --gutter: #0a0d0f;
+  --quote-ink: #c5ccd2;
+  --diff-add: #173229;
+  --diff-del: #3a201b;
+  --hatch: #1f4236;
+  --shadow: rgb(0 0 0 / 0.5);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #121619;
+    --ink: #e4e8eb;          /* 14.8:1 on paper */
+    --ink-2: #a7b0b9;        /* 8.3:1 on paper */
+    --rule: #5d6873;
+    --rule-soft: #2f373e;
+    --fill: #1e2429;
+    --fill-2: #181d21;
+    --mask: #4fbf93;         /* 8.0:1 on paper */
+    --mask-ink: #08130e;     /* 8.3:1 on --mask */
+    --ok-fill: #173229;
+    --gutter: #0a0d0f;
+    --quote-ink: #c5ccd2;
+    --diff-add: #173229;
+    --diff-del: #3a201b;
+    --hatch: #1f4236;
+    --shadow: rgb(0 0 0 / 0.5);
+  }
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -60,6 +124,13 @@ code { font: 0.88em var(--mono); background: var(--fill-2); padding: 0.05em 0.3e
 .hdr nav a { color: var(--ink-2); text-decoration: none; font-size: 15px; font-weight: 500; padding: 6px 10px; }
 .hdr nav a[aria-current] { color: var(--ink); box-shadow: inset 0 -3px 0 var(--mask); }
 .hdr nav a:hover { color: var(--ink); }
+/* theme toggle: shows the moon in light mode (switch to dark), the sun in dark */
+.theme { flex: none; display: grid; place-items: center; width: 36px; height: 36px; margin-right: -8px; padding: 0;
+  background: none; border: 0; border-radius: 4px; color: var(--ink-2); cursor: pointer; }
+.theme[hidden] { display: none; }
+.theme:hover { color: var(--ink); background: var(--fill); }
+.theme svg { width: 20px; height: 20px; }
+.theme[aria-pressed="true"] .theme__moon, .theme[aria-pressed="false"] .theme__sun { display: none; }
 
 .page { max-width: var(--page); margin: 0 auto; padding: 0 32px; }
 
@@ -119,7 +190,7 @@ figcaption b { color: var(--ink); font-weight: 650; }
 .arch .sbl { font-size: 14px; font-weight: 650; font-stretch: 90%; }      /* Sandbox label */
 .arch .bx { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
 .arch .hd { fill: var(--fill); stroke: var(--ink); stroke-width: 1.2; }  /* grey header band */
-.arch .hd.ok { fill: #e2efe9; stroke: var(--mask); }                       /* Goals: truth-table accent */
+.arch .hd.ok { fill: var(--ok-fill); stroke: var(--mask); }                       /* Goals: truth-table accent */
 .arch .bx.ok { stroke: var(--mask); }
 .arch .grp { fill: var(--fill-2); stroke: var(--rule); stroke-width: 1; }
 .arch .sandbox { fill: none; stroke: var(--mask); stroke-width: 1.5; stroke-dasharray: 6 4; }
@@ -186,8 +257,8 @@ td.st { white-space: nowrap; }
 .an__fig { border-left: 1px solid var(--rule); background: var(--fill-2); padding: 22px 26px; display: flex; flex-direction: column; justify-content: center; }
 .minibar { font: 400 14px/1.3 var(--sans); }
 .minibar__row { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 12px; margin: 10px 0; }
-.minibar__bar { height: 22px; background: var(--ink-2); display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #fff; font-weight: 600; font-size: 13px; }
-.minibar__bar.b { background: var(--mask); }
+.minibar__bar { height: 22px; background: var(--ink-2); display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: var(--paper); font-weight: 600; font-size: 13px; }
+.minibar__bar.b { background: var(--mask); color: var(--mask-ink); }
 .minibar__cap { color: var(--ink-2); font-size: 13px; margin-top: 8px; }
 
 /* ---- Footer: document metadata ---- */
@@ -203,6 +274,9 @@ td.st { white-space: nowrap; }
   .hdr__in { gap: 12px; height: auto; padding-top: 10px; padding-bottom: 6px; flex-wrap: wrap; }
   .hdr nav { margin-left: 0; width: 100%; overflow-x: auto; }
   .hdr nav a { padding: 6px 8px; }
+  /* toggle stays on the logo row; the nav wraps below both */
+  .theme { order: 1; margin-left: auto; width: 44px; height: 44px; }
+  .hdr nav { order: 2; }
   .mast { grid-template-columns: 1fr; padding-top: 28px; }
   .front, .feat, .an { grid-template-columns: 1fr; }
   .front .order { margin-top: 18px; }
@@ -301,7 +375,7 @@ sup.fn a { text-decoration: none; padding: 0 1px; }
 .term:focus-visible { outline: 2px solid var(--mask); outline-offset: 2px; border-radius: 2px; }
 .term__tip { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 20;
   width: max-content; max-width: 21rem; padding: 8px 11px;
-  background: var(--ink); color: var(--paper); border-radius: 3px; box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  background: var(--ink); color: var(--paper); border-radius: 3px; box-shadow: 0 4px 14px var(--shadow);
   font: 400 14.5px/1.45 var(--sans); font-style: normal; font-weight: 400; letter-spacing: 0; text-align: left; hyphens: manual; white-space: normal; }
 .term:hover .term__tip, .term:focus .term__tip { display: block; }
 /* narrow screens: pin the tip to the bottom of the viewport so it never runs off the edge */
