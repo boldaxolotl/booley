@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from booley.flows.sim.campaign_durability import durable_copy, durable_directory
@@ -374,6 +374,10 @@ def safe_runtime_relative(value: str) -> Path:
     if (
         not value
         or "\\" in value
+        # Same verdict on every OS: a rooted ("/abs") or drive ("C:x") path is
+        # not relative, even where the host's own Path would call it relative.
+        or PurePosixPath(value).anchor
+        or PureWindowsPath(value).anchor
         or path.is_absolute()
         or any(part in {"", ".", ".."} for part in path.parts)
     ):

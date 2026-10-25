@@ -559,7 +559,10 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
     assert keys == [first.collision_key, first.collision_key]
 
 
-@pytest.mark.parametrize("declared", ["../image/in.hex", "/abs/in.hex", "a/../in.hex", ""])
+@pytest.mark.parametrize(
+    "declared",
+    ["../image/in.hex", "/abs/in.hex", "\\abs\\in.hex", "C:in.hex", "a/../in.hex", ""],
+)
 def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
     tmp_path: Path, declared: str
 ) -> None:
