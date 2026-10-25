@@ -180,6 +180,28 @@ jobs:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
 
+  # Strict project-site build: renders website/ plus the published
+  # docs/user/ pages, validates every link and heading anchor, and builds the
+  # search index. .github/workflows/pages.yml repeats it to deploy on main.
+  site-build:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['site-build']
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install site toolchain
+        run: python -m pip install -r website/requirements.txt
+
+      - name: Build site
+        working-directory: website
+        run: mkdocs build --strict
+
   lint:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['lint']
@@ -1469,6 +1491,7 @@ jobs:
       - changes
       - release-semantic
       - docs-check
+      - site-build
       - lint
       - test
       - test-verify

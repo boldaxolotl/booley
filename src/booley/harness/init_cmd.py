@@ -148,6 +148,7 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
+from booley.runtime.docs_links import docs_url
 from booley.runtime.git import add_git_excludes
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_lifecycle import (
@@ -191,7 +192,7 @@ MIN_PY = (3, 11)
 # Config templates
 # ---------------------------------------------------------------------------
 
-BOOLEY_TOML_SKELETON = """\
+BOOLEY_TOML_SKELETON = f"""\
 # booley.toml - project-level config for Booley.
 #
 # Intentionally left empty by `booley init`.
@@ -203,7 +204,8 @@ BOOLEY_TOML_SKELETON = """\
 # shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
-# BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
+# BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...). Reference:
+# {docs_url("CONFIG.md", "pre-sim-commands-flowssimpre_run_commands")}
 #
 # [flows.sim]
 # pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
