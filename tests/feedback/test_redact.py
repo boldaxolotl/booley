@@ -69,6 +69,20 @@ class TestScrubbing:
 
         assert out == "see <repo>/.booley/runtime/x.log"
 
+    def test_symlinked_booley_dir_target_redacted_in_every_spelling(self, project):
+        real = project.parent / "real-data"
+        target = real / "prj-booley"
+        real.mkdir()
+        (project / ".booley").rename(target)
+        alias = project.parent / "alias-data"
+        symlink_or_skip(alias, real)
+        # The link text names the target through another link; resolve() would not.
+        symlink_or_skip(project / ".booley", alias / "prj-booley")
+
+        out, _ = apply_plan(f"{alias}/prj-booley/x and {target}/y", build_plan(project))
+
+        assert out == "<repo>/.booley/x and <repo>/.booley/y"
+
     def test_git_remote_and_slug_are_replaced(self, project):
         text = "cloned git@github.com:acme-semi/rocketwidget.git — see acme-semi/rocketwidget"
         out, _ = redact(text, project)

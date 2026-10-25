@@ -450,8 +450,9 @@ class JobRepository:
     def report_booley_dir(self, located: LocatedJob | None) -> Path | None:
         """The Booley Directory entry the Job's report roots live under, if any.
 
-        Mirrors the root choice in ``_endpoint_report_dirs``: a Goal-bound Job's
-        own directory, otherwise the session's.
+        A Goal-bound Job's own directory, otherwise the session's. Jobs located
+        under another root fall into the session branch, so a linked entry there
+        stays refused (fail closed), as it was before the entry was followed.
         """
         if located is not None and located.record.binding is not None:
             binding = job_binding(located.record)

@@ -31,6 +31,7 @@ enumerate — so the exported report says so out loud instead of pretending othe
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import tomllib
@@ -39,6 +40,7 @@ from pathlib import Path
 
 from booley.audit.project_schema import REDACT_EXTRA_PROBLEM
 from booley.commit_policy.policy import banned_spans, parse_stealth_vocabulary
+from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, is_str_list
 
 logger = logging.getLogger(__name__)
@@ -252,6 +254,18 @@ def redact_identifiers_enabled(booley_toml: dict) -> bool:
     return True
 
 
+def _entry_target_spellings(entry: Path) -> set[str]:
+    """The distinct spellings of a symlinked entry's target: as linked, and resolved."""
+    spellings: set[str] = set()
+    try:
+        spellings.add(str(entry.resolve()))
+        # One hop as written, joined to the link's parent, without following further links.
+        spellings.add(os.path.normpath(entry.parent / entry.readlink()))
+    except (OSError, RuntimeError):  # unreadable link or a loop (RuntimeError before 3.13)
+        pass
+    return spellings
+
+
 def _register_path_literals(plan: RedactionPlan, project_root: Path) -> None:
     """Register the absolute-path substitutions: Project Root, Booley Directory, home."""
     # 1. Absolute paths. Longest first is handled at apply time; register both
@@ -261,12 +275,14 @@ def _register_path_literals(plan: RedactionPlan, project_root: Path) -> None:
         plan.literals[literal] = "<repo>"
         plan.path_literals.add(literal)
     # A symlinked Booley Directory entry names Project-private state elsewhere; callers
-    # may pass either the entry or its target (BOOLEY_DIR), so key on the entry.
-    entry = project_root / ".booley"
+    # may pass either the entry or its target (BOOLEY_DIR), so key on the entry. Register
+    # every spelling of the target: the link's own text (``ls -l``) and the fully
+    # resolved path differ whenever the target is reached through another link.
+    entry = project_root / BOOLEY_DIR_NAME
     if entry.is_symlink():
-        literal = str(entry.resolve())
-        plan.literals[literal] = "<repo>/.booley"
-        plan.path_literals.add(literal)
+        for literal in _entry_target_spellings(entry):
+            plan.literals[literal] = f"<repo>/{BOOLEY_DIR_NAME}"
+            plan.path_literals.add(literal)
     home = Path.home()
     if home != project_root and str(home) not in plan.literals:
         literal = str(home)
