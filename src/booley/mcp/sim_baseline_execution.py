@@ -15,7 +15,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
+from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git_ignore import ignored_paths
 from booley.runtime.process_group import (
@@ -76,6 +78,8 @@ class BaselineExecutor:
     ]
     #: Runs inside the watchdog child; returns ``{"rows", "stamps", "reason", ...}``.
     measure: Callable[[Mapping[str, Any]], dict[str, Any]]
+    #: The Job Class of the Flow that ``measure`` runs; the supervisor claims it.
+    job_class: Callable[[], str]
 
 
 def contents_stamp(fingerprint: Mapping[str, Any], key: str = SIM_KEY) -> str:
@@ -433,10 +437,66 @@ def _publish_run(project, family, target, run, proof, cached, observed) -> dict[
     return result
 
 
+@contextmanager
+def _background_slot(owner: Mapping[str, Any], output: Path) -> Iterator[job_slots.SlotToken]:
+    """Hold one background-priority slot of the Flow's Job Class while measuring.
+
+    The supervisor, the process recorded on the Job, owns the claim so Job
+    status shows the wait. The wait spends the Job's own remaining budget:
+    a starved baseline ends unavailable rather than as a live Job that
+    readers report failed.
+    """
+    from booley.config.jobs import parse_caps
+    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
+    from booley.runtime.job_records import _proc_cmdline
+    from booley.runtime.shared_infra import load_job_budget_config
+
+    booley_dir = Path(owner["booley_dir"])
+    job_class = EXECUTORS[family_for_schema(owner["schema"]).name].job_class()
+    store = job_slots.SlotStore(
+        job_slots.slots_dir(booley_dir), parse_caps(load_job_budget_config(booley_dir=booley_dir))
+    )
+    deadline = time.monotonic() + _remaining_seconds(output)
+    pid = os.getpid()
+
+    def narrate(position: int | None) -> None:
+        line = f"baseline waiting for {job_class} slot (position {(position or 0) + 1})"
+        print(
+            f"[slot] {line}; held by {store.describe_holders(job_class)}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    try:
+        token = store.acquire(
+            job_class,
+            pid=pid,
+            argv=_proc_cmdline(pid) or [],
+            role=job_slots.ROLE_BACKGROUND,
+            # Twice the Job budget keeps the reaper's holder deadline a strict
+            # upper bound of any legitimate measurement.
+            timeout_s=2.0 * BASELINE_TIMEOUT_S,
+            on_queued=narrate,
+            should_abort=lambda: time.monotonic() >= deadline,
+        )
+    except job_slots.ClaimAbortedError as exc:
+        raise TimeoutError(
+            f"baseline Job exceeded its total execution budget while waiting for a {job_class} slot"
+        ) from exc
+    try:
+        yield token
+    finally:
+        store.release(token)
+
+
 def execute_child(
     checkout: Path, target: str, runs: tuple[TestRun, ...], output: Path
 ) -> dict[str, Any]:
-    """A watchdog survives MCP exit and cleans the whole simulator process group."""
+    """A watchdog survives MCP exit and cleans the whole simulator process group.
+
+    The child runs under the supervisor's background slot claim, so its own
+    Flow admission claims nothing (``INHERITED_SLOT_ENV``).
+    """
     from booley.mcp.sim_baseline_jobs import baseline_environment
 
     request_path = output / "request.json"
@@ -454,20 +514,24 @@ def execute_child(
         },
     )
     command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
-    process = subprocess.Popen(command, env=baseline_environment(), **new_group_kwargs())
-    group = capture_process_group(process)
-    from booley.runtime.pid import capture_process_identity
+    with _background_slot(owner, output) as token:
+        environment = baseline_environment() | {
+            job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
+        }
+        process = subprocess.Popen(command, env=environment, **new_group_kwargs())
+        group = capture_process_group(process)
+        from booley.runtime.pid import capture_process_identity
 
-    identity = capture_process_identity(process.pid)
-    write_document(
-        request_path,
-        owner | {"child_process": None if identity is None else identity.to_payload()},
-    )
-    try:
-        process.wait(timeout=_remaining_seconds(output))
-        return read_document(output / f"{family.child_stem}-result.json", family)
-    finally:
-        terminate_process_group(process, group)
+        identity = capture_process_identity(process.pid)
+        write_document(
+            request_path,
+            owner | {"child_process": None if identity is None else identity.to_payload()},
+        )
+        try:
+            process.wait(timeout=_remaining_seconds(output))
+            return read_document(output / f"{family.child_stem}-result.json", family)
+        finally:
+            terminate_process_group(process, group)
 
 
 def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None:
@@ -650,9 +714,18 @@ def _measure_sim(request: Mapping[str, Any]) -> dict[str, Any]:
     return simulate(request)
 
 
+def _sim_job_class() -> str:
+    """The Simulation Flow's own Job Class declaration."""
+    from booley.flows.sim.flow import SimulateFlow
+
+    return SimulateFlow()._resolve_job_class()
+
+
 #: Executor half of each registered family, keyed by ``BaselineFamily.name``.
 EXECUTORS: dict[str, BaselineExecutor] = {
-    "sim": BaselineExecutor(classify=classify_sim_runs, measure=_measure_sim)
+    "sim": BaselineExecutor(
+        classify=classify_sim_runs, measure=_measure_sim, job_class=_sim_job_class
+    )
 }
 
 if __name__ == "__main__":

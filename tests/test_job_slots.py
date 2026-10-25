@@ -555,6 +555,21 @@ class TestSingleProcess:
         with pytest.raises(QueueFullError):
             store.submit(CLASS_HEAVY, pid=100)
 
+    def test_background_waiters_never_fill_the_queue_for_interactive_claims(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world, SlotCaps(max_heavy=1, queue_max=2))
+        # One holder plus a full queue of waiting background claims.
+        tokens = [store.submit(CLASS_HEAVY, pid=100, role="background") for _ in range(3)]
+        assert store.refresh(tokens[0]).state == HOLDING
+        interactive = store.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
+        assert store.refresh(interactive).position == 0  # first of the waiters
+        with pytest.raises(QueueFullError):
+            store.submit(CLASS_HEAVY, pid=100, role="background")
+        # Interactive claims still hit their own bound: holder plus two waiters.
+        store.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
+        with pytest.raises(QueueFullError):
+            store.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
+
     def test_unknown_class_rejected(self, root, world):
         store = make_store(root, world)
         with pytest.raises(ValueError):
