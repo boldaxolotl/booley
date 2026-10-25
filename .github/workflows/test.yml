@@ -169,7 +169,7 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['docs-check']
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -179,6 +179,33 @@ jobs:
         env:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]"
+
+      # README, website and documentation-only pull requests skip the Python
+      # test lanes, so this job runs the content tests that read those files.
+      # ci_docs_tests.py derives the module list; it exits non-zero (failing the
+      # step before pytest starts) when a named content test is not derived.
+      - name: Run README, website and documentation content tests
+        shell: bash
+        run: |
+          python .github/scripts/ci_docs_tests.py --repo . > "${RUNNER_TEMP}/content-tests.txt"
+          mapfile -t modules < "${RUNNER_TEMP}/content-tests.txt"
+          pytest "${modules[@]}" -q --tb=short -n 4 --dist=loadscope \
+            --basetemp "${RUNNER_TEMP}/pytest" -m "not native_bwave" \
+            --timeout=60 --junitxml="${RUNNER_TEMP}/junit.xml"
+
+      - name: Publish pytest evidence
+        if: always()
+        uses: ./.github/actions/publish-pytest-evidence
+        with:
+          label: docs-check
 
   # Strict project-site build: renders website/ plus the published
   # docs/user/ pages, validates every link and heading anchor, and builds the

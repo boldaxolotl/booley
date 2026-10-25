@@ -116,8 +116,12 @@ shards together run the same set except POSIX-only cases; the `coverage-shards`
 jobs use the same mark expression. The Windows 3.11 and 3.13 compatibility legs
 run a fixed focused subset. The change classifier (`required_jobs` in
 `.github/scripts/ci_changes.py`) selects the `test` job for any path classified
-`python_source`, `python_tests` (which includes `website/`), `workflow`,
-`packaging`, or `release`, and for unclassified paths. `main` pushes select
+`python_source`, `python_tests`, `workflow`, `packaging`, or `release`, and for
+unclassified paths. README, website and documentation-only changes run
+`docs-check` instead: `git diff --check` plus the content tests that
+`.github/scripts/ci_docs_tests.py` derives from the files that read
+documentation. They add `package-artifacts` when `README.md` changed, and
+`site-build` and `lint` for `website/` and `docs/user/`. `main` pushes select
 every job, and the weekly `full-python-matrix.yml` workflow runs the same mark
 expression.
 

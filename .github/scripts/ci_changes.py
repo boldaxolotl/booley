@@ -15,6 +15,7 @@ from picorv32_ci_inputs import RISCV_IMAGE_FILES, RISCV_IMAGE_PREFIXES
 
 CATEGORIES = (
     "docs",
+    "readme",
     "site",
     "python_source",
     "python_tests",
@@ -48,6 +49,10 @@ CONDITIONAL_JOBS = (
 )
 ALWAYS_JOBS = ("changes", "release-semantic")
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
+# A path whose classification is a subset of this is a documentation path:
+# README, website and documentation content that the narrow `docs-check` job
+# covers. ci_docs_tests.py derives its content-test selection from this.
+DOCUMENTATION_CATEGORIES = frozenset({"docs", "site", "readme"})
 WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # Explicit RISC-V timing arms. "automatic" keeps path-gated selection. "cold"
 # is the forced-local arm of the controlled pairs (ADR 0070): it builds the
@@ -68,7 +73,6 @@ _STABLE_BASE_ORCHESTRATION_FILES = {
 _PACKAGING_FILES = {
     "LICENSE",
     "MANIFEST.in",
-    "README.md",
     "THIRD_PARTY_NOTICES.md",
     "VERSION",
     "pyproject.toml",
@@ -193,10 +197,12 @@ def _documentation_categories(path: str) -> set[str]:
     if path.startswith(("website/", "docs/user/")):
         # The project site shares pinned facts with the README (install
         # commands, demo revision, Goal notation) and publishes docs/user/.
-        # tests/test_site_contract.py and tests/docs/ guard those, and the
-        # strict site build checks the rendered links and anchors, so these
-        # edits must run the Python tests and the site build too.
-        return {"docs", "site", "python_tests"}
+        # The content tests that guard those facts run in `docs-check`
+        # (ci_docs_tests.py) and the strict site build checks the rendered
+        # links and anchors, so these edits need no Python test lane.
+        return {"docs", "site"}
+    if path == "README.md":
+        return {"docs", "readme"}  # the package-artifacts job renders it
     if path.startswith("docs/") or path.endswith(".md"):
         return {"docs"}
     return set()
@@ -276,7 +282,11 @@ def required_jobs(categories: set[str]) -> set[str]:
     if "docs" in categories:
         jobs.add("docs-check")
     if "site" in categories:
-        jobs.add("site-build")
+        # website/ holds Python (hooks, illustration build) that only Ruff in
+        # `lint` covers once the Python test lane is no longer selected.
+        jobs.update({"site-build", "lint"})
+    if "readme" in categories:
+        jobs.add("package-artifacts")
     if categories & {"python_source", "python_tests"}:
         jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
     if "rust" in categories:
