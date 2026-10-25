@@ -29,6 +29,7 @@ from booley.goals.presentation import GoalPresentation, goal_presentation
 from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.state_store import load_goal_state_and_evidence
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.synth_baseline import is_relative_synth
 from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resolutions
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
@@ -53,6 +54,8 @@ class GoalStatus:
     state_conflict: bool = False
     presentation: GoalPresentation | None = None
     sim_transitions: tuple[dict[str, Any], ...] | None = None
+    #: ``{"status", "reason"}`` of a relative SYNTH Goal's baseline Job, else ``None``.
+    synth_baseline: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,15 @@ def _goal_statuses(
                 store.booley_dir, record, goal, evidence, history, root, resolvers
             )
             status = replace(status, sim_transitions=tuple(transitions))
+        if is_relative_synth(goal):
+            from booley.goals.sim_baseline_store import SYNTH_BASELINE
+            from booley.goals.sim_transitions import baseline_observations
+
+            seen = baseline_observations(store.booley_dir, record, goal, SYNTH_BASELINE)
+            status = replace(
+                status,
+                synth_baseline={"status": seen["status"], "reason": str(seen.get("reason", ""))},
+            )
         statuses.append(status)
     return tuple(statuses)
 

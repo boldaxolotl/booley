@@ -620,6 +620,24 @@ configures it; otherwise Booley reports an unavailable baseline without leaving
 scratch files that would affect entry or Finish. The advice to reproduce a bug
 before editing remains unconditional.
 
+### Synthesis baseline Jobs
+
+Entering Goal Mode, or approving a Goal Change that adds one, starts a
+background synthesis Job for each baseline-relative SYNTH Goal. It synthesises
+the Goal's baseline Target at the Goal Branch's base contents, with the
+synthesis recipe frozen at that entry or change. Absolute SYNTH Goals get none.
+Booley reuses a result for the same Target identity, frozen recipe, dependent
+file contents and Protected Inputs across sessions and worktrees. Candidate
+runs still synthesise the baseline themselves.
+
+At most one baseline Job per Flow runs at a time, SIM included; others wait,
+and the wait does not count against a Job's time budget. `goal_status` and
+`booley goal status` print `baseline: pending`, `baseline: complete` or
+`baseline: unavailable (<reason>)` for each such Goal. An interrupted,
+timed-out, infrastructure-failed or recipe-mismatched Job is unavailable and
+stores no result. Like simulation baselines, it never changes a Goal's met,
+unmet or stale state.
+
 ### Changes and human decisions
 
 When a Goal needs to be added, relaxed, retargeted, or changed through a coverage
@@ -708,7 +726,7 @@ the previous view, and `?` shows help.
 
 Sessions have short, persistent Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
-Jobs use `SIM`, and other endpoints use `J-JOB<n>`. One Job counter covers every
+Jobs use `SIM`, synthesis baseline Jobs use `SYN`, and other endpoints use `J-JOB<n>`. One Job counter covers every
 kind, so numbers may skip within a kind. Handles survive Dashboard restarts
 and session pruning. The `1`–`9` keys remain navigation shortcuts, independent
 of handles. Full session keys and Job run IDs are secondary text in details;

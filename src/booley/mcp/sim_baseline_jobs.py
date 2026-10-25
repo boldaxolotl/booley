@@ -1,4 +1,4 @@
-"""Compose report-only simulation baselines with detached, durable Jobs.
+"""Compose report-only Goal baselines with detached, durable Jobs.
 
 Jobs live outside Goal Record roots. Only active-call adapters schedule them;
 Finish, abandonment, recovery and Dashboard reads never spawn baseline work.
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.file_lock import nonblocking_file_lock
+from booley.goals import sim_baseline_store
 from booley.goals.model import GoalRecord, GoalState, RecordedGoal
 from booley.goals.protected_inputs import ProtectedInputRoots
 from booley.goals.sim_baseline_store import (
@@ -149,8 +150,16 @@ def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
 def schedule_sim_baselines(
     project: Path, record: GoalRecord, *, launch: Launch | None = None
 ) -> None:
-    """Schedule the SIM family's baselines; the active-call adapters' entry point."""
+    """Schedule the SIM family's baselines."""
     schedule_family_baselines(project, record, SIM_BASELINE, launch=launch)
+
+
+def schedule_goal_baselines(
+    project: Path, record: GoalRecord, *, launch: Launch | None = None
+) -> None:
+    """Schedule every registered family's baselines; the active-call adapters' entry point."""
+    for family in sim_baseline_store.BASELINE_FAMILIES:
+        schedule_family_baselines(project, record, family, launch=launch)
 
 
 def schedule_family_baselines(
@@ -168,13 +177,13 @@ def schedule_family_baselines(
         inputs = entry_inputs(project, record)
         goals = family.goals(record)
     except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
+        logger.warning("Baseline scheduling unavailable for %s: %s", record.id, exc)
         return
     for goal in goals:
         try:
             _schedule_goal(project, record, goal, inputs, launcher, family)
         except (OSError, ValueError, RuntimeError) as exc:
-            logger.warning("Simulation baseline scheduling unavailable for %s: %s", record.id, exc)
+            logger.warning("Baseline scheduling unavailable for %s: %s", record.id, exc)
 
 
 def _schedule_goal(
@@ -190,7 +199,7 @@ def _schedule_goal(
     The Job record is written before the request is published as ``pending``,
     so no reader observes ``pending`` without the Job it waits for.
     """
-    identity = request_identity(record, goal, inputs, family)
+    identity = request_identity(project, record, goal, inputs, family)
     path = request_path(project, identity, family)
     path.parent.mkdir(parents=True, exist_ok=True)
     with (path.parent / "launch.lock").open("a+b") as handle, nonblocking_file_lock(handle):
@@ -272,8 +281,22 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _cancel)
     try:
         results = run_baseline(path, request)
-        write_document(path, request | {"status": "complete", "results": results})
-        job.status, job.exit_code = job_records.STATUS_DONE, 0
+        if results and all(row["grade"] == "unavailable" for row in results):
+            # Nothing was observed: a finished Job must not read as a complete baseline.
+            reasons = "; ".join(sorted({str(row.get("reason", "")) for row in results}))
+            write_document(
+                path,
+                request
+                | {
+                    "status": "unavailable",
+                    "reason": f"baseline unavailable: {reasons}",
+                    "results": results,
+                },
+            )
+            job.status, job.exit_code = job_records.STATUS_FAILED, 2
+        else:
+            write_document(path, request | {"status": "complete", "results": results})
+            job.status, job.exit_code = job_records.STATUS_DONE, 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         write_document(
             path, request | {"status": "unavailable", "reason": f"baseline unavailable: {exc}"}

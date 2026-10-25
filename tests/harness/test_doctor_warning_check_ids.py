@@ -30,6 +30,8 @@ def _run_in_sandbox_container_checks(monkeypatch, reporter, *, hooks: str | None
     from booley.runtime import dashboard_extension
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    # The egress probe only runs in a marked Sandbox; keep this test off real DNS.
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
     monkeypatch.setattr(activity_hooks, "hooks_error", lambda: hooks)
     monkeypatch.setattr(dashboard_extension, "installed_error", lambda: ext)

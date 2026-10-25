@@ -14,7 +14,9 @@ from tests.goals.conftest import (  # noqa: F401 — fixtures shared with Goal i
 
 @pytest.fixture(autouse=True)
 def _frozen_baseline_jobs(monkeypatch):
-    monkeypatch.setattr("booley.mcp.sim_baseline_jobs.schedule_sim_baselines", lambda *_args: None)
+    monkeypatch.setattr(
+        "booley.mcp.sim_baseline_jobs.schedule_goal_baselines", lambda *_args: None
+    )
 
 
 @pytest.mark.parametrize("short", [False, True])
