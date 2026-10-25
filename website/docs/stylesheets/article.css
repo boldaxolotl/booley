@@ -46,11 +46,20 @@ html { scroll-padding-top: 24px; }
 .post .prose .cap--top { margin: 0 0 8px; }
 .post .chart text { font-family: var(--sans); fill: var(--ink); }
 .post .chart .ax { font-size: 14.5px; fill: var(--ink-2); }
-.post .chart .v { font-size: 15px; font-weight: 600; }
 .post .chart .k { font-size: 15.5px; }
-.post .chart .tot { paint-order: stroke; stroke: #fff; stroke-width: 6px; font-size: 23px; font-weight: 750; font-stretch: 85%; }
+.post .chart .tot { paint-order: stroke; stroke: var(--paper); stroke-width: 6px; font-size: 23px; font-weight: 750; font-stretch: 85%; }
 .post .chart .bar { font-size: 16.5px; font-weight: 600; }
 .post .chart .grid { stroke: var(--rule-soft); stroke-width: 1; }
+/* Figure 1 bar segments, coloured like the Figures 2-4 timelines below */
+.post .chart .sg.build { fill: var(--series-build); }
+.post .chart .sg.obs { fill: var(--series-obs); }
+.post .chart .sg.else { fill: var(--series-else); }
+.post .chart .sg.hung { fill: var(--series-hung); }
+.post .chart .sg.sleep { fill: var(--series-sleep); }
+/* value labels sit on a segment: fixed ink, because the series colours are fixed;
+   a label placed off the bars would need theme ink instead */
+.post .chart .v { font-size: 15px; font-weight: 600; fill: var(--series-on-light); }
+.post .chart .v.on-dark { fill: var(--series-on-dark); }
 
 /* Figures 2-4: per-trial timelines. HTML bars (not SVG) so labels keep their
    size on phones; segment positions are % of the axis span, measured from
@@ -64,12 +73,12 @@ html { scroll-padding-top: 24px; }
   background: repeating-linear-gradient(to right, var(--rule-soft) 0 1px, transparent 1px var(--grid)); }
 .post .tl__track .s { position: absolute; top: 0; bottom: 0; }
 .post .prose .tl__note { margin: 5px 0 0; font: 400 14px/1.3 var(--sans); color: var(--ink-2); }
-.post .s.build, .post .sw.build { background: #2f5d8a; }
-.post .s.obs, .post .sw.obs { background: #7fbcb3; }
-.post .s.else, .post .sw.else { background: #c9ced4; }
-.post .s.hung, .post .sw.hung { background: #b8402c; }
-.post .s.sleep, .post .sw.sleep { background: #e3b23c; }
-.post .s.hunt, .post .sw.hunt { background: repeating-linear-gradient(135deg, var(--mask) 0 2px, #cfe3da 2px 6px); }
+.post .s.build, .post .sw.build { background: var(--series-build); }
+.post .s.obs, .post .sw.obs { background: var(--series-obs); }
+.post .s.else, .post .sw.else { background: var(--series-else); }
+.post .s.hung, .post .sw.hung { background: var(--series-hung); }
+.post .s.sleep, .post .sw.sleep { background: var(--series-sleep); }
+.post .s.hunt, .post .sw.hunt { background: repeating-linear-gradient(135deg, var(--mask) 0 2px, var(--hatch) 2px 6px); }
 .post .mk-tri { position: absolute; top: -12px; width: 0; height: 0; transform: translateX(-50%);
   border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 8px solid var(--ink); }
 .post .mk-dot { position: absolute; top: -13px; height: 9px; min-width: 9px; border-radius: 5px; background: var(--mask); }
@@ -92,9 +101,9 @@ html { scroll-padding-top: 24px; }
 .post pre, .post code { font-variant-ligatures: none; }  /* JetBrains Mono would draw == as one glyph */
 .post pre .p { color: var(--ink-2); user-select: none; }
 .post pre .c { color: var(--ink-2); }
-.post pre .hl { background: #d9ebe4; display: inline-block; min-width: 100%; }
-.post pre .del { background: #f6e1dc; display: inline-block; min-width: 100%; }
-.post pre .add { background: #d9ebe4; display: inline-block; min-width: 100%; }
+.post pre .hl { background: var(--diff-add); display: inline-block; min-width: 100%; }
+.post pre .del { background: var(--diff-del); display: inline-block; min-width: 100%; }
+.post pre .add { background: var(--diff-add); display: inline-block; min-width: 100%; }
 .post pre.prompt { white-space: pre-wrap; font-size: 13.5px; }  /* soft-wrap only; the download keeps exact line breaks */
 .post pre.sum { padding: 8px 14px; margin: 0 0 1.3em; font-size: 13.5px; }
 
@@ -117,7 +126,7 @@ html { scroll-padding-top: 24px; }
 .post .details__body figure { margin: 1em 0 1.4em; }
 
 /* blockquote = quoted bug report, set apart as a different voice */
-.post blockquote { margin: 0 0 1.1em; padding: 4px 0 4px 20px; border-left: 4px solid var(--rule-soft); font: 400 16.5px/1.6 var(--sans); color: #2c333b; }
+.post blockquote { margin: 0 0 1.1em; padding: 4px 0 4px 20px; border-left: 4px solid var(--rule-soft); font: 400 16.5px/1.6 var(--sans); color: var(--quote-ink); }
 
 /* contents sidebar */
 .post .toc { position: sticky; top: 24px; align-self: start; margin-top: 4px; font: 400 15px/1.4 var(--sans); }
