@@ -105,6 +105,7 @@ class ActivityStore:
     """Reader and pruner of the per-session signal files the hook script writes."""
 
     def __init__(self, booley_dir: Path) -> None:
+        self.booley_dir = booley_dir
         self.root = booley_dir / "runtime" / "session_activity"
 
     def path(self, key: str) -> Path:
@@ -120,7 +121,7 @@ class ActivityStore:
         """The session's signal, or ``None`` when absent, unsafe or malformed."""
         path = self.path(key)
         try:
-            refuse_symlinks(path)
+            refuse_symlinks(path, booley_dir=self.booley_dir)
             if path.stat().st_size > MAX_SIGNAL_BYTES:
                 return None
             return _parse(path.read_bytes(), key)
@@ -136,7 +137,7 @@ class ActivityStore:
         keep = {self.path(key).name for key in retained}
         removed = 0
         try:
-            refuse_symlinks(self.root)
+            refuse_symlinks(self.root, booley_dir=self.booley_dir)
             entries = self._entries()
         except OSError:
             return 0

@@ -41,6 +41,28 @@ def test_opaque_contained_keys(registry, key):
     assert registry.snapshot().rows[0].attribution.key == key
 
 
+def test_registry_reads_and_writes_under_a_symlinked_booley_directory(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.parent.mkdir()
+    symlink_or_skip(booley_dir, store, target_is_directory=True)
+    registry = SessionRegistry(booley_dir, quiet_after=60, proc_root=tmp_path / "proc")
+
+    registry.upsert(facts(), "tool", "completed", now=100)
+
+    snapshot = registry.snapshot()
+    assert len(snapshot.rows) == 1 and not snapshot.diagnostics and not snapshot.unavailable
+    assert (store / "runtime").is_dir()
+
+    # A link below the Booley Directory is still refused.
+    moved = tmp_path / "moved"
+    (store / "runtime/sessions").rename(moved)
+    symlink_or_skip(store / "runtime/sessions", moved, target_is_directory=True)
+    refused = registry.snapshot()
+    assert refused.unavailable and "symlink" in refused.diagnostics[0]
+
+
 def test_monotonic_times_started_and_bounded_metadata(registry):
     registry.upsert(facts(), "tool", "completed", now=100)
     registry.upsert(facts(), "tool", "completed", now=90)

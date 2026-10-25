@@ -211,7 +211,7 @@ class SessionRegistry:
             yield
 
     def _read(self, path: Path) -> SessionRow:
-        refuse_symlinks(path)
+        refuse_symlinks(path, booley_dir=self.booley_dir)
         if path.stat().st_size > MAX_ROW_BYTES:
             raise ValueError("oversized session row")
         row = _parse_row(path.read_bytes())
@@ -223,7 +223,7 @@ class SessionRegistry:
         """Read retained presence with no pruning or persistent side effects."""
         rows, diagnostics = [], []
         try:
-            refuse_symlinks(self.root)
+            refuse_symlinks(self.root, booley_dir=self.booley_dir)
             if not self.root.exists():
                 return RegistrySnapshot(
                     diagnostics=("session registry unavailable: absent",), unavailable=True
@@ -347,7 +347,7 @@ class SessionRegistry:
             original_key = attribution.key
             attribution = self.chat_attribution(attribution)
             path = self.path(attribution.key)
-            refuse_symlinks(path)
+            refuse_symlinks(path, booley_dir=self.booley_dir)
             predecessor_keys = (original_key, *predecessor_keys)
             predecessors = self._predecessors(attribution, predecessor_keys)
             attribution = self.preserve_worktree(attribution, predecessor_keys=predecessor_keys)

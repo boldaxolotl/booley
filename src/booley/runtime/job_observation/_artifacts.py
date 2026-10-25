@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import require_dict
 from booley.flows.progress_lifecycle import validate_progress_shape
 
@@ -59,7 +60,8 @@ class JobArtifactCache:
         for parent in reversed((path, *path.parents)):
             if not parent.is_relative_to(self._project) or parent in self._directories:
                 continue
-            info = parent.lstat()
+            # The Project entry is the Booley Directory: the one component that may be a link.
+            info = parent.stat() if is_booley_dir_entry(parent, self._project) else parent.lstat()
             if stat.S_ISDIR(info.st_mode):
                 self._directories.add(parent)
             elif parent != path or directory or path == self._project:
