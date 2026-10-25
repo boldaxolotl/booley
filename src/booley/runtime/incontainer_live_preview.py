@@ -28,7 +28,8 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 
-_SETTINGS_RELATIVE_PATH = Path(".vscode-server/data/Machine/settings.json")
+from booley.runtime import vscode_server
+
 _PORT_PATTERN = re.compile(r'("livePreview\.portNumber"\s*:\s*)(\d+)')
 _MIN_PORT = 49152
 _MAX_START_PORT = 65534  # Live Preview reserves the next port for WebSocket.
@@ -95,22 +96,35 @@ def patch_settings(path: Path, port: int) -> bool:
     return True
 
 
+def _is_seeded(path: Path) -> bool:
+    """Whether *path* already holds the seeded Live Preview port."""
+    try:
+        return bool(_PORT_PATTERN.search(path.read_text(encoding="utf-8")))
+    except OSError:
+        return False
+
+
 def _wait_for_seeded_settings(
-    path: Path,
+    home: Path,
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
-) -> bool:
-    """Wait briefly for devcontainers to finish writing the Machine setting."""
+) -> list[Path]:
+    """Wait briefly until every server root's Machine setting is written.
+
+    Roots are rediscovered on each poll. Returns the seeded files: all of them
+    once every listed file is seeded, otherwise those seeded when the deadline
+    passed, so one stale root cannot hide the live one.
+    """
     deadline = clock() + _WAIT_SECONDS
+    seeded: list[Path] = []
     while clock() < deadline:
-        try:
-            if _PORT_PATTERN.search(path.read_text(encoding="utf-8")):
-                return True
-        except OSError:
-            pass
+        paths = vscode_server.machine_settings_paths(home)
+        seeded = [path for path in paths if _is_seeded(path)]
+        if len(seeded) == len(paths):
+            return seeded
         sleep(_POLL_SECONDS)
-    return False
+    return seeded
 
 
 def main(
@@ -132,15 +146,16 @@ def main(
             print("live-preview: bad arguments; settings unchanged", file=sys.stderr)
         return 0
 
-    path = _agent_home() / _SETTINGS_RELATIVE_PATH
-    if not _wait_for_seeded_settings(path, sleep=sleep, clock=clock):
+    seeded = _wait_for_seeded_settings(_agent_home(), sleep=sleep, clock=clock)
+    if not seeded:
         print("live-preview: seeded Machine setting not found; settings unchanged")
         return 0
-    port = choose_port()
-    if port is None or not patch_settings(path, port):
-        print("live-preview: could not assign a fresh port; settings unchanged")
-        return 0
-    print(f"live-preview: assigned fresh remote ports {port}/{port + 1}")
+    for path in seeded:
+        port = choose_port()
+        if port is None or not patch_settings(path, port):
+            print(f"live-preview: could not assign a fresh port in {path}; settings unchanged")
+            continue
+        print(f"live-preview: assigned fresh remote ports {port}/{port + 1}")
     return 0
 
 

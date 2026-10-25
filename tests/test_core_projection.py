@@ -11,6 +11,7 @@ from booley.fusesoc.core_projection import (
     authoritative_cores,
     is_generated_isolated_core,
     is_generated_projected_core,
+    is_generated_projection,
     isolated_core_contents_equivalent,
     isolated_registry_root,
     native_cores_ignored,
@@ -21,6 +22,7 @@ from booley.fusesoc.core_projection import (
     reconcile_projected_cores,
 )
 from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 _CORE = "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n"
 
@@ -323,3 +325,21 @@ def test_isolated_registry_rejects_nonliteral_fileset_path(tmp_path: Path) -> No
 
     with pytest.raises(CoreProjectionError, match="literal fileset paths"):
         reconcile_isolated_registry(root)
+
+
+@pytest.mark.parametrize("isolated", [False, True], ids=["projected", "isolated"])
+def test_generated_detection_through_symlinked_booley_dir(tmp_path: Path, isolated: bool) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    external = symlinked_booley_dir(root, tmp_path / "external-booley")
+    toggle = "ignore_native_cores = true\n" if isolated else ""
+    (external / "booley.toml").write_text(f"[stealth]\nenabled = true\n{toggle}", encoding="utf-8")
+    (external / "cores" / "demo.core").write_text(_CORE, encoding="utf-8")
+    reconcile = reconcile_isolated_registry if isolated else reconcile_projected_cores
+    generated = reconcile(root).written[0]
+
+    # Callers may spell the generated file lexically or through the resolved
+    # Booley Directory; both are Booley's own file.
+    for spelling in (generated, generated.parent.resolve() / generated.name):
+        assert is_generated_projection(root, spelling)
+        assert is_generated_projection(root / ".booley", spelling)

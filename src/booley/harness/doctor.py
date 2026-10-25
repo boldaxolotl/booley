@@ -17,6 +17,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import booley
 from booley.agent_workspace.isolation import get_category_dirs
@@ -85,6 +87,7 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
+from booley.fusesoc.core_projection import lexical_stealth_path
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -133,6 +136,7 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
+from booley.runtime.docs_links import docs_url
 from booley.runtime.git import _git_common_dir
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
@@ -896,9 +900,9 @@ def _check_legacy_source_stashes(project_root: Path, reporter: _Reporter) -> Non
                 f"An older run left a source stash record at {manifest}",
                 subject=str(manifest),
             ),
-            "Inspect the record before Sandbox rebuild or temp cleanup. See "
-            "TROUBLESHOOTING.md: Recover sources hidden by an interrupted older run. "
-            "Recovery is manual; never overwrite current sources.",
+            "Inspect the record before Sandbox rebuild or temp cleanup. Recovery is "
+            "manual; never overwrite current sources. Guide: "
+            + docs_url("TROUBLESHOOTING.md", "recover-sources-hidden-by-an-interrupted-older-run"),
         )
 
 
@@ -2247,6 +2251,46 @@ def _check_current_runtime_git_identity(
             _pass(result.passed)
 
 
+def _check_current_runtime_egress(_pass: Check, _warn: Check, _fail: Fail) -> None:
+    """Report the declared Sandbox egress mode and whether the proxy host resolves."""
+    from booley.runtime import runtime_context
+
+    if os.environ.get("BOOLEY_CONTAINER") != "1":
+        return  # Booley forces no egress setting outside a Booley-marked Sandbox.
+    try:
+        mode = runtime_context.egress_mode()
+    except runtime_context.EgressModeError as exc:
+        _fail(
+            str(exc),
+            "set BOOLEY_EGRESS to `proxy` or `unproxied` in the Sandbox spec's containerEnv, then rebuild the Sandbox",
+        )
+        return
+    if mode == "unproxied":
+        _warning_sink(_warn, "sandbox.unproxied")(
+            "Unproxied Sandbox (BOOLEY_EGRESS=unproxied): Booley does not force its "
+            "egress proxy, so egress is not mediated by Booley"
+        )
+        return
+    # Doctor runs after the entry point forced the proxy variables, so the
+    # effective proxy is the first one set (Booley's, unless one was delivered).
+    proxy_urls = (
+        os.environ.get(var) for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+    )
+    proxy_url = next((url for url in proxy_urls if url), dc.PROXY_URL)
+    # A scheme-less value such as `corp:3128` parses with no hostname unless
+    # given the netloc marker.
+    host = urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}").hostname or dc.PROXY_HOST
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        _fail(
+            f"egress proxy {host} does not resolve; agent and model-service calls cannot leave this Sandbox",
+            "start the Sandbox from a Booley-issued devcontainer spec, or declare an Unproxied Sandbox with BOOLEY_EGRESS=unproxied in the spec's containerEnv",
+        )
+        return
+    _pass(f"egress proxy {host} resolves")
+
+
 def _check_container_runtime_payload(
     check: Callable[[str, list[str], str], None],
 ) -> None:
@@ -2294,6 +2338,7 @@ def _run_container_checks(
         _check_current_runtime_activity_hooks(_pass, _warn)
         _check_current_runtime_dashboard_extension(_pass, _warn)
         _check_current_runtime_git_identity(project, _pass, _warn, _skip)
+        _check_current_runtime_egress(_pass, _warn, _fail)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
@@ -3948,12 +3993,11 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     if catalog is not None:
         for token in _project_target_matrix(project).seed_targets:
             try:
-                owned.add(catalog.select(token).core_file)
+                owned.add(lexical_stealth_path(root, catalog.select(token).core_file))
             except FuseSocError:
                 continue  # unresolvable config tokens are their own doctor finding
-    state_cores = fusesoc_registry.state_cores_dir(root)
     for core_file in fusesoc_registry.discover_cores(root):
-        if state_cores in core_file.parents:
+        if fusesoc_registry.is_stealth_core(root, core_file):
             owned.add(core_file)
     return owned
 
@@ -4598,7 +4642,6 @@ def _check_legacy_core_targets(
     """
     note_sink = _note or _pass
     del refs  # audit every declaration, including duplicate bare Target names
-    state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
     legacy = []
     try:
@@ -4627,7 +4670,7 @@ def _check_legacy_core_targets(
     # was selected.
     native_unselected: dict[Path, list[str]] = {}
     for name, ref in legacy:
-        is_state_core = state_cores in ref.core_file.parents
+        is_state_core = fusesoc_registry.is_stealth_core(root, ref.core_file)
         if is_state_core or (ref.core_file, name) in selected:
             _warning_sink(_warn, "core.legacy-target", subject=name)(
                 f"Target '{name}' in {ref.core_file.name} is a legacy FuseSoC tools-section "
@@ -4681,7 +4724,6 @@ def _check_target_naming(
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
     del refs  # qualified duplicate Target names need exact declaration scope
-    state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
     doctor_axes = _project_target_matrix(project).axes()
     try:
@@ -4691,7 +4733,10 @@ def _check_target_naming(
     offenders = [
         (handle.name, handle)
         for handle in handles
-        if (state_cores in handle.core_file.parents or (handle.core_file, handle.name) in selected)
+        if (
+            fusesoc_registry.is_stealth_core(root, handle.core_file)
+            or (handle.core_file, handle.name) in selected
+        )
         and target_naming.violation(handle.name)
     ]
     if not offenders:
@@ -4733,7 +4778,6 @@ def _check_stray_default_targets(
     """
     _warn = _warning_sink(_warn, "core.stray-default-target")
     note_sink = _note or _pass
-    state_cores = fusesoc_registry.state_cores_dir(root)
     owned_cores = _owned_core_files(project, root)
     if not owned_cores:
         return
@@ -4748,7 +4792,7 @@ def _check_stray_default_targets(
         if not isinstance(targets, Mapping) or "default" not in targets:
             continue
         if fusesoc_registry.core_identity_key(doc) not in depended:
-            stray.append((core_file, state_cores in core_file.parents))
+            stray.append((core_file, fusesoc_registry.is_stealth_core(root, core_file)))
     if not stray:
         _pass("no dead 'default:' Targets in Booley-authored .core files")
         return

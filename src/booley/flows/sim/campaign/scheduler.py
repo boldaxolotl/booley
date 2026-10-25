@@ -36,7 +36,6 @@ class ScheduledAttempt:
 @dataclass(slots=True)
 class _ChildRunState:
     terminal_cause: str = "completed"
-    lease_id: str | None = None
     token: SlotToken | None = None
 
 
@@ -65,14 +64,14 @@ class BoundedCampaignScheduler:
         registry: ChildExecutionRegistry,
         *,
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
-        execute: Callable[[ScheduledAttempt, str | None, str | None], None],
-        prepare_child: Callable[[ScheduledAttempt, str, str], None] | None = None,
+        execute: Callable[[ScheduledAttempt, str | None], None],
+        prepare_child: Callable[[ScheduledAttempt, str], None] | None = None,
     ) -> None:
         self._capacity = capacity
         self._registry = registry
         self._allocate = allocate
         self._execute = execute
-        self._prepare_child = prepare_child or (lambda _attempt, _child, _digest: None)
+        self._prepare_child = prepare_child or (lambda _attempt, _child: None)
         self._stop = threading.Event()
         self._errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
         # A lost child lease interrupts one lane's item without stopping the campaign.
@@ -103,7 +102,6 @@ class BoundedCampaignScheduler:
             lanes = self._start_lanes(ready, child_count)
             self._await_lanes(lanes, self._lanes_exited)
             self._stop.set()
-        self._registry.recover_unretired(self._capacity.slot_store)
         if not self._errors.empty():
             raise self._errors.get()
         if not self._interruptions.empty():
@@ -171,8 +169,7 @@ class BoundedCampaignScheduler:
                 deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
             if deadline is not None and time.monotonic() >= deadline:
                 if exited.is_set():
-                    # Every lane exited during the last wait: a clean shutdown. Raising
-                    # here would also skip the caller's recover_unretired() net (#977).
+                    # Every lane exited during the last wait: a clean shutdown.
                     return
                 self._capacity.cancel_waiters()
                 self._capacity.hold_outer_until(exited)
@@ -239,7 +236,7 @@ class BoundedCampaignScheduler:
                     self._capacity.cancellation_cause,
                 )
                 with supervised_execution_scope(scope):
-                    self._execute(attempt, None, None)
+                    self._execute(attempt, None)
                 return
             self._run_child(item, attempt)
 
@@ -276,30 +273,16 @@ class BoundedCampaignScheduler:
         )
         state = _ChildRunState()
         try:
-            self._prepare_child(attempt, str(child_id), prepared.entry_sha256)
+            self._prepare_child(attempt, str(child_id))
             self._execute_child(item, attempt, child_id, prepared, state)
         except BaseException:
             if state.terminal_cause == "completed":
                 state.terminal_cause = "campaign_error"
             self._registry.mark_terminal(prepared, state.terminal_cause)
             raise
-        finally:
-            token_absent = (
-                self._capacity.token_absent(state.token)
-                if state.token is not None
-                else self._capacity.execution_token_absent(child_id)
-            )
-            if self._registry.is_terminal(child_id) and token_absent:
-                self._registry.retire(
-                    prepared,
-                    lease_id=state.lease_id,
-                    terminal_cause=state.terminal_cause,
-                    token_absent=True,
-                )
 
     def _execute_child(self, item, attempt, child_id, prepared, state) -> None:
         with self._capacity.child_permit(str(item["work_item_id"]), child_id) as permit:
-            state.lease_id = permit.token.lease_id
             state.token = permit.token
             scope = SupervisedExecutionScope(
                 child_id,
@@ -309,7 +292,7 @@ class BoundedCampaignScheduler:
             )
             try:
                 with supervised_execution_scope(scope):
-                    self._execute(attempt, str(child_id), prepared.entry_sha256)
+                    self._execute(attempt, str(child_id))
             except HeavyCapacityError as exc:
                 from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 

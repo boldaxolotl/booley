@@ -4,7 +4,9 @@
    tokens, header, footer, .strip, h1, figure, figcaption and table
    defaults live in datasheet.css. Every rule here is scoped under
    .post or .notes so it cannot leak into the other pages, except the
-   site-wide scroll padding below (harmless on pages without anchors).
+   site-wide scroll padding below (harmless on pages without anchors)
+   and the prose rules written :is(.post .prose, .doc-prose), which the
+   user docs (docs.css) share; :is() keeps their specificity unchanged.
    Application-note mode: prose is the product.
    ------------------------------------------------------------------ */
 html { scroll-padding-top: 24px; }
@@ -13,7 +15,7 @@ html { scroll-padding-top: 24px; }
 .post { --measure: 40rem;   /* ~68 characters of Literata at 19px */
   display: grid; grid-template-columns: minmax(0, var(--measure)) 1fr; gap: 0 88px; }
 .post .doc__head { grid-column: 1 / -1; }
-.post strong { font-weight: 650; }
+:is(.post, .doc-prose) strong { font-weight: 650; }
 
 /* title block additions: AND-gate document mark, byline */
 .post .strip .glyph { width: 27px; height: 16px; vertical-align: -2px; margin-right: 8px; color: var(--ink); }
@@ -27,15 +29,15 @@ html { scroll-padding-top: 24px; }
 
 /* prose */
 .post .prose { font: 400 19px/1.72 var(--serif); counter-reset: sec; }
-.post .prose code { font-size: 0.84em; padding: 0.08em 0.3em; overflow-wrap: anywhere; }  /* long paths and 40-digit hashes must wrap on phones */
-.post .prose > p, .post .prose li { hyphens: auto; }
-.post .prose p { margin: 0 0 1.05em; }
+:is(.post .prose, .doc-prose) code { font-size: 0.84em; padding: 0.08em 0.3em; overflow-wrap: anywhere; }  /* long paths and 40-digit hashes must wrap on phones */
+:is(.post .prose, .doc-prose) > p, :is(.post .prose, .doc-prose) li { hyphens: auto; }
+:is(.post .prose, .doc-prose) p { margin: 0 0 1.05em; }
 /* numbered sections; the contents sidebar numbers them the same way */
 .post .prose > h2 { counter-increment: sec; font: 700 26px/1.25 var(--sans); font-stretch: 90%; margin: 2.1em 0 0.6em; display: flex; gap: 14px; align-items: baseline; }
 .post .prose > h2::before { content: counter(sec); color: var(--mask); font-stretch: 75%; min-width: 1.3em; }
-.post .prose ul { padding-left: 1.3em; margin: 0 0 1.1em; }
-.post .prose li { margin-bottom: 0.4em; }
-.post .prose li::marker { color: var(--mask); }
+:is(.post .prose, .doc-prose) ul { padding-left: 1.3em; margin: 0 0 1.1em; }
+:is(.post .prose, .doc-prose) li { margin-bottom: 0.4em; }
+:is(.post .prose, .doc-prose) li::marker { color: var(--mask); }
 
 /* figures, listings, tables */
 .post figure { margin: 2em 0 2.2em; }
@@ -46,11 +48,20 @@ html { scroll-padding-top: 24px; }
 .post .prose .cap--top { margin: 0 0 8px; }
 .post .chart text { font-family: var(--sans); fill: var(--ink); }
 .post .chart .ax { font-size: 14.5px; fill: var(--ink-2); }
-.post .chart .v { font-size: 15px; font-weight: 600; }
 .post .chart .k { font-size: 15.5px; }
-.post .chart .tot { paint-order: stroke; stroke: #fff; stroke-width: 6px; font-size: 23px; font-weight: 750; font-stretch: 85%; }
+.post .chart .tot { paint-order: stroke; stroke: var(--paper); stroke-width: 6px; font-size: 23px; font-weight: 750; font-stretch: 85%; }
 .post .chart .bar { font-size: 16.5px; font-weight: 600; }
 .post .chart .grid { stroke: var(--rule-soft); stroke-width: 1; }
+/* Figure 1 bar segments, coloured like the Figures 2-4 timelines below */
+.post .chart .sg.build { fill: var(--series-build); }
+.post .chart .sg.obs { fill: var(--series-obs); }
+.post .chart .sg.else { fill: var(--series-else); }
+.post .chart .sg.hung { fill: var(--series-hung); }
+.post .chart .sg.sleep { fill: var(--series-sleep); }
+/* value labels sit on a segment: fixed ink, because the series colours are fixed;
+   a label placed off the bars would need theme ink instead */
+.post .chart .v { font-size: 15px; font-weight: 600; fill: var(--series-on-light); }
+.post .chart .v.on-dark { fill: var(--series-on-dark); }
 
 /* Figures 2-4: per-trial timelines. HTML bars (not SVG) so labels keep their
    size on phones; segment positions are % of the axis span, measured from
@@ -64,12 +75,12 @@ html { scroll-padding-top: 24px; }
   background: repeating-linear-gradient(to right, var(--rule-soft) 0 1px, transparent 1px var(--grid)); }
 .post .tl__track .s { position: absolute; top: 0; bottom: 0; }
 .post .prose .tl__note { margin: 5px 0 0; font: 400 14px/1.3 var(--sans); color: var(--ink-2); }
-.post .s.build, .post .sw.build { background: #2f5d8a; }
-.post .s.obs, .post .sw.obs { background: #7fbcb3; }
-.post .s.else, .post .sw.else { background: #c9ced4; }
-.post .s.hung, .post .sw.hung { background: #b8402c; }
-.post .s.sleep, .post .sw.sleep { background: #e3b23c; }
-.post .s.hunt, .post .sw.hunt { background: repeating-linear-gradient(135deg, var(--mask) 0 2px, #cfe3da 2px 6px); }
+.post .s.build, .post .sw.build { background: var(--series-build); }
+.post .s.obs, .post .sw.obs { background: var(--series-obs); }
+.post .s.else, .post .sw.else { background: var(--series-else); }
+.post .s.hung, .post .sw.hung { background: var(--series-hung); }
+.post .s.sleep, .post .sw.sleep { background: var(--series-sleep); }
+.post .s.hunt, .post .sw.hunt { background: repeating-linear-gradient(135deg, var(--mask) 0 2px, var(--hatch) 2px 6px); }
 .post .mk-tri { position: absolute; top: -12px; width: 0; height: 0; transform: translateX(-50%);
   border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 8px solid var(--ink); }
 .post .mk-dot { position: absolute; top: -13px; height: 9px; min-width: 9px; border-radius: 5px; background: var(--mask); }
@@ -86,21 +97,21 @@ html { scroll-padding-top: 24px; }
 .post .tl__key .sw { flex: none; width: 18px; height: 11px; }
 
 /* code listings: diff, checksum and prompt variants */
-.post pre { margin: 0; background: var(--fill-2); border: 1px solid var(--rule); padding: 14px 16px; overflow-x: auto;
+:is(.post, .doc-prose) pre { margin: 0; background: var(--fill-2); border: 1px solid var(--rule); padding: 14px 16px; overflow-x: auto;
   font: 14px/1.6 var(--mono); color: var(--ink); }
-.post .prose pre code { all: unset; }
-.post pre, .post code { font-variant-ligatures: none; }  /* JetBrains Mono would draw == as one glyph */
+:is(.post .prose, .doc-prose) pre code { all: unset; }
+:is(.post, .doc-prose) pre, :is(.post, .doc-prose) code { font-variant-ligatures: none; }  /* JetBrains Mono would draw == as one glyph */
 .post pre .p { color: var(--ink-2); user-select: none; }
 .post pre .c { color: var(--ink-2); }
-.post pre .hl { background: #d9ebe4; display: inline-block; min-width: 100%; }
-.post pre .del { background: #f6e1dc; display: inline-block; min-width: 100%; }
-.post pre .add { background: #d9ebe4; display: inline-block; min-width: 100%; }
+.post pre .hl { background: var(--diff-add); display: inline-block; min-width: 100%; }
+.post pre .del { background: var(--diff-del); display: inline-block; min-width: 100%; }
+.post pre .add { background: var(--diff-add); display: inline-block; min-width: 100%; }
 .post pre.prompt { white-space: pre-wrap; font-size: 13.5px; }  /* soft-wrap only; the download keeps exact line breaks */
 .post pre.sum { padding: 8px 14px; margin: 0 0 1.3em; font-size: 13.5px; }
 
 /* key-value tables (th scope=row) inside notes */
-.post .prose table { font: 400 15.5px/1.45 var(--sans); }
-.post .prose th, .post .prose td { padding: 7px 12px; }
+:is(.post .prose, .doc-prose) table { font: 400 15.5px/1.45 var(--sans); }
+:is(.post .prose, .doc-prose) th, :is(.post .prose, .doc-prose) td { padding: 7px 12px; }
 .post th[scope="row"] { background: var(--fill-2); font-weight: 600; width: 9em; }
 
 /* details = a collapsible "Note" box */
@@ -117,7 +128,7 @@ html { scroll-padding-top: 24px; }
 .post .details__body figure { margin: 1em 0 1.4em; }
 
 /* blockquote = quoted bug report, set apart as a different voice */
-.post blockquote { margin: 0 0 1.1em; padding: 4px 0 4px 20px; border-left: 4px solid var(--rule-soft); font: 400 16.5px/1.6 var(--sans); color: #2c333b; }
+.post blockquote { margin: 0 0 1.1em; padding: 4px 0 4px 20px; border-left: 4px solid var(--rule-soft); font: 400 16.5px/1.6 var(--sans); color: var(--quote-ink); }
 
 /* contents sidebar */
 .post .toc { position: sticky; top: 24px; align-self: start; margin-top: 4px; font: 400 15px/1.4 var(--sans); }

@@ -47,6 +47,7 @@ from tests.diagnostic_helpers import (
     _Rec,
     _require_doctor_warning,
 )
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
@@ -7512,6 +7513,8 @@ class TestNoDockerSkipReason:
         from booley.harness import activity_hooks, web_isolation
 
         _set_venue(monkeypatch, True)
+        # The egress probe only runs in a marked Sandbox; keep this test off real DNS.
+        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         rec = _Rec()
@@ -9272,3 +9275,60 @@ def test_cocotb_select_check_reads_the_qualified_section(tmp_path):
         lambda message, _fix="": failures.append(message),
     )
     assert any("`select` plusarg template" in message for message in failures)
+
+
+# =============================================================
+# #2157: Doctor ownership through a symlinked Booley Directory
+# =============================================================
+
+
+def _symlinked_state_core(tmp_path: Path, text: str) -> Path:
+    """A Project whose `.booley` entry links to an external directory with one core."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    (project / "dut.v").write_text("module dut; endmodule\n", encoding="utf-8")
+    (external / "cores" / "demo.core").write_text(text, encoding="utf-8")
+    return project
+
+
+class TestSymlinkedBooleyDirectoryOwnership:
+    def test_legacy_api_audit_treats_stealth_core_as_owned(self, tmp_path):
+        project = _symlinked_state_core(
+            tmp_path, TestCheckLegacyCoreTargets._LEGACY_CORE.replace("i2c.v", "dut.v")
+        )
+        refs = {handle.name: handle for handle in TargetCatalog.build(project).list()}
+        passes, warns, notes = [], [], []
+        doctor._check_legacy_core_targets(
+            _schema_audit(project), project, refs, passes.append, warns.append, _note=notes.append
+        )
+        assert len(warns) == 1
+        assert "legacy FuseSoC tools-section target" in warns[0]
+        assert not notes
+
+    def test_target_naming_audit_notes_stealth_core(self, tmp_path):
+        project = _symlinked_state_core(
+            tmp_path,
+            TestCheckTargetNaming._CORE.replace("{targets}", TestCheckTargetNaming._MISNAMED),
+        )
+        refs = {handle.name: handle for handle in TargetCatalog.build(project).list()}
+        passes, notes = [], []
+        doctor._check_target_naming(
+            _schema_audit(project), project, refs, passes.append, notes.append
+        )
+        assert len(notes) == 1
+        assert "rename it 'sim_soc'" in notes[0]
+
+    def test_stray_default_audit_reports_selected_stealth_core_once(self, tmp_path):
+        selected = TestCheckStrayDefaultTargets._STANDALONE.replace(
+            "flow_options: {tool: verilator}",
+            "flow_options: {tool: verilator, booley: {doctor: [sim]}}",
+        )
+        project = _symlinked_state_core(tmp_path, selected)
+        passes, warns = [], []
+        doctor._check_stray_default_targets(
+            _schema_audit(project, {"flows": {"sim": {}}}), project, passes.append, warns.append
+        )
+        assert len(warns) == 1
+        assert "declares a 'default:' Target" in warns[0]
+        assert passes == []

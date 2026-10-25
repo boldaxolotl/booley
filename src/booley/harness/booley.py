@@ -45,6 +45,7 @@ from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.docs_links import docs_url
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 
@@ -980,7 +981,7 @@ def _normalize_args(
             print(
                 "\nGetting started: run `booley bootstrap`, then `booley init` in your RTL "
                 "repo, and open the Project in its devcontainer. "
-                "See `booley --help` and docs/user/SETUP.md."
+                f"See `booley --help` and {docs_url('SETUP.md')}"
             )
             parser.exit(0)
         else:
@@ -2022,8 +2023,13 @@ def _dispatch_selected(
     # Project and runtime-location guards precede runtime mutation and screen clearing.
     # docker-exec entry drops the spec's remoteEnv — self-heal the proxy env
     # here so agents spawned below inherit a working egress path.
-    if runtime_context.ensure_proxy_env():
-        logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    try:
+        if runtime_context.ensure_proxy_env():
+            logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    except runtime_context.EgressModeError:
+        # Doctor must still run to report the invalid declaration as a FAIL.
+        if command != "doctor":
+            raise
 
     if _outer_endpoint_selection(args) and command in {"flow", "specialist"}:
         args._cli_endpoint_project = project_root
@@ -2068,6 +2074,7 @@ def main() -> int:
         EndpointConfigError,
         ProjectRequiredError,
         SourceCheckoutProjectError,
+        runtime_context.EgressModeError,
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

@@ -10,10 +10,12 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "docs/user/**"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "website/**"
+      - "docs/user/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 

@@ -1,7 +1,9 @@
-"""Generate Figure 1 of the home page: a synthetic, light-theme VS Code window.
+"""Generate Figure 1 of the home page: a synthetic VS Code window.
 
 The illustration is HTML and CSS, not a screenshot, so it stays crisp, follows
-the site's type and colours, and needs no image refresh when the UI changes.
+the site's type and theme colours (light or dark), and needs no image refresh
+when the UI changes. Colours come only from CSS classes and tokens, never
+literals in the markup.
 Sources live next to this script:
 
 - ide.html: the window markup; ``{{WAVE}}`` marks where the waveform SVG goes.
@@ -71,14 +73,14 @@ def bit_path(levels: list[int], top: float, bot: float) -> str:
 
 def svg() -> str:
     out = [f'<svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMin meet" focusable="false">']
-    out.append(f'<rect x="0" y="0" width="{VAL_X + 6}" height="{H}" fill="#f5f7f8"/>')
-    out.append(f'<line x1="{VAL_X + 6}" y1="0" x2="{VAL_X + 6}" y2="{H}" stroke="#d3d9df"/>')
+    out.append(f'<rect x="0" y="0" width="{VAL_X + 6}" height="{H}" class="names"/>')
+    out.append(f'<line x1="{VAL_X + 6}" y1="0" x2="{VAL_X + 6}" y2="{H}" class="names-rule"/>')
     # ruler + grid every 2 cycles; the cursor flag names its own instant
     for c in range(1, CYC, 2):
         out.append(f'<line class="gr" x1="{x(c)}" y1="{RULER - 4}" x2="{x(c)}" y2="{H}"/>')
         if c != CURSOR:
             out.append(f'<text class="tk" x="{x(c) + 3}" y="13">{(C0 + c) * TSTEP:,} ns</text>')
-    out.append(f'<line x1="{X0}" y1="{RULER - 4}" x2="{X1}" y2="{RULER - 4}" stroke="#8e98a3"/>')
+    out.append(f'<line x1="{X0}" y1="{RULER - 4}" x2="{X1}" y2="{RULER - 4}" class="ruler"/>')
     for i, (name, val, kind, data) in enumerate(signals):
         top = RULER + i * ROW + 5
         bot = top + ROW - 10

@@ -140,12 +140,12 @@ work, with one linked worktree and Goal Branch per session.
 
 1. In a **host terminal**, go to your RTL project and open VS Code:
 
-   ```bash
-   cd path/to/your-rtl-project
-   code .
-   ```
+    ```bash
+    cd path/to/your-rtl-project
+    code .
+    ```
 
-   If `code` is not found, open VS Code yourself and use **File → Open Folder**.
+    If `code` is not found, open VS Code yourself and use **File → Open Folder**.
 
 2. When VS Code offers **Reopen in Container**, accept it. If the offer doesn't
    appear, open the Command Palette (`Ctrl+Shift+P`) and run **Dev Containers:
@@ -155,47 +155,47 @@ work, with one linked worktree and Goal Branch per session.
 3. Open **Terminal → New Terminal**. This is a **container terminal**. Start
    the Developer Agent:
 
-   ```bash
-   booley
-   ```
+    ```bash
+    booley
+    ```
 
-   `booley` (or `booley chat`) just starts the Developer Agent chosen in
-   `[agent].provider` in `.booley/booley.toml`:
+    `booley` (or `booley chat`) just starts the Developer Agent chosen in
+    `[agent].provider` in `.booley/booley.toml`:
 
-   | Provider | Same as running |
-   | --- | --- |
-   | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
-   | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
+    | Provider | Same as running |
+    | --- | --- |
+    | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
+    | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
-   From then on you are using that CLI's own chat. To pass it extra options,
-   run `claude` or `codex` directly. To run several sessions, open more
-   container terminals.
+    From then on you are using that CLI's own chat. To pass it extra options,
+    run `claude` or `codex` directly. To run several sessions, open more
+    container terminals.
 
-   Prefer a chat panel? The Claude Code or Codex VS Code extension is already
-   installed in the container. Open its panel instead of using the terminal.
+    Prefer a chat panel? The Claude Code or Codex VS Code extension is already
+    installed in the container. Open its panel instead of using the terminal.
 
-   If you see a login screen instead of a chat, run `booley auth --status` in a
-   **host terminal** and follow its advice (usually `booley auth`). Then run
-   **Dev Containers: Rebuild Container** and try again. See
-   [Auth & billing](#auth--billing).
+    If you see a login screen instead of a chat, run `booley auth --status` in a
+    **host terminal** and follow its advice (usually `booley auth`). Then run
+    **Dev Containers: Rebuild Container** and try again. See
+    [Auth & billing](#auth--billing).
 
 4. Type this safe first request into the chat:
 
-   > Check whether Booley Interactive Mode is ready. List the available
-   > simulation targets and explain what each one is for. Do not change files.
+    > Check whether Booley Interactive Mode is ready. List the available
+    > simulation targets and explain what each one is for. Do not change files.
 
-   The agent asks Booley for this and summarizes what it found. You never call
-   Booley's MCP tools yourself.
+    The agent asks Booley for this and summarizes what it found. You never call
+    Booley's MCP tools yourself.
 
 5. If the agent listed a simulation Target, try a real run:
 
-   > Run the tests on the most appropriate simulation target. Do not edit any
-   > files. Tell me what ran, whether it passed, and where the detailed report
-   > was written.
+    > Run the tests on the most appropriate simulation target. Do not edit any
+    > files. Tell me what ran, whether it passed, and where the detailed report
+    > was written.
 
-   A good answer names the Target and Flow it used, says whether the result was
-   a pass, a design failure, or an infrastructure failure, and suggests what to do next.
-   If there is no simulation Target, ask for lint instead.
+    A good answer names the Target and Flow it used, says whether the result was
+    a pass, a design failure, or an infrastructure failure, and suggests what to do next.
+    If there is no simulation Target, ask for lint instead.
 
 That's a complete session. You don't need to read the rest of this guide
 before you keep going. Just ask for what you want:
@@ -420,6 +420,15 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
+
+For a SYNTH or FPGA Goal with a relative threshold (`*_increase_at_most`,
+`*_reduce_at_least`) whose evidence includes a baseline, the long
+`booley goal status` view (one Goal), the `goal_status` tool, the Dashboard's
+Goal details and the Review Package also show the baseline revision and, per
+thresholded metric, `baseline → current` with the signed change and percentage,
+for example
+`baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)`.
+Absolute Goals and Goals without baseline evidence show their usual metrics.
 
 ### Goals that name Test Runs
 

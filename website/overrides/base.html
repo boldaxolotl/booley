@@ -3,7 +3,9 @@
   stylesheet, JavaScript, search, or drawer markup is emitted, so
   stylesheets/datasheet.css owns every pixel. Material remains the theme
   only for its blog plugin, whose templates (blog.html, blog-post.html) are
-  overridden next to this file and fill the `container` block.
+  overridden next to this file and fill the `container` block, as does
+  doc.html for the user docs. Search is Pagefind, indexed after the build
+  by hooks/user_docs.py.
 -#}
 <!doctype html>
 <html lang="{{ config.theme.language | d('en') }}">
@@ -32,12 +34,25 @@
         <title>{{ config.site_name }}: open-source agentic RTL IDE for FPGA and ASIC work</title>
       {% endif %}
     {% endblock %}
+    {#- Theme: light unless the reader picked dark with the header toggle.
+        Set data-theme on <html> before any paint, so a dark page never
+        flashes light. Storage can throw (private mode, blocked cookies):
+        fall back to light, which is also the no-JavaScript look. -#}
+    <script>
+      (function () {
+        var theme;
+        try { theme = localStorage.getItem("booley-theme"); } catch (e) {}
+        document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+      })();
+    </script>
     {#- Preload the two faces every page paints first. -#}
     <link rel="preload" href="{{ 'assets/fonts/archivo-latin-standard-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="{{ 'assets/fonts/literata-latin-opsz-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="{{ 'pagefind/pagefind-ui.css' | url }}">
     {% for path in config.extra_css %}
       <link rel="stylesheet" href="{{ path | url }}">
     {% endfor %}
+    <script src="{{ 'pagefind/pagefind-ui.js' | url }}" defer></script>
     {% block extrahead %}{% endblock %}
   </head>
   <body>
@@ -49,16 +64,27 @@
           <a class="hdr__logo" href="{{ nav.homepage.url | url }}">{{ config.site_name }}</a>
           <nav aria-label="Site">
             {% for item in nav %}
-              {#- A section (the blog) is current on any of its pages; posts included. -#}
-              {% set current = item.active or (item.is_page and item == page) %}
+              {#- A section (the blog) is current on any of its pages; posts included.
+                  The docs pages sit outside nav; their hook marks them doc_section. -#}
+              {% set in_docs = page and page.meta.doc_section and item.url == "docs/" %}
+              {% set current = item.active or (item.is_page and item == page) or in_docs %}
               <a href="{{ item.url | url }}"{% if current %} aria-current="page"{% endif %}>{{ item.title }}</a>
             {% endfor %}
           </nav>
+          {#- Pagefind search field; hidden without JavaScript. "/" focuses it. -#}
+          <div class="search" role="search" hidden></div>
+          {#- Hidden until the script below runs: without JavaScript the page
+              stays light and there is nothing to toggle. -#}
+          <button class="theme" type="button" aria-label="Dark theme" aria-pressed="false" hidden>
+            <svg class="theme__moon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M15.5 12.8A6.5 6.5 0 0 1 7.2 4.5a6.5 6.5 0 1 0 8.3 8.3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            <svg class="theme__sun" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="3.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 1.5v2.2M10 16.3v2.2M1.5 10h2.2M16.3 10h2.2M4 4l1.6 1.6M14.4 14.4 16 16M4 16l1.6-1.6M14.4 5.6 16 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
         </div>
       </header>
     {% endblock %}
 
-    <main class="page" id="content">
+    {#- Search indexes every page's <main> except 404.html, which has no page. -#}
+    <main class="page" id="content"{% if page %} data-pagefind-body{% endif %}>
       {% block container %}
         {% block content %}
           {{ page.content }}
@@ -78,5 +104,38 @@
         </dl>
       </footer>
     {% endblock %}
+    {#- Theme toggle: flips light/dark and remembers the choice. -#}
+    <script>
+      (function () {
+        var button = document.querySelector(".theme");
+        if (!button) return;
+        var root = document.documentElement;
+        function show() {
+          button.setAttribute("aria-pressed", root.dataset.theme === "dark" ? "true" : "false");
+        }
+        button.addEventListener("click", function () {
+          var theme = root.dataset.theme === "dark" ? "light" : "dark";
+          root.dataset.theme = theme;
+          try { localStorage.setItem("booley-theme", theme); } catch (e) {}
+          show();
+        });
+        show();
+        button.hidden = false;
+      })();
+      /* Search: Pagefind's default UI, restyled in docs.css. */
+      window.addEventListener("DOMContentLoaded", function () {
+        var box = document.querySelector(".search");
+        if (!box || !window.PagefindUI) return;
+        new PagefindUI({ element: ".search", showSubResults: true, showImages: false });
+        box.hidden = false;
+        document.addEventListener("keydown", function (event) {
+          var target = event.target;
+          if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
+          if (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+          event.preventDefault();
+          box.querySelector("input").focus();
+        });
+      });
+    </script>
   </body>
 </html>
