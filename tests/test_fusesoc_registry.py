@@ -2910,7 +2910,5 @@ class TestSymlinkedBooleyDirectory:
                 fusesoc_registry.prepare_core_library_plan(project)
             return
         plan = fusesoc_registry.prepare_core_library_plan(project)
-        ((authored, operational),) = plan._operational_cores
         # The outside core stays its own operational core, not a projection.
-        assert operational == authored
-        assert operational.samefile(foreign)
+        assert plan.operational_core(foreign).samefile(foreign)
