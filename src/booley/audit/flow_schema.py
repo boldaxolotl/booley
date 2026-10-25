@@ -72,7 +72,7 @@ def pre_run_commands_problem(flow_name: str) -> tuple[str, str]:
     """
     return (
         f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
-        "list of strings (shell lines run before each sim run)",
+        "list of strings, none empty (shell lines run before each sim run)",
         f"fix [flows.{flow_name}].pre_run_commands",
     )
 
@@ -279,7 +279,9 @@ def _flow_shape_findings(
                 )
             )
     pre_sim_commands = section.get("pre_run_commands")
-    if pre_sim_commands is not None and not is_str_list(pre_sim_commands):
+    if pre_sim_commands is not None and not (
+        is_str_list(pre_sim_commands) and all(pre_sim_commands)
+    ):
         findings.append(fail_finding(*pre_run_commands_problem(flow_name)))
     standalone_frontend = section.get("standalone_frontend")
     if standalone_frontend is not None and standalone_frontend not in {

@@ -197,10 +197,6 @@ def test_manifest_rejects_invalid_top_level_contracts() -> None:
         (("origin", "execution_id"), "not-an-execution"),
         (("origin", "invocation_id"), 0),
         (("target", "role"), "unknown"),
-        (("workload", "mode"), "lint"),
-        (("workload", "pre_sim_build_access"), "mutable"),
-        (("required_suite", "default_invocation"), False),
-        (("build_variants", 0, "kind"), "unknown"),
         (("work_items", 0, "ordinal"), 2),
         (("work_items", 0, "kind"), "unknown"),
         (("work_items", 0, "role"), "unknown"),
@@ -229,14 +225,6 @@ def test_codec_rejects_non_json_wrong_shape_and_wrong_schema() -> None:
     document["$schema"] = "unknown"
     with pytest.raises(SimulationCampaignIntegrityError, match="unsupported"):
         codec.decode_build_result(codec.canonical_json_bytes(document))
-
-
-def test_nested_json_string_validation_walks_lists_objects_and_keys() -> None:
-    codec._validate_bounded_json_strings({"key": ["value"]}, "detail")
-    with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
-        codec._validate_bounded_json_strings(
-            {"key": ["x" * (codec.MAX_STRING_BYTES + 1)]}, "detail"
-        )
 
 
 def test_common_timestamps_must_be_canonical_utc() -> None:
@@ -286,63 +274,6 @@ def test_child_and_build_attempt_identities_must_be_coherent() -> None:
     )
     with pytest.raises(SimulationCampaignIntegrityError, match="both"):
         codec._validate_build_attempt(invalid)
-
-
-def test_runtime_declarations_require_unique_identity() -> None:
-    declaration = {
-        "source_artifact_path": "input/a",
-        "destination": "run/a",
-        "declaration_id": "sha256:" + "0" * 64,
-    }
-    with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
-        codec._validate_runtime_declarations([declaration, declaration])
-
-
-def test_source_recipe_rejects_duplicate_parameters_and_invalid_sources() -> None:
-    recipe = {
-        "sources": [],
-        "parameters": [{"name": "WIDTH", "value": {"nested": [1]}}] * 2,
-        "defines": [],
-        "pre_sim_commands": [],
-    }
-    with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
-        codec._validate_source_recipe(recipe)
-    with pytest.raises(SimulationCampaignIntegrityError, match="kind"):
-        codec._validate_source_entries(
-            [
-                {
-                    "path": "rtl/top.sv",
-                    "bytes": 1,
-                    "sha256": "sha256:" + "1" * 64,
-                    "kind": "unknown",
-                }
-            ],
-            "sources",
-        )
-
-
-@pytest.mark.parametrize(
-    "suite",
-    [
-        {
-            "names": ["test"],
-            "default_invocation": True,
-            "source_path": "tests.txt",
-            "source_bytes": 1,
-            "source_sha256": "sha256:" + "1" * 64,
-        },
-        {
-            "names": [],
-            "default_invocation": True,
-            "source_path": "tests.txt",
-            "source_bytes": 1,
-            "source_sha256": "sha256:" + "1" * 64,
-        },
-    ],
-)
-def test_required_suite_rejects_default_invocation_payloads(suite) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec._validate_required_suite(suite)
 
 
 @pytest.mark.parametrize(
@@ -523,3 +454,32 @@ def test_reader_rejects_corrupt_record(tmp_path, reader, error):
     raw = b"{" if error == "truncated" else codec.canonical_json_bytes(document)
     with pytest.raises(SimulationCampaignIntegrityError):
         decode(raw)
+
+
+def test_manifest_decode_does_not_revalidate_planned_sections() -> None:
+    document = _manifest()
+    workload = document["workload"]
+    workload["mode"] = "lint"
+    workload["source_recipe"]["defines"] = [""]
+    workload["build_recipe"]["toplevel"] = ""
+    workload["runtime_inputs"] = [{"destination": "/abs"}]
+    document["required_suite"] = {"names": ["x", "x"], "default_invocation": False}
+    document["build_variants"][0]["kind"] = "unknown"
+    document["planning_disclosures"] = [{"planner": ""}]
+    raw = codec.canonical_json_bytes(document)
+    assert codec.decode_simulation_campaign_manifest(raw).canonical_bytes() == raw
+
+
+def test_manifest_reader_rejects_a_missing_nested_field(tmp_path) -> None:
+    from booley.flows.sim.campaign.inspection import inspect_retained_campaign
+
+    document = _manifest()
+    del document["workload"]["run_cwd"]["configured"]
+    raw = codec.canonical_json_bytes(document)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+        codec.decode_simulation_campaign_manifest(raw)
+    path = tmp_path / "campaign" / "manifest.json"
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+        inspect_retained_campaign(path)

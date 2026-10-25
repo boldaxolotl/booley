@@ -3918,37 +3918,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
         )
 
-    def _resume_source_mismatches(self, manifest: SimulationCampaignManifest) -> list[str]:
-        """Compare current source/suite bytes without launching a generator."""
-        import hashlib
-
-        mismatches: list[str] = []
-        project = Path(self.args.work_dir)
-        workload = cast(Mapping[str, Any], manifest.document["workload"])
-        recipe = cast(Mapping[str, Any], workload["source_recipe"])
-        for index, source in enumerate(cast(tuple[Mapping[str, Any], ...], recipe["sources"])):
-            path = project / cast(str, source["path"])
-            try:
-                raw = path.read_bytes()
-            except OSError as exc:
-                mismatches.append(f"/workload/source_recipe/sources/{index}: {exc}")
-                continue
-            digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-            if len(raw) != source["bytes"] or digest != source["sha256"]:
-                mismatches.append(f"/workload/source_recipe/sources/{index}: source bytes changed")
-        suite = cast(Mapping[str, Any], manifest.document["required_suite"])
-        source_path = cast(str, suite["source_path"])
-        if source_path:
-            try:
-                raw = (project / source_path).read_bytes()
-            except OSError as exc:
-                mismatches.append(f"/required_suite/source_path: {exc}")
-            else:
-                digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-                if len(raw) != suite["source_bytes"] or digest != suite["source_sha256"]:
-                    mismatches.append("/required_suite: required suite changed")
-        return mismatches
-
     def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> tuple[Any, Any]:
         """Run the shared coverage preflight for the manifest's frozen coverage choice."""
         from booley.criteria.state import DevelopmentState

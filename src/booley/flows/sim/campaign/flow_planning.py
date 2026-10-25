@@ -216,6 +216,11 @@ def _recipes(
     trace: bool,
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Build the frozen source and build recipes of a Target workload."""
+    if not inspection.toplevel:
+        raise SimulationCampaignIntegrityError(
+            f"Target {handle.identity!r} has an empty toplevel; set toplevel to the "
+            "simulation top module in its .core target"
+        )
     root = handle.project_root.resolve()
     parameters = [
         {"name": name, "value": value} for name, value in sorted(inspection.parameters.items())

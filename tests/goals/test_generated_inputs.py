@@ -331,12 +331,11 @@ def test_copyto_protected_destination_refuses_finish(layout, destination):
 @pytest.mark.parametrize("case", ["legacy-renamed", "v3-unmapped", "traversal"])
 def test_copyto_unproven_source_refuses_finish(layout, case):
     if case == "traversal":
-        from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
-
-        with pytest.raises(SimulationCampaignIntegrityError):
-            classified(
-                layout, copyto="dhry.hex", source_metadata=True, source_override="../escape.hex"
-            )
+        classified(
+            layout, copyto="dhry.hex", source_metadata=True, source_override="../escape.hex"
+        )
+        with pytest.raises(LifecycleError, match="escapes the selected worktree"):
+            finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
         return
     classified(
         layout,

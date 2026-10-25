@@ -241,8 +241,6 @@ _SNAPSHOT_FIELDS = frozenset(
     }
 )
 
-# SHA-256 of empty input: the source digest of a default (unnamed) required suite.
-_EMPTY_SHA256 = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 _FINGERPRINT_FIELDS = frozenset(
     {
         "workload_sha256",
@@ -393,21 +391,6 @@ def _bounded_canonical_value(value: object, field: str, limit: int) -> None:
     _validate_json(value)
     if len(canonical_json_bytes(value)) - 1 > limit:
         raise SimulationCampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
-
-
-def _validate_bounded_json_strings(value: object, field: str) -> None:
-    """Apply the ordinary-string ceiling recursively to a JSON value."""
-    if isinstance(value, str):
-        _bounded_string(value, field, allow_empty=True)
-        return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _validate_bounded_json_strings(item, f"{field}[{index}]")
-        return
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _bounded_string(key, f"{field} key", allow_empty=True)
-            _validate_bounded_json_strings(item, f"{field}.{key}")
 
 
 def _bounded_string_list(
@@ -1035,15 +1018,49 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
         )
     _require_positive_int(origin["invocation_id"], "origin.invocation_id")
     _validate_target(value["target"], "target")
-    _validate_workload(value["workload"], schema)
-    _validate_required_suite(value["required_suite"])
-    _validate_variants(value["build_variants"])
-    _validate_disclosures(value["planning_disclosures"], schema)
+    _read_workload(value["workload"])
+    _read_required_suite(value["required_suite"])
+    _read_build_variant_ids(value["build_variants"])
     _validate_prerequisites(value["prerequisites"])
     _validate_work_items(value["work_items"], schema)
     fingerprints = _exact_object(value["fingerprints"], set(_FINGERPRINT_FIELDS), "fingerprints")
     for key, digest in fingerprints.items():
         _require_digest(digest, f"fingerprints.{key}")
+
+
+def _read_workload(value: object) -> None:
+    """Read the workload members manifest readers use; planning proved the rest."""
+    workload = require_dict(value, field="workload")
+    require_bool_value(workload.get("trace"), field="workload.trace")
+    require_bool_value(workload.get("coverage"), field="workload.coverage")
+    eda = require_dict(workload.get("eda"), field="workload.eda")
+    for key in ("kind", "version"):
+        require_str_value(eda.get(key), field=f"workload.eda.{key}")
+    require_str_value(
+        workload.get("adapter_contract_version"), field="workload.adapter_contract_version"
+    )
+    run_cwd = require_dict(workload.get("run_cwd"), field="workload.run_cwd")
+    for key in ("configured", "kind"):
+        require_str_value(run_cwd.get(key), field=f"workload.run_cwd.{key}")
+
+
+def _read_required_suite(value: object) -> None:
+    """Read the required-suite members resume and acceptance use."""
+    suite = require_dict(value, field="required_suite")
+    require_bool_value(suite.get("default_invocation"), field="required_suite.default_invocation")
+    _bounded_string_list(
+        suite.get("names"),
+        "required_suite.names",
+        count_limit=MAX_OBSERVATIONS,
+        byte_limit=MAX_OBSERVATION_TEST_BYTES,
+    )
+
+
+def _read_build_variant_ids(value: object) -> None:
+    """Read the build-variant IDs inspection and retention use."""
+    for index, item in enumerate(_exact_list(value, "build_variants", MAX_WORK_ITEMS)):
+        variant = require_dict(item, field=f"build_variants[{index}]")
+        _require_variant_id(variant.get("build_variant_id"))
 
 
 def _validate_target(value: object, field: str) -> Mapping[str, object]:
@@ -1058,233 +1075,6 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
     if target["role"] not in {"candidate", "cycle_count_baseline"}:
         raise SimulationCampaignIntegrityError(f"{field}.role is invalid")
     return target
-
-
-def _validate_workload(value: object, schema: str) -> None:
-    # v2 adds exactly one member, ``no_waivers``; the v1 grammar never changes.
-    extra = (
-        {"no_waivers"}
-        if (
-            schema == _MANIFEST_V2_SCHEMA
-            or (
-                schema == _MANIFEST_V4_SCHEMA
-                and isinstance(value, Mapping)
-                and "no_waivers" in value
-            )
-        )
-        else set()
-    )
-    workload = _exact_object(
-        value,
-        extra
-        | {
-            "mode",
-            "trace",
-            "coverage",
-            "eda",
-            "planner_contract_version",
-            "adapter_contract_version",
-            "pre_sim_build_access",
-            "run_cwd",
-            "runtime_inputs",
-            "source_recipe",
-            "build_recipe",
-        },
-        "workload",
-    )
-    if workload["mode"] != "simulate":
-        raise SimulationCampaignIntegrityError("workload mode/trace/coverage is invalid")
-    require_bool_value(workload["trace"], field="workload.trace")
-    require_bool_value(workload["coverage"], field="workload.coverage")
-    if extra and (workload["no_waivers"] is not True or workload["coverage"] is not True):
-        raise SimulationCampaignIntegrityError("workload no_waivers is invalid")
-    _validate_eda(workload["eda"])
-    _bounded_string(workload["planner_contract_version"], "planner_contract_version")
-    _bounded_string(workload["adapter_contract_version"], "adapter_contract_version")
-    _validate_runtime_declarations(workload["runtime_inputs"])
-    _validate_source_recipe(workload["source_recipe"])
-    _validate_build_recipe(workload["build_recipe"])
-    if workload["pre_sim_build_access"] not in {"immutable", "legacy-per-test"}:
-        raise SimulationCampaignIntegrityError("pre_sim_build_access is invalid")
-
-
-def _validate_eda(value: object) -> None:
-    eda = _exact_object(value, {"kind", "version"}, "eda")
-    for key, item in eda.items():
-        _bounded_string(item, f"eda.{key}")
-
-
-def _validate_runtime_declarations(value: object) -> None:
-    declarations = _exact_list(value, "runtime_inputs", MAX_EVIDENCE_REFS)
-    ids: list[object] = []
-    destinations: list[object] = []
-    for index, item in enumerate(declarations):
-        declaration = _exact_object(
-            item,
-            {"declaration_id", "source_artifact_path", "destination"},
-            f"runtime_inputs[{index}]",
-        )
-        validate_relative_path(cast(str, declaration["source_artifact_path"]))
-        destination = validate_relative_path(cast(str, declaration["destination"]))
-        ids.append(_require_digest(declaration["declaration_id"], "declaration_id"))
-        destinations.append(destination)
-    if len(set(ids)) != len(ids) or len(set(destinations)) != len(destinations):
-        raise SimulationCampaignIntegrityError("runtime declarations must be unique")
-
-
-def _validate_source_recipe(value: object) -> None:
-    recipe = _exact_object(
-        value, {"sources", "parameters", "defines", "pre_sim_commands"}, "source_recipe"
-    )
-    _validate_source_entries(recipe["sources"], "source_recipe.sources")
-    parameters = _exact_list(recipe["parameters"], "parameters", 10_000)
-    names: list[object] = []
-    for index, item in enumerate(parameters):
-        parameter = _exact_object(item, {"name", "value"}, f"parameters[{index}]")
-        _bounded_string(parameter["name"], f"parameters[{index}].name")
-        _validate_bounded_json_strings(parameter["value"], f"parameters[{index}].value")
-        names.append(parameter["name"])
-    if len(set(names)) != len(names):
-        raise SimulationCampaignIntegrityError("parameter names must be unique")
-    _bounded_string_list(
-        recipe["defines"], "defines", count_limit=10_000, byte_limit=MAX_STRING_BYTES
-    )
-    _bounded_string_list(
-        recipe["pre_sim_commands"],
-        "pre_sim_commands",
-        count_limit=10_000,
-        byte_limit=MAX_COMMAND_BYTES,
-    )
-
-
-def _validate_source_entries(
-    value: object, field: str, *, source_mapping: bool = False
-) -> list[Mapping[str, object]]:
-    entries = _exact_list(value, field, MAX_LIST_ITEMS)
-    decoded: list[Mapping[str, object]] = []
-    for index, item in enumerate(entries):
-        extra = (
-            {"source_path"}
-            if source_mapping and isinstance(item, Mapping) and "source_path" in item
-            else set()
-        )
-        entry = _exact_object(
-            item, {"path", "bytes", "sha256", "kind"} | extra, f"{field}[{index}]"
-        )
-        if extra:
-            validate_relative_path(cast(str, entry["source_path"]))
-        validate_relative_path(cast(str, entry["path"]))
-        _require_nonnegative_int(entry["bytes"], f"{field}.bytes")
-        _require_digest(entry["sha256"], f"{field}.sha256")
-        if entry["kind"] not in {"rtl", "testbench", "constraint", "user", "generated_input"}:
-            raise SimulationCampaignIntegrityError(f"{field}.kind is invalid")
-        decoded.append(entry)
-    return decoded
-
-
-def _validate_build_recipe(value: object) -> None:
-    recipe = _exact_object(
-        value, {"eda_tool", "toplevel", "arguments", "command_model_sha256"}, "build_recipe"
-    )
-    _bounded_string(recipe["eda_tool"], "build EDA tool")
-    _bounded_string(recipe["toplevel"], "build toplevel")
-    _bounded_string_list(
-        recipe["arguments"],
-        "build arguments",
-        count_limit=10_000,
-        byte_limit=MAX_COMMAND_BYTES,
-    )
-    _require_digest(recipe["command_model_sha256"], "command_model_sha256")
-
-
-def _validate_required_suite(value: object) -> None:
-    suite = _exact_object(
-        value,
-        {"names", "default_invocation", "source_path", "source_bytes", "source_sha256"},
-        "required_suite",
-    )
-    names = _bounded_string_list(
-        suite["names"],
-        "required_suite.names",
-        count_limit=MAX_OBSERVATIONS,
-        byte_limit=MAX_OBSERVATION_TEST_BYTES,
-        unique=True,
-    )
-    require_bool_value(suite["default_invocation"], field="default_invocation")
-    _require_nonnegative_int(suite["source_bytes"], "required_suite.source_bytes")
-    _require_digest(suite["source_sha256"], "required_suite.source_sha256")
-    source_path = _bounded_string(
-        suite["source_path"], "required_suite.source_path", allow_empty=True
-    )
-    if source_path:
-        validate_relative_path(source_path)
-    elif not suite["default_invocation"]:
-        raise SimulationCampaignIntegrityError("catalog-backed required suite needs a source path")
-    if suite["default_invocation"] and names:
-        raise SimulationCampaignIntegrityError("default required suite cannot name tests")
-    if suite["default_invocation"] and (
-        suite["source_path"] != ""
-        or suite["source_bytes"] != 0
-        or suite["source_sha256"] != _EMPTY_SHA256
-    ):
-        raise SimulationCampaignIntegrityError(
-            "default required suite must authenticate empty source"
-        )
-
-
-def _validate_variants(value: object) -> None:
-    variants = _exact_list(value, "build_variants", MAX_WORK_ITEMS)
-    ids: list[object] = []
-    for index, item in enumerate(variants):
-        variant = _exact_object(
-            item,
-            {"build_variant_id", "kind", "sharing_eligible", "source_closure", "recipe_sha256"},
-            f"build_variants[{index}]",
-        )
-        _validate_variant(variant)
-        ids.append(variant["build_variant_id"])
-    if len(set(ids)) != len(ids):
-        raise SimulationCampaignIntegrityError("build variant IDs must be unique")
-
-
-def _validate_variant(variant: Mapping[str, object]) -> None:
-    if variant["kind"] not in {"candidate", "trace", "coverage"}:
-        raise SimulationCampaignIntegrityError("build variant kind is invalid")
-    require_bool_value(variant["sharing_eligible"], field="sharing_eligible")
-    _validate_source_entries(variant["source_closure"], "source_closure")
-    _require_digest(variant["recipe_sha256"], "recipe_sha256")
-    _require_variant_id(variant["build_variant_id"])
-
-
-def _validate_disclosures(value: object, schema: str) -> None:
-    disclosures = _exact_list(value, "planning_disclosures", MAX_WORK_ITEMS)
-    for index, item in enumerate(disclosures):
-        disclosure = _exact_object(
-            item,
-            {"planner", "scratch_inputs", "generated_files", "tool_provenance", "cleanup"},
-            f"planning_disclosures[{index}]",
-        )
-        _bounded_string(disclosure["planner"], f"planning_disclosures[{index}].planner")
-        _validate_source_entries(
-            disclosure["scratch_inputs"],
-            "scratch_inputs",
-            source_mapping=schema == _MANIFEST_V4_SCHEMA,
-        )
-        _validate_source_entries(
-            disclosure["generated_files"],
-            "generated_files",
-            source_mapping=schema == _MANIFEST_V4_SCHEMA,
-        )
-        provenance = _exact_object(
-            disclosure["tool_provenance"],
-            {"kind", "version", "contract_version"},
-            "planning tool_provenance",
-        )
-        for key, entry in provenance.items():
-            _bounded_string(entry, f"planning tool_provenance.{key}")
-        cleanup = _exact_object(disclosure["cleanup"], {"removed"}, "cleanup")
-        if require_bool_value(cleanup["removed"], field="cleanup.removed") is not True:
-            raise SimulationCampaignIntegrityError("planning scratch must be removed")
 
 
 def _validate_prerequisites(value: object) -> None:

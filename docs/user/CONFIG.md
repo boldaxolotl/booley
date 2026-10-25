@@ -513,6 +513,9 @@ case*. Declare that step as **Pre-Sim Commands**:
 pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 ```
 
+Each entry is one non-empty shell line; Doctor and the Simulation Flow
+refuse an empty entry.
+
 The lines run **inside the Sandbox** immediately before each simulator
 process: once per Test Run for an HDL-testbench Target, once before each batch
 for a Cocotb Target.
@@ -1809,8 +1812,8 @@ A Target section holds only these keys. Any other key fails to load, and
 | `seed` | The [seed argument template](#seeds-seed-default_seed). |
 | `default_seed` | The Target's [Default Seed](#seeds-seed-default_seed). |
 
-**Test names.** A Test name is not empty, is not `default`, does not start
-with `-`, and contains no whitespace, control character, `+`, `@`, `<`, `>`,
+**Test names.** A Test name is not empty, is at most 512 UTF-8 bytes, is not
+`default`, does not start with `-`, and contains no whitespace, control character, `+`, `@`, `<`, `>`,
 quote or backslash. The same rule applies to Test Variant names. `+` and `@`
 are reserved because a Test Run is written `test+variant@seed`. A valid name
 can still contain characters that a shell interprets, such as `;`, `|`, `&`,

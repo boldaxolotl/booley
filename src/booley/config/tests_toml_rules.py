@@ -40,8 +40,9 @@ DEFAULT_VARIANT_KEY = "default"
 
 #: The complete name rule as one sentence. Error messages and Doctor's fix
 #: hint both quote it, so the wording users see cannot drift from the check.
+MAX_TEST_NAME_BYTES = 512
 TEST_NAME_RULES = (
-    "a Test or Test Variant name is not empty, is not 'default', does not "
+    "a Test or Test Variant name is not empty, is at most 512 UTF-8 bytes, is not 'default', does not "
     "start with '-', and contains no whitespace, control character, '+', '@', "
     "'<', '>', quote or backslash"
 )
@@ -148,6 +149,8 @@ def _name_problem(name: object) -> str:
         return f"it is not a string but {type(name).__name__}"
     if not name:
         return "it is empty"
+    if len(name.encode("utf-8")) > MAX_TEST_NAME_BYTES:
+        return f"it is longer than {MAX_TEST_NAME_BYTES} UTF-8 bytes"
     if name == DEFAULT_VARIANT_KEY:
         return f"{DEFAULT_VARIANT_KEY!r} is reserved for naming a Test's default Test Variant"
     if name.startswith(_OPTION_PREFIX):
