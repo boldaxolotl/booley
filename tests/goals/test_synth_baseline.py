@@ -493,11 +493,6 @@ def test_job_list_shows_synth_baseline_job_state(synth, monkeypatch):
     assert all(handle.startswith("J-SYN") for _, handle in after.values())
 
 
-# ---------------------------------------------------------------------------
-# The Flow seam itself (non-criterion): report shape and row mapping
-# ---------------------------------------------------------------------------
-
-
 def test_synth_row_maps_envelopes_to_results_or_unavailable():
     from booley.mcp.synth_baseline_execution import synth_row
 
@@ -514,6 +509,7 @@ def test_synth_row_maps_envelopes_to_results_or_unavailable():
 
 def test_synthesize_runs_the_standalone_flow_and_reads_its_canonical_report(tmp_path, monkeypatch):
     from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.flows.synth.recipe import default_recipe_args, synthesis_recipe_args
     from booley.mcp.synth_baseline_execution import _synthesize
 
     seen = []
@@ -529,4 +525,7 @@ def test_synthesize_runs_the_standalone_flow_and_reads_its_canonical_report(tmp_
     ((request, adapter),) = seen
     assert (request.target, request.work_dir, request.timeout_ms) == ("top", tmp_path, 90_000)
     assert type(adapter).__name__ == "StandaloneFlowExecution"
+    # The Flow derives its recipe from this bare request: it must equal the one frozen at entry.
+    frozen = synthesis_recipe_args({}, default_recipe_args(), target="top")
+    assert synthesis_recipe_args({}, request, target="top") == frozen
     assert envelope["recipe"]["fingerprint"] == "f1"
