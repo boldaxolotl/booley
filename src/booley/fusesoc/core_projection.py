@@ -84,7 +84,8 @@ def stealth_core_relative(project_root: Path | str, path: Path) -> str | None:
     is spelled ``<root>/.booley/cores/x.core`` by callers that walk the Project
     and ``<target>/cores/x.core`` by those that hold a resolved path (the Target
     catalog, the core-library plan).  Both spellings of the root are accepted;
-    the lexical one is tried first so the plain layout costs no ``resolve()``.
+    the lexical one is tried first, so a stealth core in the plain layout costs
+    no ``resolve()`` (any other path pays one).
     *path* itself is never resolved: a ``.core`` link inside the root that
     points elsewhere stays outside it.
     """

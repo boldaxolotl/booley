@@ -565,7 +565,10 @@ class TestWriteTraceOverlay:
             declared = next(iter(entry))
             # Projection roots the dump module under `.booley/cores/`; isolated
             # mode declares the packaged source instead.
-            assert declared.startswith(".booley/cores/") or isolated
+            if isolated:
+                assert Path(declared).is_absolute()
+            else:
+                assert declared.startswith(".booley/cores/")
             assert (project / declared).is_file()
         finally:
             overlay.cleanup()
