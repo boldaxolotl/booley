@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit.doctor_waivers import DoctorWarning, warning
-from booley.runtime.incontainer_git_identity import GitIdentityError, load_git_identity
+from booley.runtime.incontainer_git_identity import (
+    DEFAULT_IDENTITY,
+    GitIdentityError,
+    load_git_identity,
+)
 
 OVERRIDE_CHECK = "sandbox.git-identity-override"
 GITCONFIG_CHECK = "sandbox.gitconfig-identity"
@@ -34,10 +38,10 @@ _OVERRIDE_FIX = (
 )
 _GITCONFIG_FIX = (
     "while the override is complete this identity is only a fallback: waive "
-    f"{GITCONFIG_CHECK} in doctor-waivers.toml. Booley's Sandbox Image sets a neutral "
-    "Dev <dev@localhost> in /etc/gitconfig, and an editor may copy a host "
-    "~/.gitconfig with user.*; remove the identity from the one named above to clear it"
+    f"{GITCONFIG_CHECK} in doctor-waivers.toml, or remove the user.name/user.email "
+    "entries from the gitconfig named above"
 )
+_NEUTRAL_VALUES = {"user.name": DEFAULT_IDENTITY.name, "user.email": DEFAULT_IDENTITY.email}
 
 
 @dataclass(frozen=True)
@@ -137,8 +141,16 @@ def inspect_override(checkout: Path, booley_dir: Path) -> IdentityCheck:
 
 
 def inspect_gitconfig_identity(checkout: Path) -> IdentityCheck:
-    """Check that no system or global gitconfig sets ``user.name`` / ``user.email``."""
-    clean = IdentityCheck(passed="no user.name/user.email in system or global gitconfig")
+    """Check that no system or global gitconfig sets a foreign ``user.name`` / ``user.email``.
+
+    The Sandbox Image's own neutral ``Dev <dev@localhost>`` is not foreign, per value.
+    """
+    clean = IdentityCheck(
+        passed=(
+            "system and global gitconfig set no identity other than "
+            f"{DEFAULT_IDENTITY.name} <{DEFAULT_IDENTITY.email}>"
+        )
+    )
     try:
         result = _git_config(checkout, "--get-regexp", r"^user\.(name|email)$")
     except (OSError, subprocess.SubprocessError) as exc:
@@ -150,7 +162,7 @@ def inspect_gitconfig_identity(checkout: Path) -> IdentityCheck:
     found = [
         entry
         for entry in _parse_entries(result.stdout, with_key=True)
-        if entry.scope in _FILE_SCOPES
+        if entry.scope in _FILE_SCOPES and entry.value != _NEUTRAL_VALUES.get(entry.key)
     ]
     if not found:
         return clean

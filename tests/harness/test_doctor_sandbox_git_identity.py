@@ -174,7 +174,7 @@ def test_matching_override_and_clean_gitconfig_pass(sandbox_git, capsys):
     assert not _warns(reporter, GITCONFIG_ID)
     out = capsys.readouterr().out
     assert "Git identity override matches [agent.git]" in out
-    assert "no user.name/user.email in system or global gitconfig" in out
+    assert "set no identity other than Dev <dev@localhost>" in out
 
 
 @pytest.mark.parametrize("scope", ["system", "global"])
@@ -187,6 +187,28 @@ def test_gitconfig_identity_warns(sandbox_git, scope):
     assert "Visitor" in finding.message
     # The override is complete, so the two checks are independent.
     assert not _warns(reporter, OVERRIDE_ID)
+
+
+def test_image_default_identity_does_not_warn(sandbox_git, capsys):
+    # The Sandbox Image writes this pair into /etc/gitconfig (Dockerfile.base).
+    sandbox_git.write_identity("system", "Dev", "dev@localhost")
+    sandbox_git.set_full_override()
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    assert not _warns(reporter, GITCONFIG_ID)
+    assert not _warns(reporter, OVERRIDE_ID)
+    assert "set no identity other than Dev <dev@localhost>" in capsys.readouterr().out
+
+
+def test_foreign_identity_warns_beside_image_default(sandbox_git):
+    sandbox_git.write_identity("system", "Dev", "dev@localhost")
+    sandbox_git.write_identity("global", "Visitor", "v@example.com")
+    sandbox_git.set_full_override()
+    reporter = doctor._Reporter.create()
+    _run_checks(sandbox_git, reporter)
+    finding = _single_warn(reporter, GITCONFIG_ID)
+    assert "Visitor" in finding.message
+    assert "'Dev'" not in finding.message
 
 
 @pytest.mark.parametrize("check_id", [OVERRIDE_ID, GITCONFIG_ID])
