@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
@@ -416,6 +417,21 @@ def _link_target_under(link: Path, root: Path) -> Path | None:
     return target if target == root or root in target.parents else None
 
 
+def _source_link_target(link: Path, state_dir: Path, root: Path) -> Path | None:
+    """Like :func:`_link_target_under`, for a link under the (possibly symlinked) entry.
+
+    The OS resolves a relative link text from the entry's physical target, so the
+    one hop is taken from there and then re-spelled through the entry. Without a
+    symlinked *state_dir* this is the purely lexical classification.
+    """
+    if not state_dir.is_symlink():
+        return _link_target_under(link, root)
+    physical_parent = state_dir.resolve() / link.parent.relative_to(state_dir)
+    target = lexical_booley_path(state_dir, _lexical_path(physical_parent / link.readlink()))
+    root = _lexical_path(root)
+    return target if target == root or root in target.parents else None
+
+
 def _lexical_path(path: Path) -> Path:
     """Normalize an absolute path without following its symlink target."""
     value = os.path.abspath(os.path.normpath(path))  # noqa: PTH100 - lexical; do not follow links
@@ -459,7 +475,7 @@ def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> l
         rel = link.relative_to(dst)
         # Classify from the SOURCE link: its relative text resolves against the
         # live tree, whereas the copy's identical text resolves in the worktree.
-        target = _link_target_under(src / rel, project_root)
+        target = _source_link_target(src / rel, state_dir, project_root)
         if target is None:
             continue
         if _is_within(target, src):

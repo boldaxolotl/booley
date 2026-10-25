@@ -252,6 +252,29 @@ def redact_identifiers_enabled(booley_toml: dict) -> bool:
     return True
 
 
+def _register_path_literals(plan: RedactionPlan, project_root: Path) -> None:
+    """Register the absolute-path substitutions: Project Root, Booley Directory, home."""
+    # 1. Absolute paths. Longest first is handled at apply time; register both
+    #    the resolved and the as-given form, which differ under symlinks.
+    for path in {project_root, project_root.resolve()}:
+        literal = str(path)
+        plan.literals[literal] = "<repo>"
+        plan.path_literals.add(literal)
+    # A symlinked Booley Directory entry names Project-private state elsewhere; callers
+    # may pass either the entry or its target (BOOLEY_DIR), so key on the entry.
+    entry = project_root / ".booley"
+    if entry.is_symlink():
+        literal = str(entry.resolve())
+        plan.literals[literal] = "<repo>/.booley"
+        plan.path_literals.add(literal)
+    home = Path.home()
+    if home != project_root and str(home) not in plan.literals:
+        literal = str(home)
+        plan.literals[literal] = "<home>"
+        plan.path_literals.add(literal)
+    plan.patterns.extend((pattern, r"<home>") for pattern in _HOME_PATTERNS)
+
+
 def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionPlan:
     """Assemble the substitutions for *project_root*.
 
@@ -264,18 +287,7 @@ def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionP
     booley_toml = _load_toml(booley_dir / "booley.toml")
     plan = RedactionPlan()
 
-    # 1. Absolute paths. Longest first is handled at apply time; register both
-    #    the resolved and the as-given form, which differ under symlinks.
-    for path in {project_root, project_root.resolve()}:
-        literal = str(path)
-        plan.literals[literal] = "<repo>"
-        plan.path_literals.add(literal)
-    home = Path.home()
-    if home != project_root and str(home) not in plan.literals:
-        literal = str(home)
-        plan.literals[literal] = "<home>"
-        plan.path_literals.add(literal)
-    plan.patterns.extend((pattern, r"<home>") for pattern in _HOME_PATTERNS)
+    _register_path_literals(plan, project_root)
 
     # 2. Git remotes — URL and slug. The slug alone identifies the project on
     #    GitHub, so stripping only the URL would leak it anyway.

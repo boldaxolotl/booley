@@ -200,6 +200,16 @@ class JobLifecycle:
         rec.run_started_at = utc_now_rfc3339()
         jobrec.write_record(rec, root=self._write_root(rec))
 
+    def _repair_progress(self, rec: jobrec.JobRecord) -> None:
+        """Terminalize the Job's checkpoint, following the Booley Directory entry."""
+        located = self._repository.locate(rec.run_id)
+        repair_progress_after_reap(
+            self._repository.report_dirs(located),
+            rec.endpoint,
+            rec.run_id,
+            booley_dir=self._repository.report_booley_dir(located),
+        )
+
     def _record_terminal(
         self,
         rec: jobrec.JobRecord,
@@ -207,11 +217,7 @@ class JobLifecycle:
         *,
         timed_out: bool,
     ) -> None:
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
+        self._repair_progress(rec)
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
         rec.ended_at = utc_now_rfc3339()
@@ -341,11 +347,7 @@ class JobLifecycle:
             self._lifetime.mark_mcp_endpoint_end()
 
     def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
+        self._repair_progress(rec)
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         rec.ended_at = utc_now_rfc3339()
@@ -551,11 +553,7 @@ class JobLifecycle:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
+        self._repair_progress(rec)
         jobrec.write_record(rec, root=located.root)
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 

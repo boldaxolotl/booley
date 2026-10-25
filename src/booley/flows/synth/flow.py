@@ -28,6 +28,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_bool
 from booley.core.build_paths import work_root_for
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
@@ -1076,7 +1078,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         # treatment as --extra-rtl — each is a path relative to the worktree,
         # resolved against /work inside the sandbox.
         for sdc_file in resolved.sdc_files:
-            path = sdc_file.absolute(resolved.build_root).resolve()
+            # A stealth core's SDC behind a symlinked Booley Directory entry stays
+            # named through the entry, which is what /work shows in the Sandbox.
+            path = lexical_booley_path(
+                work_dir.resolve() / BOOLEY_DIR_NAME,
+                sdc_file.absolute(resolved.build_root).resolve(),
+            )
             try:
                 path.relative_to(work_dir.resolve())
             except ValueError as exc:

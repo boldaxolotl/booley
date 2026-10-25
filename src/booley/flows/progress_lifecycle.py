@@ -135,8 +135,14 @@ def read_progress_for_run(
     report_roots: Sequence[Path],
     endpoint: str,
     run_id: str,
+    *,
+    booley_dir: Path | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
-    """Return the newest trusted run-scoped checkpoint and its exact path."""
+    """Return the newest trusted run-scoped checkpoint and its exact path.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused.
+    """
     candidates: list[tuple[int, Path]] = []
     for root in report_roots:
         try:
@@ -155,7 +161,7 @@ def read_progress_for_run(
             except OSError:
                 continue
     for _mtime, path in sorted(candidates, key=lambda item: item[0], reverse=True):
-        document = _read_trusted_progress(path, report_roots)
+        document = _read_trusted_progress(path, report_roots, booley_dir=booley_dir)
         if (
             document is not None
             and document.get("flow") == endpoint
@@ -165,10 +171,16 @@ def read_progress_for_run(
     return None
 
 
-def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_id: str) -> bool:
+def repair_progress_after_reap(
+    report_roots: Sequence[Path],
+    endpoint: str,
+    run_id: str,
+    *,
+    booley_dir: Path | None = None,
+) -> bool:
     """Best-effort terminalization after the supervisor proved a child dead."""
     try:
-        found = read_progress_for_run(report_roots, endpoint, run_id)
+        found = read_progress_for_run(report_roots, endpoint, run_id, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     if found is None:
@@ -187,7 +199,7 @@ def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_
     )
     validate_progress_shape(repaired)
     try:
-        _replace_if_unchanged(path, document, repaired)
+        _replace_if_unchanged(path, document, repaired, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     return True
@@ -235,12 +247,14 @@ def validate_coverage_origin_progress(path: Path) -> dict[str, Any]:
 def _read_trusted_progress(
     path: Path,
     report_roots: Sequence[Path],
+    *,
+    booley_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     try:
         root = _containing_root(path, report_roots)
         if _has_link_between(path, root):
             return None
-        document = _read_json_object_nofollow(path)
+        document = _read_json_object_nofollow(path, booley_dir=booley_dir)
         validate_progress_shape(document)
         return document
     except (OSError, ValueError, UnicodeError):
@@ -276,10 +290,14 @@ def _has_link_between(path: Path, root: Path) -> bool:
 
 
 def _replace_if_unchanged(
-    path: Path, original: Mapping[str, object], updated: Mapping[str, object]
+    path: Path,
+    original: Mapping[str, object],
+    updated: Mapping[str, object],
+    *,
+    booley_dir: Path | None = None,
 ) -> None:
     with _progress_file_lock(path):
-        current = _read_json_object_nofollow(path)
+        current = _read_json_object_nofollow(path, booley_dir=booley_dir)
         if current != original:
             raise ValueError("progress changed concurrently")
         _write_progress_json_unlocked(path, updated)
@@ -321,8 +339,8 @@ def _write_progress_json_unlocked(path: Path, document: Mapping[str, object]) ->
         Path(temporary).unlink(missing_ok=True)
 
 
-def _read_json_object_nofollow(path: Path) -> dict[str, Any]:
-    descriptor = open_regular_nofollow(path)
+def _read_json_object_nofollow(path: Path, *, booley_dir: Path | None = None) -> dict[str, Any]:
+    descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
         if os.fstat(stream.fileno()).st_size > _MAX_PROGRESS_BYTES:
             raise ValueError("progress exceeds the size limit")
