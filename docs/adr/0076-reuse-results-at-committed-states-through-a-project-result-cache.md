@@ -7,8 +7,8 @@ Status: proposed
 Booley repeats expensive EDA work it has already done.
 
 - Simulation reuses builds but never results.
-- The SIM Goal baseline store (#1498) reuses results only for baseline
-  Jobs.
+- The Goal baseline store (#1498, generalised to any Goal family by #2043)
+  reuses results only for baseline Jobs.
 - The Vivado metrics cache sits in one checkout's work root, and its hits
   count as Goal evidence although its key names the tool by a version
   string (#2051).
