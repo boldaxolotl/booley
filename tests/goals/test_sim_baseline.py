@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.booley_dir import reset_cache
 from booley.goals.freshness import DEFAULT_RESOLVERS
 from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
@@ -34,15 +35,18 @@ from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resoluti
 from booley.mcp.sim_baseline_execution import (
     baseline_kind,
     contents_stamp,
+    reap_owned_checkout,
     run_baseline,
 )
 from booley.mcp.sim_baseline_jobs import launch_baseline as real_launch_baseline
 from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 from booley.runtime import job_records
+from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.goals.conftest import (
     SIM_KEY,
     SMOKE_RUN,
+    TESTS_TOML,
     enter_goals,
     git,
     run_row,
@@ -954,3 +958,128 @@ def test_current_transition_uses_history_fold(baseline):
         DEFAULT_RESOLVERS,
     )
     assert rows[0]["current"] == "failed"
+
+
+def _version_booley_directory(layout, excludes, tmp_path, *, submodules=False):
+    """Turn the Goal worktree's Snapshot into a Paired Checkout of a standalone repository.
+
+    ``layout.control`` (the main checkout's ``.booley``) becomes the standalone
+    Versioned Booley Directory; the Goal worktree's ``.booley`` becomes a linked
+    worktree of it. With ``submodules`` the RTL repository also carries one
+    submodule that only Goal entry populates in the worktree.
+    """
+    import shutil
+
+    control = layout.control
+    git(layout.main, "config", "core.excludesFile", str(excludes))
+    if submodules:
+        dependency = tmp_path / "dependency"
+        dependency.mkdir()
+        git(dependency, "init", "-q", "-b", "main")
+        (dependency / "source.sv").write_bytes(b"old\n")
+        git(dependency, "add", "-A")
+        git(dependency, "commit", "-qm", "dependency")
+        # Fixture-only: the dependency is a local path, which Git blocks by default.
+        git(
+            layout.main,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(dependency),
+            "vendor/ip",
+        )
+        git(layout.main, "commit", "-qm", "submodule")
+        git(layout.worktree, "merge", "-q", "--ff-only", "main")
+        assert not (layout.worktree / "vendor/ip/source.sv").exists()
+        (control / "booley.toml").write_bytes(
+            b"[project]\nname = 'demo'\n[submodules]\npaths = [\"vendor/ip\"]\n"
+        )
+    (control / ".gitignore").write_bytes(PROJECT_GITIGNORE.encode())
+    (control / "notes.txt").write_bytes(b"v1\n")
+    (control / "tests.toml").write_bytes(TESTS_TOML)
+    git(control, "init", "-q", "-b", "main")
+    git(control, "config", "core.autocrlf", "false")
+    git(control, "config", "core.excludesFile", str(excludes))
+    git(control, "add", "-A")
+    git(control, "commit", "-qm", "project")
+    paired = layout.worktree / ".booley"
+    shutil.rmtree(paired)
+    git(control, "worktree", "add", "-q", "--detach", str(paired))
+    return paired
+
+
+@pytest.mark.parametrize("submodules", [False, True], ids=["plain", "submodules"])
+def test_versioned_booley_directory_baseline_classifies_at_entry_pinned_paired_revision(
+    layout, tmp_path, isolated_git_excludes, monkeypatch, submodules
+):
+    paired = _version_booley_directory(
+        layout, isolated_git_excludes, tmp_path, submodules=submodules
+    )
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    if submodules:
+        assert (layout.worktree / "vendor/ip/source.sv").read_bytes() == b"old\n"
+    pinned = record.paired_project_base_sha
+    # The Paired Checkout moves on after entry; the baseline must not follow it.
+    (paired / "notes.txt").write_bytes(b"v2\n")
+    git(paired, "commit", "-qam", "current")
+    mode = SimpleNamespace(**vars(layout), record=record, launches=[])
+    path, request = _schedule(mode)
+    scratch = []
+
+    def execute(checkout, target, runs, output):
+        scratch.append(checkout)
+        assert checkout.resolve().is_relative_to(paired.resolve())
+        assert git(checkout / ".booley", "rev-parse", "HEAD") == pinned
+        assert (checkout / ".booley" / "notes.txt").read_bytes() == b"v1\n"
+        if submodules:
+            assert (checkout / "vendor/ip/source.sv").read_bytes() == b"old\n"
+        return _execute(checkout, target, runs, output)
+
+    monkeypatch.delenv("BOOLEY_DIR")
+    reset_cache()
+    rows = run_baseline(path, request, execute=execute)
+    monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
+    reset_cache()
+    write_document(path, request | {"status": "complete", "results": rows})
+    _record(mode, "current", [run_row(grade="fail")])
+    summary = transition_summary(
+        build_status(GoalStore(layout.control), record).goals[0].sim_transitions
+    )
+    assert "pass -> fail" in summary
+    assert "unavailable" not in summary
+    assert not scratch[0].exists()
+    assert ".baseline-wt-" not in git(layout.control, "worktree", "list", "--porcelain")
+    assert ".baseline-wt-" not in git(layout.worktree, "worktree", "list", "--porcelain")
+
+
+def test_interrupted_versioned_baseline_reap_removes_paired_registration(
+    layout, tmp_path, isolated_git_excludes, monkeypatch
+):
+    _version_booley_directory(layout, isolated_git_excludes, tmp_path)
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    mode = SimpleNamespace(**vars(layout), record=record, launches=[])
+    path, request = _schedule(mode)
+    scratch = []
+
+    class KilledError(Exception):
+        """Stands in for SIGKILL: the supervisor's own cleanup never runs."""
+
+    def execute(checkout, target, runs, output):
+        scratch.append(checkout)
+        # The reconciler's reap of a dead supervisor's checkout (same pid prefix).
+        reap_owned_checkout(read_document(path), os.getpid())
+        monkeypatch.setattr(
+            "booley.flows.baseline_worktree._cleanup_baseline_worktree", lambda *args: None
+        )
+        raise KilledError
+
+    monkeypatch.delenv("BOOLEY_DIR")
+    reset_cache()
+    with pytest.raises(KilledError):
+        run_baseline(path, request, execute=execute)
+    monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
+    reset_cache()
+    assert not scratch[0].exists()
+    assert ".baseline-wt-" not in git(layout.control, "worktree", "list", "--porcelain")
+    assert ".baseline-wt-" not in git(layout.worktree, "worktree", "list", "--porcelain")

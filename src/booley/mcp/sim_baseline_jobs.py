@@ -200,8 +200,11 @@ def _schedule_goal(
             "inputs": inputs,
             "booley_dir": str(project),
             "record": record.to_json(),
+            # An entry-pinned Paired Checkout exists only in the Goal worktree (#1961).
             "source_repository": str(
-                ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()
+                Path(record.worktree_path)
+                if record.paired_project_base_sha is not None
+                else ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()
                 or Path(record.worktree_path)
             ),
             "status": "pending",
