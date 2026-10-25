@@ -865,10 +865,10 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
             store = GoalStore(resolve_booley_dir(_project_root))
             checkout = _goal_checkout(args, _project_root)
             selection = select_status(store, checkout, campaign_reader=read_unpublished_results)
-            from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+            from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
             for view in selection.views:
-                schedule_sim_baselines(resolve_booley_dir(_project_root), view.record)
+                schedule_goal_baselines(resolve_booley_dir(_project_root), view.record)
             short = True if args.short else False if args.long else None
             text = (
                 render_status(selection.views, short=short, project_wide=selection.project_wide)

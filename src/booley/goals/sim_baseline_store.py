@@ -20,6 +20,12 @@ from booley.flows.test_runs import TestRun, test_run_document, test_run_from_doc
 from booley.fusesoc.fusesoc_registry import discover_cores
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
+from booley.goals.synth_baseline import (
+    baseline_target,
+    relative_synth_goals,
+    synth_result_key,
+    synth_units,
+)
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.filesystem_utils import read_file_bytes
@@ -33,7 +39,7 @@ def sim_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
     return tuple(goal for goal in record.goals if goal.spec.family is GoalFamily.SIM)
 
 
-def sim_runs(record: GoalRecord, goal: RecordedGoal) -> tuple[TestRun, ...]:
+def sim_runs(_project: Path, record: GoalRecord, goal: RecordedGoal) -> tuple[TestRun, ...]:
     """The Test Runs a SIM Goal's baseline measures."""
     resolution = record.test_run_resolution(goal.spec.key)
     return resolution.test_runs if resolution else ()
@@ -50,6 +56,11 @@ def result_key(target: str, run: TestRun, stamp: str, protected_digest: str) -> 
     }
 
 
+def _goal_target(goal: RecordedGoal) -> str | None:
+    """The Target a Goal's baseline measures unless its family names another."""
+    return goal.spec.target
+
+
 @dataclass(frozen=True)
 class BaselineFamily:
     """One Goal family's baseline store adapter; the engine never names a family.
@@ -64,10 +75,12 @@ class BaselineFamily:
     child_stem: str  # watchdog child documents: <stem>-request.json, <stem>-result.json
     freshness_key: str  # criterion key naming the dependent-content categories
     goals: Callable[[GoalRecord], tuple[RecordedGoal, ...]]
-    runs: Callable[[GoalRecord, RecordedGoal], tuple[Any, ...]]  # measured units of a Goal
+    #: ``(project, record, goal)`` -> the measured units of a Goal.
+    runs: Callable[[Path, GoalRecord, RecordedGoal], tuple[Any, ...]]
     unit_document: Callable[[Any], dict[str, Any]]  # carries "name" and "fingerprint"
     parse_unit: Callable[[Mapping[str, Any]], Any]
     result_key: Callable[[str, Any, str, str], dict[str, str]]
+    measured_target: Callable[[RecordedGoal], str | None] = _goal_target
 
     @property
     def schema(self) -> str:
@@ -96,8 +109,19 @@ SIM_BASELINE = BaselineFamily(
     parse_unit=test_run_from_document,
     result_key=result_key,
 )
+SYNTH_BASELINE = BaselineFamily(
+    name="synth",
+    child_stem="synthesis",
+    freshness_key="synthesis_ok_baseline",
+    goals=relative_synth_goals,
+    runs=synth_units,
+    unit_document=dict,
+    parse_unit=dict,
+    result_key=synth_result_key,
+    measured_target=baseline_target,
+)
 #: Every family the baseline engine serves; read at call time.
-BASELINE_FAMILIES: tuple[BaselineFamily, ...] = (SIM_BASELINE,)
+BASELINE_FAMILIES: tuple[BaselineFamily, ...] = (SIM_BASELINE, SYNTH_BASELINE)
 
 
 def family_for_schema(schema: object) -> BaselineFamily:
@@ -249,6 +273,7 @@ def entry_inputs(booley_dir: Path, record: GoalRecord) -> dict[str, Any]:
 
 
 def request_identity(
+    project: Path,
     record: GoalRecord,
     goal: RecordedGoal,
     inputs: Mapping[str, Any],
@@ -259,9 +284,9 @@ def request_identity(
         "base_sha": record.base_sha,
         "paired_base_sha": record.paired_project_base_sha,
         "protected_digest": record.protected_digest,
-        "target": goal.spec.target,
+        "target": family.measured_target(goal),
         "inputs_digest": content_digest(inputs),
-        "runs": [family.unit_document(unit) for unit in family.runs(record, goal)],
+        "runs": [family.unit_document(unit) for unit in family.runs(project, record, goal)],
     }
 
 
@@ -309,12 +334,19 @@ def request_runs(raw: Mapping[str, Any]) -> tuple[TestRun, ...]:
     )
 
 
-def validate_results(project: Path, request: Mapping[str, Any]) -> None:
+def validate_results(
+    project: Path, request: Mapping[str, Any], family: BaselineFamily = SIM_BASELINE
+) -> None:
     """Corrupt report evidence is unavailable, never a status or Finish failure."""
     status = request.get("status")
     if status not in {"pending", "complete", "unavailable"}:
         raise ValueError("invalid simulation baseline request status")
-    wanted = {(run.name, run.fingerprint): run for run in request_runs(request)}
+    identity = require_dict(request.get("identity"), field="baseline request identity")
+    wanted = {}
+    for raw_unit in require_list(identity.get("runs"), field="runs"):
+        unit = family.parse_unit(raw_unit)
+        document = family.unit_document(unit)
+        wanted[(document["name"], document["fingerprint"])] = (unit, document)
     rows = require_list(request.get("results"), field="baseline results")
     found: set[tuple[str, str]] = set()
     for raw in rows:
@@ -325,8 +357,8 @@ def validate_results(project: Path, request: Mapping[str, Any]) -> None:
         )
         if pair not in wanted or pair in found:
             raise ValueError("baseline result is not an exact requested Test Run")
-        run = wanted[pair]
-        if any(row.get(key) != value for key, value in test_run_document(run).items()):
+        unit, document = wanted[pair]
+        if any(row.get(key) != value for key, value in document.items()):
             raise ValueError("baseline result Test Run inputs differ")
         grade = row.get("grade")
         if grade not in {"pass", "fail", "new", "not comparable", "unavailable"}:
@@ -341,16 +373,21 @@ def validate_results(project: Path, request: Mapping[str, Any]) -> None:
         ):
             raise ValueError("baseline absence or incompatibility proof names another base")
         if grade in {"pass", "fail"}:
-            key = result_key(
+            key = family.result_key(
                 require_str_value(proof.get("target_identity"), field="baseline Target identity"),
-                run,
+                unit,
                 proof["contents"],
                 require_str_value(
                     proof.get("protected_digest"), field="baseline protected inputs"
                 ),
             )
-            cached = cached_result(project, key)
-            if cached is None or cached["grade"] != grade or cached["proof"] != proof:
+            cached = cached_result(project, key, family)
+            if (
+                cached is None
+                or cached["grade"] != grade
+                or cached["proof"] != proof
+                or cached.get("measurement") != row.get("measurement")
+            ):
                 raise ValueError("baseline report differs from its contents-addressed evidence")
         found.add(pair)
     if status == "complete" and found != set(wanted):

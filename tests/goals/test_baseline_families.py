@@ -51,7 +51,7 @@ def _probe_family() -> Any:
         child_stem="probe",
         freshness_key=PROBE_KEY,
         goals=store.sim_goals,
-        runs=lambda _record, _goal: (PROBE_UNIT,),
+        runs=lambda _project, _record, _goal: (PROBE_UNIT,),
         unit_document=dict,
         parse_unit=dict,
         result_key=_probe_result_key,
@@ -96,7 +96,7 @@ def _schedule(baseline, family, published):
     jobs.schedule_family_baselines(baseline.control, baseline.record, family, launch=launch)
     goal = family.goals(baseline.record)[0]
     inputs = store.entry_inputs(baseline.control, baseline.record)
-    identity = store.request_identity(baseline.record, goal, inputs, family)
+    identity = store.request_identity(baseline.control, baseline.record, goal, inputs, family)
     path = store.request_path(baseline.control, identity, family)
     return path, store.read_document(path, family)
 

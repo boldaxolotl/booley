@@ -26,6 +26,7 @@ from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from booley.goals import entry as entry_module
 from booley.goals import test_run_freezing
 from booley.goals.binding import GoalRunBinding, bind_run
+from booley.goals.sim_baseline_store import family_for_schema
 from booley.goals.store import GoalStore
 from booley.mcp import (
     sim_baseline_jobs,
@@ -146,7 +147,12 @@ def pending_baseline_launch(_path: Path, request: Mapping[str, Any]) -> None:
     """Record a live (this process) baseline Job without starting a worker."""
     job_records.write_record(
         job_records.JobRecord(
-            request["job_id"], "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid(), argv=[]
+            request["job_id"],
+            family_for_schema(request["schema"]).endpoint,
+            utc_now_rfc3339(),
+            sim_baseline_jobs.BASELINE_TIMEOUT_S,
+            pid=os.getpid(),
+            argv=[],
         ),
         Path(request["jobs_root"]),
     )
@@ -242,8 +248,12 @@ def enter_goals(
     goals: Sequence[Mapping[str, Any]] = GOAL_ARGS,
     *,
     tests_toml: bytes = TESTS_TOML,
+    environment: Any = None,
 ) -> Any:
-    """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode."""
+    """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode.
+
+    *environment* replaces the default entry environment (for example, to freeze recipes).
+    """
     from booley.goals.entry import EntryRequest, enter_goal_mode
     from booley.goals.model import parse_goal_args
 
@@ -256,7 +266,7 @@ def enter_goals(
     request = EntryRequest(
         work_dir=layout.worktree, slug="evidence", goals=parse_goal_args(list(goals))
     )
-    return enter_goal_mode(request, entry_environment(layout)).record
+    return enter_goal_mode(request, environment or entry_environment(layout)).record
 
 
 @pytest.fixture
