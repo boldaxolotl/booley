@@ -2265,8 +2265,12 @@ def main() -> None:
     # runtime.mcp_config), so a config that doesn't forward the proxy vars
     # leaves this server — and every endpoint subprocess under it — with no
     # egress path. Self-heal here so the whole endpoint subprocess tree inherits it.
-    if runtime_context.ensure_proxy_env():
-        logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    try:
+        if runtime_context.ensure_proxy_env():
+            logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    except runtime_context.EgressModeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

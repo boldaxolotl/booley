@@ -516,6 +516,7 @@ jobs:
             --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-evidence",dst=/evidence \
             -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -e BOOLEY_EGRESS=unproxied \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.simulation_selftest \
             --project /work --booley /usr/local/bin/booley \

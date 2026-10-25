@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Import the real server first: the per-class `mcp` stubs below cannot satisfy
+# `mcp.server.context`, so an isolated run of one class would fail at setup.
+import booley.mcp.server  # noqa: F401
 from booley.mcp import (
     catalog,
     endpoint_process,
@@ -1894,6 +1897,7 @@ class TestMainProxySelfHeal:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY"):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv("BOOLEY_EGRESS", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TRANSPORT", raising=False)
 
     def test_main_defaults_proxy_env_in_sandbox(self, monkeypatch):
@@ -1911,6 +1915,32 @@ class TestMainProxySelfHeal:
         for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert os.environ[var] == runtime_context._PROXY_URL
         assert os.environ["NO_PROXY"] == "localhost,127.0.0.1"
+
+    def test_main_leaves_unproxied_sandbox_unproxied(self, monkeypatch):
+        import os
+
+        monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+        monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
+        monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
+        monkeypatch.setattr(sys, "argv", ["booley-mcp"])
+
+        self.mcp_server.main()
+
+        assert not any(
+            var in os.environ for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        )
+
+    def test_main_refuses_invalid_egress_mode(self, monkeypatch, capsys):
+        monkeypatch.setenv("BOOLEY_EGRESS", "bogus")
+        monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
+        monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
+        monkeypatch.setattr(sys, "argv", ["booley-mcp"])
+
+        with pytest.raises(SystemExit) as refusal:
+            self.mcp_server.main()
+
+        assert refusal.value.code == 2
+        assert "`unproxied`" in capsys.readouterr().err
 
     def test_main_respects_delivered_proxy_env(self, monkeypatch):
         """A config that DOES forward the proxy vars must win untouched."""
