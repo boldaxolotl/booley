@@ -119,8 +119,12 @@ An advisory cluster of Developer Agent activity, useful Specialists, Booley Flow
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
-The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**; there is no per-Flow network boundary. Host authority (Docker sockets, SSH credentials, host EDA configuration) is never present in a Sandbox; an SSH directory holding only an `authorized_keys` file grants inbound access to the Sandbox, not host authority.
+The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**, except in an **Unproxied Sandbox**, whose egress Booley does not mediate; there is no per-Flow network boundary. Host authority (Docker sockets, SSH credentials, host EDA configuration) is never present in a Sandbox; an SSH directory holding only an `authorized_keys` file grants inbound access to the Sandbox, not host authority.
 _Avoid_: per-Flow network policy
+
+**Unproxied Sandbox**:
+A **Sandbox** whose spec declares `BOOLEY_EGRESS=unproxied`. Booley neither sets nor forces the egress proxy environment there, so agents and tools reach the network the platform provides, such as a Codespace. It is an explicit opt-in, never inferred from platform signals, and Doctor keeps it visible as the waivable WARN `sandbox.unproxied`. The declaration is not the isolation boundary: a Booley-issued Sandbox's network stays default-deny whatever the variable says.
+_Avoid_: no proxy, open egress, direct egress
 
 **Host-Provisioned Sandbox EDA Tool**:
 An EDA tool whose immutable installation files are supplied by the host while every process executes inside the **Sandbox** under its **Sandbox Policy**. Host provisioning conveys file availability, not host execution authority.

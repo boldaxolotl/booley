@@ -85,6 +85,43 @@ class TestEnsureProxyEnv:
             assert os.environ[var] == runtime_context._PROXY_URL
         assert os.environ["NO_PROXY"] == "localhost,127.0.0.1"
 
+    @pytest.fixture(autouse=True)
+    def _no_inherited_egress_mode(self, monkeypatch):
+        monkeypatch.delenv("BOOLEY_EGRESS", raising=False)
+
+    @pytest.mark.parametrize("declared", [None, "proxy"], ids=["unset", "proxy"])
+    def test_proxy_mode_defaults_proxy_vars(self, container_env, monkeypatch, declared):
+        import os
+
+        if declared is not None:
+            monkeypatch.setenv("BOOLEY_EGRESS", declared)
+        assert runtime_context.egress_mode() == "proxy"
+        assert runtime_context.ensure_proxy_env() is True
+        assert all(
+            os.environ[var] == runtime_context._PROXY_URL
+            for var in runtime_context._PROXY_ENV_VARS
+        )
+
+    def test_unproxied_mode_sets_no_proxy_vars(self, container_env, monkeypatch):
+        import os
+
+        monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+        assert runtime_context.ensure_proxy_env() is False
+        assert not any(var in os.environ for var in (*runtime_context._PROXY_ENV_VARS, "NO_PROXY"))
+
+    @pytest.mark.parametrize("value", ["bogus", ""], ids=["bogus", "empty"])
+    def test_invalid_mode_refuses(self, container_env, monkeypatch, value):
+        monkeypatch.setenv("BOOLEY_EGRESS", value)
+        with pytest.raises(runtime_context.EgressModeError, match=r"`proxy`.*`unproxied`"):
+            runtime_context.ensure_proxy_env()
+
+    def test_codespaces_signal_does_not_select_unproxied(self, container_env, monkeypatch):
+        import os
+
+        monkeypatch.setenv("CODESPACES", "true")
+        assert runtime_context.ensure_proxy_env() is True
+        assert os.environ["HTTPS_PROXY"] == runtime_context._PROXY_URL
+
     def test_noop_on_host(self, host):
         import os
 

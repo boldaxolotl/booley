@@ -2022,8 +2022,13 @@ def _dispatch_selected(
     # Project and runtime-location guards precede runtime mutation and screen clearing.
     # docker-exec entry drops the spec's remoteEnv — self-heal the proxy env
     # here so agents spawned below inherit a working egress path.
-    if runtime_context.ensure_proxy_env():
-        logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    try:
+        if runtime_context.ensure_proxy_env():
+            logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    except runtime_context.EgressModeError:
+        # Doctor must still run to report the invalid declaration as a FAIL.
+        if command != "doctor":
+            raise
 
     if _outer_endpoint_selection(args) and command in {"flow", "specialist"}:
         args._cli_endpoint_project = project_root
@@ -2068,6 +2073,7 @@ def main() -> int:
         EndpointConfigError,
         ProjectRequiredError,
         SourceCheckoutProjectError,
+        runtime_context.EgressModeError,
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

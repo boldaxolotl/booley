@@ -78,6 +78,39 @@ Containers for an editor-owned Sandbox. A pending VS Code start also
 holds a slot and can be cleared with the reported `session down` command after
 canceling the editor operation.
 
+## Sandbox egress mode (`BOOLEY_EGRESS`)
+
+Inside a Sandbox, Booley points every agent and tool at its egress proxy
+(`booley-proxy`) by setting the `HTTP_PROXY` family of variables. A Sandbox
+that cannot use that proxy, such as a Codespace you wrote the devcontainer
+spec for, declares an **Unproxied Sandbox** instead. Booley-issued Sandboxes
+are always proxied; this variable is for hand-written specs.
+
+| `BOOLEY_EGRESS` | Effect |
+|---|---|
+| unset or `proxy` | Default. Booley sets the proxy variables when the environment did not deliver them. |
+| `unproxied` | Booley sets no proxy variable; agents and nested MCP servers inherit none. |
+| anything else | `booley` and `booley-mcp` refuse to start (exit 2) and name `proxy` and `unproxied`. `booley doctor` still runs and FAILs. |
+
+Set it in the spec's `containerEnv`, not `remoteEnv`: a bare `docker exec`
+drops `remoteEnv`, and the Sandbox would silently fall back to `proxy`. The
+variable is read only inside a Sandbox (`BOOLEY_CONTAINER=1`) and is never
+inferred from platform signals such as `CODESPACES`.
+
+It is a declaration, not a security boundary. Any process in a Sandbox can set
+it for itself; in a Booley-issued Sandbox the internal network still denies
+direct egress, so doing so only breaks that process's connectivity.
+
+Doctor reports the mode in the Sandbox checks:
+
+- `proxy` and the proxy host resolves: PASS.
+- `proxy` and the proxy host does not resolve: FAIL. Start the Sandbox from a
+  Booley-issued devcontainer spec, or declare `BOOLEY_EGRESS=unproxied`.
+- `unproxied`: WARN `sandbox.unproxied`, because Booley does not mediate
+  egress. Accept it by waiving that check ID in
+  [`doctor-waivers.toml`](#doctor-waivers-doctor-waiverstoml).
+- Any other value: FAIL naming the two valid values.
+
 ## booley.toml
 
 Project identity, Flow selection, and Developer Agent and Specialist configuration live in

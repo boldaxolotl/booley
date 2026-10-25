@@ -7512,6 +7512,8 @@ class TestNoDockerSkipReason:
         from booley.harness import activity_hooks, web_isolation
 
         _set_venue(monkeypatch, True)
+        # The egress probe only runs in a marked Sandbox; keep this test off real DNS.
+        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         rec = _Rec()

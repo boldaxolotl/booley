@@ -17,6 +17,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import booley
 from booley.agent_workspace.isolation import get_category_dirs
@@ -2229,6 +2231,44 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
     _pass("Dashboard workspace extension bundled in the Sandbox Image")
 
 
+def _check_current_runtime_egress(_pass: Check, _warn: Check, _fail: Fail) -> None:
+    """Report the declared Sandbox egress mode and whether the proxy host resolves."""
+    from booley.runtime import runtime_context
+
+    if os.environ.get("BOOLEY_CONTAINER") != "1":
+        return  # Booley forces no egress setting outside a Booley-marked Sandbox.
+    try:
+        mode = runtime_context.egress_mode()
+    except runtime_context.EgressModeError as exc:
+        _fail(
+            str(exc),
+            "set BOOLEY_EGRESS to `proxy` or `unproxied` in the Sandbox spec's containerEnv, then rebuild the Sandbox",
+        )
+        return
+    if mode == "unproxied":
+        _warning_sink(_warn, "sandbox.unproxied")(
+            "Unproxied Sandbox (BOOLEY_EGRESS=unproxied): egress is not mediated by "
+            "Booley's egress proxy; agents and tools reach the network directly"
+        )
+        return
+    # Doctor runs after the entry point forced the proxy variables, so the
+    # effective proxy is the first one set (Booley's, unless one was delivered).
+    proxy_urls = (
+        os.environ.get(var) for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+    )
+    proxy_url = next((url for url in proxy_urls if url), dc.PROXY_URL)
+    host = urlsplit(proxy_url).hostname or dc.PROXY_HOST
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        _fail(
+            f"egress proxy {host} does not resolve; agent and model-service calls cannot leave this Sandbox",
+            "start the Sandbox from a Booley-issued devcontainer spec, or declare an Unproxied Sandbox with BOOLEY_EGRESS=unproxied in the spec's containerEnv",
+        )
+        return
+    _pass(f"egress proxy {host} resolves")
+
+
 def _check_container_runtime_payload(
     check: Callable[[str, list[str], str], None],
 ) -> None:
@@ -2275,6 +2315,7 @@ def _run_container_checks(
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
         _check_current_runtime_dashboard_extension(_pass, _warn)
+        _check_current_runtime_egress(_pass, _warn, _fail)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
