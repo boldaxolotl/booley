@@ -38,13 +38,15 @@ SEED_SEPARATOR = "@"
 #: Test Variant may be called this.
 DEFAULT_VARIANT_KEY = "default"
 
+#: Longest Test or Test Variant name, in UTF-8 bytes.
+MAX_TEST_NAME_BYTES = 512
+
 #: The complete name rule as one sentence. Error messages and Doctor's fix
 #: hint both quote it, so the wording users see cannot drift from the check.
-MAX_TEST_NAME_BYTES = 512
 TEST_NAME_RULES = (
-    "a Test or Test Variant name is not empty, is at most 512 UTF-8 bytes, is not 'default', does not "
-    "start with '-', and contains no whitespace, control character, '+', '@', "
-    "'<', '>', quote or backslash"
+    f"a Test or Test Variant name is not empty, is at most {MAX_TEST_NAME_BYTES} "
+    "UTF-8 bytes, is not 'default', does not start with '-', and contains no "
+    "whitespace, control character, '+', '@', '<', '>', quote or backslash"
 )
 
 #: The seed a Test Run uses when none is named. Never ``0``: Verilator reads

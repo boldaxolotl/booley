@@ -1813,8 +1813,8 @@ A Target section holds only these keys. Any other key fails to load, and
 | `default_seed` | The Target's [Default Seed](#seeds-seed-default_seed). |
 
 **Test names.** A Test name is not empty, is at most 512 UTF-8 bytes, is not
-`default`, does not start with `-`, and contains no whitespace, control character, `+`, `@`, `<`, `>`,
-quote or backslash. The same rule applies to Test Variant names. `+` and `@`
+`default`, does not start with `-`, and contains no whitespace, control
+character, `+`, `@`, `<`, `>`, quote or backslash. The same rule applies to Test Variant names. `+` and `@`
 are reserved because a Test Run is written `test+variant@seed`. A valid name
 can still contain characters that a shell interprets, such as `;`, `|`, `&`,
 `$`, `(`, `)` or `*`: quote such a name on the command line. A name appears

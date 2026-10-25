@@ -462,12 +462,19 @@ def test_manifest_decode_does_not_revalidate_planned_sections() -> None:
     workload["mode"] = "lint"
     workload["source_recipe"]["defines"] = [""]
     workload["build_recipe"]["toplevel"] = ""
-    workload["runtime_inputs"] = [{"destination": "/abs"}]
     document["required_suite"] = {"names": ["x", "x"], "default_invocation": False}
     document["build_variants"][0]["kind"] = "unknown"
     document["planning_disclosures"] = [{"planner": ""}]
     raw = codec.canonical_json_bytes(document)
     assert codec.decode_simulation_campaign_manifest(raw).canonical_bytes() == raw
+
+
+def test_manifest_reader_rejects_a_wrong_nested_type() -> None:
+    document = _manifest()
+    document["workload"]["run_cwd"]["configured"] = 7
+    raw = codec.canonical_json_bytes(document)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+        codec.decode_simulation_campaign_manifest(raw)
 
 
 def test_manifest_reader_rejects_a_missing_nested_field(tmp_path) -> None:

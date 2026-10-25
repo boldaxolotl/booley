@@ -10,9 +10,7 @@ from booley.flows.sim.campaign.codec import (
 )
 from booley.flows.sim.campaign.planning import finalize_manifest
 from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
-from tests.flows.sim.test_campaign_manifest_codec import (
-    _sha,
-)
+from tests.flows.sim.test_campaign_manifest_codec import _sha
 from tests.flows.sim.test_campaign_test_runs import (
     _manifest_run_groups,
     _work_item_test_runs,

@@ -56,7 +56,9 @@ from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import attempt_scope
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
+    RuntimeInputError,
     materialize_campaign_runtime_inputs,
+    safe_runtime_relative,
 )
 from booley.flows.test_runs import TestRun, test_run_from_document
 from booley.runtime.supervised_execution import current_supervised_execution
@@ -1844,7 +1846,13 @@ def _capture_private_image(
         executable_assigned |= kind == "simulator_executable"
         sources.append((source, kind))
     for declaration in runtime_declarations:
-        sources.append((source_root / declaration["source_artifact_path"], "runtime_input"))
+        # A resumed prerequisite manifest is not re-planned, so refuse a path
+        # that could copy outside the private image before touching the disk.
+        try:
+            relative = safe_runtime_relative(declaration["source_artifact_path"])
+        except RuntimeInputError as exc:
+            raise SimulationCampaignIntegrityError(str(exc)) from exc
+        sources.append((source_root / relative, "runtime_input"))
     if not executable_assigned:
         raise SimulationCampaignIntegrityError("private image has no simulator executable")
     records = []
