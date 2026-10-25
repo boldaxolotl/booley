@@ -46,6 +46,13 @@ def _open_windows(path: Path, booley_dir: Path | None) -> int:  # pragma: no cov
         expected = os.path.normcase(str(Path(os.path.normpath(path)).absolute()))
         final = Path(_windows_path_from_handle(descriptor))
         if booley_dir is not None:
+            # A link above the entry stays refused, as on POSIX: re-spelling through
+            # the entry must not also absorb an aliased ancestor.
+            entry_parent = booley_dir.absolute().parent
+            if os.path.normcase(str(entry_parent.resolve())) != os.path.normcase(
+                str(entry_parent)
+            ):
+                raise OSError(errno.ELOOP, "path resolves through a reparse point", path)
             final = lexical_booley_path(booley_dir.absolute(), final)
         actual = os.path.normcase(str(final))
         if actual != expected:

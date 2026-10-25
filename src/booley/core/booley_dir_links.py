@@ -1,7 +1,7 @@
 """The one rule for a symlinked Booley Directory entry.
 
-Only the exact ``<root>/.booley`` entry (the Booley Directory) may be a followed
-symlink; every link above or below it stays refused. Places that walk a path
+Only the exact Booley Directory entry (``<root>/.booley`` unless the Project
+selects another location) may be a followed symlink; every link above or below it stays refused. Places that walk a path
 without following links call :func:`is_booley_dir_entry` to learn which single
 component they may follow. Places that compare a resolved path with the lexical
 Booley Directory call :func:`lexical_booley_path` to put both in one spelling.

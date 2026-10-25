@@ -60,7 +60,8 @@ class JobArtifactCache:
         for parent in reversed((path, *path.parents)):
             if not parent.is_relative_to(self._project) or parent in self._directories:
                 continue
-            # The Project entry is the Booley Directory: the one component that may be a link.
+            # self._project is the Booley Directory (the cache is built from it): the one
+            # component that may be a link.
             info = parent.stat() if is_booley_dir_entry(parent, self._project) else parent.lstat()
             if stat.S_ISDIR(info.st_mode):
                 self._directories.add(parent)
