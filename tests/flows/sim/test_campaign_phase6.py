@@ -140,7 +140,7 @@ class _NoEdaExecutor:
                 "owned": False,
             },
             "child_execution_id": request.child_execution_id,
-            "child_entry_sha256": request.child_entry_sha256,
+            "child_entry_sha256": None,
             "pre_sim_build_access": workload["pre_sim_build_access"],
             "policy": {"timeout_seconds": None, "no_kill": False, "diagnostic": False},
             "started_at": _STAMP,
@@ -1023,6 +1023,147 @@ def test_a_v0_3_0_campaign_is_inspected_and_pruned(tmp_path: Path, legacy_schema
     assert status.summary_complete is True
     prune_invocation(reports, 1)
     assert not (reports / "sim/1").exists()
+
+
+def test_full_pruning_reclaims_unretired_v030_child_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Booley 0.3.0 child left unretired still has its slot token reclaimed by pruning."""
+    from booley.config.jobs import SlotCaps
+    from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
+    from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
+    from tests.flows.sim.campaign_v030_support import publish_v030_child
+
+    reports, project_data, store = _retained_invocation(tmp_path)
+    project_data.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(project_data))
+    manifest = store.load_manifest()
+    registry = ChildExecutionRegistry.from_project_data(store, manifest, project_data)
+    work_item_id = str(manifest.document["work_items"][0]["work_item_id"])
+    attempt_id = "550e8400-e29b-41d4-a716-446655440099"
+    child = ExecutionId("c" * 32)
+    legacy = publish_v030_child(
+        registry,
+        execution_id=child,
+        work_item_id=work_item_id,
+        attempt_id=attempt_id,
+        attempt_ordinal=9,
+        attempt_directory=store.work_item_directory(work_item_id)
+        / "attempts"
+        / f"0009-{attempt_id}",
+        parent_execution_id=ExecutionId("a" * 32),
+    )
+    slots = SlotStore(project_data / "runtime" / "jobs" / "slots", SlotCaps(max_heavy=1))
+    slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=child)
+    assert legacy.campaign_entry.is_file()
+
+    prune_invocation(reports, 1)
+
+    assert slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert not (reports / "sim/1").exists()
+    assert not list((project_data / ".runtime/campaign-child-executions/entries").glob("*.json"))
+
+
+def _interrupt_latest_attempt(
+    tmp_path: Path, reports: Path, store: CampaignStore, lane_id: str | None = None
+) -> tuple[Path, dict[str, object]]:
+    """Turn the retained Campaign's only item into an interrupted one with an owned run directory.
+
+    Returns the owned run directory and the rewritten attempt document. With ``lane_id`` the
+    attempt names that lane execution (a Campaign written by the current release).
+    """
+    from booley.flows.sim.campaign.run_directory import expand_run_directory
+
+    status = inspect_retained_campaign(store.manifest_path)
+    work_item_id = status.completed[0]
+    (store.work_item_directory(work_item_id) / "result.json").unlink()
+    store.summary_path.unlink()
+    (store.root.parent / "simulation.json").unlink()
+    progress_path = reports / "sim/1/progress.json"
+    progress = json.loads(progress_path.read_text())
+    progress.update(completed_targets=[], pending_targets=["sim"], complete=False, phase="running")
+    progress_path.write_text(json.dumps(progress))
+    attempt_path = next(
+        (store.work_item_directory(work_item_id) / "attempts").glob("*/attempt.json")
+    )
+    document = json.loads(attempt_path.read_bytes())
+    project_root = tmp_path / "checkout"
+    project_root.mkdir()
+    run = expand_run_directory(
+        "work/{campaign}/{test}/{attempt}",
+        project_root=project_root,
+        campaign_id=document["campaign_id"],
+        target_key="sim",
+        work_item_key=store.work_item_directory(work_item_id).name,
+        attempt_key=attempt_path.parent.name,
+    )
+    document["run_directory"] = {
+        "kind": "templated",
+        "configured": "work/{campaign}/{test}/{attempt}",
+        "resolved": str(run.path),
+        "collision_key": run.collision_key,
+        "owned": True,
+    }
+    document["child_execution_id"] = lane_id
+    document["child_entry_sha256"] = None
+    attempt_path.chmod(0o600)
+    attempt_path.write_bytes(canonical_json_bytes(document))
+    run.path.mkdir(parents=True)
+    (run.path / ".booley-simulation-attempt.json").write_bytes(
+        canonical_json_bytes(
+            {
+                "campaign_id": document["campaign_id"],
+                "work_item_id": work_item_id,
+                "attempt_id": document["attempt_id"],
+            }
+        )
+    )
+    return run.path, document
+
+
+def test_full_pruning_cleans_interrupted_owned_run_directory(tmp_path: Path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    run_path, _document = _interrupt_latest_attempt(tmp_path, reports, store)
+
+    prune_invocation(reports, 1)
+
+    assert not run_path.exists()
+    assert not (reports / "sim/1").exists()
+
+
+@pytest.mark.parametrize("recovered", [True, False], ids=["recovered", "incomplete"])
+def test_full_pruning_recovers_interrupted_lane_before_run_directory_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovered: bool
+) -> None:
+    """Pruning cancels the lane a crashed Campaign left behind, or keeps everything."""
+    from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
+
+    reports, project_data, store = _retained_invocation(tmp_path)
+    lane = ExecutionId("d" * 32)
+    run_path, document = _interrupt_latest_attempt(tmp_path, reports, store, str(lane))
+    registry = ChildExecutionRegistry.from_project_data(store, store.load_manifest(), project_data)
+    registry.prepare(
+        lane,
+        work_item_id=str(document["work_item_id"]),
+        attempt_id=str(document["attempt_id"]),
+        attempt_ordinal=int(document["attempt_ordinal"]),  # type: ignore[call-overload]
+        attempt_directory=store.root,
+        parent_execution_id=ExecutionId("a" * 32),
+    )
+    assert not registry.is_terminal(lane)
+    if not recovered:
+        monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
+
+    if recovered:
+        prune_invocation(reports, 1)
+        assert registry.is_terminal(lane)
+        assert not run_path.exists()
+        assert not (reports / "sim/1").exists()
+    else:
+        with pytest.raises(CampaignRetentionError, match="recovery is incomplete"):
+            prune_invocation(reports, 1)
+        assert run_path.exists()
+        assert (reports / "sim/1").exists()
 
 
 def test_detached_copy_pruning_never_releases_project_child_pair(tmp_path: Path) -> None:

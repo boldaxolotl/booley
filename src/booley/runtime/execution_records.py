@@ -209,18 +209,26 @@ def verify_inherited_execution_id(
     return execution_id
 
 
+def _child_entry_path(paths: ExecutionPaths, execution_id: ExecutionId) -> Path:
+    """Locate the Project-local child entry Booley 0.3.0 wrote for ``execution_id``."""
+    return (
+        paths.root.parents[2]
+        / ".runtime"
+        / "campaign-child-executions"
+        / "entries"
+        / f"{execution_id}.json"
+    )
+
+
 def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
-    """Authenticate an optional immutable campaign-child context sidecar."""
+    """Authenticate an optional immutable campaign-child context sidecar.
+
+    A valid context stands alone for a current parallel lane. When a Booley 0.3.0
+    Project entry exists it must bind the context digest exactly; an entry without
+    a context fails closed.
+    """
     if not paths.context.exists():
-        project_data = paths.root.parents[2]
-        entry = (
-            project_data
-            / ".runtime"
-            / "campaign-child-executions"
-            / "entries"
-            / f"{execution_id}.json"
-        )
-        return not entry.exists()
+        return not _child_entry_path(paths, execution_id).exists()
     payload = read_json(paths.context)
     expected = {
         "$schema",
@@ -240,21 +248,15 @@ def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> b
     )
     if not context_valid:
         return False
+    if not _child_entry_path(paths, execution_id).exists():
+        return True
     return _child_entry_matches(paths, execution_id, payload)
 
 
 def _child_entry_matches(
     paths: ExecutionPaths, execution_id: ExecutionId, context: dict[str, Any]
 ) -> bool:
-    project_data = paths.root.parents[2]
-    entry_path = (
-        project_data
-        / ".runtime"
-        / "campaign-child-executions"
-        / "entries"
-        / f"{execution_id}.json"
-    )
-    entry = read_json(entry_path)
+    entry = read_json(_child_entry_path(paths, execution_id))
     if entry is None:
         return False
     try:
