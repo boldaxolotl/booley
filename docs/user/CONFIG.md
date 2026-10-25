@@ -392,19 +392,19 @@ options, and you never have to rewrite a testbench you don't own:
   see `booley.data.refs/sim_result_sentinel.sv`.
 - Keep your TB's existing wording and declare it in `booley.toml`:
 
-  ```toml
-  [flows.sim]
-  pass_sentinels = ["ALL TESTS PASSED."]
-  fail_sentinels = ["ERROR!", "TIMEOUT"]
-  cycle_sentinels = ["CoreMark completed in:"]
-  ```
+    ```toml
+    [flows.sim]
+    pass_sentinels = ["ALL TESTS PASSED."]
+    fail_sentinels = ["ERROR!", "TIMEOUT"]
+    cycle_sentinels = ["CoreMark completed in:"]
+    ```
 
-  These are honored end-to-end in the built-in Icarus/Verilator flow (a fail
-  sentinel wins ties). `booley doctor` greps your sim Target's TB for the
-  default sentinel and warns at setup time if none is present. For a custom
-  configured phrase, a missing literal is only a note because the TB may build
-  it dynamically; the simulation smoke remains authoritative. Otherwise a
-  passing run reads as INCONCLUSIVE only when you finally run it.
+    These are honored end-to-end in the built-in Icarus/Verilator flow (a fail
+    sentinel wins ties). `booley doctor` greps your sim Target's TB for the
+    default sentinel and warns at setup time if none is present. For a custom
+    configured phrase, a missing literal is only a note because the TB may build
+    it dynamically; the simulation smoke remains authoritative. Otherwise a
+    passing run reads as INCONCLUSIVE only when you finally run it.
 
 Cycle counts use the same literal-prefix model. By default Booley recognizes
 `[SIM_CYCLES] smoke 12345`; `cycle_sentinels` lets an existing HDL testbench
@@ -2130,9 +2130,9 @@ pin set (`tox.ini` / `requirements.txt`) wholesale.
   raises, because the submodule is where the dead import lives. Verify with the
   real thing:
 
-  ```bash
-  booley session enter -- python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
-  ```
+    ```bash
+    booley session enter -- python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
+    ```
 
 **What a pin cannot fix: the simulator pairing.** cocotb's run loop is compiled
 against the simulator, so a cocotb build incompatible with the image's current Verilator can

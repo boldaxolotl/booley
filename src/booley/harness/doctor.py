@@ -133,6 +133,7 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
+from booley.runtime.docs_links import docs_url
 from booley.runtime.git import _git_common_dir
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
@@ -896,9 +897,9 @@ def _check_legacy_source_stashes(project_root: Path, reporter: _Reporter) -> Non
                 f"An older run left a source stash record at {manifest}",
                 subject=str(manifest),
             ),
-            "Inspect the record before Sandbox rebuild or temp cleanup. See "
-            "TROUBLESHOOTING.md: Recover sources hidden by an interrupted older run. "
-            "Recovery is manual; never overwrite current sources.",
+            "Inspect the record before Sandbox rebuild or temp cleanup. Recovery is "
+            "manual; never overwrite current sources. Guide: "
+            + docs_url("TROUBLESHOOTING.md", "recover-sources-hidden-by-an-interrupted-older-run"),
         )
 
 
