@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.scope_matching import scope_matches_file
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
@@ -275,6 +277,8 @@ def _script_paths(spec: Mapping[str, Any], core_file: Path, project_root: Path) 
         candidate = (core_file.parent / token).resolve()
         if not (candidate.exists() or _looks_like_script(token)):
             continue
+        # A symlinked ``.booley`` resolves outside the Project; report it as ``.booley/...``.
+        candidate = lexical_booley_path(project_root / BOOLEY_DIR_NAME, candidate)
         try:
             rel = candidate.relative_to(project_root).as_posix()
         except ValueError:

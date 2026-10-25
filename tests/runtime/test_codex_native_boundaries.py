@@ -74,10 +74,11 @@ def test_hook_and_registry_both_reject_redirected_handle_map_ancestors(tmp_path,
     project = tmp_path / "project"
     owner = process(tmp_path / "proc", 100, 1)
     chat_sessions.reserve_codex_chat(project, owner)
-    target = project if redirect == "project" else project / "runtime"
+    # "project": a link above the Booley Directory (the entry itself may be a link).
+    target = tmp_path if redirect == "project" else project / "runtime"
     link = tmp_path / "redirected"
     symlink_or_skip(link, target)
-    selected = link if redirect == "project" else tmp_path / "alias"
+    selected = link / "project" if redirect == "project" else tmp_path / "alias"
     if redirect == "runtime":
         selected.mkdir()
         symlink_or_skip(selected / "runtime", link)

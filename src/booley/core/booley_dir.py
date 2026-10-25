@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
     require_current_layout,
@@ -242,7 +243,10 @@ def resolve_authoritative_booley_dir(project_root: Path) -> Path:
 def checkout_booley_dir_relative_to(project_root: Path) -> Path:
     """Return the selected checkout's Booley Directory as a safe relative path."""
     root = project_root.resolve()
-    booley_dir = resolve_checkout_booley_dir(root).resolve()
+    # A symlinked ``.booley`` entry is reported by its lexical name, not its target.
+    booley_dir = lexical_booley_path(
+        root / BOOLEY_DIR_NAME, resolve_checkout_booley_dir(root).resolve()
+    )
     try:
         relative = booley_dir.relative_to(root)
     except ValueError as exc:

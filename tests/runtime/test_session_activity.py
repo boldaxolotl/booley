@@ -87,6 +87,29 @@ def test_prune_keeps_registered_and_recent_signals_only(tmp_path):
     assert store.read("codex:gone") is None
 
 
+def test_store_reads_and_prunes_under_a_symlinked_booley_directory(tmp_path):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.parent.mkdir()
+    symlink_or_skip(booley_dir, store_dir, target_is_directory=True)
+    store = ActivityStore(booley_dir)
+    path = write_activity_signal(booley_dir, "codex:a", activity.WORKING, STAMP)
+    os.utime(path, (NOW - 500, NOW - 500))
+
+    assert store.read("codex:a") == ActivitySignal("codex:a", activity.WORKING, STAMP)
+    assert store.prune(set(), now=NOW, quiet_after=100) == 1
+    assert store.read("codex:a") is None
+
+    # A link below the Booley Directory is still refused.
+    write_activity_signal(store_dir, "codex:b", activity.WORKING, STAMP)
+    moved = store_dir / "moved"
+    (store_dir / "runtime/session_activity").rename(moved)
+    symlink_or_skip(store_dir / "runtime/session_activity", moved, target_is_directory=True)
+    assert store.read("codex:b") is None
+    assert store.prune(set(), now=NOW + 10_000, quiet_after=100) == 0
+
+
 def test_prune_expires_signals_when_directory_entries_have_no_inode(tmp_path, monkeypatch):
     store = ActivityStore(tmp_path)
     path = write_activity_signal(tmp_path, "codex:gone", activity.WAITING_USER, STAMP)

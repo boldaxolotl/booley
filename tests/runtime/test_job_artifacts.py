@@ -97,21 +97,32 @@ def test_overflow_reuses_unchanged_documents(tmp_path, monkeypatch, invalid):
 
 
 @pytest.mark.parametrize("kind", ["report", "progress"])
-def test_project_boundary_accepts_only_links_above_project(tmp_path, monkeypatch, kind):
+def test_project_boundary_follows_only_the_booley_directory_entry(tmp_path, monkeypatch, kind):
     real = tmp_path / "real"
     root = real / "project" / "jobs"
     progress(report(root, "sim", 1).with_name("progress.json"))
     monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0 if kind == "progress" else 100)
+    # A link above the entry is accepted.
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     cache = JobArtifactCache(alias / "project")
     cache.begin()
     assert cache.find(alias / "project/jobs", "sim", "1", kind) is not None
+    # The entry itself (the cache's Project is the Booley Directory) is followed.
     linked_project = tmp_path / "linked"
     linked_project.symlink_to(real / "project", target_is_directory=True)
     cache = JobArtifactCache(linked_project)
     cache.begin()
-    assert cache.find(linked_project / "jobs", "sim", "1", kind) is None
+    assert cache.find(linked_project / "jobs", "sim", "1", kind) is not None
+    # A link below the entry is still refused.
+    other = tmp_path / "other"
+    report(other / "project" / "jobs", "sim", 1)
+    progress(other / "project" / "flow-reports/sim/1/progress.json")
+    (other / "project" / "flow-reports").rename(other / "elsewhere")
+    (other / "project" / "flow-reports").symlink_to(other / "elsewhere", target_is_directory=True)
+    below = JobArtifactCache(other / "project")
+    below.begin()
+    assert below.find(other / "project/jobs", "sim", "1", kind) is None
 
 
 @pytest.mark.parametrize("kind,limit", [("report", 100), ("progress", 100), ("progress", 0)])
@@ -198,8 +209,19 @@ def test_directory_checks_shared_once_and_refreshed_after_link_change(tmp_path, 
     assert cache.find(root, "sim", "1", "report") is None
 
 
-@pytest.mark.parametrize("component", range(7))
-@pytest.mark.parametrize("refusal", ["link", "dangling", "non-directory"])
+# Component 6 is the Project entry itself (the Booley Directory in production): it
+# may be a followed link, but is still refused when dangling or not a directory.
+@pytest.mark.parametrize(
+    ("component", "refusal"),
+    [
+        *((component, "link") for component in range(6)),
+        *(
+            (component, refusal)
+            for component in range(7)
+            for refusal in ("dangling", "non-directory")
+        ),
+    ],
+)
 @pytest.mark.parametrize("limit", [0, 100])
 def test_internal_components_refused(tmp_path, monkeypatch, component, refusal, limit):
     project = tmp_path / "project"

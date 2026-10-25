@@ -235,6 +235,32 @@ def test_missing_read_and_symlink_refusal(tmp_path):
     assert external.read_text() == "{}"
 
 
+def test_handles_follow_a_symlinked_booley_directory(tmp_path):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.parent.mkdir()
+    symlink_or_skip(booley_dir, store_dir, target_is_directory=True)
+
+    assert handles.reserve_session_handle(booley_dir, "codex:one") == "S1"
+    handles.register_job(booley_dir, "run-1", "sim", "codex:two")
+
+    assert handles.HandleStore(booley_dir).snapshot() == (
+        {"codex:one": "S1", "codex:two": "S2"},
+        (),
+    )
+    assert handles.HandleStore(booley_dir, jobs=True).snapshot() == ({"run-1": "J-SIM1"}, ())
+    assert (store_dir / "runtime/sessions/handles/map.json").is_file()
+    assert (store_dir / "runtime/job-handles/map.json").is_file()
+
+    # A link below the Booley Directory is still refused.
+    moved = store_dir / "moved"
+    (store_dir / "runtime/job-handles").rename(moved)
+    symlink_or_skip(store_dir / "runtime/job-handles", moved, target_is_directory=True)
+    labels, diagnostics = handles.HandleStore(booley_dir, jobs=True).snapshot()
+    assert labels == {} and "symlink" in diagnostics[0]
+
+
 @pytest.mark.parametrize(
     "payload",
     ["[" * 50000 + "0" + "]" * 50000, "x" * (16 * 1024 * 1024 + 1)],

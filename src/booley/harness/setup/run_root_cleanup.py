@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.feedback import findings, materialize
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
 
@@ -55,7 +56,8 @@ def _locate(project_root: Path, run_id: str) -> tuple[Path, Path]:
     if booley_dir != root / BOOLEY_DIR_NAME or not booley_dir.is_dir():
         raise CleanupRefusedError("no .booley directory was found")
     run_root = booley_dir / "tmp" / "setup" / run_id
-    for path in (booley_dir, *reversed(run_root.parents[:2]), run_root):
+    # The Booley Directory entry itself may be a followed link; everything below it may not.
+    for path in (*reversed(run_root.parents[:2]), run_root):
         if path.is_symlink():
             raise CleanupRefusedError(f"refusing symlinked path: {path}")
     return booley_dir, run_root
@@ -78,7 +80,11 @@ def _attached(booley_dir: Path, run_root: Path) -> tuple[set[Path], int]:
     """Attachment paths under the run root, and the Findings Log's corrupt-line count."""
     log = findings.read_log(booley_dir)
     raw = (a for finding in log.entries for a in finding.attachments)
-    paths = {materialize.normalize_attachment_path(a, booley_dir) for a in raw}
+    # Attachments resolve to the entry's physical target; compare in the lexical spelling.
+    paths = {
+        lexical_booley_path(booley_dir, materialize.normalize_attachment_path(a, booley_dir))
+        for a in raw
+    }
     return {p for p in paths if p.is_relative_to(run_root)}, log.corrupt_lines
 
 

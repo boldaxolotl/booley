@@ -268,6 +268,23 @@ def test_symlink_and_ancestor_conflicts(project, tmp_path, conflict):
     assert (target / "tasks.json").read_bytes() == b'{"tasks":[]}'
 
 
+def test_task_reconciles_under_a_symlinked_booley_directory(project, tmp_path):
+    store = tmp_path / "store"
+    project.data.rmdir()
+    store.mkdir()
+    symlink_or_skip(project.data, store, target_is_directory=True)
+
+    assert tasks.inspect(project.root, project.data).pending
+    assert tasks.reconcile(project.root, project.data).applied
+    assert (store / "runtime/dashboard-task.json").is_file()
+    assert not tasks.inspect(project.root, project.data).pending
+
+    # A link below the Booley Directory is still refused.
+    (store / "runtime").rename(store / "moved")
+    symlink_or_skip(store / "runtime", store / "moved", target_is_directory=True)
+    assert tasks.inspect(project.root, project.data).diagnostics
+
+
 def test_compare_and_swap_preserves_intervening_user_edit(project):
     transaction = tasks.TaskTransaction(tasks.inspect(project.root, project.data))
     project.file.parent.mkdir()

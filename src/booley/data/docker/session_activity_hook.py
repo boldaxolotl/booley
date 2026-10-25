@@ -141,7 +141,12 @@ def _codex_key(payload: Mapping[str, object]) -> str | None:
 
 
 def _chat_aliases(project: Path) -> dict[str, str]:
-    """Validate the same session-map contract as runtime.handles.HandleStore."""
+    """Validate the session-map contract of runtime.handles.HandleStore, but stricter.
+
+    The host store follows a symlinked Booley Directory entry; this container-side
+    reader never sees one (Sandbox issuance refuses a linked mount source), so it
+    keeps refusing every link on the path.
+    """
     path = project / "runtime/sessions/handles/map.json"
     if any(part.is_symlink() for part in (path, *path.parents)):
         raise ValueError("handle map is redirected")

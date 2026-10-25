@@ -35,6 +35,7 @@ from booley.harness.setup.scaffold import (
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.target_surface import collect_surface
+from tests.conftest import symlink_or_skip
 
 
 def _choices(**overrides) -> ScaffoldChoices:
@@ -540,6 +541,25 @@ def test_step_writes_everything_in_fresh_repo(tmp_path: Path, monkeypatch, capsy
     ):
         assert (tmp_path / rel).is_file(), rel
     reset_cache()
+    capsys.readouterr()
+
+
+def test_step_writes_config_through_a_symlinked_booley_directory(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    symlink_or_skip(project / ".booley", store, target_is_directory=True)
+    ctx = _ctx(project, monkeypatch)
+
+    assert step_scaffold(ctx, _args()) is True
+
+    assert ctx.results[-1].status == "ok"
+    assert (store / "booley.toml").is_file() and (store / "tests.toml").is_file()
+    assert (project / "rtl" / "my_ip.sv").is_file()
+    assert (project / ".booley").is_symlink()
     capsys.readouterr()
 
 

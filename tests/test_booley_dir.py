@@ -17,6 +17,7 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
+from tests.conftest import symlink_or_skip
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +118,16 @@ class TestEnvVarOverride:
 
         assert resolve_checkout_booley_dir(checkout) == custom.resolve()
         assert checkout_booley_dir_relative_to(checkout) == Path("control")
+
+    def test_checkout_relative_booley_dir_names_a_symlinked_entry(self, tmp_path, monkeypatch):
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        external = tmp_path / "external"
+        external.mkdir()
+        symlink_or_skip(checkout / ".booley", external, target_is_directory=True)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+
+        assert checkout_booley_dir_relative_to(checkout) == Path(".booley")
 
     def test_checkout_relative_booley_dir_rejects_external_path(self, tmp_path, monkeypatch):
         checkout = tmp_path / "ticket-checkout"

@@ -77,28 +77,72 @@ def test_apply_removes_only_the_run_root(tmp_path, capsys):
     )
 
 
-def test_apply_refuses_symlinked_boundaries(tmp_path, capsys):
-    for number, link in enumerate((".booley", "tmp", "tmp/setup", "tmp/setup/r")):
-        real = tmp_path / f"real{number}"
-        (real / "tmp" / "setup" / "r").mkdir(parents=True)
-        (real / "tmp" / "setup" / "r" / MARKER).write_text("x", encoding="utf-8")
-        (real / "tmp" / "setup" / "r" / "keep.txt").write_text("keep", encoding="utf-8")
-        project = tmp_path / f"project{number}"
-        parts = Path(link).parts
-        # Real directories down to the parent, then one symlink to the real tree.
-        holder = project / ".booley" if link != ".booley" else project
-        for part in parts[:-1] if link != ".booley" else ():
-            (holder / part).mkdir(parents=True, exist_ok=True)
-            holder /= part
-        holder.mkdir(parents=True, exist_ok=True)
-        target = real if link == ".booley" else real.joinpath(*parts)
-        symlink_or_skip(holder / (parts[-1] if link != ".booley" else ".booley"), target)
+@pytest.mark.parametrize("entry", ["directory", "symlink"])
+@pytest.mark.parametrize("link", ["tmp", "tmp/setup", "tmp/setup/r"])
+def test_apply_refuses_symlinked_boundaries(tmp_path, capsys, link, entry):
+    """A link at ``tmp``, ``tmp/setup`` or the run root is refused and named.
 
-        code, out = _cli(project, capsys, "apply", "--run-id", "r")
+    ``entry`` is the Project's ``.booley``: a real directory, or itself a link to a
+    store (followed as the Booley Directory, so the link below it is still the one named).
+    """
+    real = tmp_path / "real"
+    (real / "tmp" / "setup" / "r").mkdir(parents=True)
+    (real / "tmp" / "setup" / "r" / MARKER).write_text("x", encoding="utf-8")
+    (real / "tmp" / "setup" / "r" / "keep.txt").write_text("keep", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    booley_dir = project / ".booley"
+    if entry == "symlink":
+        store = tmp_path / "store"
+        store.mkdir()
+        symlink_or_skip(booley_dir, store, target_is_directory=True)
+    else:
+        booley_dir.mkdir()
+    # Real directories down to the parent, then one symlink to the real tree.
+    parts = Path(link).parts
+    holder = booley_dir
+    for part in parts[:-1]:
+        (holder / part).mkdir()
+        holder /= part
+    symlink_or_skip(holder / parts[-1], real.joinpath(*parts), target_is_directory=True)
 
-        assert code == 2 and "symlink" in out["error"], link
-        assert (real / "tmp" / "setup" / "r" / "keep.txt").exists()
-        assert (real / "tmp" / "setup" / "r" / MARKER).exists()
+    code, out = _cli(project, capsys, "apply", "--run-id", "r")
+
+    assert code == 2 and f"refusing symlinked path: {booley_dir / link}" in out["error"]
+    assert (real / "tmp" / "setup" / "r" / "keep.txt").exists()
+    assert (real / "tmp" / "setup" / "r" / MARKER).exists()
+
+
+def test_symlinked_booley_directory_prepares_previews_and_removes_with_snapshot(tmp_path, capsys):
+    """A linked ``.booley`` is followed; attached evidence is still snapshotted first."""
+    project = tmp_path / "project"
+    project.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    booley_dir = project / ".booley"
+    symlink_or_skip(booley_dir, store, target_is_directory=True)
+    run_root = booley_dir / "tmp" / "setup" / "r1"
+    code, out = _cli(project, capsys, "prepare", "--run-id", "r1")
+    assert (code, out.get("status")) == (0, "prepared"), out
+    source = run_root / "doctor.log"
+    source.write_text("evidence\n", encoding="utf-8")
+    append(Finding(title="doctor finding", attachments=[str(source)]), booley_dir)
+
+    code, out = _cli(project, capsys, "preview", "--run-id", "r1")
+    assert (code, out["status"]) == (0, "preview")
+    assert {row["path"]: row["attached"] for row in out["files"]} == {
+        MARKER: False,
+        "doctor.log": True,
+    }
+
+    code, out = _cli(project, capsys, "apply", "--run-id", "r1")
+
+    assert (code, out["status"], out["kept"]) == (0, "removed", [])
+    assert not run_root.exists() and not (store / "tmp" / "setup" / "r1").exists()
+    attachment = Path(read_log(booley_dir).entries[0].attachments[0])
+    assert "setup-evidence" in str(attachment) and attachment.is_file()
+    assert attachment.read_text(encoding="utf-8") == "evidence"
+    assert booley_dir.is_symlink()
 
 
 def test_apply_refuses_unowned_run_root(tmp_path, capsys):

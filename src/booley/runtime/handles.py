@@ -81,11 +81,12 @@ class HandleStore:
 
     def __init__(self, booley_dir: Path, *, jobs: bool = False) -> None:
         self.jobs = jobs
+        self.booley_dir = booley_dir
         self.root = booley_dir / "runtime" / ("job-handles" if jobs else "sessions/handles")
         self.path = self.root / "map.json"
 
     def load(self) -> HandleMap:
-        refuse_symlinks(self.path)
+        refuse_symlinks(self.path, booley_dir=self.booley_dir)
         if not self.path.exists():
             return HandleMap()
         with self.path.open("rb") as stream:
@@ -105,7 +106,7 @@ class HandleStore:
         return HandleMap(entries, aliases, counter)
 
     def save(self, handles: HandleMap) -> None:
-        refuse_symlinks(self.path)
+        refuse_symlinks(self.path, booley_dir=self.booley_dir)
         payload = (json.dumps({"schema": 1, **asdict(handles)}, sort_keys=True) + "\n").encode()
         if len(payload) > MAX_MAP_BYTES:
             raise ValueError("handle map exceeds 16 MiB")
@@ -113,7 +114,7 @@ class HandleStore:
 
     def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
         root = self.root if self.jobs else self.root.parent
-        with _writer(root, wait_s=1 if self.jobs else None):
+        with _writer(root, wait_s=1 if self.jobs else None, booley_dir=self.booley_dir):
             handles = self.load()
             before = asdict(handles)
             label = handles.reserve(key, prefix, predecessors=predecessors)
@@ -129,9 +130,9 @@ class HandleStore:
 
 
 @contextmanager
-def _writer(root: Path, *, wait_s: float | None) -> Iterator[None]:
+def _writer(root: Path, *, wait_s: float | None, booley_dir: Path) -> Iterator[None]:
     lock = root / ".lock"
-    refuse_symlinks(lock)
+    refuse_symlinks(lock, booley_dir=booley_dir)
     root.mkdir(parents=True, exist_ok=True)
     with lock.open("a+", encoding="utf-8", newline="") as handle:
         if wait_s is None:
@@ -145,7 +146,7 @@ def _writer(root: Path, *, wait_s: float | None) -> Iterator[None]:
 
 
 def session_writer(booley_dir: Path) -> AbstractContextManager[None]:
-    return _writer(booley_dir / "runtime/sessions", wait_s=None)
+    return _writer(booley_dir / "runtime/sessions", wait_s=None, booley_dir=booley_dir)
 
 
 def reserve_session_handle(booley_dir: Path, key: str) -> str:
