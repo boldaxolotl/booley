@@ -32,6 +32,10 @@ class GitIdentity:
     email: str
 
 
+#: The neutral identity the Sandbox Image and Booley fall back to.
+DEFAULT_IDENTITY = GitIdentity(_DEFAULT_NAME, _DEFAULT_EMAIL)
+
+
 def _table(value: Any, field: str) -> dict[str, Any]:
     try:
         return require_dict(value, field=field)

@@ -1504,30 +1504,38 @@ billing](USAGE.md#auth--billing).
 
 #### Git identity (`[agent.git]`)
 
-Set the default author and committer identity for Git commands run in
-Interactive Mode and Goal Mode:
-
 ```toml
 [agent.git]
 name = "Expected Developer"
 email = "developer@example.com"
 ```
 
-Interactive Mode supplies the configured identity through command-scope Git
-settings in both the Sandbox container and VS Code remote environment. These
-settings take precedence over copied host-global `.gitconfig` values and leave
-the host checkout's Git identity unchanged. A missing or empty `name` falls back
-to `Dev`; a missing or empty `email` falls back to `dev@localhost`.
+This is the default author and committer for every Git command in an
+Interactive Mode or Goal Mode Sandbox (agents, the terminal, the editor's Git
+UI). A missing or empty `name` falls back to `Dev`, `email` to `dev@localhost`.
 
-Sandbox creation and startup remove a complete worktree
-Git identity pair matching the current settings or `Dev <dev@localhost>`;
-unrecognized custom overrides and other Git settings are preserved. Changed
-`[agent.git]` settings require refreshing and recreating the Sandbox to update
-its immutable environment. Explicit Git overrides such
-as `git commit --author` or the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment
-variables still take precedence.
+The issued devcontainer spec sets it as command-scope Git settings
+(`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`) in
+`containerEnv` and `remoteEnv`. These beat any gitconfig and leave the host
+checkout untouched; a hand-written spec, such as one for GitHub Codespaces,
+must set the same variables. `git -c`, `git commit --author`, and
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After changing `[agent.git]`,
+refresh and recreate the Sandbox. Sandbox creation and startup remove a
+complete worktree identity pair matching the current settings or
+`Dev <dev@localhost>`; a different custom identity and other Git settings are
+kept.
 
+Doctor, run inside a Sandbox, warns with:
 
+- `sandbox.git-identity-override` when the override is missing, partial,
+  malformed, or differs from `[agent.git]`, naming what Git would use instead,
+  if anything. A throwaway shell container has no override, so it warns there.
+- `sandbox.gitconfig-identity` when system or global gitconfig sets another
+  identity, such as a copied host `~/.gitconfig`; Git falls back to it whenever
+  the override is missing. The image's own `Dev <dev@localhost>` does not count.
+
+Either can be waived in `doctor-waivers.toml`; an active warning keeps Doctor
+from recording a clean run.
 
 ### Model selection (`[models]`)
 
