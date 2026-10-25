@@ -26,7 +26,10 @@ from booley.flows.sim.campaign.run_directory import (
     cleanup_interrupted_run_directory,
     expand_run_directory,
 )
-from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.campaign.serial_execution import (
+    OrdinaryHdlSerialExecutor,
+    _capture_private_image,
+)
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import (
     SimulationArtifactEvidence,
@@ -554,3 +557,27 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
         thread.join()
     assert first.collision_key == alias.collision_key
     assert keys == [first.collision_key, first.collision_key]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["../image/in.hex", "/abs/in.hex", "\\abs\\in.hex", "C:in.hex", "a/../in.hex", ""],
+)
+def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
+    tmp_path: Path, declared: str
+) -> None:
+    """A resumed prerequisite manifest is not re-planned; capture must not copy outside."""
+    source_root = tmp_path / "image"
+    source_root.mkdir()
+    (source_root / "sim.bin").write_bytes(b"x")
+    (source_root / "in.hex").write_bytes(b"y")
+    destination = tmp_path / "private"
+    with pytest.raises(SimulationCampaignIntegrityError, match="invalid runtime input path"):
+        _capture_private_image(
+            (source_root / "sim.bin",),
+            source_root,
+            destination,
+            ({"source_artifact_path": declared},),  # type: ignore[arg-type]
+        )
+    assert not (tmp_path / "in.hex").exists()
+    assert sorted(path.name for path in destination.iterdir()) == []

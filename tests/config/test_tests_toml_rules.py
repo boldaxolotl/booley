@@ -150,3 +150,9 @@ def test_env_table_refuses_a_non_table(raw: object) -> None:
 
 def test_env_table_error_is_a_value_error() -> None:
     assert issubclass(EnvTableError, ValueError)
+
+
+def test_names_longer_than_512_utf8_bytes_are_refused() -> None:
+    assert validate_test_or_variant_name("t" * 512) == "t" * 512
+    with pytest.raises(TestRunNameError, match="longer than 512 UTF-8 bytes"):
+        validate_test_or_variant_name("é" * 257)

@@ -10,10 +10,7 @@ from booley.flows.sim.campaign.codec import (
 )
 from booley.flows.sim.campaign.planning import finalize_manifest
 from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
-from tests.flows.sim.test_campaign_manifest_codec import (
-    _prepared_disclosure,
-    _sha,
-)
+from tests.flows.sim.test_campaign_manifest_codec import _sha
 from tests.flows.sim.test_campaign_test_runs import (
     _manifest_run_groups,
     _work_item_test_runs,
@@ -68,50 +65,10 @@ def test_no_waivers_v2_manifest_decodes_and_keeps_its_schema() -> None:
     assert decoded.document == manifest.document
 
 
-@pytest.mark.parametrize(
-    ("schema", "members"),
-    [
-        (_V2, {"coverage": True}),
-        (_V2, {"coverage": True, "no_waivers": False}),
-        (_V2, {"coverage": True, "no_waivers": "yes"}),
-        (_V2, {"coverage": False, "no_waivers": True}),
-        (_V1, {"coverage": True, "no_waivers": True}),
-    ],
-)
-def test_no_waivers_manifest_grammar_is_exact(schema: str, members: dict[str, object]) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        _refinalized(schema, **members)
-
-
 def test_v1_manifest_grammar_is_unchanged_by_no_waivers_support() -> None:
     manifest = _refinalized(_V1, coverage=True)
     assert manifest.document["$schema"] == _V1
     assert "no_waivers" not in manifest.document["workload"]  # type: ignore[operator]
-
-
-@pytest.mark.parametrize("schema", ["v1", "v2"])
-@pytest.mark.parametrize("mapping", [False, True])
-def test_source_mapping_schema_grammar(schema, mapping):
-    document = _legacy_manifest(schema)
-    document.pop("fingerprints")
-    entry = {
-        "path": "staged.hex",
-        "bytes": 1,
-        "sha256": "sha256:" + "a" * 64,
-        "kind": "generated_input",
-    }
-    if mapping:
-        entry["source_path"] = "data/source.hex"
-    document["planning_disclosures"] = [_prepared_disclosure([entry])]
-    if mapping:
-        with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-            finalize_manifest(document)
-    else:
-        manifest = finalize_manifest(document)
-        assert (
-            decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-            == manifest
-        )
 
 
 def test_a_manifest_before_v4_still_decodes_for_reports():

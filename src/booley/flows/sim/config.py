@@ -141,7 +141,7 @@ def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
     value = _sim_config(work_dir).get("pre_run_commands")
     if value is None:
         return []
-    if not is_str_list(value):
+    if not is_str_list(value) or not all(value):
         message, fix = pre_run_commands_problem("sim")
         raise BoundaryError(f"{message}; {fix}")
     return list(value)

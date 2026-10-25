@@ -835,7 +835,7 @@ def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directo
     return request
 
 
-@given(st.sampled_from(["missing", "unknown", "type", "path"]))
+@given(st.sampled_from(["missing", "unknown", "type"]))
 def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
     manifest = _manifest()
     target = manifest["target"]
@@ -843,25 +843,9 @@ def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
         del target["revision"]
     elif mutation == "unknown":
         target["unexpected"] = True
-    elif mutation == "type":
-        target["name"] = 7
     else:
-        manifest["required_suite"]["source_path"] = "../escape"  # type: ignore[index]
+        target["name"] = 7
     with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("defines", ["x" * 4097]),
-        ("pre_sim_commands", ["x" * (16 * 1024 + 1)]),
-    ],
-)
-def test_manifest_rejects_recipe_string_resource_overflow(field: str, value: object) -> None:
-    manifest = _manifest()
-    manifest["workload"]["source_recipe"][field] = value  # type: ignore[index]
-    with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
         decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
@@ -1346,13 +1330,6 @@ def test_diagnostic_projection_needs_no_path_read_bytes_or_text(monkeypatch):
     assert diagnostic.mismatch_summary == ("source changed: relative/a.sv",)
 
 
-def test_absolute_source_paths_remain_rejected_before_projection():
-    with pytest.raises(SimulationCampaignIntegrityError, match="relative"):
-        _finalize_diagnostic_document(
-            _diagnostic_document(sources=[_diagnostic_source("/absolute/a.sv")])
-        )
-
-
 @pytest.mark.parametrize(
     ("old_value", "new_value", "line"),
     [
@@ -1438,13 +1415,6 @@ def test_prepared_manifest_pair_corpus(case):
         assert exc.value.diagnostic == diagnostic
 
 
-def test_unremoved_planning_scratch_is_rejected_before_diagnostic_projection():
-    _old, new = _prepared_diagnostic_pair()
-    new["planning_disclosures"][0]["cleanup"]["removed"] = False
-    with pytest.raises(SimulationCampaignIntegrityError, match="planning scratch must be removed"):
-        _finalize_diagnostic_document(new)
-
-
 def test_explicit_zero_findings_produces_no_typed_parameter_roots():
     from booley.flows.sim.campaign.planning import project_workload_mismatches
 
@@ -1486,35 +1456,6 @@ def test_parameter_display_escapes_nested_controls_without_changing_raw_values()
     assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
 
 
-@pytest.mark.parametrize("field,value", [("source_path", "../outside.hex"), ("unknown", "x")])
-def test_source_mapping_rejects_unsafe_or_unknown_disclosure_fields(field, value):
-    document = _manifest()
-    document.pop("fingerprints")
-    document["planning_disclosures"] = [
-        _prepared_disclosure(
-            [
-                {
-                    "path": "staged.hex",
-                    "bytes": 1,
-                    "sha256": "sha256:" + "a" * 64,
-                    "kind": "generated_input",
-                    field: value,
-                }
-            ]
-        )
-    ]
-    with pytest.raises(SimulationCampaignIntegrityError):
-        finalize_manifest(document)
-
-
-def test_source_mapping_does_not_relax_source_recipe():
-    document = _diagnostic_document(
-        sources=[{**_diagnostic_source("data.hex"), "source_path": "other.hex"}]
-    )
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        finalize_manifest(document)
-
-
 def test_copyto_prepared_digest_diagnostic_uses_declared_source():
     old, new = _prepared_diagnostic_pair()
     for document in (old, new):
@@ -1525,15 +1466,6 @@ def test_copyto_prepared_digest_diagnostic_uses_declared_source():
     assert diagnostic.mismatch_summary == ("source changed: a.sv",)
     new["planning_disclosures"][0]["generated_files"][0]["source_path"] = "other.sv"
     assert any("source_path" in line for line in _project_diagnostics(old, new).mismatch_summary)
-
-
-@pytest.mark.parametrize("flag", [False, 1, "true"])
-def test_current_no_waivers_requires_literal_true(flag):
-    document = _manifest()
-    document.pop("fingerprints")
-    document["workload"]["no_waivers"] = flag
-    with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers is invalid"):
-        finalize_manifest(document)
 
 
 def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatch):

@@ -17,6 +17,7 @@ from .codec import (
     canonical_json_bytes,
     decode_simulation_campaign_manifest,
     encode_simulation_campaign_manifest,
+    validate_relative_path,
 )
 from .model import SimulationCampaignManifest
 
@@ -451,7 +452,15 @@ def derive_runtime_input_declarations(
     declarations: list[Mapping[str, str]] = []
     seen: set[str] = set()
     for destination in destinations:
-        normalized = _relative_path(destination, field="runtime input destination")
+        try:
+            normalized = validate_relative_path(
+                _relative_path(destination, field="runtime input destination")
+            )
+        except SimulationCampaignIntegrityError as exc:
+            raise SimulationCampaignIntegrityError(
+                f"Target input copyto destination {destination!r} must be a relative path "
+                f"inside the run directory ({exc}); fix copyto in the Target's .core file"
+            ) from exc
         if normalized in seen:
             raise SimulationCampaignIntegrityError(
                 f"duplicate runtime input destination {normalized!r}"

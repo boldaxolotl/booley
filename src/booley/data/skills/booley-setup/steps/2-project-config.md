@@ -662,9 +662,9 @@ run. Full rules: CONFIG.md → "Tests (`tests.toml`)".
 - A Target section holds only `tests`, `test_list`, `skip`, `select`, `env`,
   `seed`, `default_seed`, and `variants`. Any other key fails to load.
 - A section sets `tests` **or** `test_list`, never both.
-- A Test or Test Variant name is not empty, is not `default`, does not start
-  with `-`, and contains no whitespace, control character, `+`, `@`, `<`, `>`,
-  quote or backslash. When the repository's own test names break this rule
+- A Test or Test Variant name is not empty, is at most 512 UTF-8 bytes, is not
+  `default`, does not start with `-`, and contains no whitespace, control
+  character, `+`, `@`, `<`, `>`, quote or backslash. When the repository's own test names break this rule
   (for example `axi+burst`), register a conforming name and map it to the
   native one in the testbench or a Pre-Sim Command; record the mapping as a
   finding.

@@ -329,3 +329,33 @@ def test_every_planned_manifest_is_v4_whatever_it_discloses(
     assert [run["name"] for run in manifest.document["work_items"][0]["test_runs"]] == [
         "<default>"
     ]
+
+
+def test_empty_target_toplevel_is_refused_at_planning(tmp_path):
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+
+    _project, handle, inspection, preview = _planning_fixture(tmp_path)
+    with pytest.raises(SimulationCampaignIntegrityError, match="empty toplevel; set toplevel"):
+        _plan(handle, dataclasses.replace(inspection, toplevel=""), preview, ("reset", "count"))
+
+
+def test_copyto_destination_outside_the_run_directory_is_refused_at_planning(tmp_path):
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+
+    _project, handle, inspection, preview = _planning_fixture(tmp_path)
+    (tmp_path / "fw.hex").write_text("00\n", encoding="utf-8")
+    staged = TargetInput("fw.hex", "acme:lib:dut:1", "user", (), False, {"copyto": "C:fw.hex"})
+    planned = dataclasses.replace(inspection, inputs=(*inspection.inputs, staged))
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"copyto destination 'C:fw\.hex'"):
+        _plan(handle, planned, preview, ("reset", "count"))
+
+
+def test_empty_pre_run_command_is_refused_at_planning(tmp_path):
+    project, handle, inspection, preview = _planning_fixture(tmp_path)
+    (project / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["make", ""]\n', encoding="utf-8"
+    )
+    with pytest.raises(
+        ValueError, match=r"pre_run_commands must be a list of strings, none empty"
+    ):
+        _plan(handle, inspection, preview, ("reset", "count"))

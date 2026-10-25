@@ -203,6 +203,16 @@ def test_validate_one_flow_table_pre_run_commands_shape():
     )
     assert ok is False
 
+    # An empty entry would run an empty shell line before every sim run.
+    fails.clear()
+    ok = _record_audit(
+        flow_schema.audit_flow_table("sim", {"pre_run_commands": ["make prep", ""]}),
+        warned=warns.append,
+        failed=lambda msg, fix="": fails.append(msg),
+    )
+    assert ok is False
+    assert any("none empty" in m for m in fails)
+
     # A well-formed list passes, with no inert-knob warning on simulate.
     fails.clear()
     warns.clear()
