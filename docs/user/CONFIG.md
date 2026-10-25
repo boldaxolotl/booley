@@ -1488,8 +1488,30 @@ Git identity pair matching the current settings or `Dev <dev@localhost>`;
 unrecognized custom overrides and other Git settings are preserved. Changed
 `[agent.git]` settings require refreshing and recreating the Sandbox to update
 its immutable environment. Explicit Git overrides such
-as `git commit --author` or the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment
-variables still take precedence.
+as `git -c`, `git commit --author`, or the `GIT_AUTHOR_*` and `GIT_COMMITTER_*`
+environment variables still take precedence.
+
+Inside an Interactive Mode or Goal Mode Sandbox, every process (agents, the
+terminal, and the editor's Git UI) therefore commits with the `[agent.git]`
+identity. A hand-written devcontainer spec, for example one for GitHub
+Codespaces, must carry the same `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and
+`GIT_CONFIG_VALUE_<n>` variables in both `containerEnv` and `remoteEnv` as the
+issued spec. A throwaway `booley shell` container does not carry them, so
+Doctor run there warns.
+
+Doctor run inside a Sandbox asks Git which identity it would use and warns:
+
+- `sandbox.git-identity-override` when the override is missing, partial (for
+  example only `user.name`), malformed, or different from `[agent.git]`. The
+  warning names the value Git would use instead.
+- `sandbox.gitconfig-identity` when a system or global gitconfig sets
+  `user.name` or `user.email`, for example a host `~/.gitconfig` the editor
+  copies in. While the override is complete this identity is only a fallback,
+  so the warning is normally waived.
+
+Both checks pass when the override matches and no system or global gitconfig
+sets an identity. Both can be waived in `doctor-waivers.toml`; an active
+warning keeps Doctor from recording a clean run.
 
 
 

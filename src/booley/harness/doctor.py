@@ -89,6 +89,7 @@ from booley.harness import (
     doctor_deep,
     host_diagnostics,
     nangate_pdk,
+    sandbox_git_identity,
     upgrade_cli,
     upgrade_review,
 )
@@ -2229,6 +2230,23 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
     _pass("Dashboard workspace extension bundled in the Sandbox Image")
 
 
+def _check_current_runtime_git_identity(
+    project: ProjectAudit | None, _pass: Check, _warn: Check, _skip: Check
+) -> None:
+    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
+    if project is None:
+        _skip("Sandbox Git identity checks skipped - project config invalid")
+        return
+    for result in (
+        sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
+        sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
+    ):
+        if result.warning is not None:
+            _warn(result.warning, result.fix)
+        else:
+            _pass(result.passed)
+
+
 def _check_container_runtime_payload(
     check: Callable[[str, list[str], str], None],
 ) -> None:
@@ -2275,6 +2293,7 @@ def _run_container_checks(
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
         _check_current_runtime_dashboard_extension(_pass, _warn)
+        _check_current_runtime_git_identity(project, _pass, _warn, _skip)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
