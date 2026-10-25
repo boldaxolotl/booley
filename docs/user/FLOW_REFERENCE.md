@@ -510,11 +510,11 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
   unfinished Target's manifest separately.
 - Within a Target, the retry unit is a work item:
 
-  | Testbench | Work item | On resume |
-  |---|---|---|
-  | HDL | one Test Run | Only Test Runs without a recorded result run again. |
-  | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
-  | `--coverage` | the whole collection | Refused (exit `2`) until the collection has a recorded result; then only publication is finished. |
+    | Testbench | Work item | On resume |
+    |---|---|---|
+    | HDL | one Test Run | Only Test Runs without a recorded result run again. |
+    | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
+    | `--coverage` | the whole collection | Refused (exit `2`) until the collection has a recorded result; then only publication is finished. |
 
 - Resuming a coverage run whose collection never finished is refused with exit
   `2`, before anything builds or runs, and `--dry-run` reports the same

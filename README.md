@@ -11,7 +11,7 @@ Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Deve
 
 **Website:** [boldaxolotl.github.io/booley](https://boldaxolotl.github.io/booley/) for the full feature tour, videos, and blog.
 
-![Booley in VS Code with RTL, a Developer Agent session, Goal progress, and waveform inspection](docs/user/assets/booley-screenshot.png)
+![Booley in VS Code with RTL, a Developer Agent session, Goal progress, and waveform inspection](https://boldaxolotl.github.io/booley/docs/assets/booley-screenshot.png)
 
 ## What it does
 
@@ -19,10 +19,10 @@ Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Deve
 - **Reproducible team environment:** Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker)).
 - **One VS Code window:** RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts RTL, agent sessions, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window.
 - **Sandboxed Developer Agent:** Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.
-- **Goal Mode:** You set mandatory Goals up front, such as `SYNTH:synth_fifo (area increase ≤ 10%)` or `COVERAGE:sim_fifo (line ≥ 90%, tests all)`. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent's claim of success ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode)).
+- **Goal Mode:** You set mandatory Goals up front, such as `SYNTH:synth_fifo (area increase ≤ 10%)` or `COVERAGE:sim_fifo (line ≥ 90%, tests all)`. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent's claim of success ([details](https://boldaxolotl.github.io/booley/docs/usage/#goal-mode)).
 - **Waveform queries:** `bwave` lets the agent find, sample, snapshot, and measure real simulation traces. Ask "When did `data_o` equal `0xDEADBEEF`?" and it answers from simulation data instead of guessing from RTL.
 
-[FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) is the complete feature reference.
+The [Features page](https://boldaxolotl.github.io/booley/docs/features/) is the complete feature reference.
 
 ## Quick Start
 
@@ -42,7 +42,7 @@ Two videos on the [Videos page](https://boldaxolotl.github.io/booley/videos/) sh
 
 ### Level 3: Use it on your own project
 
-Follow [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md) to integrate Booley with your own RTL project, after you [install Booley](#installation).
+Follow the [Setup guide](https://boldaxolotl.github.io/booley/docs/setup/) to integrate Booley with your own RTL project, after you [install Booley](#installation).
 
 ## Installation
 
@@ -78,7 +78,7 @@ booley bootstrap --update
 <!-- /booley-smoke:upgrade -->
 
 Seeing `externally-managed-environment`, PATH, or other install errors? See
-[Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
+[Troubleshooting](https://boldaxolotl.github.io/booley/docs/troubleshooting/#installation-fails-with-externally-managed-environment).
 
 **Next:** [try the demo](#level-2-try-the-demo-yourself) or [set up your own project](#level-3-use-it-on-your-own-project).
 
@@ -94,24 +94,24 @@ Current integrations:
 - **Coming soon** — Synopsys VCS, Cadence Xcelium
 
 For exact versions, provisioning, trace support, and platform constraints, see
-**[SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md)**.
+**[Supported EDA tools](https://boldaxolotl.github.io/booley/docs/supported-eda-tools/)**.
 Support for additional commercial EDA tools is coming soon; see the
 [roadmap](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#commercial-eda-tools).
 
 ## Documentation
 
-- [Features](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md)
+- [Features](https://boldaxolotl.github.io/booley/docs/features/)
 - [Architecture](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md)
-- [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md)
-- [Usage](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md)
-- [Flow reference](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FLOW_REFERENCE.md)
-- [Supported EDA tools](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md)
+- [Setup](https://boldaxolotl.github.io/booley/docs/setup/)
+- [Usage](https://boldaxolotl.github.io/booley/docs/usage/)
+- [Flow reference](https://boldaxolotl.github.io/booley/docs/flow-reference/)
+- [Supported EDA tools](https://boldaxolotl.github.io/booley/docs/supported-eda-tools/)
 - [Limitations](https://boldaxolotl.github.io/booley/#limitations)
 - [How Booley is built](https://boldaxolotl.github.io/booley/#how-it-is-built)
 
 ## Contributing
 
-Booley is still early, so the most useful contribution is trying it and reporting what works, what doesn't, and what you want next. Tell **`/booley-feedback`** in your Developer Agent chat; it gathers and redacts any needed evidence. Opinions need no reproduction, and nothing leaves your machine until you approve the exact text ([feedback guide](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#when-booley-itself-misbehaves), [configuration](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#feedback-feedback)).
+Booley is still early, so the most useful contribution is trying it and reporting what works, what doesn't, and what you want next. Tell **`/booley-feedback`** in your Developer Agent chat; it gathers and redacts any needed evidence. Opinions need no reproduction, and nothing leaves your machine until you approve the exact text ([feedback guide](https://boldaxolotl.github.io/booley/docs/usage/#when-booley-itself-misbehaves), [configuration](https://boldaxolotl.github.io/booley/docs/config/#feedback-feedback)).
 
 Code and documentation contributions are welcome; see [CONTRIBUTING.md](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/CONTRIBUTING.md). Please keep feedback technical and specific; broader debates about AI's effects on society or employment are outside the project's scope.
 

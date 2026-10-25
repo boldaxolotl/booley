@@ -45,6 +45,7 @@ from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.docs_links import docs_url
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 
@@ -980,7 +981,7 @@ def _normalize_args(
             print(
                 "\nGetting started: run `booley bootstrap`, then `booley init` in your RTL "
                 "repo, and open the Project in its devcontainer. "
-                "See `booley --help` and docs/user/SETUP.md."
+                f"See `booley --help` and {docs_url('SETUP.md')}"
             )
             parser.exit(0)
         else:

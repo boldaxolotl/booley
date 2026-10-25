@@ -15,6 +15,7 @@ from picorv32_ci_inputs import RISCV_IMAGE_FILES, RISCV_IMAGE_PREFIXES
 
 CATEGORIES = (
     "docs",
+    "site",
     "python_source",
     "python_tests",
     "image_tests",
@@ -33,6 +34,7 @@ CATEGORIES = (
 )
 CONDITIONAL_JOBS = (
     "docs-check",
+    "site-build",
     "lint",
     "test",
     "test-verify",
@@ -188,11 +190,13 @@ def _changed_paths(raw: bytes) -> list[str]:
 
 
 def _documentation_categories(path: str) -> set[str]:
-    if path.startswith("website/"):
+    if path.startswith(("website/", "docs/user/")):
         # The project site shares pinned facts with the README (install
-        # commands, demo revision, Goal notation); tests/test_site_contract.py
-        # guards them, so site edits must run the Python tests too.
-        return {"docs", "python_tests"}
+        # commands, demo revision, Goal notation) and publishes docs/user/.
+        # tests/test_site_contract.py and tests/docs/ guard those, and the
+        # strict site build checks the rendered links and anchors, so these
+        # edits must run the Python tests and the site build too.
+        return {"docs", "site", "python_tests"}
     if path.startswith("docs/") or path.endswith(".md"):
         return {"docs"}
     return set()
@@ -206,6 +210,8 @@ def _path_categories(path: str) -> set[str]:
         categories.add("release")
     if path.startswith("src/booley/"):
         categories.add("python_source")
+    if path == "src/booley/runtime/docs_links.py":
+        categories.add("site")  # website/hooks/user_docs.py loads its slug table
     if path.startswith("tests/"):
         categories.add("python_tests")
     if path.startswith(_IMAGE_TEST_PREFIXES) or path in _IMAGE_TEST_FILES:
@@ -269,6 +275,8 @@ def required_jobs(categories: set[str]) -> set[str]:
     jobs = set(ALWAYS_JOBS)
     if "docs" in categories:
         jobs.add("docs-check")
+    if "site" in categories:
+        jobs.add("site-build")
     if categories & {"python_source", "python_tests"}:
         jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
     if "rust" in categories:
