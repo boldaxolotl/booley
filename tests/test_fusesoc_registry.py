@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc.core_projection import CoreProjectionError, is_generated_projection
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
@@ -56,9 +57,10 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
+from booley.targets.target_surface import collect_surface, detail_payload, surface_payload
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
-from tests.fusesoc_test_support import touch_declared_sources
+from tests.fusesoc_test_support import symlinked_booley_dir, touch_declared_sources
 from tests.fusesoc_test_support import write_core as _write_core
 
 
@@ -2821,3 +2823,94 @@ def test_restore_explicit_tb_tag_when_nonstrict_inventory_skips_core(tmp_path):
     assert restored.files[0].is_tb
     with pytest.raises(FuseSocError, match=r"design\.core"):
         fusesoc_registry.classified_sources(tmp_path, strict=True)
+
+
+# ---------------------------------------------------------------------------
+# #2157: a symlinked Booley Directory entry is the same stealth core root
+# ---------------------------------------------------------------------------
+
+_SYMLINK_MODES = {
+    "projected": "[stealth]\nenabled = true\n",
+    "isolated": "[stealth]\nenabled = true\nignore_native_cores = true\n",
+}
+
+
+def _stealth_layout(tmp_path: Path, mode: str, *, symlinked: bool) -> Path:
+    """One Project whose `.booley` is a real directory or a directory symlink."""
+    project = tmp_path / ("linked" if symlinked else "real")
+    project.mkdir()
+    if symlinked:
+        booley_dir = symlinked_booley_dir(project, tmp_path / "external-booley")
+    else:
+        booley_dir = project / ".booley"
+        (booley_dir / "cores").mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(_SYMLINK_MODES[mode], encoding="utf-8")
+    (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    _write_core(booley_dir / "cores", _CORE_TEXT, create_sources=False)
+    for relative in ("rtl/counter_pkg.sv", "rtl/counter.sv", "tb/tb_counter.sv"):
+        (project / relative).parent.mkdir(parents=True, exist_ok=True)
+        (project / relative).write_text("// fixture\n", encoding="utf-8")
+    return project
+
+
+class TestSymlinkedBooleyDirectory:
+    @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
+    def test_core_library_plan_matches_real_layout(self, tmp_path: Path, mode: str):
+        def operational_view(project: Path) -> list[tuple[str, str]]:
+            plan = fusesoc_registry.prepare_core_library_plan(project)
+            view = []
+            for core in discover_cores(project):
+                operational = plan.operational_core(core)
+                assert is_generated_projection(project, operational)
+                marker = operational.read_text(encoding="utf-8").splitlines()[1]
+                view.append((operational.name, marker))
+            return view
+
+        real = operational_view(_stealth_layout(tmp_path, mode, symlinked=False))
+        linked = operational_view(_stealth_layout(tmp_path, mode, symlinked=True))
+
+        assert linked == real
+        assert real and real[0][1].endswith(".booley/cores/design.core")
+
+    @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
+    def test_targets_detail_reaches_fusesoc(self, tmp_path: Path, mode: str):
+        pytest.importorskip("fusesoc")
+        project = _stealth_layout(tmp_path, mode, symlinked=True)
+        listing = surface_payload(collect_surface(project), project)
+        payload = detail_payload(
+            project,
+            "sim",
+            fusesoc_cmd=[sys.executable, "-c", "from fusesoc.main import main; main()"],
+        )
+
+        assert payload.get("resolved_error") is None
+        assert payload["resolved"]["toplevel"] == "tb_counter"
+        assert payload["core_file"] == ".booley/cores/design.core"
+        assert [core["core_file"] for core in listing["cores"]] == [".booley/cores/design.core"]
+
+    @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
+    def test_link_inside_core_root_pointing_outside_keeps_today_outcome(
+        self, tmp_path: Path, mode: str
+    ):
+        """A `.core` link leaving the core root is not adopted (AC6)."""
+        project = tmp_path / "project"
+        project.mkdir()
+        external = symlinked_booley_dir(project, tmp_path / "external-booley")
+        (external / "booley.toml").write_text(_SYMLINK_MODES[mode], encoding="utf-8")
+        (external / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        foreign = tmp_path / "outside" / "foreign.core"
+        foreign.parent.mkdir()
+        foreign.write_text("CAPI=2:\nname: ::foreign:0\n", encoding="utf-8")
+        symlink_or_skip(external / "cores" / "foreign.core", foreign)
+
+        if mode == "isolated":
+            with pytest.raises(
+                CoreProjectionError, match=r"outside the stealth core root.*foreign\.core"
+            ):
+                fusesoc_registry.prepare_core_library_plan(project)
+            return
+        plan = fusesoc_registry.prepare_core_library_plan(project)
+        ((authored, operational),) = plan._operational_cores
+        # The outside core stays its own operational core, not a projection.
+        assert operational == authored
+        assert operational.samefile(foreign)

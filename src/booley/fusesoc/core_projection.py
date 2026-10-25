@@ -77,14 +77,49 @@ def authoritative_cores(project_root: Path | str) -> tuple[Path, ...]:
     return tuple(sorted(cores))
 
 
+def stealth_core_relative(project_root: Path | str, path: Path) -> str | None:
+    """Return *path* below the stealth core root as POSIX text, or ``None``.
+
+    ``<root>/.booley`` may be a symlink to another directory, so the same core
+    is spelled ``<root>/.booley/cores/x.core`` by callers that walk the Project
+    and ``<target>/cores/x.core`` by those that hold a resolved path (the Target
+    catalog, the core-library plan).  Both spellings of the root are accepted;
+    the lexical one is tried first so the plain layout costs no ``resolve()``.
+    *path* itself is never resolved: a ``.core`` link inside the root that
+    points elsewhere stays outside it.
+    """
+    core_root = Path(project_root) / ".booley" / "cores"
+    for base in (core_root, core_root.resolve()):
+        try:
+            return path.relative_to(base).as_posix()
+        except ValueError:
+            continue
+    return None
+
+
+def lexical_stealth_path(project_root: Path | str, path: Path) -> Path:
+    """Re-spell a stealth core path as ``<root>/.booley/cores/<rel>``.
+
+    Paths outside the stealth core root are returned unchanged.
+    """
+    relative = stealth_core_relative(project_root, path)
+    if relative is None:
+        return path
+    return Path(project_root) / ".booley" / "cores" / relative
+
+
+def _require_stealth_relative(project_root: Path | str, core_file: Path) -> str:
+    """Return the stealth-root-relative path of *core_file* or refuse it."""
+    relative = stealth_core_relative(project_root, core_file)
+    if relative is None:
+        raise CoreProjectionError(f"core is outside the stealth core root: {core_file}")
+    return relative
+
+
 def projected_core_path(project_root: Path | str, core_file: Path) -> Path:
     """Return the deterministic root-level projection path for *core_file*."""
     root = Path(project_root)
-    core_root = root / ".booley" / "cores"
-    try:
-        relative = core_file.relative_to(core_root).as_posix()
-    except ValueError as exc:
-        raise CoreProjectionError(f"core is outside the stealth core root: {core_file}") from exc
+    relative = _require_stealth_relative(root, core_file)
     encoded = quote(relative, safe="")
     return root / f"{PROJECTED_CORE_PREFIX}{encoded}"
 
@@ -115,11 +150,7 @@ def isolated_registry_root(project_root: Path | str) -> Path:
 def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     """Return the private-registry projection for one authoritative core."""
     root = Path(project_root)
-    core_root = root / ".booley" / "cores"
-    try:
-        relative = core_file.relative_to(core_root).as_posix()
-    except ValueError as exc:
-        raise CoreProjectionError(f"core is outside the stealth core root: {core_file}") from exc
+    relative = _require_stealth_relative(root, core_file)
     return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
 
 
@@ -144,8 +175,9 @@ def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
     """Identify a directly contained Booley projection, not an authored core."""
     if not native_cores_ignored(project_root):
         return False
+    registry = isolated_registry_root(project_root)
     if (
-        path.parent != isolated_registry_root(project_root)
+        path.parent not in (registry, registry.resolve())
         or path.is_symlink()
         or not path.is_file()
     ):
@@ -156,7 +188,8 @@ def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
     if source is None:
         return False
     try:
-        return isolated_core_path(project_root, source) == path
+        expected = isolated_core_path(project_root, source)
+        return path in (expected, expected.parent.resolve() / expected.name)
     except CoreProjectionError:
         return False
 

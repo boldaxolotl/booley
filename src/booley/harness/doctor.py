@@ -85,6 +85,7 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
+from booley.fusesoc.core_projection import lexical_stealth_path
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -3929,12 +3930,11 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     if catalog is not None:
         for token in _project_target_matrix(project).seed_targets:
             try:
-                owned.add(catalog.select(token).core_file)
+                owned.add(lexical_stealth_path(root, catalog.select(token).core_file))
             except FuseSocError:
                 continue  # unresolvable config tokens are their own doctor finding
-    state_cores = fusesoc_registry.state_cores_dir(root)
     for core_file in fusesoc_registry.discover_cores(root):
-        if state_cores in core_file.parents:
+        if fusesoc_registry.is_stealth_core(root, core_file):
             owned.add(core_file)
     return owned
 
@@ -4579,7 +4579,6 @@ def _check_legacy_core_targets(
     """
     note_sink = _note or _pass
     del refs  # audit every declaration, including duplicate bare Target names
-    state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
     legacy = []
     try:
@@ -4608,7 +4607,7 @@ def _check_legacy_core_targets(
     # was selected.
     native_unselected: dict[Path, list[str]] = {}
     for name, ref in legacy:
-        is_state_core = state_cores in ref.core_file.parents
+        is_state_core = fusesoc_registry.is_stealth_core(root, ref.core_file)
         if is_state_core or (ref.core_file, name) in selected:
             _warning_sink(_warn, "core.legacy-target", subject=name)(
                 f"Target '{name}' in {ref.core_file.name} is a legacy FuseSoC tools-section "
@@ -4662,7 +4661,6 @@ def _check_target_naming(
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
     del refs  # qualified duplicate Target names need exact declaration scope
-    state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
     doctor_axes = _project_target_matrix(project).axes()
     try:
@@ -4672,7 +4670,10 @@ def _check_target_naming(
     offenders = [
         (handle.name, handle)
         for handle in handles
-        if (state_cores in handle.core_file.parents or (handle.core_file, handle.name) in selected)
+        if (
+            fusesoc_registry.is_stealth_core(root, handle.core_file)
+            or (handle.core_file, handle.name) in selected
+        )
         and target_naming.violation(handle.name)
     ]
     if not offenders:
@@ -4714,7 +4715,6 @@ def _check_stray_default_targets(
     """
     _warn = _warning_sink(_warn, "core.stray-default-target")
     note_sink = _note or _pass
-    state_cores = fusesoc_registry.state_cores_dir(root)
     owned_cores = _owned_core_files(project, root)
     if not owned_cores:
         return
@@ -4729,7 +4729,7 @@ def _check_stray_default_targets(
         if not isinstance(targets, Mapping) or "default" not in targets:
             continue
         if fusesoc_registry.core_identity_key(doc) not in depended:
-            stray.append((core_file, state_cores in core_file.parents))
+            stray.append((core_file, fusesoc_registry.is_stealth_core(root, core_file)))
     if not stray:
         _pass("no dead 'default:' Targets in Booley-authored .core files")
         return
