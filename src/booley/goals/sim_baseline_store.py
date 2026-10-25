@@ -342,7 +342,7 @@ def validate_results(
     if status not in {"pending", "complete", "unavailable"}:
         raise ValueError("invalid simulation baseline request status")
     identity = require_dict(request.get("identity"), field="baseline request identity")
-    wanted = {}
+    wanted: dict[tuple[str, str], tuple[Any, dict[str, Any]]] = {}
     for raw_unit in require_list(identity.get("runs"), field="runs"):
         unit = family.parse_unit(raw_unit)
         document = family.unit_document(unit)
