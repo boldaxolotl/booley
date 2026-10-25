@@ -1194,8 +1194,13 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
 
-Full pruning releases matching retired child-execution index entries before it
-removes the invocation. When authenticated surviving external resources exist,
+Current Campaigns write no child records: each parallel lane has only its
+execution record and context sidecar, and its attempt names the lane's execution
+ID. Before removing an interrupted attempt's run directory, resume and full
+pruning cancel that lane execution and fail closed unless it is tree-terminal.
+Records written by Booley 0.3.0 are still recovered, retired and released as
+follows. Full pruning releases matching retired child-execution index entries
+before it removes the invocation. When authenticated surviving external resources exist,
 it first performs bounded recovery/cancellation of exact Campaign-mirrored orphan
 process trees, proves them terminal, reconciles their heavy-slot tokens, publishes
 retirement mirrors, and marker-authenticates cleanup of owned templated run

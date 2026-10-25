@@ -1,4 +1,7 @@
-"""Durable parent linkage for supervised Simulation Campaign child claims."""
+"""Per-lane execution identity for parallel Campaign lanes.
+
+Also recovers the child records Booley 0.3.0 wrote.
+"""
 
 from __future__ import annotations
 
@@ -68,10 +71,18 @@ _RETIREMENT_FIELDS = {
 
 @dataclass(frozen=True, slots=True)
 class PreparedChild:
+    """One parallel lane's execution identity: its ID and context sidecar."""
+
+    execution_id: ExecutionId
+    context_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _V030Child:
+    """A child execution recorded by a Booley 0.3.0 entry record."""
+
     execution_id: ExecutionId
     entry_sha256: str
-    project_entry: Path
-    campaign_entry: Path
     context_path: Path
 
 
@@ -86,7 +97,7 @@ class _ChildIdentity:
 
 
 class ChildExecutionRegistry:
-    """Publish and recover exact child execution linkage for one campaign."""
+    """Give parallel lanes execution identities; recover 0.3.0 child records."""
 
     def __init__(
         self,
@@ -118,9 +129,9 @@ class ChildExecutionRegistry:
         self._manifest = manifest
         self._project_data_root = project_data
         self._campaign_root = store.root / "child-executions"
-        # The worker (mark_terminal/retire) and the cancel path (recover_execution)
-        # both read-check-write one child's execution record. Serialize them per
-        # child so a retirement digest can never go stale (#977).
+        # A lane's mark_terminal, the cancel path (recover_execution) and a
+        # 0.3.0 retirement each read-check-write one execution record. Serialize
+        # them per execution so those steps never interleave.
         self._record_locks: dict[ExecutionId, threading.Lock] = {}
         self._record_locks_gate = threading.Lock()
 
@@ -158,29 +169,16 @@ class ChildExecutionRegistry:
             attempt_ordinal,
             attempt_directory,
         )
-        context = self._context(identity)
-        context_raw = canonical_json_bytes(context)
-        entry = self._entry(identity, _sha(context_raw))
-        entry_raw = canonical_json_bytes(entry)
-        project_entry = self._project_root / "entries" / f"{execution_id}.json"
-        campaign_entry = self._campaign_root / "entries" / f"{execution_id}.json"
-        _publish_or_verify(project_entry, entry_raw)
-        _publish_or_verify(campaign_entry, entry_raw)
+        context_raw = canonical_json_bytes(self._context(identity))
         paths = execution_paths(execution_id, booley_dir=self._project_data)
         _publish_or_verify(paths.context, context_raw)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
-        return PreparedChild(
-            execution_id,
-            _sha(entry_raw),
-            project_entry,
-            campaign_entry,
-            paths.context,
-        )
+        return PreparedChild(execution_id, paths.context)
 
     def mark_terminal(
         self,
-        prepared: PreparedChild,
+        prepared: PreparedChild | _V030Child,
         terminal_cause: str,
     ) -> None:
         with self._record_lock(prepared.execution_id):
@@ -196,49 +194,38 @@ class ChildExecutionRegistry:
                     "child execution lacks process-tree terminal proof"
                 )
 
-    def retire(
+    def _retire_v030(
         self,
-        prepared: PreparedChild,
-        *,
+        child: _V030Child,
         lease_id: str | None,
         terminal_cause: str,
-        token_absent: bool,
     ) -> None:
-        if not token_absent:
-            raise SimulationCampaignIntegrityError(
-                "cannot retire a child execution while its token remains"
-            )
-        with self._record_lock(prepared.execution_id):
-            self._publish_retirement(prepared, lease_id, terminal_cause, token_absent)
+        """Publish the retirement record Booley 0.3.0 readers require.
 
-    def _publish_retirement(
-        self,
-        prepared: PreparedChild,
-        lease_id: str | None,
-        terminal_cause: str,
-        token_absent: bool,
-    ) -> None:
-        paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
-        terminal = read_json(paths.record)
-        if terminal is None or terminal.get("tree_terminal") is not True:
-            raise SimulationCampaignIntegrityError(
-                "cannot retire a child execution before tree-terminal proof"
-            )
-        terminal_raw = canonical_json_bytes(terminal)
-        retirement = {
-            "$schema": _RETIREMENT_SCHEMA,
-            "child_execution_id": str(prepared.execution_id),
-            "entry_sha256": prepared.entry_sha256,
-            "execution_terminal_sha256": _sha(terminal_raw),
-            "lease_id": lease_id,
-            "token_absent": token_absent,
-            "terminal_cause": terminal_cause,
-        }
-        raw = canonical_json_bytes(retirement)
-        project = self._project_root / "retired" / f"{prepared.execution_id}.json"
-        campaign = self._campaign_root / "retired" / f"{prepared.execution_id}.json"
-        _publish_or_verify(project, raw)
-        _publish_or_verify(campaign, raw)
+        Every caller has already proven the slot token absent
+        (``_release_matching_token`` / ``_assert_token_absent``), and the 0.3.0
+        format records that proof as ``token_absent: true``.
+        """
+        with self._record_lock(child.execution_id):
+            paths = execution_paths(child.execution_id, booley_dir=self._project_data)
+            terminal = read_json(paths.record)
+            if terminal is None or terminal.get("tree_terminal") is not True:
+                raise SimulationCampaignIntegrityError(
+                    "cannot retire a child execution before tree-terminal proof"
+                )
+            retirement = {
+                "$schema": _RETIREMENT_SCHEMA,
+                "child_execution_id": str(child.execution_id),
+                "entry_sha256": child.entry_sha256,
+                "execution_terminal_sha256": _sha(canonical_json_bytes(terminal)),
+                "lease_id": lease_id,
+                "token_absent": True,
+                "terminal_cause": terminal_cause,
+            }
+            raw = canonical_json_bytes(retirement)
+            name = f"{child.execution_id}.json"
+            _publish_or_verify(self._project_root / "retired" / name, raw)
+            _publish_or_verify(self._campaign_root / "retired" / name, raw)
 
     def is_terminal(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
@@ -261,6 +248,21 @@ class ChildExecutionRegistry:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.05)
+
+    def recover_lane(self, execution_id: ExecutionId) -> None:
+        """Make an interrupted lane's execution terminal before its attempt is discarded.
+
+        A lane without a record never started (or its terminal record was
+        garbage-collected). Anything else must be cancelled and proven
+        tree-terminal; failing that, the caller must not delete the attempt.
+        """
+        record = read_json(execution_paths(execution_id, booley_dir=self._project_data).record)
+        if record is None or self.is_terminal(execution_id):
+            return
+        if not self.cancel(execution_id):
+            raise SimulationCampaignIntegrityError(
+                f"child execution recovery is incomplete: {execution_id}"
+            )
 
     def recover_unretired(self, slot_store: object | None) -> None:
         """Finish exact child cleanup before work-item attempt recovery."""
@@ -400,24 +402,22 @@ class ChildExecutionRegistry:
             self._assert_token_absent(slot_store, execution_id)
             _publish_or_verify(campaign_retired, retired_raw)
             return
-        prepared = PreparedChild(
+        child = _V030Child(
             execution_id,
             _sha(raw),
-            path,
-            campaign_entry,
             execution_paths(execution_id, booley_dir=self._project_data).context,
         )
-        self._recover_execution(prepared, entry)
+        self._recover_execution(child, entry)
         lease_id = self._release_matching_token(slot_store, execution_id)
         if slot_store is None:
             self._assert_no_unmanaged_token(execution_id)
         record = read_json(execution_paths(execution_id, booley_dir=self._project_data).record)
         cause = str(record.get("terminal_cause", "recovered")) if record else "recovered"
-        self.retire(prepared, lease_id=lease_id, terminal_cause=cause, token_absent=True)
+        self._retire_v030(child, lease_id, cause)
 
-    def _recover_execution(self, prepared: PreparedChild, entry: dict) -> None:
+    def _recover_execution(self, child: _V030Child, entry: dict) -> None:
         identity = _ChildIdentity(
-            prepared.execution_id,
+            child.execution_id,
             ExecutionId(entry["parent_execution_id"]),
             entry["work_item_id"],
             entry["attempt_id"],
@@ -428,13 +428,13 @@ class ChildExecutionRegistry:
         raw = canonical_json_bytes(context)
         if _sha(raw) != entry.get("runtime_context_sha256"):
             raise SimulationCampaignIntegrityError("child context digest disagrees with entry")
-        _publish_or_verify(prepared.context_path, raw)
-        paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
+        _publish_or_verify(child.context_path, raw)
+        paths = execution_paths(child.execution_id, booley_dir=self._project_data)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
-        if not self.is_terminal(prepared.execution_id) and not self.cancel(prepared.execution_id):
+        if not self.is_terminal(child.execution_id) and not self.cancel(child.execution_id):
             raise SimulationCampaignIntegrityError(
-                f"child execution recovery is incomplete: {prepared.execution_id}"
+                f"child execution recovery is incomplete: {child.execution_id}"
             )
 
     @staticmethod
@@ -494,22 +494,6 @@ class ChildExecutionRegistry:
             "work_item_id": identity.work_item_id,
             "attempt_id": identity.attempt_id,
             "attempt_ordinal": identity.attempt_ordinal,
-        }
-
-    def _entry(self, identity: _ChildIdentity, context_digest: str):
-        relative = identity.attempt_directory.relative_to(self._store.root).as_posix()
-        return {
-            "$schema": _ENTRY_SCHEMA,
-            "child_execution_id": str(identity.execution_id),
-            "parent_execution_id": str(identity.parent_execution_id),
-            "campaign_id": self._manifest.document["campaign_id"],
-            "manifest_path": str(self._store.manifest_path.resolve(strict=True)),
-            "manifest_sha256": manifest_digest(self._manifest),
-            "work_item_id": identity.work_item_id,
-            "attempt_id": identity.attempt_id,
-            "attempt_ordinal": identity.attempt_ordinal,
-            "attempt_relative_path": relative,
-            "runtime_context_sha256": context_digest,
         }
 
 

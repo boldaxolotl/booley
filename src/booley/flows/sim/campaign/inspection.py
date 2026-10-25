@@ -14,6 +14,7 @@ from booley.flows.campaign_results import (
     DurableCampaignResults,
     StartedCampaign,
 )
+from booley.runtime.execution_records import ExecutionId
 
 from .codec import SimulationCampaignIntegrityError
 from .coordinator import collected_result_facts
@@ -238,7 +239,7 @@ def authenticate_retained_campaign_inventory(
 def recover_retained_campaign_resources(
     status: RetainedCampaignStatus, project_data: Path | None
 ) -> None:
-    """Recover exact child records and interrupted owned run directories."""
+    """Recover child records, interrupted lanes and interrupted owned run directories."""
     from booley.runtime.job_slots import SlotStore
 
     from .child_protocol import ChildExecutionRegistry
@@ -259,15 +260,19 @@ def recover_retained_campaign_resources(
         else ()
     )
     surviving_runs = _surviving_owned_run_directories(store, status.interrupted)
-    if (unretired or surviving_runs) and project_data is None:
+    interrupted_lanes = _interrupted_lane_ids(store, status.interrupted)
+    if (unretired or surviving_runs or interrupted_lanes) and project_data is None:
         raise SimulationCampaignIntegrityError(
             "Booley Directory is required to recover retained Campaign resources"
         )
     if project_data is None:
         return
+    registry = ChildExecutionRegistry.from_project_data(store, status.manifest, project_data)
     if unretired:
-        registry = ChildExecutionRegistry.from_project_data(store, status.manifest, project_data)
         registry.recover_selected_unretired(SlotStore(project_data / "runtime" / "jobs" / "slots"))
+    for lane_id in interrupted_lanes:
+        # Fail closed before any interrupted run directory is removed.
+        registry.recover_lane(lane_id)
     for work_item_id in status.interrupted:
         attempt = store.latest_attempt(work_item_id)
         if attempt is None:
@@ -285,6 +290,18 @@ def recover_retained_campaign_resources(
                 "attempt_id": cast(str, document["attempt_id"]),
             },
         )
+
+
+def _interrupted_lane_ids(
+    store: CampaignStore, interrupted: tuple[str, ...]
+) -> tuple[ExecutionId, ...]:
+    """Name the lane executions of interrupted attempts that were scheduled on a lane."""
+    lanes: list[ExecutionId] = []
+    for work_item_id in interrupted:
+        attempt = store.latest_attempt(work_item_id)
+        if attempt is not None and attempt.document["child_execution_id"] is not None:
+            lanes.append(ExecutionId(cast(str, attempt.document["child_execution_id"])))
+    return tuple(lanes)
 
 
 def _surviving_owned_run_directories(

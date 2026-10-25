@@ -89,11 +89,6 @@ class HeavyCapacity:
     def shutdown_timeout_seconds(self) -> float:
         return self._admission.timeout_seconds or 30.0
 
-    @property
-    def slot_store(self):
-        """Return the managed store used to prove child-token retirement."""
-        return self._admission.slot_store
-
     @contextmanager
     def outer_permit(self) -> Iterator[HeavyPermit]:
         """Lend the already-held outer permit exactly once."""
@@ -199,13 +194,6 @@ class HeavyCapacity:
     def token_absent(self, token: SlotToken) -> bool:
         store = self._admission.slot_store
         return store is not None and store.token_absent(token)
-
-    def execution_token_absent(self, execution_id: ExecutionId) -> bool:
-        """Prove that no holder or waiter remains for one exact child."""
-        store = self._admission.slot_store
-        if store is None:
-            return True
-        return store.execution_token_absent(CLASS_HEAVY, execution_id)
 
     def hold_outer_until(self, exited: threading.Event) -> None:
         """Keep the outer slot held until ``exited`` is set (the last lane left)."""
