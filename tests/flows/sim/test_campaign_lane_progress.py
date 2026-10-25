@@ -94,7 +94,7 @@ def _run_two_lanes(
         # A unique collision key lets both lanes run at once.
         return ScheduledAttempt(item, attempt_id, ordinal, directory, f"key-{attempt_id}")
 
-    def execute(attempt, _child_id, _entry_digest) -> None:
+    def execute(attempt, _child_id) -> None:
         name = str(attempt.item["selection"]["names"][0])  # type: ignore[index]
         labels[name] = f"{name}/{attempt.attempt_id[:8]}"
         bodies[name]()

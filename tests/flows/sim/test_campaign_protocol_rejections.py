@@ -11,6 +11,7 @@ from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError, canonical_json_bytes
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.runtime.execution_records import ExecutionId
+from tests.flows.sim.campaign_v030_support import publish_v030_child
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
 
 
@@ -70,8 +71,9 @@ def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> 
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440001"
     ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
-    prepared = registry.prepare(
-        ExecutionId("e" * 32),
+    prepared = publish_v030_child(
+        registry,
+        execution_id=ExecutionId("e" * 32),
         work_item_id=str(item["work_item_id"]),
         attempt_id=attempt_id,
         attempt_ordinal=ordinal,
@@ -160,13 +162,7 @@ def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
 
 
 def _prepared(tmp_path: Path) -> child_protocol.PreparedChild:
-    return child_protocol.PreparedChild(
-        ExecutionId("e" * 32),
-        "sha256:" + "1" * 64,
-        tmp_path / "project.json",
-        tmp_path / "campaign.json",
-        tmp_path / "context.json",
-    )
+    return child_protocol.PreparedChild(ExecutionId("e" * 32), tmp_path / "context.json")
 
 
 @pytest.mark.parametrize("record", [None, {"state": "running", "tree_terminal": False}])
@@ -184,22 +180,19 @@ def test_mark_terminal_requires_a_recoverable_or_terminal_record(
         registry.mark_terminal(_prepared(tmp_path), "failed")
 
 
-def test_retire_requires_token_absence_and_terminal_proof(tmp_path: Path, monkeypatch) -> None:
+def test_v030_retirement_requires_terminal_proof(tmp_path: Path, monkeypatch) -> None:
     registry = _registry(tmp_path)
     monkeypatch.setattr(
         child_protocol,
         "execution_paths",
         lambda *_args, **_kwargs: SimpleNamespace(record=tmp_path / "record"),
     )
-    with pytest.raises(SimulationCampaignIntegrityError, match="token remains"):
-        registry.retire(
-            _prepared(tmp_path), lease_id=None, terminal_cause="failed", token_absent=False
-        )
     monkeypatch.setattr(child_protocol, "read_json", lambda _path: None)
+    child = child_protocol._V030Child(
+        ExecutionId("e" * 32), "sha256:" + "1" * 64, tmp_path / "context.json"
+    )
     with pytest.raises(SimulationCampaignIntegrityError, match="tree-terminal"):
-        registry.retire(
-            _prepared(tmp_path), lease_id=None, terminal_cause="failed", token_absent=True
-        )
+        registry._retire_v030(child, None, "failed")
 
 
 def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -300,3 +293,57 @@ def test_child_reader_rejects_corrupt_record(tmp_path, kind, error):
     path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
     with pytest.raises(ValueError):
         prune_invocation(reports, 1)
+
+
+def _lane_registry(tmp_path: Path):
+    """A real registry over a stored Campaign, plus one prepared (waiting) lane."""
+    manifest = _two_item_manifest()
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
+    item = manifest.document["work_items"][0]
+    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
+    ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
+
+    def prepare(execution_id: str) -> child_protocol.PreparedChild:
+        return registry.prepare(
+            ExecutionId(execution_id),
+            work_item_id=str(item["work_item_id"]),
+            attempt_id=attempt_id,
+            attempt_ordinal=ordinal,
+            attempt_directory=attempt,
+            parent_execution_id=ExecutionId("a" * 32),
+        )
+
+    return registry, prepare
+
+
+def test_recover_lane_finishes_a_waiting_lane(tmp_path: Path) -> None:
+    registry, prepare = _lane_registry(tmp_path)
+    lane = prepare("e" * 32)
+    assert not registry.is_terminal(lane.execution_id)
+
+    registry.recover_lane(lane.execution_id)
+
+    assert registry.is_terminal(lane.execution_id)
+    registry.recover_lane(lane.execution_id)  # already terminal: nothing to do
+
+
+def test_recover_lane_fails_closed_when_cancel_fails(tmp_path: Path, monkeypatch) -> None:
+    registry, prepare = _lane_registry(tmp_path)
+    cancelled: list[ExecutionId] = []
+
+    def failing_cancel(execution_id: ExecutionId) -> bool:
+        cancelled.append(execution_id)
+        return False
+
+    monkeypatch.setattr(registry, "cancel", failing_cancel)
+    registry.recover_lane(ExecutionId("d" * 32))  # no record: the lane never started
+    assert cancelled == []
+
+    lane = prepare("e" * 32)
+    with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
+        registry.recover_lane(lane.execution_id)
+    assert cancelled == [lane.execution_id]

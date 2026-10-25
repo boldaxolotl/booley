@@ -389,7 +389,7 @@ COMPOSITION_PERMISSIONS = (
         "D31",
         "booley.flows.sim.campaign.child_protocol",
         "booley.flows.sim.campaign.store",
-        "Campaign-owned child linkage validates and publishes durable Campaign paths.",
+        "Recovery of v0.3.0 Campaign child records reads and retires durable Campaign paths.",
     ),
     CompositionPermission(
         "C12",
