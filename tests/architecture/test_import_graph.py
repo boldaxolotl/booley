@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
+import dataclasses
 from pathlib import Path
 
 import pytest
 
+from tests.architecture import import_graph
 from tests.architecture.import_graph import (
     Dependency,
     analyze_imports,
@@ -154,6 +157,43 @@ def test_every_selected_python_file_is_read(monkeypatch: pytest.MonkeyPatch) -> 
     analyze_imports(_FIXTURE_ROOT)
 
     assert sorted(read_paths) == sorted(_FIXTURE_ROOT.rglob("*.py"))
+
+
+def test_source_tree_analysis_parses_each_module_once_for_graph_and_scans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = analyze_imports(_FIXTURE_ROOT)
+    original = Path.read_text
+    read_paths: list[Path] = []
+    probed: list[str] = []
+
+    def record_read(path: Path, *args: object, **kwargs: object) -> str:
+        read_paths.append(path)
+        return original(path, *args, **kwargs)
+
+    def probe(module: import_graph.SourceModule, tree: ast.Module) -> tuple[str, ...]:
+        probed.append(module.name)
+        return (f"{module.name}:{type(tree).__name__}",)
+
+    monkeypatch.setattr(Path, "read_text", record_read)
+
+    analysis = import_graph.analyze_source_tree(_FIXTURE_ROOT, {"probe": probe})
+
+    assert sorted(read_paths) == sorted(_FIXTURE_ROOT.rglob("*.py"))
+    assert len(probed) == len(set(probed))
+    assert analysis.dependencies == expected
+    assert analysis.findings("probe") == tuple(f"{name}:Module" for name in probed)
+
+
+def test_source_tree_analysis_result_cannot_be_mutated() -> None:
+    analysis = import_graph.analyze_source_tree(
+        _FIXTURE_ROOT, {"probe": lambda module, tree: (module.name,)}
+    )
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        analysis.dependencies = ()  # type: ignore[misc]
+    assert isinstance(analysis.dependencies, tuple)
+    assert isinstance(analysis.findings("probe"), tuple)
 
 
 def test_projected_package_sccs_detect_a_reverse_edge(tmp_path: Path) -> None:
