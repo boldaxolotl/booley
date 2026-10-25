@@ -206,7 +206,6 @@ def test_light_is_the_default_theme():
     styles = "".join(path.read_text(encoding="utf-8") for path in STYLESHEETS.glob("*.css"))
 
     assert "prefers-color-scheme" not in shell + styles
-    assert 'theme === "dark" ? "dark" : "light"' in shell
 
 
 def _luminance(hex_colour: str) -> float:

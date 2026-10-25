@@ -160,7 +160,7 @@ work, with one linked worktree and Goal Branch per session.
     ```
 
     `booley` (or `booley chat`) just starts the Developer Agent chosen in
-   `[agent].provider` in `.booley/booley.toml`:
+    `[agent].provider` in `.booley/booley.toml`:
 
     | Provider | Same as running |
     | --- | --- |
@@ -168,16 +168,16 @@ work, with one linked worktree and Goal Branch per session.
     | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
     From then on you are using that CLI's own chat. To pass it extra options,
-   run `claude` or `codex` directly. To run several sessions, open more
-   container terminals.
+    run `claude` or `codex` directly. To run several sessions, open more
+    container terminals.
 
     Prefer a chat panel? The Claude Code or Codex VS Code extension is already
-   installed in the container. Open its panel instead of using the terminal.
+    installed in the container. Open its panel instead of using the terminal.
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
-   **host terminal** and follow its advice (usually `booley auth`). Then run
-   **Dev Containers: Rebuild Container** and try again. See
-   [Auth & billing](#auth--billing).
+    **host terminal** and follow its advice (usually `booley auth`). Then run
+    **Dev Containers: Rebuild Container** and try again. See
+    [Auth & billing](#auth--billing).
 
 4. Type this safe first request into the chat:
 
@@ -185,7 +185,7 @@ work, with one linked worktree and Goal Branch per session.
     > simulation targets and explain what each one is for. Do not change files.
 
     The agent asks Booley for this and summarizes what it found. You never call
-   Booley's MCP tools yourself.
+    Booley's MCP tools yourself.
 
 5. If the agent listed a simulation Target, try a real run:
 
@@ -194,8 +194,8 @@ work, with one linked worktree and Goal Branch per session.
     > was written.
 
     A good answer names the Target and Flow it used, says whether the result was
-   a pass, a design failure, or an infrastructure failure, and suggests what to do next.
-   If there is no simulation Target, ask for lint instead.
+    a pass, a design failure, or an infrastructure failure, and suggests what to do next.
+    If there is no simulation Target, ask for lint instead.
 
 That's a complete session. You don't need to read the rest of this guide
 before you keep going. Just ask for what you want:

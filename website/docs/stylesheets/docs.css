@@ -49,6 +49,7 @@
 .docs__pager a:hover { text-decoration: underline; }
 .docs__pager span { font-size: 13.5px; font-weight: 400; color: var(--ink-2); }
 .docs__pager a[rel="next"] { margin-left: auto; text-align: right; }
+.docs__source { margin: 14px 0 0; font: 400 14px/1.4 var(--sans); color: var(--ink-2); }
 
 /* on this page: h2 list; the scroll-spy (data-spy) shows only the current section's h3s */
 .docs .toc { position: sticky; top: 24px; align-self: start; margin-top: 34px; max-height: calc(100vh - 48px);

@@ -363,39 +363,39 @@ experiment, not a setup requirement.
   default if appropriate; init preserves them because ownership cannot be proven.
 
     Files already on disk with CRLF are a separate matter. From a clean tracked
-  tree, init stages Git-filtered LF replacements, verifies that the affected
-  files have not changed since inspection and that replacements change only
-  CRLF to LF, then atomically replaces them and reconciles Git's cached metadata
-  for only those paths. Content edits made while init runs are preserved and
-  reported as unsafe. This preserves
-  filesystem metadata, leaves the index content unchanged, and leaves untracked
-  and unaffected tracked files alone. Init refuses dirty trees, Git-protected
-  affected paths, and hard-linked candidates. The one exception is Booley's own
-  Windows guidance fallback: when the root `AGENTS.md`/`CLAUDE.md` are untracked
-  hardlinks to the resolved Booley Directory's `AGENTS.md`, init releases them,
-  normalizes the canonical file, and recreates the links. Failed tracking
-  inspections preserve the links; a partial release is reconciled even if
-  another link is locked. Any other hardlink to a candidate
-  still blocks the repair. If reconciliation remains unsafe,
-  normal init reports setup incomplete and names the affected repository and
-  refusal; `--check-only` reports pending work without changing files. Commit
-  or stash changes and rerun:
+    tree, init stages Git-filtered LF replacements, verifies that the affected
+    files have not changed since inspection and that replacements change only
+    CRLF to LF, then atomically replaces them and reconciles Git's cached metadata
+    for only those paths. Content edits made while init runs are preserved and
+    reported as unsafe. This preserves
+    filesystem metadata, leaves the index content unchanged, and leaves untracked
+    and unaffected tracked files alone. Init refuses dirty trees, Git-protected
+    affected paths, and hard-linked candidates. The one exception is Booley's own
+    Windows guidance fallback: when the root `AGENTS.md`/`CLAUDE.md` are untracked
+    hardlinks to the resolved Booley Directory's `AGENTS.md`, init releases them,
+    normalizes the canonical file, and recreates the links. Failed tracking
+    inspections preserve the links; a partial release is reconciled even if
+    another link is locked. Any other hardlink to a candidate
+    still blocks the repair. If reconciliation remains unsafe,
+    normal init reports setup incomplete and names the affected repository and
+    refusal; `--check-only` reports pending work without changing files. Commit
+    or stash changes and rerun:
 
     ```bash
     booley init
     ```
 
     `booley doctor` re-asks both repositories every run and identifies which one
-  is unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
-  index metadata left by an earlier repair gets caught rather than surfacing as
-  phantom diffs in the container. `--fix-line-endings` is accepted; clean
-  CRLF checkouts receive the same automatic repair with or without it.
+    is unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
+    index metadata left by an earlier repair gets caught rather than surfacing as
+    phantom diffs in the container. `--fix-line-endings` is accepted; clean
+    CRLF checkouts receive the same automatic repair with or without it.
 
     (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
-  is **not** enough. With the clean filter in place the worktree files already
-  match the index, so Git decides nothing needs rewriting and leaves the CRLF on
-  disk. Init materializes filtered replacements separately and applies them only
-  after all safety checks pass; it never deletes the originals.)
+    is **not** enough. With the clean filter in place the worktree files already
+    match the index, so Git decides nothing needs rewriting and leaves the CRLF on
+    disk. Init materializes filtered replacements separately and applies them only
+    after all safety checks pass; it never deletes the originals.)
 
 - **Init cannot resolve the trusted host Booley executable.** A per-user Python
   install normally places `booley.exe` under the user scripts directory rather

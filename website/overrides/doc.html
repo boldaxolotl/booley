@@ -11,8 +11,7 @@
     <div class="docs__head">
       <div class="strip">
         <span><b>DOCS</b>Booley user guide</span>
-        <span>Tracks the main branch
-          {%- if page.meta.doc_source %} &middot; <a href="{{ page.meta.doc_source }}">Source on GitHub</a>{% endif %}</span>
+        <span>Tracks the main branch</span>
       </div>
     </div>
 
@@ -29,7 +28,7 @@
       </details>
     </nav>
     <script>
-      if (matchMedia("(max-width: 960px)").matches) document.querySelector(".docs__menu").open = false;
+      if (matchMedia("(max-width: 860px)").matches) document.querySelector(".docs__menu").open = false;
     </script>
 
     <article class="prose doc-prose">
@@ -48,6 +47,8 @@
             {% endif %}
           {% endfor %}
         </nav>
+        <p class="docs__source" data-pagefind-ignore="all">Source:
+          <a href="{{ page.meta.doc_source }}">{{ page.meta.doc_source.split("/blob/main/")[1] }}</a> on GitHub</p>
       {% endif %}
     </article>
 

@@ -31,7 +31,8 @@ GITHUB_BLOB = "https://github.com/boldaxolotl/booley/blob/main/"
 def _load_docs_links():
     path = REPO / "src" / "booley" / "runtime" / "docs_links.py"
     spec = importlib.util.spec_from_file_location("booley_docs_links", path)
-    assert spec and spec.loader
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the docs slug table from {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # NamedTuple needs its module importable by name
     spec.loader.exec_module(module)
