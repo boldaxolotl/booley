@@ -14,7 +14,7 @@ import yaml
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from ci_changes import ALL_JOBS, build_test_matrix
+from ci_changes import ALL_JOBS, build_test_matrix, classify, required_jobs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
@@ -465,43 +465,120 @@ def test_package_inventory_inputs_select_their_image_gates(
     assert "bwave-smoke" in _required(outputs)
 
 
-def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
-    _write(repo, "docs/architecture.md")
-    head = _commit(repo, "docs only")
-
-    outputs = _classify(repo, base, head)
-
-    assert outputs["docs"] == "true"
-    assert _required(outputs) == {"changes", "release-semantic", "docs-check"}
-    assert _jobs(outputs)["docs-check"] is True
-    assert _jobs(outputs)["test"] is False
-    assert _jobs(outputs)["coverage-shards"] is False
-    assert _jobs(outputs)["coverage"] is False
-    assert "coverage-shards" not in _required(outputs)
-    assert "coverage" not in _required(outputs)
+_BASE_JOBS = {"changes", "release-semantic", "docs-check"}
+_SITE_JOBS = _BASE_JOBS | {"site-build", "lint"}
 
 
 @pytest.mark.parametrize(
-    "path",
+    ("paths", "expected"),
     [
-        "website/docs/index.md",
-        "website/docs/stylesheets/datasheet.css",
-        "website/mkdocs.yml",
-        "docs/user/USAGE.md",
+        pytest.param(["README.md"], _BASE_JOBS | {"package-artifacts"}, id="readme"),
+        pytest.param(["website/docs/index.md"], _SITE_JOBS, id="website-page"),
+        pytest.param(["website/mkdocs.yml"], _SITE_JOBS, id="website-config"),
+        # Python under website/ must still reach Ruff through ``lint``.
+        pytest.param(["website/hooks/user_docs.py"], _SITE_JOBS, id="website-python"),
+        pytest.param(["docs/user/USAGE.md"], _SITE_JOBS, id="user-docs"),
+        pytest.param(["docs/architecture.md"], _BASE_JOBS, id="internal-docs"),
+        pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
+        pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),
+        pytest.param(
+            ["README.md", "website/docs/index.md"],
+            _SITE_JOBS | {"package-artifacts"},
+            id="readme-and-website",
+        ),
     ],
 )
-def test_project_site_changes_run_the_site_tests_and_build(tmp_path: Path, path: str) -> None:
+def test_documentation_only_changes_select_the_narrow_job_set(
+    paths: list[str], expected: set[str]
+) -> None:
+    """README, website and documentation changes skip the Python, Rust and image lanes."""
+    assert required_jobs(classify(paths)) == expected
+
+
+def test_readme_and_website_pull_request_outputs_the_narrow_set(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    _write(repo, path)
-    head = _commit(repo, "project site change")
+    _write(repo, "README.md")
+    _write(repo, "website/docs/index.md")
+    head = _commit(repo, "readme and website")
 
     outputs = _classify(repo, base, head)
 
-    assert outputs["docs"] == "true"
-    assert outputs["python_tests"] == "true"
+    expected = _SITE_JOBS | {"package-artifacts"}
     assert outputs["full"] == "false"
-    assert {"docs-check", "site-build", "test"} <= _required(outputs)
+    assert outputs["packaging"] == "false"
+    assert outputs["python_tests"] == "false"
+    assert _required(outputs) == expected
+    assert {job for job, selected in _jobs(outputs).items() if selected} == expected - {
+        "changes",
+        "release-semantic",
+    }
+    for skipped in ("test", "test-verify", "coverage-shards", "coverage", "bwave-smoke"):
+        assert _jobs(outputs)[skipped] is False
+
+
+_NOT_SELECTED_BY_SOURCE = {
+    "bwave-integration",
+    "bwave-smoke",
+    "rust-test",
+    "sidecar-smoke",
+}
+
+
+@pytest.mark.parametrize(
+    ("paths", "unselected"),
+    [
+        # Characterization: these sets are what a3d1efea0 selected before the
+        # documentation job set was narrowed.
+        *(
+            pytest.param([path], set(), id=path)
+            for path in (
+                "pyproject.toml",
+                "setup.cfg",
+                "setup.py",
+                "VERSION",
+                "MANIFEST.in",
+                "LICENSE",
+                "THIRD_PARTY_NOTICES.md",
+                ".github/workflows/example.yml",
+                "CHANGELOG.md",
+                "release-assets/x",
+                "unmapped/config.xyz",
+            )
+        ),
+        pytest.param(
+            ["src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"docs-check", "site-build"},
+            id="source",
+        ),
+        pytest.param(
+            ["tests/unit/test_example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"docs-check", "site-build", "package-artifacts"},
+            id="tests",
+        ),
+        pytest.param(["README.md", "pyproject.toml"], set(), id="readme-and-packaging"),
+        pytest.param(
+            ["website/docs/index.md", "src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE,
+            id="website-and-source",
+        ),
+        pytest.param(
+            ["docs/architecture.md", "src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"site-build"},
+            id="internal-docs-and-source",
+        ),
+        # README stopped being a packaging file: with source it adds only its
+        # own narrow jobs (documentation check, package build) to the source set.
+        pytest.param(
+            ["README.md", "src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"site-build"},
+            id="readme-and-source",
+        ),
+    ],
+)
+def test_non_documentation_changes_keep_their_job_sets(
+    paths: list[str], unselected: set[str]
+) -> None:
+    assert required_jobs(classify(paths)) == set(ALL_JOBS) - unselected
 
 
 def test_aggregate_waits_for_every_conditional_job() -> None:
@@ -750,11 +827,10 @@ def test_unrelated_path_does_not_require_sidecar_smoke(tmp_path: Path) -> None:
     assert "sidecar-smoke" not in _required(outputs)
 
 
-def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> None:
+def test_version_is_a_packaging_and_release_input(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    _write(repo, "README.md")
     _write(repo, "VERSION", "9.9.9\n")
-    head = _commit(repo, "package metadata")
+    head = _commit(repo, "version bump")
 
     outputs = _classify(repo, base, head)
 
