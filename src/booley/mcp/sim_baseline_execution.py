@@ -102,6 +102,8 @@ def restore_entry_inputs(root: Path, request: Mapping[str, Any]) -> None:
     files = require_dict(inputs.get("files"), field="baseline input files")
     links = require_dict(inputs.get("links"), field="baseline resolution links")
     record = GoalRecord.from_json(request["record"])
+    # The one link the scratch may sit behind is the Goal's own Main Booley Directory entry.
+    entry = main_booley_dir_entry(Path(record.worktree_path))
     project = root / relative_path(inputs["project_relative"])
     project.mkdir(parents=True, exist_ok=True)
     if record.project_snapshot is not None and (project / "cores").is_dir():
@@ -109,7 +111,7 @@ def restore_entry_inputs(root: Path, request: Mapping[str, Any]) -> None:
     for name, data in files.items():
         path = root / relative_path(name)
         if path.is_symlink() or any(
-            parent.is_symlink() and not is_booley_dir_entry(parent, root.parent)
+            parent.is_symlink() and not is_booley_dir_entry(parent, entry)
             for parent in path.parents
             if parent != root
         ):

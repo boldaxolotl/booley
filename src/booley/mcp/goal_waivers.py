@@ -209,7 +209,7 @@ class GoalWaiverService:
         for encoded in record.protected_paths:
             path = roots.absolute(ProtectedPath.decode(encoded), roots.main_checkout())
             if path is not None and any(
-                candidate == protected or protected in candidate.parents
+                candidate.is_relative_to(protected)
                 for candidate, protected in (
                     (destination, path),
                     (destination.resolve(), path.resolve()),

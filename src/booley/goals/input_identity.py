@@ -136,6 +136,13 @@ def capture_roots(root: Path, control_project: Path) -> dict[str, Any]:
 
 
 def main_booley_dir_entry(worktree: Path) -> Path | None:
-    """The Main Booley Directory entry as its main checkout names it (it may be a symlink)."""
-    common = git_common_dir(worktree)
-    return resolve_authoritative_booley_dir(common.parent) if common.name == ".git" else None
+    """The Main Booley Directory entry as its main checkout names it (it may be a symlink).
+
+    ``None`` when it cannot be derived (a bare repository, or a worktree that is gone or
+    no longer a checkout): callers then follow no link at all, as before the entry rule.
+    """
+    try:
+        common = git_common_dir(worktree)
+        return resolve_authoritative_booley_dir(common.parent) if common.name == ".git" else None
+    except RuntimeError:
+        return None

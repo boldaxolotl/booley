@@ -86,7 +86,7 @@ def test_protected_checkout_label_names_the_worktree_booley_dir(lexical):
     assert tests_label(record.input_paths) == ".booley/tests.toml"
 
 
-@pytest.mark.parametrize("spelling", ["plain", "lexical", "physical"])
+@pytest.mark.parametrize("spelling", ["plain", "lexical", "physical-store"])
 def test_waiver_destination_under_symlinked_booley_dir_is_protected(layout, tmp_path, spelling):
     from booley.goals.waiver_policy import policy_location
     from booley.mcp.goal_waivers import GoalWaiverService
@@ -135,23 +135,39 @@ def test_file_effect_follows_only_the_booley_dir_entry(tmp_path):
     assert not (store / "goals/other.json").exists()
 
 
-def test_goal_change_applies_and_recovers_through_symlinked_booley_dir(lexical):
-    from booley.goals.apply import recover
+def _interrupted_approval(layout):
+    """Crash an approval after its intent is logged; return the env and the revision before it."""
     from tests.goals import test_proposals
 
-    env = test_proposals.setup_cycle(lexical)
-    test_proposals.publish(lexical)
-    view = test_proposals.proposal(lexical, env)
-    revision = GoalStore(lexical.control).load(lexical.record.id).revision
+    env = test_proposals.setup_cycle(layout)
+    test_proposals.publish(layout)
+    view = test_proposals.proposal(layout, env)
+    revision = GoalStore(layout.control).load(layout.record.id).revision
 
     def crash(at):
         if at == "intent":
             raise test_proposals.Crash(at)
 
     with pytest.raises(test_proposals.Crash):
-        test_proposals.approve(lexical, replace(env, on_boundary=crash), view.proposal.id)
+        test_proposals.approve(layout, replace(env, on_boundary=crash), view.proposal.id)
+    return env, revision
+
+
+def test_goal_change_applies_and_recovers_through_symlinked_booley_dir(lexical):
+    from booley.goals.apply import recover
+
+    env, revision = _interrupted_approval(lexical)
     recover(env.store, lexical.record.id, env)
     assert GoalStore(lexical.control).load(lexical.record.id).revision == revision + 1
+
+
+def test_goal_change_recovers_after_the_goal_worktree_is_gone(layout):
+    from booley.goals.apply import recover
+
+    env, revision = _interrupted_approval(layout)
+    shutil.rmtree(layout.worktree)
+    recover(env.store, layout.record.id, env)
+    assert GoalStore(layout.control).load(layout.record.id).revision == revision + 1
 
 
 # --- AC3 -------------------------------------------------------------------
@@ -225,7 +241,7 @@ def test_interrupted_sim_baseline_checkout_is_reaped_through_symlinked_booley_di
     assert read_document(path)["status"] == "unavailable"
 
 
-def test_restore_entry_inputs_follows_only_the_booley_dir_entry(lexical):
+def test_restore_entry_inputs_follows_only_the_booley_dir_entry(lexical, tmp_path):
     from booley.mcp import sim_baseline_execution as execution
     from tests.goals.test_sim_baseline_boundaries import _restore_request
 
@@ -246,3 +262,14 @@ def test_restore_entry_inputs_follows_only_the_booley_dir_entry(lexical):
         execution.restore_entry_inputs(
             root, _restore_request(mode, raw, files={"linked/file": "00"})
         )
+    # A link that is not the Main Booley Directory entry is never followed, wherever it sits.
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / ".baseline-wt-restore").mkdir(parents=True)
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, elsewhere, target_is_directory=True)
+    with pytest.raises(ValueError, match="crosses a link"):
+        execution.restore_entry_inputs(
+            alias / ".baseline-wt-restore",
+            _restore_request(mode, raw, files={"inputs/entry.txt": "00"}),
+        )
+    assert not (elsewhere / ".baseline-wt-restore" / "inputs").exists()
