@@ -19,12 +19,17 @@ SITE_URL = "https://boldaxolotl.github.io/booley/"
 
 
 class UserDoc(NamedTuple):
-    """One user doc: its file in ``docs/user/``, site slug, nav label, and sidebar group."""
+    """One user doc: its file in ``docs/user/``, site slug, nav label, and sidebar group.
+
+    ``parent`` names the file of the doc this one belongs to; the sidebar
+    indents it under that doc, which must come right before it.
+    """
 
     file: str
     slug: str
     title: str
     section: str
+    parent: str | None = None
 
 
 # Reading order: the site's docs sidebar and prev/next links follow it. The
@@ -36,7 +41,7 @@ USER_DOCS = (
     UserDoc("GOAL-MODE.md", "goal-mode", "Goal Mode", "Get started"),
     UserDoc("FLOW_REFERENCE.md", "flow-reference", "Running Flows", "Flows"),
     UserDoc("FLOW-SIM.md", "flow-sim", "Simulation", "Flows"),
-    UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows"),
+    UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows", parent="FLOW-SIM.md"),
     UserDoc("FLOW-LINT.md", "flow-lint", "Lint", "Flows"),
     UserDoc("FLOW-SYNTH.md", "flow-synth", "ASIC synthesis", "Flows"),
     UserDoc("FLOW-FPGA.md", "flow-fpga", "FPGA implementation", "Flows"),

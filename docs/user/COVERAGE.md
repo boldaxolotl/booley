@@ -1,6 +1,7 @@
-# Coverage
+# Simulation coverage
 
-`sim` can collect Verilator coverage (line, branch, expression, toggle,
+Coverage is part of the [`sim` Flow](FLOW-SIM.md): add `--coverage` to a
+Simulation run to collect it. `sim` can collect Verilator coverage (line, branch, expression, toggle,
 and cover properties) into a **Coverage Campaign**, check it against Coverage
 Criteria, and hand it to the Coverage Analyst for waiver candidates and
 testbench improvements.

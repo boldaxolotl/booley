@@ -65,6 +65,14 @@ def test_user_docs_table_matches_docs_user() -> None:
     assert len(set(slugs)) == len(slugs)
 
 
+def test_child_docs_follow_their_parent_in_the_same_section() -> None:
+    """The sidebar indents a child doc under the doc right before it."""
+    for previous, doc in zip(USER_DOCS, USER_DOCS[1:], strict=False):
+        if doc.parent is not None:
+            assert (previous.file, previous.section) == (doc.parent, doc.section), doc.file
+    assert USER_DOCS[0].parent is None
+
+
 def test_docs_url_calls_name_published_docs_and_headings() -> None:
     failures = []
     calls = 0

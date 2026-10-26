@@ -150,6 +150,7 @@ def on_env(env, config, files):
         {
             "title": doc.title,
             "section": doc.section,
+            "child": doc.parent is not None,
             "url": f"docs/{doc.slug}/",
             "src_uri": f"docs/{doc.file}",
         }

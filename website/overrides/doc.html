@@ -31,7 +31,7 @@
             {% set group.section = doc.section %}
           {% endif %}
           {% if doc.src_uri == page.file.src_uri %}
-            <li><a href="{{ doc.url | url }}" aria-current="page">{{ doc.title }}</a>
+            <li{% if doc.child %} class="docs__child"{% endif %}><a href="{{ doc.url | url }}" aria-current="page">{{ doc.title }}</a>
               {#- The open doc's h2 sections, each with its h3 list. The
                   scroll-spy shows only the current section's h3s; without
                   it, every h3 is listed. -#}
@@ -53,7 +53,7 @@
               {% endif %}
             </li>
           {% else %}
-            <li><a href="{{ doc.url | url }}">{{ doc.title }}</a></li>
+            <li{% if doc.child %} class="docs__child"{% endif %}><a href="{{ doc.url | url }}">{{ doc.title }}</a></li>
           {% endif %}
         {% endfor %}
         </ol>

@@ -30,6 +30,8 @@
 .docs__nav a { display: block; padding: 5px 0 5px 14px; margin-left: -1px; border-left: 2px solid transparent;
   color: var(--ink-2); text-decoration: none; }
 .docs__nav a:hover { color: var(--ink); }
+/* a doc that belongs to the one above it: indented, same size as other docs */
+.docs__nav .docs__child > a { padding-left: 30px; }
 .docs__nav a[aria-current] { color: var(--ink); font-weight: 600; border-left-color: var(--mask); }
 
 /* prose */
@@ -53,6 +55,8 @@
 /* wide tables scroll inside their own box (the hook adds the wrapper) */
 .doc-table { overflow-x: auto; margin: 0 0 1.3em; }
 .doc-table table { min-width: 32rem; }
+/* a page that belongs to the one above it (docs landing table) */
+.doc-prose td.docs__child { padding-left: 2em; }
 
 /* previous / next */
 .docs__pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 56px; padding-top: 16px;
@@ -67,8 +71,10 @@
    scroll-spy (data-spy) shows only the current section's h3s */
 .docs__nav .docs__toc { margin: 2px 0 8px; font-size: 14px; }
 .docs__nav .docs__toc, .docs__nav .docs__toc ol { border-left: 0; }
-.docs__nav .docs__toc a { padding: 3px 0 3px 26px; color: var(--ink-2); font-weight: 400; }
-.docs__nav .docs__toc ol a { padding-left: 38px; font-size: 13.5px; }
+.docs__nav .docs__toc a { padding: 3px 0 3px 34px; color: var(--ink-2); font-weight: 400; }
+.docs__nav .docs__toc ol a { padding-left: 46px; font-size: 13.5px; }
+.docs__nav .docs__child .docs__toc a { padding-left: 46px; }
+.docs__nav .docs__child .docs__toc ol a { padding-left: 58px; }
 .docs__nav .docs__toc a.on { color: var(--ink); border-left-color: var(--mask); }
 .docs__toc[data-spy] li:not(.open) > ol { display: none; }
 

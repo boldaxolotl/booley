@@ -25,7 +25,7 @@ booley flow sim --target sim_soc --seed random            # a drawn seed for eve
 | `--tests-file <path>` | Read Test Run selectors from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
-| `--coverage` / `--cov` | Collect coverage (see [Coverage](COVERAGE.md#coverage)). |
+| `--coverage` / `--cov` | Collect coverage (see [Coverage](COVERAGE.md)). |
 | `--no-waivers` | With `--coverage`, report raw coverage without applying approved waivers. With a Coverage Criterion it also needs `--diagnostic` (see [Collecting vs. gating](COVERAGE.md#collecting-vs-gating)). |
 | `--resume-from <manifest.json>` | Resume an interrupted run (see [Resuming](#resuming-an-interrupted-run)). |
 | `--verbose` | With `--resume-from`, include full Simulation Campaign mismatch pointers and values (also with `--dry-run`). |

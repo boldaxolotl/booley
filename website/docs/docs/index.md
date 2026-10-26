@@ -18,7 +18,7 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="goal-mode/">Goal Mode</a></td><td>Evidence-backed Goals, Goalsets, and review.</td></tr>
 <tr><th scope="rowgroup" rowspan="6">Flows</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares, from choosing Targets to reading results.</td></tr>
 <tr><td><a href="flow-sim/">Simulation</a></td><td><code>sim</code> tests, Test Runs, seeds, verdicts, and <code>[flows.sim]</code>.</td></tr>
-<tr><td><a href="coverage/">Coverage</a></td><td>Collect, gate, and analyze Verilator coverage.</td></tr>
+<tr><td class="docs__child"><a href="coverage/">Coverage</a></td><td>Collect coverage with <code>sim --coverage</code>, gate it, and analyze it.</td></tr>
 <tr><td><a href="flow-lint/">Lint</a></td><td>Verilator and Verible lint Targets.</td></tr>
 <tr><td><a href="flow-synth/">ASIC synthesis</a></td><td>Fast Yosys and OpenROAD area and timing estimates.</td></tr>
 <tr><td><a href="flow-fpga/">FPGA implementation</a></td><td>Vivado implementation, PPA profiles, and utilization.</td></tr>
