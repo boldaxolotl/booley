@@ -1074,3 +1074,40 @@ def test_digest_binds_exact_anchor_and_directory_configuration(tmp_path: Path) -
     )
 
     assert len({project.digest, rtl.digest, alternate.digest}) == 3
+
+
+def _linked_booley_dir_roots(tmp_path: Path) -> CoverageRepositoryRoots:
+    """Roots whose ``project_data_repository`` anchor is a symlinked ``.booley`` entry."""
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    symlinked_booley_dir(project, tmp_path / "external-booley")
+    return CoverageRepositoryRoots(
+        rtl_repository=project, project_data_repository=project / ".booley"
+    )
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_project_data_anchor_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    roots = _linked_booley_dir_roots(tmp_path)
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(
+            roots.project_data_repository / "coverage-waivers",
+            tmp_path / "elsewhere",
+            target_is_directory=True,
+        )
+    _write_valid_approval(roots)
+    config = CoverageWaiverConfig("project_data_repository", "coverage-waivers")
+
+    if linked == "below":
+        with pytest.raises(CoverageWaiverValidationError) as raised:
+            load_approved_waiver_set(config, roots, known_targets=(_TARGET,))
+        assert [item.code for item in raised.value.findings] == ["COV_WAIVER_DIRECTORY_SYMLINK"]
+    else:
+        approved = load_approved_waiver_set(config, roots, known_targets=(_TARGET,))
+        assert [waiver.waiver_id for waiver in approved.waivers] == ["counter-basic-block"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from stat import S_ISDIR
 
@@ -23,6 +24,7 @@ __all__ = [
     "checkout_booley_dir_relative_to",
     "committed_project_scope",
     "contains",
+    "crossed_booley_dir_entry",
     "init_booley_dir_scope",
     "reset_cache",
     "resolve_authoritative_booley_dir",
@@ -88,3 +90,39 @@ def contains(path: str | Path, *, booley_dir: Path | None = None) -> Path | None
         return resolved if resolved.is_relative_to(root) else authoritative
     except (OSError, RuntimeError):
         return None
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink or a Windows junction/reparse point, tested without following it."""
+    info = path.lstat()
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def crossed_booley_dir_entry(path: Path) -> Path | None:
+    """The Booley Directory entry that *path* reaches through a link, or None.
+
+    The first link on *path* (walked from the filesystem root) counts only when it
+    is exactly the configured Booley Directory entry of the Git checkout that
+    contains it. Callers pass the result as the one component they may follow
+    (``is_booley_dir_entry`` / ``booley_dir=``); any other first link, ``..``, a
+    filesystem error, or an unresolvable checkout gives None, so the caller keeps
+    refusing links exactly as without an entry. Configuration is read only when a
+    link is crossed.
+    """
+    absolute = path.absolute()
+    if ".." in absolute.parts:
+        return None
+    try:
+        for item in reversed((absolute, *absolute.parents)):
+            if not _is_link(item):
+                continue
+            checkout = item.parent
+            if not (checkout / ".git").exists():
+                return None
+            entry = resolve_authoritative_booley_dir(checkout)
+            return item if entry == checkout.resolve() / item.name else None
+    except (OSError, RuntimeError):
+        return None
+    return None

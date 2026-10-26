@@ -19,10 +19,11 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.runtime.atomic_files import atomic_write_once
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
-from .campaign_reports import is_report_link
+from .campaign_reports import report_link_ancestor
 from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
@@ -270,12 +271,13 @@ def _expected_scoring(collection: Mapping[str, object]) -> dict[str, object]:
 
 
 def _contains_link(path: Path) -> bool:
-    return any(is_report_link(item) for item in (path, *path.parents))
+    # A symlinked .booley entry is followed; every other link is refused.
+    return report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
 
 
 def _open_regular(path: Path) -> int:
     try:
-        return open_regular_nofollow(path)
+        return open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
     except OSError as exc:
         raise CoverageCampaignStoreError(
             "COV_PATH_UNSAFE", f"Cannot open retained regular file: {path}"

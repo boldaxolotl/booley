@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.coverage_waiver_inputs import CoverageWaiverConfig, parse_coverage_waiver_config
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.config_paths import resolve_toml
 from booley.goals.proposals import digest
-from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.booley_dir import crossed_booley_dir_entry, resolve_checkout_booley_dir
 
 WAIVER_POLICY_DETAIL_KEY = "goal_waiver_policy"
 
@@ -41,7 +42,14 @@ def waiver_policy_fingerprint(
         value: dict[str, Any] = {"config": None, "files": {}}
         return {**value, "digest": digest(value)}
     root = anchor / config.directory
-    if any(path.is_symlink() for path in (root, *root.parents)) or not root.is_dir():
+    entry = crossed_booley_dir_entry(root)  # the one link a linked .booley may add
+    if (
+        any(
+            path.is_symlink() and not is_booley_dir_entry(path, entry)
+            for path in (root, *root.parents)
+        )
+        or not root.is_dir()
+    ):
         raise ValueError(f"approved waiver directory is missing or a symlink: {root}")
     files: dict[str, str] = {}
     for path in sorted(root.rglob("*")):

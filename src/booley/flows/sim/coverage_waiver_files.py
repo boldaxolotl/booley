@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from booley.core.booley_dir_links import is_booley_dir_entry
+from booley.runtime.booley_dir import crossed_booley_dir_entry
+
 PathProblemKind = Literal["missing", "symlink", "invalid", "unreadable"]
 PathEntryKind = Literal["directory", "file"]
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
@@ -97,8 +100,10 @@ def _read_descriptor(descriptor: int) -> bytes:
 class _DescriptorSecureTree:
     """POSIX adapter using directory descriptors for every lookup."""
 
-    def __init__(self, root: Path) -> None:
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    def __init__(self, root: Path, *, follow_root: bool = False) -> None:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if not follow_root:
+            flags |= os.O_NOFOLLOW
         try:
             self._root_descriptor = os.open(root, flags)
         except OSError as exc:
@@ -239,12 +244,12 @@ def _windows_error_kind(exc: OSError) -> PathProblemKind:  # pragma: no cover
 class _WindowsSecureTree:  # pragma: no cover
     """Windows adapter retaining no-delete handles for every ancestor."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, follow_root: bool = False) -> None:
         self._root = root
-        self._root_handle = self._open(root, expected_directory=True)
+        self._root_handle = self._open(root, expected_directory=True, follow=follow_root)
 
     @staticmethod
-    def _open(path: Path, *, expected_directory: bool) -> Any:
+    def _open(path: Path, *, expected_directory: bool, follow: bool = False) -> Any:
         import pywintypes
         import win32con
         import win32file
@@ -252,7 +257,9 @@ class _WindowsSecureTree:  # pragma: no cover
         share = win32con.FILE_SHARE_READ
         if expected_directory:
             share |= win32con.FILE_SHARE_WRITE
-        flags = win32con.FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT
+        flags = win32con.FILE_FLAG_BACKUP_SEMANTICS
+        if not follow:
+            flags |= _FILE_FLAG_OPEN_REPARSE_POINT
         try:
             handle = win32file.CreateFile(
                 str(path),
@@ -267,7 +274,7 @@ class _WindowsSecureTree:  # pragma: no cover
             kind: PathEntryKind = "directory" if expected_directory else "file"
             raise SecurePathError(str(path), _windows_error_kind(exc), kind) from exc
         attributes = win32file.GetFileInformationByHandle(handle)[0]
-        if attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
+        if not follow and attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
             handle.Close()
             kind = "directory" if expected_directory else "file"
             raise SecurePathError(str(path), "symlink", kind)
@@ -382,10 +389,12 @@ class SecureTree:
         self._implementation: _SecureTreeImplementation | None = None
 
     def __enter__(self) -> SecureTree:
+        # Only a root that is exactly a symlinked Booley Directory entry is followed.
+        follow_root = is_booley_dir_entry(self._root, crossed_booley_dir_entry(self._root))
         if os.name == "nt":
-            self._implementation = _WindowsSecureTree(self._root)
+            self._implementation = _WindowsSecureTree(self._root, follow_root=follow_root)
         else:
-            self._implementation = _DescriptorSecureTree(self._root)
+            self._implementation = _DescriptorSecureTree(self._root, follow_root=follow_root)
         return self
 
     def __exit__(self, *_args: object) -> None:
