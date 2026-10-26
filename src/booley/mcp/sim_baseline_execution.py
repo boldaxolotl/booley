@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import require_dict, require_list, require_str_value
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.evidence.acceptance import PairedProjectBaseline
@@ -35,6 +36,7 @@ from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
 from booley.goals.checkout import GoalCheckout
 from booley.goals.committed_export import pinned_working_bytes, tracked_matches_pin
 from booley.goals.freshness import DEFAULT_RESOLVERS, goal_required_categories
+from booley.goals.input_identity import main_booley_dir_entry
 from booley.goals.model import GoalRecord
 from booley.goals.sim_baseline_store import (
     SCHEMA,
@@ -100,6 +102,8 @@ def restore_entry_inputs(root: Path, request: Mapping[str, Any]) -> None:
     files = require_dict(inputs.get("files"), field="baseline input files")
     links = require_dict(inputs.get("links"), field="baseline resolution links")
     record = GoalRecord.from_json(request["record"])
+    # The one link the scratch may sit behind is the Goal's own Main Booley Directory entry.
+    entry = main_booley_dir_entry(Path(record.worktree_path))
     project = root / relative_path(inputs["project_relative"])
     project.mkdir(parents=True, exist_ok=True)
     if record.project_snapshot is not None and (project / "cores").is_dir():
@@ -107,7 +111,9 @@ def restore_entry_inputs(root: Path, request: Mapping[str, Any]) -> None:
     for name, data in files.items():
         path = root / relative_path(name)
         if path.is_symlink() or any(
-            parent.is_symlink() for parent in path.parents if parent != root
+            parent.is_symlink() and not is_booley_dir_entry(parent, entry)
+            for parent in path.parents
+            if parent != root
         ):
             raise ValueError("baseline input destination crosses a link")
         if data is None:
@@ -152,7 +158,7 @@ def prove_base_contents(
         if found is None:
             raise ValueError(f"baseline dependency has no pinned repository: {name}")
         repository = found[0]
-        pin = _participant_pin(repository, root, record)
+        pin = _participant_pin(repository, root.resolve(), record)
         if repository not in projections:
             projections[repository] = pinned_working_bytes(repository, pin)
         projection = projections[repository]
@@ -265,6 +271,11 @@ def _ignored_destination(root: Path, base: str) -> None:
         )
     owner = GoalCheckout(destination.parent).containing_repository()
     if owner is None:
+        # Git never descends a symlink, so no repository can list a scratch that lives in the
+        # target of a symlinked Main Booley Directory entry; that entry is the owner.
+        entry = main_booley_dir_entry(root)
+        if entry is not None and entry.is_symlink() and entry.resolve() == state_dir:
+            return
         raise ValueError("baseline scratch has no repository owner")
     try:
         ignored = ignored_paths(
