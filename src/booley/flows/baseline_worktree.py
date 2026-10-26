@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,9 +34,13 @@ from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.flows.terminal_progress import announce_unit
-from booley.fusesoc.core_projection import projection_enabled
-from booley.fusesoc.fusesoc_registry import prepare_core_library_plan, state_cores_dir
-from booley.runtime.project_repositories import paired_project_repository
+from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.project_gitignore import is_project_transient_path
+from booley.runtime.project_repositories import (
+    is_standalone_git_repository,
+    paired_project_repository,
+)
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
@@ -136,24 +141,12 @@ def baseline_worktree(
         )
         _materialize_baseline_submodules(project_root, wt_dir, ref)
         if paired_baseline is None:
-            _copy_stealth_cores(project_root, wt_dir, ref)
-            _copy_baseline_configuration(project_root, wt_dir)
+            _mirror_booley_directory(project_root, wt_dir, ref)
         _copy_root_quarantine_marker(project_root, wt_dir)
         prepare_core_library_plan(wt_dir)
         yield wt_dir
     finally:
         _cleanup_baseline_worktree(project_root, wt_dir, paired_baseline)
-
-
-def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
-    """Copied Stealth cores retain their explicit projection configuration."""
-    if not projection_enabled(project_root) or not (worktree / ".booley/cores").is_dir():
-        return
-    source = worktree_state_dir(project_root) / "booley.toml"
-    destination = worktree / ".booley" / "booley.toml"
-    if source.is_file() and not destination.exists():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
 
 
 def baseline_worktree_path(project_root: Path, ref: str) -> Path:
@@ -343,42 +336,49 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
         shutil.copy2(marker, wt_dir / marker.name)
 
 
-def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
-    """Mirror the stealth authored-cores dir (ADR 0036) into the worktree.
+def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None:
+    """Mirror the live Booley Directory's authored files into the worktree.
 
-    ``.booley/`` is git-excluded, so a fresh ``git worktree add``
-    checkout carries no ``.booley/cores/`` — and the baseline run
-    scans cores relative to the *worktree*, so stealth-only projects would
-    silently compare against zero cores. Without a Paired Checkout, copying the
-    *live* stealth cores is the pragmatic choice: Flow config is likewise read
-    from the live Booley Directory, not the baseline ref. Paired Checkouts
-    take the separate fork-point worktree path before this helper is called.
+    ``.booley/`` is git-excluded, so a fresh ``git worktree add`` checkout
+    carries none of it. When the Project has stealth cores (ADR 0036), the
+    baseline run scans cores relative to the *worktree*, so the worktree needs
+    its own ``.booley/``. Those cores also name other Booley Directory files
+    (``.booley/synth/top.sdc``, wrappers, scripts), and once the worktree has
+    a ``.booley/`` Booley resolves configuration there too, so every authored
+    file is mirrored, not just ``cores/``. Transient state (worktrees, runtime,
+    logs, this baseline checkout itself) stays behind; a Versioned Booley
+    Directory also leaves out what its own ignore rules exclude. Without
+    stealth cores the worktree keeps no ``.booley/`` and resolves the live
+    Booley Directory directly. Without a Paired Checkout, the *live* content is
+    the pragmatic choice; Paired Checkouts take the separate fork-point
+    worktree path before this helper is called.
 
     Symlinks are copied **as symlinks**. A stealth ``.core`` resolves its
     filesets relative to itself, so it reaches the RTL through core-relative
     resolution links (ADR 0036: ``cores/rtl -> ../../rtl``). Dereferencing
-    those — ``copytree``'s default — writes the *live working tree's* RTL into
-    the baseline checkout, so both sides of a ``--baseline`` delta synthesize
-    the modified design and report a reassuring ~+0.0% that measured nothing.
-    Kept as a link, the same relative path resolves inside the worktree, i.e.
-    against the baseline ref's RTL.
+    those writes the *live working tree's* RTL into the baseline checkout, so
+    both sides of a ``--baseline`` delta synthesize the modified design and
+    report a reassuring ~+0.0% that measured nothing. Kept as a link, the same
+    relative path resolves inside the worktree, i.e. against the baseline
+    ref's RTL.
 
     Raises :class:`BaselineWorktreeError` on copy failure: a partial copy
     would produce silently-wrong baseline metrics, the one thing delta mode
     exists to prevent.
     """
-    src = worktree_state_dir(project_root) / "cores"
-    if not src.is_dir():
+    src = worktree_state_dir(project_root)
+    if not (src / "cores").is_dir():
         return
     project_root = Path(os.path.normpath(str(project_root)))
     wt_dir = Path(os.path.normpath(str(wt_dir)))
-    dst = state_cores_dir(wt_dir)
+    dst = wt_dir / BOOLEY_DIR_NAME
     try:
-        shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+        for relative in _authored_booley_paths(src):
+            _copy_entry(src / relative, dst / relative)
         missing = _retarget_links(project_root, wt_dir, src, dst)
     except OSError as exc:
         raise BaselineWorktreeError(
-            f"copying stealth cores {src} into baseline worktree failed: {exc}"
+            f"copying Booley Directory {src} into baseline worktree failed: {exc}"
         ) from exc
     if missing:
         raise BaselineWorktreeError(
@@ -387,6 +387,60 @@ def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
             "but not in the checkout, so the baseline cannot be built from that "
             "ref. Commit the target paths, or pick a ref that contains them."
         )
+
+
+def _authored_booley_paths(booley_dir: Path) -> list[str]:
+    """Relative POSIX paths of the Booley Directory's authored files and links.
+
+    Git lists them under the directory's own ignore rules: a Versioned Booley
+    Directory uses its repository (tracked plus untracked), any other one a
+    throwaway index. Booley's canonical transient policy then also applies, so
+    a stale project ignore file never lets run state into the copy.
+    """
+    # A user's global ignore file must not silently drop authored inputs.
+    listing = ("-c", "core.excludesFile=", "ls-files", "-z", "--others", "--exclude-standard")
+    if is_standalone_git_repository(booley_dir):
+        listed = _git_output(booley_dir, *listing, "--cached")
+    else:
+        with tempfile.TemporaryDirectory(prefix="booley-baseline-index-") as scratch:
+            _git_output(Path(scratch), "init", "-q")
+            git_dir = Path(scratch) / ".git"
+            listed = _git_output(
+                booley_dir, f"--git-dir={git_dir}", f"--work-tree={booley_dir}", *listing
+            )
+    return [
+        relative
+        for relative in sorted(set(listed.split("\0")))
+        # A trailing slash marks an untracked nested repository, not authored input.
+        if relative
+        and not relative.endswith("/")
+        and not is_project_transient_path(relative)
+        and os.path.lexists(booley_dir / relative)
+    ]
+
+
+def _copy_entry(source: Path, destination: Path) -> None:
+    """Copy one listed entry; symlinks are recreated verbatim (retargeted afterwards).
+
+    A listed directory is a submodule of a Versioned Booley Directory: its
+    checked-out content is copied, without its Git metadata.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        destination.symlink_to(source.readlink(), target_is_directory=source.is_dir())
+    elif source.is_dir():
+        shutil.copytree(source, destination, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    else:
+        shutil.copy2(source, destination)
+
+
+def _git_output(cwd: Path, *args: str) -> str:
+    result = _git(cwd, *args, timeout=60)
+    if result.returncode != 0:
+        raise BaselineWorktreeError(
+            f"git {' '.join(args)} failed in {cwd}: {(result.stderr or result.stdout).strip()}"
+        )
+    return result.stdout
 
 
 def _symlinks_under(root: Path) -> list[Path]:
@@ -441,7 +495,7 @@ def _lexical_path(path: Path) -> Path:
 
 
 def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> list[str]:
-    """Point each copied link at whichever tree actually holds its target.
+    """Point each link copied from Booley Directory *src* to *dst* at its real target.
 
     Classified by where the link pointed in the *live* tree (read off the source
     link, whose text the copy reproduces verbatim) — four cases:
@@ -449,14 +503,13 @@ def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> l
     - **Outside the project** (a vendored drop, a shared library tree): left
       alone. It names the same external thing from either tree, and rebasing
       would invent a path that does not exist.
-    - **Inside the mirrored ``cores/`` tree**: re-pointed at the copy, which
-      holds the same content. A relative link already resolves there and only
-      gets its own text back; an absolute one stops naming the live tree.
-    - **Elsewhere in the Booley Directory** (ADR 0036 blesses ``cores/worktrees ->
-      ../worktrees``, e.g. a core pinning a frozen checkout): re-pointed at the
-      LIVE Booley Directory. ``.booley/`` is git-excluded, so no checkout of any
-      ref has one — and that storage is deliberately ref-independent, like the
-      Flow config a baseline run likewise reads from the live Booley Directory.
+    - **Inside the Booley Directory, and mirrored**: re-pointed at the copy,
+      which holds the same content. A relative link already resolves there and
+      only gets its own text back; an absolute one stops naming the live tree.
+    - **Inside the Booley Directory, not mirrored** (ADR 0036 blesses
+      ``cores/worktrees -> ../worktrees``, e.g. a core pinning a frozen
+      checkout): re-pointed at the LIVE Booley Directory. Transient storage is
+      never copied, and it is deliberately ref-independent.
     - **Repo content** (``cores/rtl -> ../../rtl``): re-pointed at the
       worktree's copy, which is the whole point of delta mode. A relative link
       already resolves there; an absolute one (``/home/me/prj/rtl``) still names
@@ -469,20 +522,17 @@ def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> l
     silently falls back to the current sources, which is the failure mode this
     copy exists to prevent; the caller refuses the run instead.
     """
-    state_dir = src.parent
     missing: list[str] = []
     for link in _symlinks_under(dst):
         rel = link.relative_to(dst)
         # Classify from the SOURCE link: its relative text resolves against the
         # live tree, whereas the copy's identical text resolves in the worktree.
-        target = _source_link_target(src / rel, state_dir, project_root)
+        target = _source_link_target(src / rel, src, project_root)
         if target is None:
             continue
         if _is_within(target, src):
-            _repoint(link, dst / target.relative_to(src))
-            continue
-        if _is_within(target, state_dir):
-            _repoint(link, target)
+            mirrored = dst / target.relative_to(src)
+            _repoint(link, mirrored if os.path.lexists(mirrored) else target)
             continue
         in_worktree = wt_dir / target.relative_to(project_root)
         _repoint(link, in_worktree)
@@ -504,7 +554,7 @@ def _repoint(link: Path, target: Path) -> None:
     project.
     """
     link.unlink()
-    link.symlink_to(os.path.relpath(target, link.parent))
+    link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=target.is_dir())
 
 
 def _git(cwd: Path, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:
