@@ -59,6 +59,7 @@ from booley.config.project_config import (
     normalize_tests_toml,
 )
 from booley.config.tests_toml_rules import TEST_NAME_RULES
+from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
@@ -164,7 +165,7 @@ from booley.targets.selection import (
 if TYPE_CHECKING:
     from booley.harness import developer_probe
 
-_DOCTOR_TMP = Path("tmp") / "doctor"
+_DOCTOR_TMP = DOCTOR_TMP_DIR
 _DRY_RUN_TIMEOUT_S = 60
 _DEEP_TIMEOUTS_S = {
     "sim": 900,

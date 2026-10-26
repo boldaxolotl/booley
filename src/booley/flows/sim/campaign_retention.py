@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -120,20 +121,30 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path)
 
 
+# Booley-owned places a ``flow-reports`` root may sit in, relative to the Booley
+# Directory entry; most specific first, so the first suffix match wins.
+_OWNED_REPORT_PARENTS = (DOCTOR_TMP_DIR, Path(".runtime"), Path())
+
+
 def invocation_booley_dir(root: Path) -> Path | None:
     """Return the Booley Directory entry an invocation root lives under, if it is one.
 
     *root* is ``<reports_root>/sim/<N>`` (or a sibling such as its quarantine). The
-    reports root is ``<entry>/flow-reports`` or ``<entry>/.runtime/flow-reports``; the
-    candidate counts only when it is exactly the configured Booley Directory of the
-    checkout containing it (#2191). Custom report roots get ``None`` and stay strict.
+    reports root is ``<entry>/flow-reports``, ``<entry>/.runtime/flow-reports``, or
+    deep Doctor's ``<entry>/tmp/doctor/flow-reports``; the candidate counts only when
+    it is exactly the configured Booley Directory of the checkout containing it
+    (#2191). Custom report roots get ``None`` and stay strict.
     """
     reports_root = root.parent.parent
     if reports_root.name != "flow-reports":
         return None
-    candidate = reports_root.parent
-    if candidate.name == ".runtime":
-        candidate = candidate.parent
+    owner = reports_root.parent
+    owned = next(
+        suffix
+        for suffix in _OWNED_REPORT_PARENTS
+        if not suffix.parts or owner.parts[-len(suffix.parts) :] == suffix.parts
+    )
+    candidate = owner.parents[len(owned.parts) - 1] if owned.parts else owner
     if simulation_booley_dir(candidate.parent) != candidate:
         return None
     return candidate

@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _fake_booley(root: Path) -> tuple[Path, Path]:
+def _fake_booley(root: Path, *, init_output: str = "[OK] initialized") -> tuple[Path, Path]:
     log = root / "commands.jsonl"
     executable = root / "bin" / "booley"
     executable.parent.mkdir()
@@ -38,7 +38,11 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
         "capture_output=True, text=True)\n"
         "    assert 'ms-vscode-remote.remote-containers' in after.stdout\n"
         "elif sys.argv[1] == 'init':\n"
-        "    print('[OK] initialized')\n"
+        "    import shutil\n"
+        "    agent = shutil.which('codex')\n"
+        "    assert agent == os.path.join(os.environ['HOME'], 'bin', 'codex'), agent\n"
+        "    subprocess.run([agent, '--version'], check=True)\n"
+        f"    print({init_output!r})\n"
         "elif sys.argv[1] == 'doctor':\n"
         "    print('MCP server exposes 17 MCP tool(s)')\n"
         "    print('0 failed.')\n",
@@ -127,9 +131,11 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["cleanup"] == {
         "editor_probe_removed": True,
+        "agent_cli_probe_removed": True,
         "editor_marker_removed": True,
     }
     assert not (home / "bin" / "code").exists()
+    assert not (home / "bin" / "codex").exists()
     assert not (home / ".booley-ci-dev-containers").exists()
 
 
@@ -149,3 +155,58 @@ def test_host_doctor_rejects_project_outside_isolated_root(tmp_path: Path) -> No
             candidate_sha="candidate-sha",
             image_digest="sha256:candidate",
         )
+
+
+def test_host_doctor_names_the_initialization_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A warning fails the gate, and the error carries the offending line itself."""
+    booley, log = _fake_booley(tmp_path, init_output="[!!] host-agent-cli: something drifted")
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    home.mkdir()
+    monkeypatch.setenv("COMMAND_LOG", str(log))
+
+    with pytest.raises(RuntimeError, match=r"\[!!\] host-agent-cli: something drifted"):
+        host_doctor.validate(
+            allowed_root=tmp_path,
+            project=project,
+            home=home,
+            booley=booley,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            candidate_sha="candidate-sha",
+            image_digest="sha256:candidate",
+        )
+    # Both stubs are removed even when the gate fails.
+    assert not (home / "bin" / "code").exists()
+    assert not (home / "bin" / "codex").exists()
+
+
+def test_host_doctor_keeps_a_preexisting_agent_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``codex`` this run did not write is refused and left in place."""
+    booley, log = _fake_booley(tmp_path)
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    (home / "bin").mkdir(parents=True)
+    existing = home / "bin" / "codex"
+    existing.write_text("not ours", encoding="utf-8")
+    monkeypatch.setenv("COMMAND_LOG", str(log))
+
+    with pytest.raises(ValueError, match="codex probe path already exists"):
+        host_doctor.validate(
+            allowed_root=tmp_path,
+            project=project,
+            home=home,
+            booley=booley,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            candidate_sha="candidate-sha",
+            image_digest="sha256:candidate",
+        )
+    assert existing.read_text(encoding="utf-8") == "not ours"
+    assert not (home / "bin" / "code").exists()
