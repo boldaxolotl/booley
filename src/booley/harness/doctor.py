@@ -874,6 +874,7 @@ def _run_project_phase(
     else:
         reporter.diagnostics(readiness.check_guidance(project, mode=mode))
         _check_project_data_destination_branch(project.project_root, reporter)
+    _check_worktree_booley_pairing(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
         project_root,
@@ -957,6 +958,37 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
         )
     else:
         _warn_missing_project_data_branch(project_repo, outer_branch, project_head, reporter)
+
+
+def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> None:
+    """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
+
+    ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
+    made by hand looks healthy, but Goal Mode then records no paired revision
+    and its baselines read the copy's live files instead of versioned ones.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.directory_migration_git import primary_checkout
+
+    local = project_root / BOOLEY_DIR_NAME
+    is_copy = local.is_dir() and not local.is_symlink() and not (local / ".git").exists()
+    if not (project_root / ".git").is_file() or not is_copy:
+        return
+    try:
+        primary = primary_checkout(project_root)
+    except (BooleyLayoutError, OSError, subprocess.TimeoutExpired):
+        return  # Git layout problems are reported by the Git state checks.
+    versioned = primary / BOOLEY_DIR_NAME
+    if primary == project_root.resolve() or not project_repositories.is_standalone_git_repository(
+        versioned
+    ):
+        return  # A Snapshot of a non-versioned Booley Directory is the expected layout.
+    _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
+        f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
+        f"{versioned}; Goal Mode and baselines will not use its committed revisions",
+        "save any work in this worktree, then recreate it with `booley worktree new <name>` "
+        f"from {primary}",
+    )
 
 
 def _warn_missing_project_data_branch(
