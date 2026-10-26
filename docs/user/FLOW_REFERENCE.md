@@ -4,8 +4,8 @@ Booley ships four built-in Flows. Each has its own page:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
   whether each one passed.
-  - [Simulation coverage](COVERAGE.md): measure how much of the RTL your tests
-    exercise, and find what they miss.
+    - [Simulation coverage](COVERAGE.md): measure how much of the RTL your
+      tests exercise, and find what they miss.
 - [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
   problems.
 - [ASIC synthesis (`synth`)](FLOW-SYNTH.md): estimate ASIC area and timing
