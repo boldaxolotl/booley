@@ -2163,6 +2163,114 @@ def test_validate_rejects_post_issuance_project_data_symlink_swap(issued) -> Non
         runtime_spec.validate(project, spec, path)
 
 
+def _sealed_fresh_spec(project: Path) -> dict:
+    """Build, pin and seal a default Sandbox spec for *project*."""
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    return spec
+
+
+def _link_booley_dir_entry(project: Path, target: Path) -> None:
+    """Replace or create ``<project>/.booley`` as a directory symlink to *target*."""
+    entry = project / ".booley"
+    if entry.is_dir() and not entry.is_symlink():
+        entry.rmdir()
+    entry.symlink_to(target, target_is_directory=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires host privilege")
+@pytest.mark.parametrize("alias_capable", [False, True], ids=["legacy", "canonical-alias"])
+def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
+    issued, monkeypatch, tmp_path: Path, alias_capable: bool
+) -> None:
+    """A symlinked ``.booley`` entry issues the same mounts as a real directory."""
+    from booley.runtime import project_image
+
+    project, _spec, _path, _stamp = issued
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: alias_capable)
+    entry = project / ".booley"
+    (entry / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    real_directory_mounts = list(_sealed_fresh_spec(project)["mounts"])
+
+    external = tmp_path / "external-data"
+    entry.rename(external)
+    _link_booley_dir_entry(project, external)
+    spec = _sealed_fresh_spec(project)
+
+    assert spec["mounts"] == real_directory_mounts
+    expected_source = docker_mount_path(entry)
+    assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
+    path = dc.write_devcontainer(project, spec)
+    stamp = runtime_spec.issue(project, spec, path)
+    assert runtime_spec.validate(project, spec, path) == stamp
+    assert stamp.project_data_source == str(entry)
+    assert stamp.project_data_layout == ("canonical-alias" if alias_capable else "legacy")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires host privilege")
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        pytest.param("inside-project", "overlaps the Project", id="inside-project"),
+        pytest.param("home", "too broad", id="home"),
+        pytest.param("link-not-entry", "must not be a symlink", id="link-not-entry"),
+        pytest.param("mount-grammar", "mount grammar", id="mount-grammar"),
+        pytest.param(
+            "target-without-booley-toml", "not a Booley Directory", id="target-without-booley-toml"
+        ),
+        pytest.param("linked-booley-toml", "not a Booley Directory", id="linked-booley-toml"),
+        pytest.param("link-loop", "unavailable", id="link-loop"),
+    ],
+)
+def test_symlinked_booley_dir_entry_keeps_mount_safety_refusals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, message: str
+) -> None:
+    """Only the exact entry may be a link, and its target keeps every mount check."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ("proj,x" if case == "mount-grammar" else "project")
+    project.mkdir()
+    booley_files = tmp_path / "booley-files"
+    booley_files.mkdir()
+    (booley_files / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    if case == "inside-project":
+        inner = project / "inner"
+        inner.mkdir()
+        (inner / "booley.toml").write_text("[project]\n", encoding="utf-8")
+        _link_booley_dir_entry(project, inner)
+    elif case == "home":
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "booley.toml").write_text("[project]\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        _link_booley_dir_entry(project, home)
+    elif case == "target-without-booley-toml":
+        # Stand-in for a user-owned directory that is not a Booley Directory.
+        unrelated = tmp_path / "unrelated-config"
+        unrelated.mkdir()
+        _link_booley_dir_entry(project, unrelated)
+    elif case == "linked-booley-toml":
+        # The marker itself may not be a link into an unrelated file.
+        (booley_files / "booley.toml").unlink()
+        (booley_files / "booley.toml").symlink_to(tmp_path / "unrelated.toml")
+        (tmp_path / "unrelated.toml").write_text("", encoding="utf-8")
+        _link_booley_dir_entry(project, booley_files)
+    elif case == "link-loop":
+        _link_booley_dir_entry(project, project / ".booley")
+    else:
+        _link_booley_dir_entry(project, booley_files)
+    if case == "link-not-entry":
+        alias = tmp_path / "alias"
+        alias.symlink_to(project, target_is_directory=True)
+        monkeypatch.setenv("BOOLEY_DIR", str(alias / ".booley"))
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=message):
+        runtime_spec.authorized_project_data_source(project)
+
+
 def test_seal_requires_canonical_hash_scoped_state_volume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
