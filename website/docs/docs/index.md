@@ -8,27 +8,31 @@ description: The Booley user guide - setup, day-to-day use, Goal Mode, Flows, co
 
 The Booley user guide. The first time, read **Get started** in order.
 
-| Section | Page | What it covers |
-|---|---|---|
-| **Get started** | [Features](https://boldaxolotl.github.io/booley/docs/features/) | Everything Booley does, and why. |
-|  | [Setup](https://boldaxolotl.github.io/booley/docs/setup/) | Connect an installed Booley to your RTL project. |
-|  | [Usage](https://boldaxolotl.github.io/booley/docs/usage/) | Day-to-day work with the Developer Agent and waveforms. |
-|  | [Goal Mode](https://boldaxolotl.github.io/booley/docs/goal-mode/) | Evidence-backed Goals, Goalsets, and review. |
-| **Flows** | [Running Flows](https://boldaxolotl.github.io/booley/docs/flow-reference/) | What every Flow shares, from choosing Targets to reading results. |
-|  | [Simulation](https://boldaxolotl.github.io/booley/docs/flow-sim/) | `sim` tests, Test Runs, seeds, verdicts, and `[flows.sim]`. |
-|  | [Coverage](https://boldaxolotl.github.io/booley/docs/coverage/) | Collect, gate, and analyze Verilator coverage. |
-|  | [Lint](https://boldaxolotl.github.io/booley/docs/flow-lint/) | Verilator and Verible lint Targets. |
-|  | [ASIC synthesis](https://boldaxolotl.github.io/booley/docs/flow-synth/) | Fast Yosys and OpenROAD area and timing estimates. |
-|  | [FPGA implementation](https://boldaxolotl.github.io/booley/docs/flow-fpga/) | Vivado implementation, PPA profiles, and utilization. |
-| **Reference** | [Config](https://boldaxolotl.github.io/booley/docs/config/) | Project-wide `booley.toml` knobs, and where the rest live. |
-|  | [Targets and tests](https://boldaxolotl.github.io/booley/docs/targets/) | `.core` files, `tests.toml`, and Cocotb Targets. |
-|  | [Sandbox](https://boldaxolotl.github.io/booley/docs/sandbox/) | Container policy, egress, custom images, and commercial EDA tools. |
-|  | [Stealth Mode](https://boldaxolotl.github.io/booley/docs/stealth/) | Keep Booley out of your Git history. |
-|  | [CLI reference](https://boldaxolotl.github.io/booley/docs/cli-reference/) | Every command, Flow, and Specialist. |
-|  | [Supported EDA tools](https://boldaxolotl.github.io/booley/docs/supported-eda-tools/) | Which tools each Flow drives, and where they come from. |
-| **Help** | [Doctor](https://boldaxolotl.github.io/booley/docs/doctor/) | Health checks for Booley's build and execution machinery. |
-|  | [Troubleshooting](https://boldaxolotl.github.io/booley/docs/troubleshooting/) | Symptoms, causes, and fixes. |
-|  | [Windows](https://boldaxolotl.github.io/booley/docs/windows/) | Windows-only first-run traps. |
+<!-- Section cells span their rows, which Markdown tables cannot do. -->
+<table>
+<thead><tr><th>Section</th><th>Page</th><th>What it covers</th></tr></thead>
+<tbody>
+<tr><th scope="rowgroup" rowspan="4">Get started</th><td><a href="features/">Features</a></td><td>Everything Booley does, and why.</td></tr>
+<tr><td><a href="setup/">Setup</a></td><td>Connect an installed Booley to your RTL project.</td></tr>
+<tr><td><a href="usage/">Usage</a></td><td>Day-to-day work with the Developer Agent and waveforms.</td></tr>
+<tr><td><a href="goal-mode/">Goal Mode</a></td><td>Evidence-backed Goals, Goalsets, and review.</td></tr>
+<tr><th scope="rowgroup" rowspan="6">Flows</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares, from choosing Targets to reading results.</td></tr>
+<tr><td><a href="flow-sim/">Simulation</a></td><td><code>sim</code> tests, Test Runs, seeds, verdicts, and <code>[flows.sim]</code>.</td></tr>
+<tr><td><a href="coverage/">Coverage</a></td><td>Collect, gate, and analyze Verilator coverage.</td></tr>
+<tr><td><a href="flow-lint/">Lint</a></td><td>Verilator and Verible lint Targets.</td></tr>
+<tr><td><a href="flow-synth/">ASIC synthesis</a></td><td>Fast Yosys and OpenROAD area and timing estimates.</td></tr>
+<tr><td><a href="flow-fpga/">FPGA implementation</a></td><td>Vivado implementation, PPA profiles, and utilization.</td></tr>
+<tr><th scope="rowgroup" rowspan="6">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> knobs, and where the rest live.</td></tr>
+<tr><td><a href="targets/">Targets and tests</a></td><td><code>.core</code> files, <code>tests.toml</code>, and Cocotb Targets.</td></tr>
+<tr><td><a href="sandbox/">Sandbox</a></td><td>Container policy, egress, custom images, and commercial EDA tools.</td></tr>
+<tr><td><a href="stealth/">Stealth Mode</a></td><td>Keep Booley out of your Git history.</td></tr>
+<tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command, Flow, and Specialist.</td></tr>
+<tr><td><a href="supported-eda-tools/">Supported EDA tools</a></td><td>Which tools each Flow drives, and where they come from.</td></tr>
+<tr><th scope="rowgroup" rowspan="3">Help</th><td><a href="doctor/">Doctor</a></td><td>Health checks for Booley's build and execution machinery.</td></tr>
+<tr><td><a href="troubleshooting/">Troubleshooting</a></td><td>Symptoms, causes, and fixes.</td></tr>
+<tr><td><a href="windows/">Windows</a></td><td>Windows-only first-run traps.</td></tr>
+</tbody>
+</table>
 
 These pages track the `main` branch, so they can describe changes newer than
 your installed release; the [changelog](https://github.com/boldaxolotl/booley/blob/main/CHANGELOG.md)
