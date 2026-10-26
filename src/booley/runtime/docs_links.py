@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import NamedTuple
 from unicodedata import category
 
-SITE_URL = "https://boldaxolotl.github.io/booley/"
+SITE_URL = "https://booley.dev/"
 
 
 class UserDoc(NamedTuple):

@@ -15,8 +15,8 @@ Doctor before calling the project healthy.
 If Booley reports that its version changed, invoke `/booley-heal`.
 
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
-[SETUP.md](https://boldaxolotl.github.io/booley/docs/setup/), for day-to-day driving see [USAGE.md](https://boldaxolotl.github.io/booley/docs/usage/), and for
-the config knobs named below see [CONFIG.md](https://boldaxolotl.github.io/booley/docs/config/). For the Booley-specific
+[SETUP.md](https://booley.dev/docs/setup/), for day-to-day driving see [USAGE.md](https://booley.dev/docs/usage/), and for
+the config knobs named below see [CONFIG.md](https://booley.dev/docs/config/). For the Booley-specific
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
@@ -347,7 +347,7 @@ experiment, not a setup requirement.
   and preserves existing local rules and registrations. Doctor reports this
   limitation as `git.attributes-policy-unknown`, independently of real policy
   conflicts. Inspect the policy from an environment where its source is
-  accessible; see [Doctor health](https://boldaxolotl.github.io/booley/docs/doctor/) for source-specific guidance and
+  accessible; see [Doctor health](https://booley.dev/docs/doctor/) for source-specific guidance and
   waiver behavior. Normal init remains nonfatal, while unknown-only
   `booley init --check` exits 1 for incomplete inspection.
   With Stealth disabled, and in a Versioned Booley Directory, init adds the default as the first line of root `.gitattributes`
@@ -482,11 +482,11 @@ riscv-none-elf-gcc -march=<theirs> ...
 ```
 
 Better to plan for it during setup planning (Step 0 of the
-[`booley-setup`](https://boldaxolotl.github.io/booley/docs/setup/#the-booley-setup-skill) skill, whose setup plan
+[`booley-setup`](https://booley.dev/docs/setup/#the-booley-setup-skill) skill, whose setup plan
 carries this probe on its execution-time checks list) than to learn it after
 the config is written. For the image
 contents and how to layer EDA tools on top, see
-[CONFIG.md → RISC-V toolchain image](https://boldaxolotl.github.io/booley/docs/config/#risc-v-toolchain-image-booley-sandbox-riscv).
+[CONFIG.md → RISC-V toolchain image](https://booley.dev/docs/config/#risc-v-toolchain-image-booley-sandbox-riscv).
 
 ## Developer Agents and Specialists turn into "Not logged in" partway through an unattended run
 
@@ -509,8 +509,8 @@ re-seeds the devcontainer spec; Booley then injects it on every container start.
 **Rebuild an existing container once** so the read-only mount exists.
 `booley auth --status` reports which credential each configured provider would use, and
 `booley doctor` warns when a run is about to rely on a refreshing one. Billing
-options are in [USAGE.md](https://boldaxolotl.github.io/booley/docs/usage/#auth--billing);
-choosing between several credentials is in [CONFIG.md](https://boldaxolotl.github.io/booley/docs/config/#pinning-what-bills-agent-auth).
+options are in [USAGE.md](https://booley.dev/docs/usage/#auth--billing);
+choosing between several credentials is in [CONFIG.md](https://booley.dev/docs/config/#pinning-what-bills-agent-auth).
 
 ## Two Developer Agents keep clobbering each other's edits
 
@@ -575,7 +575,7 @@ than the `$size` call. **Workaround:** hoist the count into a named constant
 instantiation. This is not a Booley bug and not a dead end; the fix is usually a
 two-line RTL change. The running list of `slang` limitations (and where to add a
 new one) is in
-[SUPPORTED-EDA-TOOLS.md](https://boldaxolotl.github.io/booley/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
+[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
 If you don't need `slang`, stay on the default `sv2v` frontend.
 
 ## `flow sim` refuses a seed, a Test Variant or a Test Run selector
@@ -583,7 +583,7 @@ If you don't need `slang`, stay on the default `sv2v` frontend.
 A Test Run is one Test Variant simulated with one seed, written
 `test[+variant][@seed]`. `booley flow sim` checks every `--test` selector and
 `--seed` before it builds anything. See
-[Test Runs, Test Variants and seeds](https://boldaxolotl.github.io/booley/docs/flow-reference/#test-runs-test-variants-and-seeds)
+[Test Runs, Test Variants and seeds](https://booley.dev/docs/flow-reference/#test-runs-test-variants-and-seeds)
 for the forms it accepts.
 
 | Message | Cause | Fix |
@@ -599,13 +599,13 @@ for the forms it accepts.
 
 `booley doctor` reports a `tests.toml` that cannot be loaded, or that a Target
 cannot apply, as a `tests.toml` failure that names the Target and the key. The
-rules are in [Tests (`tests.toml`)](https://boldaxolotl.github.io/booley/docs/config/#tests-teststoml).
+rules are in [Tests (`tests.toml`)](https://booley.dev/docs/config/#tests-teststoml).
 
 ## A Goal that names Test Runs stays unmet
 
 Simulation, Cycle Count and coverage Goals require exact Test Runs that Goal
 Mode freezes at entry
-([Goals that name Test Runs](https://boldaxolotl.github.io/booley/docs/usage/#goals-that-name-test-runs)).
+([Goals that name Test Runs](https://booley.dev/docs/usage/#goals-that-name-test-runs)).
 `goal_status` shows each Goal's frozen Test Runs with their outcomes, and one
 of these reasons when the Goal is unmet. A coverage Goal is decided by its
 coverage floors alone, so it never shows `goal-test-run-incomplete`,
@@ -668,7 +668,7 @@ to modernize the testbench for cocotb 1.9+ or 2.x (`cocotb.fork` becomes
 `cocotb.start_soon`, with a few import moves). The more expensive alternative is
 a project image containing a mutually compatible prior Verilator and Python
 stack. The supported selection dialects and current image versions are in
-[SUPPORTED-EDA-TOOLS.md](https://boldaxolotl.github.io/booley/docs/supported-eda-tools/#built-in-flows).
+[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#built-in-flows).
 
 ## Yosys rejects transpiled Verilog after `sv2v` succeeds
 
@@ -683,7 +683,7 @@ parser rejects even though `sv2v` exited successfully.
 Switch the synthesis Target to `frontend = "slang"`, which reads the interfaces
 natively. This is an upstream `sv2v` limitation rather than something the flow
 can repair. Frontend selection and requirements are in
-[SUPPORTED-EDA-TOOLS.md](https://boldaxolotl.github.io/booley/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
+[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
 
 ## Verilator reports timing or enum errors
 
@@ -1003,7 +1003,7 @@ the Campaign-bound evidence tool.
   not approvals. Ask the Developer Agent to use `goal_propose_change(kind="waiver")` and
   inspect the exact candidate before deciding.
 - `[coverage.waivers] is not configured`: select the
-  [approval directory](https://boldaxolotl.github.io/booley/docs/config/#approved-coverage-waivers) before approval.
+  [approval directory](https://booley.dev/docs/config/#approved-coverage-waivers) before approval.
   Configuration is protected during Goal Mode; arrange it before entry.
 - A proposal remains pending: a cancelled or invalid form makes no decision.
   Resume its exact proposal ID; if chat fallback is needed, give an explicit

@@ -1,8 +1,8 @@
-# Project site published at https://boldaxolotl.github.io/booley/ by
+# Project site published at https://booley.dev/ by
 # .github/workflows/pages.yml. Preview locally from this directory:
 #   pip install -r requirements.txt && mkdocs serve
 site_name: Booley
-site_url: https://boldaxolotl.github.io/booley/
+site_url: https://booley.dev/
 site_description: The open-source agentic RTL IDE
 site_author: boldaxolotl
 

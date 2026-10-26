@@ -1,9 +1,11 @@
 name: Project site
 
 # Builds website/ with MkDocs Material and publishes it to GitHub Pages at
-# https://boldaxolotl.github.io/booley/. Pull requests only build (strict),
-# so broken links or config fail before merge; main pushes also deploy.
-# One-time repo setting: Settings -> Pages -> Source = "GitHub Actions".
+# https://booley.dev/. Pull requests only build (strict), so broken links or
+# config fail before merge; main pushes also deploy.
+# One-time repo settings: Settings -> Pages -> Source = "GitHub Actions" and
+# Custom domain = booley.dev (GitHub then redirects the old
+# boldaxolotl.github.io/booley/ URLs here).
 
 on:
   push:
@@ -11,11 +13,13 @@ on:
     paths:
       - "website/**"
       - "docs/user/**"
+      - "src/booley/runtime/docs_links.py"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "website/**"
       - "docs/user/**"
+      - "src/booley/runtime/docs_links.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
