@@ -21,6 +21,7 @@ from typing import Any
 
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.config.host_config import HostConfigError, load_host_policy
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -1561,14 +1562,18 @@ def _validate_project_data_source(
         raise RuntimeSpecError("BOOLEY_DIR must be an absolute host path")
     if any(char == "," or ord(char) < 32 for char in str(candidate)):
         raise RuntimeSpecError("Booley Directory path contains unsafe Docker mount grammar")
-    if any(part.is_symlink() for part in (candidate, *candidate.parents)):
+    # Only the default entry ``<project>/.booley`` itself may be a link; a link
+    # above it or any other linked spelling (e.g. a symlinked BOOLEY_DIR) is refused.
+    is_link = candidate.is_symlink()
+    linked = is_link and is_booley_dir_entry(candidate, project / ".booley")
+    if (is_link and not linked) or any(p.is_symlink() for p in candidate.parents):
         raise RuntimeSpecError(
             "Booley Directory mount source or its ancestry must not be a symlink"
         )
     try:
         source = candidate.resolve(strict=True)
         info = source.stat()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:  # Python < 3.13 reports a link loop as RuntimeError
         raise RuntimeSpecError(
             f"Booley Directory mount source is unavailable: {candidate}: {exc}"
         ) from exc
@@ -1580,15 +1585,24 @@ def _validate_project_data_source(
     overlaps = (
         source == project or source in project.parents or (project in source.parents and not local)
     )
+    source_label = "symlink target" if linked else "mount source"
     if broad or overlaps:
         raise RuntimeSpecError(
-            f"Booley Directory mount source is too broad or overlaps the Project: {source}"
+            f"Booley Directory {source_label} is too broad or overlaps the Project: {source}"
         )
     if os.name != "nt" and info.st_uid != os.getuid():
         raise RuntimeSpecError(
             f"Booley Directory mount source is not owned by the host user: {source}"
         )
-    return source
+    # The marker must be a regular file: a link below the entry is never followed.
+    marker = source / "booley.toml"
+    if linked and (marker.is_symlink() or not marker.is_file()):
+        raise RuntimeSpecError(
+            f"Booley Directory symlink target is not a Booley Directory (no booley.toml): {source}"
+        )
+    # Keep the entry spelling for a link so the mount pin and the /work/.booley
+    # shadow match the real-directory layout exactly.
+    return candidate if linked else source
 
 
 def _pin_project_data_mount(
