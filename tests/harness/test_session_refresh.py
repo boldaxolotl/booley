@@ -17,9 +17,12 @@ from booley.runtime.image_lifecycle import LifecycleResult, Status
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.runtime import test_session_issuance as issuance_fixtures
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
+issued = issuance_fixtures.issued
+trusted_validator = issuance_fixtures.trusted_validator
 
 
 @pytest.fixture(autouse=True)
@@ -827,3 +830,30 @@ def test_image_gc_deferral_does_not_block_completed_runtime(
     monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
     session_refresh._cleanup_owned_images(tmp_path)
     assert ("deferred" if failure else "retained by another Project") in caplog.text
+
+
+@pytest.fixture
+def project_local_booley_dir(monkeypatch):
+    """Drop the harness-wide BOOLEY_DIR so ``issued`` uses its own Project data."""
+    from booley.runtime.booley_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+
+def test_refresh_prepares_spec_in_host_egress_mode(project_local_booley_dir, issued) -> None:
+    from booley.config.host_config import host_config_path
+    from booley.runtime import devcontainer as dc
+
+    project, _spec, _path, stamp = issued
+    host_config_path().parent.mkdir(parents=True, exist_ok=True)
+    host_config_path().write_text('[sandbox]\negress = "unproxied"\n', encoding="utf-8")
+    images = harness_refresh._RuntimeImages()
+
+    images.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+
+    spec = images._spec.spec
+    networks = [spec["runArgs"][i + 1] for i, a in enumerate(spec["runArgs"]) if a == "--network"]
+    assert networks == [dc.UNPROXIED_NETWORK]
+    assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
+    assert not images.spec_is_current(project)

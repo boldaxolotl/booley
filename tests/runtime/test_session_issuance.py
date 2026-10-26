@@ -17,6 +17,7 @@ from unittest.mock import Mock
 import pytest
 from tests import eda_grant_support
 
+from booley.config.host_config import host_config_path
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.licensing import flexnet_docker
@@ -145,6 +146,30 @@ def test_preview_exposes_only_detached_inputs_and_does_not_persist(
     )
     assert prepared.prospective_issuance is not None
     assert not (project / ".devcontainer" / "devcontainer.json").exists()
+
+
+def _set_host_egress(mode: str) -> None:
+    """Write host ``[sandbox] egress`` into the test's isolated config dir."""
+    path = host_config_path()
+    for directory in (path.parent.parent, path.parent):
+        # Private like the issuance stamp store that later shares this root.
+        directory.mkdir(mode=0o700, exist_ok=True)
+    path.write_text(f'[sandbox]\negress = "{mode}"\n', encoding="utf-8")
+
+
+def test_preview_inputs_carry_host_egress_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    _set_host_egress("unproxied")
+    _stub_preview_dependencies(project, monkeypatch)
+
+    prepared = runtime_spec.preview(project, lambda _inputs: {"image": "booley-sandbox"})
+
+    assert prepared.inputs.egress == "unproxied"
 
 
 def test_licensed_preview_does_not_create_authority_lock(
@@ -533,6 +558,82 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
         runtime_spec.validate(project, spec, path)
     assert str(raised.value) == _WITHDRAWN_ISSUANCE
     assert isinstance(raised.value.__cause__, FileNotFoundError)
+
+
+def _egress_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    return project
+
+
+def _issue_in_mode(project: Path, egress: str) -> tuple[dict, Path]:
+    """Build, pin, seal, write and issue an unlicensed spec in one egress mode."""
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+        egress=egress,
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    runtime_spec.issue(project, spec, path)
+    return spec, path
+
+
+@pytest.mark.parametrize(
+    "spec_mode, host_mode",
+    [
+        pytest.param("proxy", "unproxied", id="proxy-spec-under-unproxied-policy"),
+        pytest.param("unproxied", "proxy", id="unproxied-spec-under-proxy-policy"),
+    ],
+)
+def test_validate_rejects_spec_in_other_egress_mode(
+    tmp_path, monkeypatch, trusted_validator, spec_mode, host_mode
+) -> None:
+    del trusted_validator
+    project = _egress_project(tmp_path, monkeypatch)
+    _set_host_egress(spec_mode)
+    spec, path = _issue_in_mode(project, spec_mode)
+    _set_host_egress(host_mode)
+    with pytest.raises(runtime_spec.EgressDriftError, match=f"egress = '{host_mode}'"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_unproxied_policy_issues_and_validates_unproxied_spec(
+    tmp_path, monkeypatch, trusted_validator
+) -> None:
+    del trusted_validator
+    project = _egress_project(tmp_path, monkeypatch)
+    _set_host_egress("unproxied")
+    spec, path = _issue_in_mode(project, "unproxied")
+    assert runtime_spec.validate(project, spec, path).spec_sha256 == runtime_spec._spec_digest(
+        spec
+    )
+
+
+def test_policy_switch_is_cured_by_reissuing_in_host_mode(issued) -> None:
+    project, spec, path, _stamp = issued
+    _set_host_egress("unproxied")
+    with pytest.raises(runtime_spec.EgressDriftError):
+        runtime_spec.validate(project, spec, path)
+
+    def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
+        return dc.build_devcontainer_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+            fixed_container_env=dict(inputs.fixed_container_environment),
+            egress=inputs.egress,
+        )
+
+    prepared = runtime_spec.preview(project, build)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the prepared"):
+        runtime_spec.inspect_prepared(project, prepared)
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert runtime_spec.validate(project, json.loads(path.read_text(encoding="utf-8")), path)
 
 
 _WITHDRAWN_ISSUANCE = (
@@ -1263,7 +1364,7 @@ def test_missing_fixed_environment_uses_missing_marker(issued) -> None:
     del spec["remoteEnv"]["HTTP_PROXY"]
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing fixed") as caught:
-        runtime_spec._validate_environment(spec, None)
+        runtime_spec._validate_environment(spec, None, "proxy")
 
     assert "HTTP_PROXY present -> <missing>" in str(caught.value)
 
@@ -1273,7 +1374,7 @@ def test_fixed_environment_drift_names_field_and_values(issued) -> None:
     spec["remoteEnv"]["NO_PROXY"] = "example.test"
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="fixed Sandbox") as caught:
-        runtime_spec._validate_environment(spec, None)
+        runtime_spec._validate_environment(spec, None, "proxy")
 
     assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
 
@@ -1514,6 +1615,49 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
         run_args[index + 1] for index, item in enumerate(run_args) if item == "--label"
     }
     assert expected_labels.issubset(actual_labels)
+
+
+def test_unproxied_licensed_seal_joins_routed_and_private_networks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = _egress_project(tmp_path, monkeypatch)
+    _set_host_egress("unproxied")
+    profile = SimpleNamespace(name="site", lmgrd_port=2100)
+
+    @contextmanager
+    def resolved(_project: Path, _host_provisioning: bool):
+        yield None, profile
+
+    monkeypatch.setattr(runtime_spec.authority, "resolve_for_issuance", resolved)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "d" * 64)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+        fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
+        egress="unproxied",
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+
+    from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
+    from booley.runtime.session_runtime import docker_run_argv
+
+    expected_networks = {
+        dc.UNPROXIED_NETWORK,
+        resources_for_session(str(project.resolve())).private_network,
+    }
+    run_args = spec["runArgs"]
+    spec_networks = {
+        run_args[index + 1] for index, item in enumerate(run_args) if item == "--network"
+    }
+    argv = docker_run_argv(spec, project, "session")
+    headless_networks = {argv[index + 1] for index, item in enumerate(argv) if item == "--network"}
+    assert spec_networks == headless_networks == expected_networks
+    assert runtime_spec.issue(project, spec, dc.write_devcontainer(project, spec))
 
 
 def test_issue_rejects_mutable_image_reference(
@@ -2149,7 +2293,7 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
     # An old Sandbox authenticates against its own stamp; the environment
     # check must then name the actionable fix, not a generic key diff.
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Compiler-cache root differs"):
-        runtime_spec._validate_environment(spec, None)
+        runtime_spec._validate_environment(spec, None, "proxy")
 
 
 @pytest.mark.parametrize(

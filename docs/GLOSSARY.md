@@ -123,7 +123,7 @@ The isolation rules applied to a Sandbox: mounted paths, network access, credent
 _Avoid_: per-Flow network policy
 
 **Unproxied Sandbox**:
-A **Sandbox** whose spec declares `BOOLEY_EGRESS=unproxied`. Booley neither sets nor forces the egress proxy environment there, so agents and tools reach the network the platform provides, such as a Codespace. It is an explicit opt-in, never inferred from platform signals, and Doctor keeps it visible as the waivable WARN `sandbox.unproxied`. The declaration is not the isolation boundary: a Booley-issued Sandbox's network stays default-deny whatever the variable says.
+A **Sandbox** whose spec declares `BOOLEY_EGRESS=unproxied`, either hand-written or issued by Booley under host `[sandbox] egress = "unproxied"`. Booley neither sets nor forces the egress proxy environment there, so agents and tools reach the network the platform provides, such as a Codespace. It is an explicit opt-in, never inferred from platform signals, and Doctor keeps it visible as the waivable WARN `sandbox.unproxied`. The declaration is not the isolation boundary: a Sandbox Booley issued under host `egress = "proxy"` keeps its default-deny network whatever the variable says; under host `egress = "unproxied"` Booley issues it on a routed network.
 _Avoid_: no proxy, open egress, direct egress
 
 **Host-Provisioned Sandbox EDA Tool**:
