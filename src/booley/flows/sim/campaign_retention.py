@@ -121,11 +121,6 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path)
 
 
-# Booley-owned places a ``flow-reports`` root may sit in, relative to the Booley
-# Directory entry; most specific first, so the first suffix match wins.
-_OWNED_REPORT_PARENTS = (DOCTOR_TMP_DIR, Path(".runtime"), Path())
-
-
 def invocation_booley_dir(root: Path) -> Path | None:
     """Return the Booley Directory entry an invocation root lives under, if it is one.
 
@@ -138,16 +133,19 @@ def invocation_booley_dir(root: Path) -> Path | None:
     reports_root = root.parent.parent
     if reports_root.name != "flow-reports":
         return None
-    owner = reports_root.parent
-    owned = next(
-        suffix
-        for suffix in _OWNED_REPORT_PARENTS
-        if not suffix.parts or owner.parts[-len(suffix.parts) :] == suffix.parts
-    )
-    candidate = owner.parents[len(owned.parts) - 1] if owned.parts else owner
+    candidate = reports_root.parent
+    if _ends_with(candidate, DOCTOR_TMP_DIR):
+        candidate = candidate.parents[len(DOCTOR_TMP_DIR.parts) - 1]
+    elif candidate.name == ".runtime":
+        candidate = candidate.parent
     if simulation_booley_dir(candidate.parent) != candidate:
         return None
     return candidate
+
+
+def _ends_with(path: Path, suffix: Path) -> bool:
+    """Whether *path*'s last components are exactly *suffix*'s (lexical only)."""
+    return path.parts[-len(suffix.parts) :] == suffix.parts
 
 
 def _safe_tree(path: Path, booley_dir: Path | None) -> None:

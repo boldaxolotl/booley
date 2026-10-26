@@ -12,6 +12,9 @@ from pathlib import Path
 _MCP_TOOLS = re.compile(r"MCP server exposes [0-9]+ MCP tool\(s\)")
 # Status markers Project Initialization prints for a warning or a failure.
 _PROBLEM_MARKERS = ("[!!]", "[XX]")
+# Executables stubbed into the isolated home's bin for the duration of a run.
+_EDITOR_PROBE = "code"
+_AGENT_CLI_PROBE = "codex"
 
 
 def _inside(root: Path, path: Path, label: str) -> Path:
@@ -65,7 +68,7 @@ def _write_probe(home: Path, name: str, script: str) -> Path:
 def _prepare_editor_probe(home: Path) -> Path:
     return _write_probe(
         home,
-        "code",
+        _EDITOR_PROBE,
         "#!/bin/sh\n"
         "set -eu\n"
         'marker="${HOME}/.booley-ci-dev-containers"\n'
@@ -91,7 +94,7 @@ def _prepare_agent_cli_probe(home: Path) -> Path:
     """
     return _write_probe(
         home,
-        "codex",
+        _AGENT_CLI_PROBE,
         "#!/bin/sh\n"
         'case "${1:-}" in\n'
         "  --version) printf 'codex-cli 0.0.0-release-validation\\n' ;;\n"
@@ -181,8 +184,8 @@ def validate(
         "identity": identity,
         "checks": checks,
         "cleanup": {
-            "editor_probe_removed": not (home / "bin" / "code").exists(),
-            "agent_cli_probe_removed": not (home / "bin" / "codex").exists(),
+            "editor_probe_removed": not (home / "bin" / _EDITOR_PROBE).exists(),
+            "agent_cli_probe_removed": not (home / "bin" / _AGENT_CLI_PROBE).exists(),
             "editor_marker_removed": not _editor_marker(home).exists(),
         },
     }

@@ -156,7 +156,7 @@ def test_project_alias_doctor_executes_real_simulation(
         assert tracker.missing == ()
         assert reporter.result(0).clean
         assert "correctly graded a failure" in output
-    reports = data / doctor._DOCTOR_TMP / "flow-reports"
+    reports = data / doctor.DOCTOR_TMP_DIR / "flow-reports"
     assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
     assert len(list(reports.glob("sim/*/progress.json"))) == 3
 

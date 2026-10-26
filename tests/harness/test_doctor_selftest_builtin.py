@@ -130,7 +130,7 @@ def _simulation_failure_report(target="sim_core", test="hello_world", variant=No
 def _write_sim_bad_report(cmd, *, project=None):
     # Host transports render container paths; use the owning Project when supplied.
     root = (
-        project.booley_dir / doctor._DOCTOR_TMP / "flow-reports"
+        project.booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports"
         if project
         else Path(cmd[cmd.index("--report-dir") + 1])
     )

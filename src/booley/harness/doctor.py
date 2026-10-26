@@ -165,7 +165,6 @@ from booley.targets.selection import (
 if TYPE_CHECKING:
     from booley.harness import developer_probe
 
-_DOCTOR_TMP = DOCTOR_TMP_DIR
 _DRY_RUN_TIMEOUT_S = 60
 _DEEP_TIMEOUTS_S = {
     "sim": 900,
@@ -6753,7 +6752,7 @@ def _execute_selftest(
 
 
 def _selftest_report_path(project: ProjectAudit) -> Path:
-    return project.booley_dir / _DOCTOR_TMP / "flow-reports" / "sim.json"
+    return project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / "sim.json"
 
 
 def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
@@ -7219,7 +7218,7 @@ def _prepare_flow_report_dir(
     project: ProjectAudit, flow_name: str, target: str, dry_run: bool
 ) -> Path:
     """Create the Doctor report directory and remove stale synth evidence."""
-    report_dir = project.booley_dir / _DOCTOR_TMP / "flow-reports"
+    report_dir = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
@@ -7391,7 +7390,7 @@ def _is_simulate_tb_top_skip(
     needle = "--tb-top is required"
     if needle in f"{result.stderr or ''}\n{result.stdout or ''}":
         return True
-    report = project.booley_dir / _DOCTOR_TMP / "flow-reports" / f"{flow_name}.json"
+    report = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / f"{flow_name}.json"
     try:
         payload = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -7492,9 +7491,9 @@ def _flow_argv(
 ) -> list[str]:
     work_dir = "/work" if host_entry else str(project.project_root)
     report_dir = (
-        f"{dc.BOOLEY_DIR_TARGET}/{_DOCTOR_TMP}/flow-reports"
+        f"{dc.BOOLEY_DIR_TARGET}/{DOCTOR_TMP_DIR}/flow-reports"
         if host_entry
-        else str(project.booley_dir / _DOCTOR_TMP / "flow-reports")
+        else str(project.booley_dir / DOCTOR_TMP_DIR / "flow-reports")
     )
     argv = [
         "--work-dir",
