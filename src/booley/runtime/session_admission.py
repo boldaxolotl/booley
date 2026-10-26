@@ -23,12 +23,14 @@ from booley.config.host_config import (
 )
 from booley.core.boundary import (
     BoundaryError,
+    as_str_list,
     require_bool_value,
     require_dict,
     require_list,
     require_str,
     require_str_value,
 )
+from booley.core.egress_modes import declared_egress
 from booley.core.private_store import PrivateStore
 from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
@@ -78,6 +80,8 @@ class Sandbox:
     running: bool
     vscode: bool
     observed_root: str | None = None
+    # Egress mode declared by the container's BOOLEY_EGRESS environment entry.
+    egress: str = "proxy"
 
 
 def _run(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -218,6 +222,26 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
         return tuple(items.values())
     except (OSError, subprocess.SubprocessError) as exc:
         raise AdmissionError(f"cannot inspect Project Sandboxes safely: {exc}") from exc
+
+
+def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
+    """Read the host-wide running Booley Sandbox inventory that admission uses."""
+    try:
+        return _inventory(run)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AdmissionError(f"cannot inspect Booley Sandboxes safely: {exc}") from exc
+
+
+def recreate_remedy(item: Sandbox) -> str:
+    """Name the host steps that recreate one Sandbox from a freshly issued spec."""
+    seed = _command(["booley", "init", "--seed", "--project", item.project_root])
+    if item.vscode:
+        return (
+            f"recreate it: run `{seed}`, then use Dev Containers: Rebuild Container "
+            "in its VS Code window"
+        )
+    down = _command(["booley", "session", "down", "--project", item.project_root])
+    return f"recreate it: run `{down}`, `{seed}`, then start the Sandbox again"
 
 
 def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
@@ -407,7 +431,21 @@ def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = 
         running,
         _FOLDER_LABEL in labels,
         labels.get(_FOLDER_LABEL),
+        _container_egress(config.get("Env")),
     )
+
+
+def _container_egress(raw_env: object) -> str:
+    """Return the egress mode a container's ``Config.Env`` declares.
+
+    Docker reports a null ``Env`` for containers without environment entries;
+    the environment classifies the mode, ownership stays the label check.
+    """
+    prefix = "BOOLEY_EGRESS="
+    values = [
+        entry.removeprefix(prefix) for entry in as_str_list(raw_env) if entry.startswith(prefix)
+    ]
+    return declared_egress(values[-1] if values else None)
 
 
 def _labels(raw: object) -> dict[str, str]:

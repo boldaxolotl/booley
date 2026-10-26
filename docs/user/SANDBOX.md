@@ -71,7 +71,9 @@ refuses the Sandbox spec issued for the other mode and asks you to run
 `booley init --seed` (then reopen the folder in the container, or use Dev
 Containers: Rebuild Container if VS Code is running it). A running Sandbox
 keeps its mode until it is recreated; until then, headless `booley session
-enter` and `booley auth` refuse it with the same remedy. Like Docker's default
+enter` and `booley auth` refuse it with the same remedy. Host `booley doctor` prints the host egress
+mode and warns about each running Sandbox still in the other mode; see
+[Doctor reports a Sandbox whose egress mode differs from the host](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host). Like Docker's default
 `bridge`, `booley-unproxied-v1` also lets Sandboxes reach services listening on
 the host's Docker gateway address.
 

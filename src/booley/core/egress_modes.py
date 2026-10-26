@@ -9,3 +9,12 @@ can depend on it.
 from __future__ import annotations
 
 EGRESS_MODES = ("proxy", "unproxied")
+
+
+def declared_egress(value: str | None) -> str:
+    """Classify a Sandbox's ``BOOLEY_EGRESS`` declaration as an egress mode.
+
+    Booley issues ``BOOLEY_EGRESS=unproxied`` only for an Unproxied Sandbox;
+    an absent or any other value declares the default ``proxy`` mode.
+    """
+    return "unproxied" if value == "unproxied" else "proxy"

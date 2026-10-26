@@ -234,6 +234,31 @@ Delete a file that matches the shipped template. For edited or unfamiliar
 content, move its rules into a Goalset under `.booley/goalsets/`, then
 delete it. Both warning IDs can be narrowly waived in `doctor-waivers.toml`.
 
+### Doctor reports a Sandbox whose egress mode differs from the host
+
+Host Doctor prints the host's egress mode under `Host checks`, for example
+`host Sandbox egress mode: unproxied`. It then checks every running Booley
+Sandbox on the host. A Sandbox still issued for the other mode after you changed
+[`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml)
+gets a `host.sandbox-egress-mismatch` warning that names the Sandbox, its
+Project, and both modes.
+
+The check is host-wide: Doctor in any Project reports every Project's
+mismatched Sandbox, and the warning keeps Doctor from recording clean health
+until you resolve it. Recreate the Sandbox from a freshly issued spec:
+
+- Headless: run `booley session down --project <root>`, then
+  `booley init --seed --project <root>`, then start the Sandbox again.
+- VS Code: run `booley init --seed --project <root>`, then use Dev Containers:
+  Rebuild Container in that Project's VS Code window.
+
+Booley never recreates a Sandbox automatically. The warning clears once the
+Sandbox is recreated or stopped. To keep one running in the other mode
+deliberately, waive `host.sandbox-egress-mismatch` in `doctor-waivers.toml`
+with `subject` set to that Project's root. If Doctor instead fails with
+`cannot check running Sandboxes against host egress mode`, resolve the problem
+it names; Sandbox starts are refused for the same reason.
+
 ### Retained issued Sandbox Images
 
 `booley session down` and Grant revocation retain issued-image keeper tags.
