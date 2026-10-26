@@ -69,7 +69,7 @@ extensions remain non-blocking. `--force` refreshes Booley-managed host
 resources while preserving caches and user-owned files.
 
 Under host `[sandbox] egress = "unproxied"` (see
-[host configuration](CONFIG.md#host-configuration-configtoml)), Bootstrap
+[host configuration](SANDBOX.md#host-configuration-configtoml)), Bootstrap
 builds and runs only the reaper, never the egress proxy. It removes an existing
 `booley-proxy` container and `booley-egress-v2` network only when no Booley
 Sandbox is running and no Sandbox parked by an interrupted refresh or rebuild
