@@ -364,7 +364,9 @@ wants you to break these; it doesn't.
 The steps author the config files; they do **not** re-explain every field.
 When a step needs the meaning of a `booley.toml` section, a `.core`
 fileset/target, `tests.toml`, sentinels, or an advanced setup, it links to
-`CONFIG.md` in the project docs. Bundled templates live at this skill's root:
+the Booley user docs: `CONFIG.md` for Project-wide `booley.toml` settings,
+`TARGETS.md` for `.core` files, `TESTS.md` for `tests.toml`, the per-Flow pages
+(`FLOW-SIM.md` for sentinels), and `SANDBOX.md` for the Sandbox image. Bundled templates live at this skill's root:
 `../SETUP_PLAN_TEMPLATE.md`, `../BOOLEY_TEMPLATE.toml`,
 `../TESTS_TEMPLATE.toml`, `../CORE_TEMPLATE.yaml`, `../AGENTS_TEMPLATE.md`
 (paths relative to the step files in `steps/`).

@@ -2,7 +2,7 @@
 
 ## Read this first
 
-This is the big-picture view of Booley and how its parts fit together. It assumes familiarity with the terms **Booley Flow**, **Target**, **Specialist**, **Sandbox**, and FuseSoC `.core`; all are defined in the [GLOSSARY.md glossary](../GLOSSARY.md). Operational commands and capability details belong in [USAGE.md](../user/USAGE.md), while each section below links to deeper technical documentation.
+This is the big-picture view of Booley and how its parts fit together. It assumes familiarity with the terms **Booley Flow**, **Target**, **Specialist**, **Sandbox**, and FuseSoC `.core`; all are defined in the [GLOSSARY.md glossary](../GLOSSARY.md). Operational commands and capability details belong in [USAGE.md](../user/USAGE.md) and [CLI-REFERENCE.md](../user/CLI-REFERENCE.md), while each section below links to deeper technical documentation.
 
 The executable package-direction design and its legacy cycle baseline live in the
 [Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md).
@@ -49,9 +49,9 @@ flowchart TD
 
 ## The Sandbox
 
-The Sandbox is the shared execution and containment boundary. The `booley-sandbox` image supplies the open-source simulation, lint, synthesis, timing, and waveform-analysis stack, so most projects need no additional provisioning. It runs as a non-root user with the Project Root and Booley Directory mounted in, remains available across editor window closes, and is stopped only by explicit lifecycle commands or the idle reaper. One image-lifecycle module reconciles the selected Sandbox Image and its managed ancestry for init, Doctor, and refresh; callers receive immutable identity and typed diagnostics rather than reimplementing Docker freshness rules. Sandbox recreation remains a separate transaction so a failed replacement can restore the prior container. Setup and image customization are covered in [SETUP.md](../user/SETUP.md) and [CONFIG.md](../user/CONFIG.md#custom-sandbox-image); the packaged toolchain is listed in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
+The Sandbox is the shared execution and containment boundary. The `booley-sandbox` image supplies the open-source simulation, lint, synthesis, timing, and waveform-analysis stack, so most projects need no additional provisioning. It runs as a non-root user with the Project Root and Booley Directory mounted in, remains available across editor window closes, and is stopped only by explicit lifecycle commands or the idle reaper. One image-lifecycle module reconciles the selected Sandbox Image and its managed ancestry for init, Doctor, and refresh; callers receive immutable identity and typed diagnostics rather than reimplementing Docker freshness rules. Sandbox recreation remains a separate transaction so a failed replacement can restore the prior container. Setup and image customization are covered in [SETUP.md](../user/SETUP.md) and [SANDBOX.md](../user/SANDBOX.md#custom-sandbox-image); the packaged toolchain is listed in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
-Capabilities fall into two architectural categories. **Booley Flows** deterministically turn structured requests into EDA invocations and their results into evidence. **Specialists** are scoped LLM sub-agents for work such as review and mutation testing. The calling agent reaches both through a uniform MCP surface rather than spawning EDA tools directly. The live capability catalog and controls are in [USAGE.md](../user/USAGE.md#booley-flows--specialists); the build and evidence contracts are in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md), and the extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
+Capabilities fall into two architectural categories. **Booley Flows** deterministically turn structured requests into EDA invocations and their results into evidence. **Specialists** are scoped LLM sub-agents for work such as review and mutation testing. The calling agent reaches both through a uniform MCP surface rather than spawning EDA tools directly. The live capability catalog and controls are in [CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists); the build and evidence contracts are in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md), and the extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
 
 Source ownership follows those boundaries. Each built-in Flow owns its
 tool-specific adapters beneath `src/booley/flows/<flow>/backends/`; for example,
@@ -72,13 +72,13 @@ Interactive Mode is both the hands-on workflow and the front door to the Sandbox
 
 ## Goal Mode
 
-Goal Mode uses the existing agent session rather than launching a separate Ticket loop. Entry requires a clean linked worktree and creates a Goal Branch from HEAD. The worktree owns one Goal Record; any session in that worktree may continue it. While any Goal Record occupies the Project, a Booley Flow, Specialist or custom-tool call, a report fetch, or a Goal tool call without explicit `work_dir` is refused (so is any such call while a Goal Record is unreadable). This Project-wide rule also applies to calls intended to run outside the Goal worktree, so a Project-defined endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/USAGE.md#working-with-evidence) lists the tools that accept none. Calls into an occupied Goal worktree capture an immutable Run Binding to the record, its Goal specifications, and Protected Inputs.
+Goal Mode uses the existing agent session rather than launching a separate Ticket loop. Entry requires a clean linked worktree and creates a Goal Branch from HEAD. The worktree owns one Goal Record; any session in that worktree may continue it. While any Goal Record occupies the Project, a Booley Flow, Specialist or custom-tool call, a report fetch, or a Goal tool call without explicit `work_dir` is refused (so is any such call while a Goal Record is unreadable). This Project-wide rule also applies to calls intended to run outside the Goal worktree, so a Project-defined endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/GOAL-MODE.md#working-with-evidence) lists the tools that accept none. Calls into an occupied Goal worktree capture an immutable Run Binding to the record, its Goal specifications, and Protected Inputs.
 
 Ordinary CLI Flow calls remain diagnostic; evidence that should count toward a Goal runs through MCP with its Run Binding.
 
 The agent cannot meet a Goal by assertion: only structured Booley Flow or Specialist evidence counts. Publication revalidates the Run Binding, and relevant source or Target changes make old evidence stale. A Goal Change Proposal requires human approval and is recorded in the Change Log. Finish requires fresh evidence for every Goal at a clean committed HEAD, unchanged Protected Inputs, and a Session Summary; it presents a Review Package without merging the branch. Abandon keeps the work and the abandoned record.
 
-`booley goal` provides status and abandonment, and `booley dashboard` is the read-only Sandbox view. See [USAGE.md](../user/USAGE.md#goal-mode), [ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md), and the [Goal Mode glossary](../../src/booley/goals/GLOSSARY.md).
+`booley goal` provides status and abandonment, and `booley dashboard` is the read-only Sandbox view. See [GOAL-MODE.md](../user/GOAL-MODE.md#goal-mode), [ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md), and the [Goal Mode glossary](../../src/booley/goals/GLOSSARY.md).
 
 ### Shared execution and evidence
 
@@ -96,7 +96,7 @@ Booley is backend-agnostic. One provider—Claude or Codex—is configured for a
 
 ## Security & Trust Model
 
-Booley treats Developer Agent behavior as untrusted, whether caused by error or adversarial input. Developer Agents, MCP tools, Flows, and EDA subprocesses run inside the hardened Sandbox with no direct host command channel. The container receives the Project Root, its Booley Directory, linked worktrees, and explicitly authorized resources; it has no host home, SSH state, or Docker socket, and runs non-root with dropped capabilities, `no-new-privileges`, memory and PID limits, and default-deny egress (unless the host opts into Unproxied Sandboxes; see [`config.toml`](../user/CONFIG.md#host-configuration-configtoml)).
+Booley treats Developer Agent behavior as untrusted, whether caused by error or adversarial input. Developer Agents, MCP tools, Flows, and EDA subprocesses run inside the hardened Sandbox with no direct host command channel. The container receives the Project Root, its Booley Directory, linked worktrees, and explicitly authorized resources; it has no host home, SSH state, or Docker socket, and runs non-root with dropped capabilities, `no-new-privileges`, memory and PID limits, and default-deny egress (unless the host opts into Unproxied Sandboxes; see [`config.toml`](../user/SANDBOX.md#host-configuration-configtoml)).
 
 **Known escape hatch:** shared Git metadata remains writable from the Sandbox.
 An agent can plant executable configuration or hooks that a later host Git
@@ -104,7 +104,7 @@ invocation consumes, including Booley's own host-side Git calls. This can execut
 code with the host user's authority without exploiting Docker or the kernel.
 Doctor does not currently detect or prevent it. Remediation is deferred in
 [#1529](https://github.com/boldaxolotl/booley/issues/1529); see the
-[current precautions](../user/TROUBLESHOOTING.md#known-sandbox-escape-through-shared-git-metadata).
+[current precautions](../user/SANDBOX.md#known-sandbox-escape-through-shared-git-metadata).
 
 Goal work stays on its Goal Branch for review. Protected Input checks guard
 evidence-producing configuration, while the Review Package exposes changed

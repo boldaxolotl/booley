@@ -16,6 +16,7 @@ from pathlib import Path
 from booley.goals.model import parse_goal_args
 from booley.goals.presentation import goal_presentation
 from booley.goals.translate import translate_goals
+from booley.runtime.docs_links import SITE_URL
 from tests.docs.test_links import _destination_failure, _repository_path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,11 +107,11 @@ def test_demo_link_uses_the_contract_pinned_revision():
 
 def test_readme_links_resolve_to_site_sections_and_pages():
     """Every README link into the site names a home-page section, user doc, or page."""
-    links = re.findall(r"https://boldaxolotl\.github\.io/booley/([\w./-]*)(?:#([\w-]+))?", README)
+    links = re.findall(rf"{re.escape(SITE_URL)}([\w./-]*)(?:#([\w-]+))?", README)
     site_ids = set(re.findall(r'\bid="([a-z-]+)"', SITE))
     failures = []
     for page, anchor in links:
-        url = f"https://boldaxolotl.github.io/booley/{page}" + (f"#{anchor}" if anchor else "")
+        url = f"{SITE_URL}{page}" + (f"#{anchor}" if anchor else "")
         if not page:
             if anchor and anchor not in site_ids:
                 failures.append(url)
@@ -257,3 +258,35 @@ def test_text_meets_wcag_aa_contrast_in_both_themes():
     ]
 
     assert failures == []
+
+
+def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
+    """The docs landing table is hand-written HTML; keep it in step with USER_DOCS.
+
+    It must list every doc once, in reading order, under its sidebar section,
+    with rowspans that cover each section, and mark exactly the child docs.
+    """
+    from booley.runtime.docs_links import USER_DOCS
+
+    landing = (WEBSITE / "docs/docs/index.md").read_text(encoding="utf-8")
+    body = landing.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    rows = re.findall(r"<tr>(.*?)</tr>", body)
+    sections: list[tuple[str, int]] = []
+    pages = []
+    for row in rows:
+        group = re.search(r'<th scope="rowgroup" rowspan="(\d+)">([^<]+)</th>', row)
+        if group:
+            sections.append((group.group(2), int(group.group(1))))
+        link = re.search(
+            r'<td>(<span class="docs__tree"[^>]*>└</span>)?<a href="([^"]+)">([^<]+)</a>', row
+        )
+        assert link, f"landing row without a page link: {row}"
+        pages.append((sections[-1][0], link.group(2), link.group(3), bool(link.group(1))))
+
+    expected = [
+        (doc.section, f"{doc.slug}/", doc.title, doc.parent is not None) for doc in USER_DOCS
+    ]
+    assert pages == expected
+    assert sum(span for _, span in sections) == len(rows)
+    for section, span in sections:
+        assert span == sum(doc.section == section for doc in USER_DOCS), section

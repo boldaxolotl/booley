@@ -7,7 +7,7 @@
 {% extends "main.html" %}
 
 {% block container %}
-  <div class="strip"><span><b>AN</b>Application notes</span><span>Booley product family &middot; booley-rtl</span></div>
+  <div class="strip"><span><a class="strip__home" href="{{ 'blog/' | url }}"><b>AN</b>Application notes</a></span><span>Booley product family &middot; booley-rtl</span></div>
   {{ page.content }}
 
   <section class="notes" aria-label="Application notes">

@@ -33,13 +33,13 @@ _ENDPOINTS = builtin_endpoint_catalog()
 # project criteria). cheatsheet.md is also spliced live by `booley cheat`, but its
 # committed copy must still match so the raw file is correct.
 _EMBEDDED_DOCS = [
-    REPO_ROOT / "docs" / "user" / "USAGE.md",
+    REPO_ROOT / "docs" / "user" / "GOAL-MODE.md",
     cheatsheet_path(),
 ]
 
 REGEN_HINT = (
     "Regenerate with: python -m booley.dev_support.criteria_reference "
-    "docs/user/USAGE.md src/booley/data/cheatsheet.md"
+    "docs/user/GOAL-MODE.md src/booley/data/cheatsheet.md"
 )
 
 
@@ -55,7 +55,7 @@ def test_committed_block_matches_source(doc: Path) -> None:
     )
 
 
-# USAGE.md links to `booley cheat --criteria` for the full threshold tables
+# GOAL-MODE.md links to `booley cheat --criteria` for the full threshold tables
 # instead of embedding them, so only the cheatsheet carries this block.
 _PARAMS_EMBEDDED_DOCS = [cheatsheet_path()]
 

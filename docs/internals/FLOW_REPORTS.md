@@ -7,7 +7,7 @@ script or tool that consumes Flow output.
 
 | Document | Covers |
 |---|---|
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How to run each Flow and read its verdict |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run each Flow and read its verdict |
 | **This document** | Report files, JSON fields, and on-disk layout |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the Flows produce these files: planning, verdict rules, recovery |
 | [MCP-TOOLS.md](MCP-TOOLS.md#built-in-flow-calls) | How the same results reach an agent over MCP |
@@ -285,7 +285,7 @@ finding: it loads, and those entries are ignored.
 
 `python -m booley.flows.sim.campaign_retention` deletes the evidence of one
 exact run. Nothing is ever deleted automatically. Usage is in
-[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#cleaning-up-completed-campaigns); the
+[COVERAGE.md](../user/COVERAGE.md#cleaning-up-completed-campaigns); the
 algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 

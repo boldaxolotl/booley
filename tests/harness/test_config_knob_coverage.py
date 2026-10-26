@@ -1,11 +1,11 @@
-"""Every booley.toml knob documented in CONFIG.md must have a reader in src/.
+"""Every booley.toml knob documented in the configuration pages must have a reader in src/.
 
 The recurring "inert knob" bug class: a documented knob exists but nothing
 reads it — ``[sandbox].memory`` was hardcoded (1142d2e), ``[models]`` was inert
 (74f5781), the agent provider was ignored (645f98a), and ``[project].description``
 was documented for months with no read-site anywhere. Each was found by a user
 setting the knob and watching nothing happen. This test is the mechanical
-ratchet: it extracts every knob CONFIG.md documents in a fenced ``toml`` block
+ratchet: it extracts every knob the configuration pages (CONFIG_PAGES) document in a fenced ``toml`` block
 under a recognized booley.toml table and asserts the key appears as a config
 read in production code (Python string literal in a read-ish context, or a bare
 occurrence in a shell script).
@@ -25,9 +25,10 @@ import re
 from pathlib import Path
 
 from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
+from tests.config_docs_support import CONFIG_PAGES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_MD = REPO_ROOT / "docs" / "user" / "CONFIG.md"
+USER_DOCS = REPO_ROOT / "docs" / "user"
 SRC_ROOT = REPO_ROOT / "src" / "booley"
 
 # Documented knobs with no code reader, each with a reviewed justification.
@@ -45,17 +46,24 @@ _KNOB_RE = re.compile(r"^\s*(?:#\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s")
 
 
 def _documented_knobs() -> dict[tuple[str, str], str]:
-    """(root_table, key) -> "line N" for every knob CONFIG.md documents.
+    """(root_table, key) -> "file:line" for every knob the configuration pages document.
 
     Only keys inside a ``[section]`` whose root is a recognized booley.toml
-    table count: CONFIG.md also shows ``tests.toml`` / ``.core`` examples, whose
+    table count: the pages also show ``tests.toml`` / ``.core`` examples, whose
     sections (Target names, CAPI2 keys) are not booley.toml tables and are
     naturally excluded by the root check.
     """
     knobs: dict[tuple[str, str], str] = {}
     in_toml = False
     section_root: str | None = None
-    for lineno, line in enumerate(CONFIG_MD.read_text(encoding="utf-8").splitlines(), 1):
+    lines = [
+        (f"docs/user/{name}:{lineno}", line)
+        for name in CONFIG_PAGES
+        for lineno, line in enumerate(
+            (USER_DOCS / name).read_text(encoding="utf-8").splitlines(), 1
+        )
+    ]
+    for where, line in lines:
         fence = _FENCE_RE.match(line)
         if fence:
             in_toml = not in_toml and fence.group(1) == "toml"
@@ -72,7 +80,7 @@ def _documented_knobs() -> dict[tuple[str, str], str]:
             continue
         knob = _KNOB_RE.match(line)
         if knob:
-            knobs.setdefault((section_root, knob.group(1)), f"docs/user/CONFIG.md:{lineno}")
+            knobs.setdefault((section_root, knob.group(1)), where)
     return knobs
 
 
@@ -104,10 +112,10 @@ def _has_reader(key: str, py_text: str, sh_text: str) -> bool:
 
 def test_every_documented_knob_has_a_reader():
     documented = _documented_knobs()
-    # Self-check: the extractor must actually find the doc's knobs — a CONFIG.md
+    # Self-check: the extractor must actually find the docs' knobs — a configuration-page
     # restructure that breaks parsing would otherwise pass vacuously.
     assert len(documented) >= 25, (
-        f"CONFIG.md knob extraction found only {len(documented)} knobs — "
+        f"Configuration-page knob extraction found only {len(documented)} knobs — "
         "the doc structure changed; update _documented_knobs()"
     )
 
@@ -118,7 +126,7 @@ def test_every_documented_knob_has_a_reader():
         if (table, key) not in _INERT_BY_DESIGN and not _has_reader(key, py_text, sh_text)
     }
     assert not inert, (
-        "CONFIG.md documents knobs with no reader anywhere in src/booley — "
+        "The configuration pages document knobs with no reader anywhere in src/booley — "
         "either the knob was renamed/removed in code (fix the doc), the reader "
         "was never written (fix the code), or it is deliberately informational "
         f"(add to _INERT_BY_DESIGN with a justification): {sorted(inert)}"

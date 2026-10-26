@@ -302,7 +302,7 @@
     "tests/criteria/test_wrong_target_evidence.py::test_wrong_target_result_is_not_stored_as_optional_evidence": 1.0,
     "tests/dev_support/test_build_development_wheel.py::test_source_launcher_runs_from_unrelated_cwd": 1.478353,
     "tests/dev_support/test_flow_specialist_reference.py::test_cheatsheet_keeps_tools_and_specialists_in_separate_blocks": 1.206459,
-    "tests/dev_support/test_flow_specialist_reference.py::test_committed_block_matches_registry[USAGE.md]": 1.086,
+    "tests/dev_support/test_flow_specialist_reference.py::test_committed_block_matches_registry[CLI-REFERENCE.md]": 1.086,
     "tests/dev_support/test_flow_specialist_reference.py::test_docs_render_links_flow_reference_instead_of_controls": 1.875261,
     "tests/dev_support/test_flow_specialist_reference.py::test_docs_render_uses_session_runtime_only_shape": 1.007,
     "tests/dev_support/test_flow_specialist_reference.py::test_every_builtin_flow_has_key_controls": 1.107,

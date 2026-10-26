@@ -45,11 +45,11 @@ def test_help_groups_public_commands_by_location() -> None:
     ]
 
 
-def test_usage_guide_has_the_same_public_inventory() -> None:
-    usage = Path(__file__).parents[2] / "docs/user/USAGE.md"
+def test_cli_reference_has_the_same_public_inventory() -> None:
+    reference = Path(__file__).parents[2] / "docs/user/CLI-REFERENCE.md"
     rows = re.findall(
         r"^\| (Sandbox|Either|Host-only) \| ([^|]+) \|$",
-        usage.read_text(),
+        reference.read_text(),
         re.M,
     )
     assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [

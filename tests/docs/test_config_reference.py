@@ -4,10 +4,16 @@ import re
 from pathlib import Path
 
 import pytest
+from tests.config_docs_support import CONFIG_PAGES
 
 from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
 
-CONFIG_REFERENCE = Path(__file__).resolve().parents[2] / "docs/user/CONFIG.md"
+USER_DOCS = Path(__file__).resolve().parents[2] / "docs/user"
+CONFIG_REFERENCE = USER_DOCS / "CONFIG.md"
+
+
+def _config_pages_text() -> str:
+    return "\n".join((USER_DOCS / name).read_text(encoding="utf-8") for name in CONFIG_PAGES)
 
 
 # Project [interactive] recognizes migration inputs only: policy and app are
@@ -18,10 +24,12 @@ MIGRATION_ONLY_TABLES = {"interactive"}
 
 @pytest.mark.parametrize("table", sorted(KNOWN_BOOLEY_TOML_TABLES - MIGRATION_ONLY_TABLES))
 def test_config_reference_documents_known_booley_toml_table(table: str) -> None:
-    reference = CONFIG_REFERENCE.read_text(encoding="utf-8")
+    reference = _config_pages_text()
 
     table_reference = rf"\[{re.escape(table)}(?:\.[^\]\n]+)?\]"
-    assert re.search(table_reference, reference), f"booley.toml [{table}] missing from CONFIG.md"
+    assert re.search(table_reference, reference), (
+        f"booley.toml [{table}] missing from the configuration pages"
+    )
 
 
 def test_config_reference_lists_pinnable_roles_exactly() -> None:

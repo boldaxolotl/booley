@@ -1,6 +1,6 @@
 ### Stealth sanitation and attribution
 
-The [published Stealth contract](../../../../docs/user/CONFIG.md) has two rules. It redacts built-in banned words (including `booley`) in place, keeping subject, body, and rationale. It **rejects** recognized attribution footers and leaves the raw message unchanged. Use the accepted Stealth settings with no custom banned-word override. Run each case as a commit attempt on a run-owned disposable empty commit, and save the raw message, the stored message (if any), the hook's stdout/stderr, and the exit status. Discard the disposable commits after capturing evidence.
+The [published Stealth contract](../../../../docs/user/STEALTH.md) has two rules. It redacts built-in banned words (including `booley`) in place, keeping subject, body, and rationale. It **rejects** recognized attribution footers and leaves the raw message unchanged. Use the accepted Stealth settings with no custom banned-word override. Run each case as a commit attempt on a run-owned disposable empty commit, and save the raw message, the stored message (if any), the hook's stdout/stderr, and the exit status. Discard the disposable commits after capturing evidence.
 
 **Case 1: `Co-Authored-By` is rejected.** Supply exactly:
 

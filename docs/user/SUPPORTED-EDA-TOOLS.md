@@ -100,7 +100,7 @@ see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-witho
 A test that needs a non-RTL build step before it can run (a per-case
 firmware compile, vector staging) declares it as
 `[flows.sim].pre_run_commands`
-([CONFIG.md](CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) —
+([FLOW-SIM.md](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)) —
 the project's own Makefile runs inside the Sandbox, and Booley keeps the
 same Flow contract above it. A simulator outside this matrix is out of scope
 for Goal Mode; widening the matrix is the sanctioned extension axis.
@@ -156,7 +156,7 @@ Everything below is pinned in `src/booley/data/docker/Dockerfile.base` (the
 image digest and `ARG` lines are the source of truth). This table is what a
 fresh `booley-sandbox` build gives you; a project image may add to it, and `[sandbox].pip_requirements`
 may override the Python rows (see
-[CONFIG.md](CONFIG.md#python-dependencies-sandboxpip_requirements)).
+[SANDBOX.md](SANDBOX.md#python-dependencies-sandboxpip_requirements)).
 
 | Component | Version |
 |---|---|
@@ -193,7 +193,7 @@ refreshes this exact official-master pin once per Booley release, after its
 image and RISC-V acceptance gates pass; see
 [ADR 0069](../adr/0069-follow-tested-spike-master-snapshots.md). This is
 upstream Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation
-needs. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
+needs. See also [SANDBOX.md](SANDBOX.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,
 licensing, Doctor, security, and full-Flow evidence before they can join this
