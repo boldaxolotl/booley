@@ -322,9 +322,13 @@ def _entry_checkout_label(saved: Mapping[str, Any]) -> tuple[RootKind, str]:
         ("control", RootKind.PROJECT),
         ("main", RootKind.MAIN),
     ):
-        if key in saved and project.is_relative_to(Path(saved[key]["path"])):
-            relative = project.relative_to(Path(saved[key]["path"])).as_posix()
-            return kind, "" if relative == "." else relative
+        if key not in saved:
+            continue
+        base = Path(saved[key]["path"])
+        for spelling in (base, base.resolve()):
+            if project.is_relative_to(spelling):
+                relative = project.relative_to(spelling).as_posix()
+                return kind, "" if relative == "." else relative
     return RootKind.ABSOLUTE, project.as_posix()
 
 

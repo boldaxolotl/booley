@@ -32,6 +32,7 @@ from booley.goals.changes import (
 )
 from booley.goals.derivation import CoverageEvaluation, Derivation, derive_changes
 from booley.goals.entry import EntryEnvironment
+from booley.goals.input_identity import main_booley_dir_entry
 from booley.goals.model import GoalRecord, GoalSpec, GoalState, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.goals.proposals import (
@@ -493,14 +494,15 @@ def _drive(
     lock: RecordLock, view: ProposalView, transaction: ApplyTransaction, env: ChangeEnvironment
 ) -> ProposalView:
     _validate_transaction(view, transaction, env)
+    entry = main_booley_dir_entry(Path(env.store.load(lock.goal_id).worktree_path))
     existing = _existing_entry(lock, transaction.entry)
     for effect in transaction.effects:
-        effect.require_expected()
+        effect.require_expected(booley_dir=entry)
     if transaction.entry is not None and existing == "absent":
         append_intent(lock, transaction.entry)
         env.checkpoint("intent")
     for index, effect in enumerate(transaction.effects):
-        effect.apply()
+        effect.apply(booley_dir=entry)
         env.checkpoint(f"effect:{effect.label}:{index}")
     if transaction.entry is None:
         return finalize(lock, view, rejected=True)

@@ -7,7 +7,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
-from booley.runtime.booley_dir import contains, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import (
+    contains,
+    resolve_authoritative_booley_dir,
+    resolve_checkout_booley_dir,
+)
 from booley.runtime.git import git_common_dir
 from booley.runtime.git_facts import repository_facts
 from booley.runtime.project_repositories import paired_project_repository
@@ -105,10 +109,13 @@ def logical_roots(saved: Mapping[str, Any], current: Mapping[str, Any]) -> dict[
 
 
 def tests_label(saved: Mapping[str, Any]) -> str:
-    """The Project tests label is relative only to the entry RTL spelling."""
+    """The Project tests label is relative to the entry RTL root in either spelling."""
     rtl = Path(saved["rtl"]["path"])
     tests = Path(saved["project"]["path"]) / "tests.toml"
-    return (tests.relative_to(rtl) if tests.is_relative_to(rtl) else tests).as_posix()
+    for spelling in (rtl, rtl.resolve()):
+        if tests.is_relative_to(spelling):
+            return tests.relative_to(spelling).as_posix()
+    return tests.as_posix()
 
 
 @repository_facts()
@@ -126,3 +133,9 @@ def capture_roots(root: Path, control_project: Path) -> dict[str, Any]:
     if paired is not None:
         roots["paired"] = paired.worktree
     return root_bindings(roots)
+
+
+def main_booley_dir_entry(worktree: Path) -> Path | None:
+    """The Main Booley Directory entry as its main checkout names it (it may be a symlink)."""
+    common = git_common_dir(worktree)
+    return resolve_authoritative_booley_dir(common.parent) if common.name == ".git" else None
