@@ -126,6 +126,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_upgrade_review",
             "_check_legacy_source_stashes",
             "_check_goal_presence",
+            "_check_worktree_booley_pairing",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",
         }
