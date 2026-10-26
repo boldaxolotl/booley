@@ -22,6 +22,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.core.differences import format_differences
+from booley.core.egress_modes import EGRESS_MODES
 from booley.runtime import interactive_docker as legacy
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
@@ -44,9 +45,11 @@ ROLE_LABEL = "booley.role"
 SESSION_ROLE = "interactive"
 _DEVCONTAINER_FOLDER_LABEL = "devcontainer.local_folder"
 _WORKSPACE_MOUNT_TARGET = "/work"
-# Host ``[sandbox] egress`` mode under which no Sandbox uses the egress proxy.
-_UNPROXIED = "unproxied"
-_UNUSED = "host egress = unproxied"
+# Host ``[sandbox] egress`` modes; under unproxied no Sandbox uses the egress proxy.
+_PROXY, _UNPROXIED = EGRESS_MODES
+_UNPROXIED_REASON = f"host egress = {_UNPROXIED}"
+# Container states plain ``docker ps`` lists, so ``_active_sessions`` names them.
+_ACTIVE_STATES = frozenset({"running", "restarting", "paused"})
 # Proxy-mode resources that converge to absent under unproxied egress, in row order.
 _RETIRED_EGRESS = (("network", legacy.EGRESS_NETWORK), ("proxy", legacy.PROXY_CONTAINER))
 
@@ -204,7 +207,7 @@ def inspect_sidecars(
     docker = _docker_adapter()
     if policy is not None and policy.egress == _UNPROXIED:
         return _inspect_unproxied(policy, booley_root, docker)
-    findings = _inspect_images(booley_root, "proxy", docker)
+    findings = _inspect_images(booley_root, _PROXY, docker)
     findings.append(_inspect_bootstrap_network(docker))
     if policy is None:
         findings.extend(
@@ -278,7 +281,9 @@ def _inspect_unproxied(
 
 def _proxy_image_not_required() -> SidecarFinding:
     return SidecarFinding(
-        "proxy-image", SidecarState.CURRENT, f"{legacy.PROXY_IMAGE} is not required ({_UNUSED})"
+        "proxy-image",
+        SidecarState.CURRENT,
+        f"{legacy.PROXY_IMAGE} is not required ({_UNPROXIED_REASON})",
     )
 
 
@@ -305,15 +310,16 @@ def _retire_egress(
             return _egress_rows(
                 present,
                 SidecarState.CURRENT,
-                f"is present but unused under {_UNUSED}; "
+                f"is present but unused under {_UNPROXIED_REASON}; "
                 "`booley bootstrap` removes it once no Sandbox runs",
             )
-        _require_no_egress_blockers(network, docker)
+        # Mutating Bootstrap runs Sandbox recovery before sidecar reconciliation.
+        _require_no_egress_blockers(network, docker, recovery_ran=intent is not Intent.CHECK)
         if intent is Intent.CHECK:
             return _egress_rows(
                 present,
                 SidecarState.PENDING,
-                f"is present although {_UNUSED}; `booley bootstrap` removes it",
+                f"is present although {_UNPROXIED_REASON}; `booley bootstrap` removes it",
             )
     except SidecarError as exc:
         return tuple(
@@ -329,30 +335,34 @@ def _egress_rows(
     return tuple(
         SidecarFinding(row, state, f"{name} {detail}")
         if present[row]
-        else SidecarFinding(row, SidecarState.CURRENT, f"{name} is absent (unused: {_UNUSED})")
+        else SidecarFinding(
+            row, SidecarState.CURRENT, f"{name} is absent (unused: {_UNPROXIED_REASON})"
+        )
         for row, name in _RETIRED_EGRESS
     )
 
 
-def _require_no_egress_blockers(network: _NetworkState, docker: _DockerPort) -> None:
+def _require_no_egress_blockers(
+    network: _NetworkState, docker: _DockerPort, *, recovery_ran: bool
+) -> None:
     """Refuse retirement while a Sandbox or foreign container could still need the network."""
     active = _active_sessions(docker)
     parked = _parked_refresh_predecessors(docker)
     if active or parked:
-        described = ", ".join(
-            summary
-            for summary in (_active_session_summary(active), _parked_predecessor_summary(parked))
-            if summary
+        summaries = (
+            _active_session_summary(active),
+            _parked_predecessor_summary(parked, recovery_ran=recovery_ran),
         )
+        described = ", ".join(summary for summary in summaries if summary)
         raise SidecarError(
             f"cannot remove unused {legacy.PROXY_CONTAINER} and {legacy.EGRESS_NETWORK} "
-            f"({_UNUSED}) while Booley Sandboxes exist: {described}; stop or remove each "
+            f"({_UNPROXIED_REASON}) while Booley Sandboxes exist: {described}; stop or remove each "
             "listed Sandbox and retry `booley bootstrap`"
         )
     foreign = tuple(name for name in network.attached_names if name != legacy.PROXY_CONTAINER)
     if foreign:
         raise SidecarError(
-            f"cannot remove unused {legacy.EGRESS_NETWORK} ({_UNUSED}); detach foreign "
+            f"cannot remove unused {legacy.EGRESS_NETWORK} ({_UNPROXIED_REASON}); detach foreign "
             f"containers after checking ownership: {', '.join(foreign)}"
         )
 
@@ -366,12 +376,15 @@ def _remove_egress(present: dict[str, bool], docker: _DockerPort) -> tuple[Sidec
         return tuple(
             SidecarFinding(row, SidecarState.ERROR, str(exc)) for row, _ in _RETIRED_EGRESS
         )
-    removed = _egress_rows(present, SidecarState.CHANGED, f"was removed (unused: {_UNUSED})")
+    removed = _egress_rows(
+        present, SidecarState.CHANGED, f"was removed (unused: {_UNPROXIED_REASON})"
+    )
     try:
         if present["network"]:
             _remove_unused(["network", "rm", legacy.EGRESS_NETWORK], legacy.EGRESS_NETWORK, docker)
     except SidecarError as exc:
-        return SidecarFinding("network", SidecarState.ERROR, str(exc)), removed[1]
+        proxy_row = next(finding for finding in removed if finding.resource == "proxy")
+        return SidecarFinding("network", SidecarState.ERROR, str(exc)), proxy_row
     return removed
 
 
@@ -513,7 +526,7 @@ def _reconcile_images(
 def plan_image_builds(
     intent: Intent,
     *,
-    egress: str = "proxy",
+    egress: str = _PROXY,
     booley_root: Path | None = None,
     docker: _DockerPort | None = None,
 ) -> tuple[DockerBuildRequest, ...]:
@@ -995,16 +1008,24 @@ def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
     return ", ".join(descriptions)
 
 
-def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...]) -> str:
-    """Describe parked refresh predecessors, leading with non-destructive recovery."""
+def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...], *, recovery_ran: bool) -> str:
+    """Describe parked refresh predecessors, leading with non-destructive recovery.
+
+    Once this Bootstrap's recovery ran, a remaining predecessor is one it could
+    not restore, so the remedy leads with the rename instead of a rerun.
+    """
+    lead = (
+        "Bootstrap's recovery left it in place; "
+        if recovery_ran
+        else "run `booley bootstrap` to recover it; if it remains, "
+    )
     descriptions = []
-    for session in parked:
-        original = session.name.removesuffix(legacy.REFRESH_BACKUP_SUFFIX)
-        rename = _shell_command(["docker", "rename", session.name, original])
+    for sandbox in parked:
+        original = sandbox.name.removesuffix(legacy.REFRESH_BACKUP_SUFFIX)
+        rename = _shell_command(["docker", "rename", sandbox.name, original])
         descriptions.append(
-            f"{session.name} (Project {session.project_root}; parked by an interrupted refresh "
-            "or rebuild: run `booley bootstrap` to recover it; if it remains, rename it back "
-            f"with `{rename}` or remove it after inspection)"
+            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted refresh "
+            f"or rebuild: {lead}rename it back with `{rename}` or remove it after inspection)"
         )
     return ", ".join(descriptions)
 
@@ -1049,7 +1070,7 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
 
 
 def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
-    """Return stopped Sessions parked by refresh or rebuild; restore needs their network."""
+    """Return stopped Sandboxes parked by refresh or rebuild; restore needs their network."""
     result = docker.run(
         [
             "ps",
@@ -1071,8 +1092,8 @@ def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, .
         if len(fields) != 3 or not all(field.strip() for field in fields):
             raise SidecarError("Docker returned an incomplete Sandbox listing")
         container_id, name, status = (field.strip() for field in fields)
-        # A running predecessor is already an active Session.
-        if not name.endswith(legacy.REFRESH_BACKUP_SUFFIX) or status == "running":
+        # Plain ``docker ps`` already lists these states as active Sandboxes.
+        if not name.endswith(legacy.REFRESH_BACKUP_SUFFIX) or status in _ACTIVE_STATES:
             continue
         state = _inspect_container(container_id, docker)
         if not state.exists or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE:

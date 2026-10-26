@@ -1026,8 +1026,14 @@ class _EgressDocker:
         )
 
     def add_session(
-        self, name: str, *, running: bool = True, networks: tuple[str, ...] = ()
+        self,
+        name: str,
+        *,
+        running: bool = True,
+        networks: tuple[str, ...] = (),
+        state: str | None = None,
     ) -> None:
+        """Add a Sandbox; ``state`` overrides the ``ps -a`` State derived from ``running``."""
         self.add_container(
             name,
             labels={
@@ -1037,6 +1043,8 @@ class _EgressDocker:
             running=running,
             networks=networks,
         )
+        if state is not None:
+            self.containers[name]["state"] = state
 
     def mutations(self) -> list[list[str]]:
         return [call for call in self.calls if "inspect" not in call and call[0] != "ps"]
@@ -1117,7 +1125,7 @@ class _EgressDocker:
             if role != sidecars.SESSION_ROLE:
                 continue
             if "-a" in args:
-                state = "running" if entry["running"] else "exited"
+                state = entry.get("state") or ("running" if entry["running"] else "exited")
                 rows.append(f"{name}\t{name}\t{state}")
             elif entry["running"]:
                 rows.append(f"{name}\t{name}")
@@ -1332,3 +1340,71 @@ def test_check_only_unproxied_reports_leftover_proxy_and_network(
             assert "booley-session-a" in line
     assert status == (1 if blocker == "idle" else 2)
     assert docker.mutations() == []
+
+
+@pytest.mark.parametrize(
+    ("intent", "lead"),
+    [
+        (Intent.ENSURE, "Bootstrap's recovery left it in place; rename it back"),
+        (Intent.CHECK, "run `booley bootstrap` to recover it; if it remains, rename it back"),
+    ],
+    ids=["mutating", "check-only"],
+)
+def test_parked_predecessor_remedy_reflects_whether_recovery_ran(
+    monkeypatch: pytest.MonkeyPatch, intent: Intent, lead: str
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    docker.add_session("booley-session-a-pre-refresh", running=False)
+
+    if intent is Intent.CHECK:
+        result = sidecars.inspect_sidecars(_UNPROXIED)
+    else:
+        result = sidecars.reconcile_sidecars(_UNPROXIED, intent)
+
+    proxy = next(finding for finding in result.findings if finding.resource == "proxy")
+    assert proxy.state is sidecars.SidecarState.ERROR
+    assert lead in proxy.detail, "mutating Bootstrap already ran recovery; never re-prescribe it"
+
+
+def test_restarting_predecessor_is_listed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    name = "booley-session-a-pre-refresh"
+    docker.add_session(name, state="restarting")
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    proxy = next(finding for finding in result.findings if finding.resource == "proxy")
+    assert proxy.state is sidecars.SidecarState.ERROR
+    assert proxy.detail.count(name) == 1, "an active predecessor must not also be listed parked"
+
+
+def test_unproxied_reaper_image_error_skips_retirement(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker, reaper=False)
+    docker.images[sidecars.legacy.REAPER_IMAGE] = ("sha256:foreign", {})
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    assert _states(result) == [
+        ("proxy-image", sidecars.SidecarState.CURRENT),
+        ("reaper-image", sidecars.SidecarState.ERROR),
+    ]
+    assert docker.mutations() == [], "an image error must stop before any retirement mutation"
+
+
+def test_unproxied_network_removal_failure_reports_removed_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    monkeypatch.setattr(docker, "_remove_network", lambda _args: _cp(1, stderr="in use"))
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    rows = {finding.resource: finding for finding in result.findings}
+    assert rows["network"].state is sidecars.SidecarState.ERROR
+    assert "in use" in rows["network"].detail
+    assert rows["proxy"].state is sidecars.SidecarState.CHANGED
+    assert sidecars.legacy.PROXY_CONTAINER not in docker.containers

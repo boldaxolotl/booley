@@ -72,7 +72,8 @@ builds and runs only the reaper, never the egress proxy. It removes an existing
 Sandbox is running and no Sandbox parked by an interrupted refresh or rebuild
 remains. Otherwise it lists each one with its repair command and exits 2, as
 for other sidecar drift. `--check-only` treats an absent proxy and network as
-current and reports leftover ones as pending until Bootstrap removes them.
+current. It reports leftover ones as pending, or as an error naming what blocks
+their removal.
 `booley init` and `booley init --seed` accept both, so reissuing one Project
 never waits for other Projects' Sandboxes. The setting is daemon-wide: the
 removal affects every Project on the Docker daemon. A stopped Sandbox still
