@@ -11,6 +11,8 @@ import pytest
 from booley.flows.sim.campaign import run_directory as rd
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.runtime.file_lock import LockTimeoutError
+from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 PARENT_MARKER = ".booley-simulation-parent.json"
 
@@ -170,3 +172,39 @@ def test_interrupted_cleanup_ignores_an_unowned_run(tmp_path: Path) -> None:
     run, identity = _run(tmp_path)
     literal = dataclasses.replace(run, owned=False, template_root=None)
     assert rd.cleanup_interrupted_run_directory(literal, identity=identity) is False
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_templated_run_directory_follows_only_the_booley_dir_entry(
+    tmp_path: Path, linked: str
+) -> None:
+    """#2191: a templated run_cwd under the Booley Directory crosses only the entry link."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (.runtime/runs) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (entry / ".runtime").mkdir()
+        symlink_or_skip(entry / ".runtime" / "runs", outside, target_is_directory=True)
+    run = rd.expand_run_directory(
+        ".booley/.runtime/runs/{attempt}",
+        project_root=project,
+        campaign_id="c",
+        target_key="sim",
+        work_item_key="t",
+        attempt_key="a1",
+    )
+    identity = {"campaign_id": "c", "work_item_id": "t", "attempt_id": "a1"}
+
+    if linked == "below":
+        with (
+            pytest.raises(SimulationCampaignIntegrityError, match="contains a link"),
+            rd.claimed_run_directory(run, identity=identity),
+        ):
+            pass
+        return
+    with rd.claimed_run_directory(run, identity=identity) as directory:
+        assert (directory / ".booley-simulation-attempt.json").is_file()

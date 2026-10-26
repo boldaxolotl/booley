@@ -53,6 +53,8 @@ from .campaign.dependency import (
 from .campaign_reports import (
     campaign_invocation_lock,
     is_report_link,
+    report_link_ancestor,
+    simulation_booley_dir,
     target_report_directory,
     write_campaign_json,
 )
@@ -99,7 +101,9 @@ class _PruneBatch:
 def _retention_invocation_lock(root: Path) -> Iterator[None]:
     with ExitStack() as stack:
         try:
-            stack.enter_context(campaign_invocation_lock(root))
+            stack.enter_context(
+                campaign_invocation_lock(root, booley_dir=invocation_booley_dir(root))
+            )
         except LockContentionError as exc:
             raise CampaignRetentionError(
                 f"invocation {root.name} is still being produced; retry after it finishes"
@@ -116,10 +120,29 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path)
 
 
-def _safe_tree(path: Path) -> None:
-    for parent in (path, *path.parents):
-        if is_report_link(parent):
-            raise CampaignRetentionError(f"Symlinks are not allowed: {parent}")
+def invocation_booley_dir(root: Path) -> Path | None:
+    """Return the Booley Directory entry an invocation root lives under, if it is one.
+
+    *root* is ``<reports_root>/sim/<N>`` (or a sibling such as its quarantine). The
+    reports root is ``<entry>/flow-reports`` or ``<entry>/.runtime/flow-reports``; the
+    candidate counts only when it is exactly the configured Booley Directory of the
+    checkout containing it (#2191). Custom report roots get ``None`` and stay strict.
+    """
+    reports_root = root.parent.parent
+    if reports_root.name != "flow-reports":
+        return None
+    candidate = reports_root.parent
+    if candidate.name == ".runtime":
+        candidate = candidate.parent
+    if simulation_booley_dir(candidate.parent) != candidate:
+        return None
+    return candidate
+
+
+def _safe_tree(path: Path, booley_dir: Path | None) -> None:
+    parent = report_link_ancestor(path, booley_dir)
+    if parent is not None:
+        raise CampaignRetentionError(f"Symlinks are not allowed: {parent}")
     if path.is_dir():
         for child in path.rglob("*"):
             if is_report_link(child) or not (child.is_file() or child.is_dir()):
@@ -137,7 +160,7 @@ def _invocation(reports_root: Path, invocation: int) -> Path:
     if type(invocation) is not int or invocation < 1:
         raise CampaignRetentionError("Select one exact positive invocation number")
     root = _canonical_retention_path(reports_root) / "sim" / str(invocation)
-    _safe_tree(root)
+    _safe_tree(root, invocation_booley_dir(root))
     return root
 
 
@@ -208,7 +231,7 @@ def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Pa
 
 
 def _prune_native(root: Path, target: str) -> Path:
-    _safe_tree(root)
+    _safe_tree(root, invocation_booley_dir(root))
     _validate_native_pruning_eligibility(root, target)
     directory, loaded = _target(root, target)
     sidecar = directory / "availability.json"
@@ -341,9 +364,10 @@ def _remaining_dependencies(root: Path, members: tuple[Path, ...]) -> tuple[Path
 
 
 def _preflight_invocation(root: Path, *, project_data: Path | None) -> None:
-    _safe_tree(root)
+    booley_dir = invocation_booley_dir(root)
+    _safe_tree(root, booley_dir)
     quarantine = root.with_name(f".pruned-{root.name}")
-    _safe_tree(quarantine)
+    _safe_tree(quarantine, booley_dir)
     if _completed_tombstone(root):
         return
     if _recoverable_quarantine(root):
@@ -623,6 +647,7 @@ def _manifest_reference_matches(
             expected_owner=campaign_id,
             maximum=MANIFEST_MAX_BYTES,
             external_origin_target=external_origin_target,
+            booley_dir=invocation_booley_dir(report_path.parent),
         )
     except ArtifactReferenceError:
         return False
@@ -630,9 +655,10 @@ def _manifest_reference_matches(
 
 
 def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
-    _safe_tree(root)
+    booley_dir = invocation_booley_dir(root)
+    _safe_tree(root, booley_dir)
     quarantine = root.with_name(f".pruned-{root.name}")
-    _safe_tree(quarantine)
+    _safe_tree(quarantine, booley_dir)
     if root.exists():
         if quarantine.exists():
             raise CampaignRetentionError("Ambiguous invocation pruning state")
@@ -725,8 +751,9 @@ def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None
         validate_retired_campaign_children,
     )
 
+    booley_dir = invocation_booley_dir(root)
     for directory in _campaign_directories(root):
-        status = inspect_retained_campaign(directory / "manifest.json")
+        status = inspect_retained_campaign(directory / "manifest.json", booley_dir=booley_dir)
         children = directory / "child-executions"
         if not children.exists():
             if status.interrupted and project_data is None:
@@ -782,7 +809,7 @@ def _release_child_indexes(root: Path, project_data: Path | None) -> None:
                         "Simulation Campaign child ownership cannot resolve its Booley Directory"
                     )
                 resolved = Path(project_data).resolve() if project_data else inferred
-                if resolved != inferred.resolve():
+                if resolved.resolve() != inferred.resolve():
                     raise CampaignRetentionError(
                         "Booley Directory disagrees with the canonical Simulation Campaign owner"
                     )
@@ -804,7 +831,9 @@ def _child_ownership_root(children: Path, manifest_paths) -> Path | None:
         except OSError:
             matches.append(False)
     if matches and all(matches):
-        return producer_paths[0].parents[3]
+        # Producer paths are persisted resolved; every one is ``samefile`` with *local*, so
+        # the caller's spelling names the same invocation root without losing a link (#2191).
+        return local.parents[3]
     if any(matches):
         raise CampaignRetentionError("Simulation Campaign child ownership is ambiguous")
     return None
@@ -823,7 +852,12 @@ def _campaign_mutation_locks(campaigns: tuple[Path, ...]) -> Iterator[None]:
     with ExitStack() as stack:
         for campaign in campaigns:
             try:
-                stack.enter_context(retained_campaign_lock(campaign / "manifest.json"))
+                stack.enter_context(
+                    retained_campaign_lock(
+                        campaign / "manifest.json",
+                        booley_dir=invocation_booley_dir(campaign.parents[2]),
+                    )
+                )
             except LockContentionError as exc:
                 raise CampaignRetentionError(
                     "Simulation Campaign is being resumed; retry after it finishes"
@@ -837,8 +871,9 @@ def _recover_campaign_resources(
     from booley.runtime.execution_records import campaign_child_entry_manifests
 
     try:
+        booley_dir = invocation_booley_dir(root)
         for directory in campaigns:
-            status = inspect_retained_campaign(directory / "manifest.json")
+            status = inspect_retained_campaign(directory / "manifest.json", booley_dir=booley_dir)
             children = directory / "child-executions"
             if not campaign_child_entry_manifests(children):
                 # No child records: only this invocation's own run directories can survive.
@@ -849,7 +884,7 @@ def _recover_campaign_resources(
                     # A detached copy has no authority over its producer's resources.
                     continue
                 resolved = _owner_project_data(owner, project_data)
-            recover_retained_campaign_resources(status, resolved)
+            recover_retained_campaign_resources(status, resolved, booley_dir=booley_dir)
     except CampaignRetentionError:
         raise
     except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
@@ -875,12 +910,13 @@ def _infer_project_data(root: Path) -> Path | None:
     if reports_root.name == "flow-reports":
         from booley.runtime.booley_dir import resolve_booley_dir
 
-        candidate = reports_root.parent.resolve()
+        candidate = reports_root.parent
         try:
             selected = resolve_booley_dir().resolve()
         except (OSError, RuntimeError, ValueError):
             return None
-        if candidate == selected:
+        # Compare resolved, but return the lexical entry so mirrors keep one spelling.
+        if candidate.resolve() == selected:
             return candidate
     return None
 
@@ -1035,9 +1071,10 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
     campaign = target / "campaign"
     manifest = campaign / "manifest.json"
     if manifest.exists():
-        status = inspect_retained_campaign(manifest)
+        booley_dir = invocation_booley_dir(root)
+        status = inspect_retained_campaign(manifest, booley_dir=booley_dir)
         expected.update(status.retention_files)
-        expected.update(authenticate_retained_campaign_inventory(status))
+        expected.update(authenticate_retained_campaign_inventory(status, booley_dir=booley_dir))
         try:
             expected.update(dependency_receipt_files(manifest))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1120,7 +1157,9 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
 
 def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligibility:
     try:
-        status = inspect_retained_campaign(campaign / "manifest.json")
+        status = inspect_retained_campaign(
+            campaign / "manifest.json", booley_dir=invocation_booley_dir(target.parents[1])
+        )
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
@@ -1211,6 +1250,7 @@ def _validate_authenticated_projection(
 ) -> None:
     if document.get("campaign_id") != status.campaign_id:
         raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
+    booley_dir = invocation_booley_dir(target.parents[1])
     artifact = resolve_artifact_reference(
         document.get("campaign_manifest"),
         bases={"origin_target": target},
@@ -1218,6 +1258,7 @@ def _validate_authenticated_projection(
         expected_kind="simulation_campaign_manifest",
         expected_owner=status.campaign_id,
         maximum=MANIFEST_MAX_BYTES,
+        booley_dir=booley_dir,
     )
     if artifact.path != status.manifest_path:
         raise CampaignRetentionError("Simulation Campaign projection manifest disagrees")
@@ -1230,6 +1271,7 @@ def _validate_authenticated_projection(
         expected_kind="coverage_campaign_reference",
         expected_owner=status.campaign_id,
         maximum=MAX_REFERENCE_BYTES,
+        booley_dir=booley_dir,
     )
     if coverage.path != (target / "coverage.json").absolute():
         raise CampaignRetentionError(

@@ -11,6 +11,7 @@ from booley.flows.sim.campaign import (
     resolve_artifact_reference,
     resolve_report_artifact_reference,
 )
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 
 def _reference(tmp_path):
@@ -244,3 +245,56 @@ def test_report_reference_requires_numbered_invocation_report(tmp_path):
             expected_owner="campaign-id",
             maximum=1024,
         )
+
+
+@pytest.mark.parametrize("layout", ["entry", "below"])
+def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
+    """#2191: a symlinked ``.booley`` entry is followed; a link below it stays refused."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    entry = project / ".booley"
+    reports = entry / "flow-reports"
+    if layout == "entry":
+        (external / "flow-reports").mkdir()
+    else:
+        # ``flow-reports`` itself is a link to a real directory: refused as today.
+        (tmp_path / "real-reports").mkdir()
+        (external / "flow-reports").symlink_to(tmp_path / "real-reports", target_is_directory=True)
+    origin = reports / "sim/1/targets/sim/campaign/manifest.json"
+    origin.parent.mkdir(parents=True, exist_ok=True)
+    origin.write_bytes(b'{"campaign":true}\n')
+    report = reports / "sim/2/report.json"
+    report.parent.mkdir(parents=True)
+    report.write_text("{}")
+    fields = {"kind": "simulation_campaign_manifest", "owner": "campaign-id", "maximum": 1024}
+
+    def follow() -> None:
+        reference = build_artifact_reference(
+            origin, base_name="reports_root", base=reports, booley_dir=entry, **fields
+        )
+        resolved = resolve_artifact_reference(
+            reference,
+            bases={"reports_root": reports},
+            allowed_bases={"reports_root"},
+            expected_kind=fields["kind"],
+            expected_owner=fields["owner"],
+            maximum=1024,
+            booley_dir=entry,
+        )
+        assert resolved.path == origin
+        from_report = resolve_report_artifact_reference(
+            report,
+            reference,
+            expected_kind=fields["kind"],
+            expected_owner=fields["owner"],
+            maximum=1024,
+            booley_dir=entry,
+        )
+        assert from_report.raw == b'{"campaign":true}\n'
+
+    if layout == "below":
+        with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
+            follow()
+    else:
+        follow()

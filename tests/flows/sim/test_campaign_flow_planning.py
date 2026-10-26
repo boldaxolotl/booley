@@ -7,11 +7,13 @@ from typing import cast
 
 import pytest
 
+from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.flow_planning import plan_ordinary_hdl_campaign
 from booley.flows.sim.execution.contract import SimulationPreview
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
+from tests.conftest import symlink_or_skip
 
 
 def test_resolved_target_plans_one_private_serial_item_per_exact_test(
@@ -359,3 +361,42 @@ def test_empty_pre_run_command_is_refused_at_planning(tmp_path):
         ValueError, match=r"pre_run_commands must be a list of strings, none empty"
     ):
         _plan(handle, inspection, preview, ("reset", "count"))
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_target_input_under_symlinked_booley_dir_is_project_relative(
+    tmp_path: Path, linked: str
+) -> None:
+    """#2191: a stealth-core input below the linked entry is project-relative.
+
+    An input reached through a link *below* the entry that points outside the
+    Project Root still escapes it.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    _project, handle, inspection, preview = _planning_fixture(root)
+    entry = root / ".booley"
+    external = tmp_path / "external"
+    entry.rename(external)
+    symlink_or_skip(entry, external, target_is_directory=True)
+    if linked == "entry":
+        directory = external / "cores"
+    else:
+        directory = tmp_path / "outside"
+        symlink_or_skip(external / "cores", directory, target_is_directory=True)
+    directory.mkdir(exist_ok=True)
+    (directory / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+    # The Target reports the input by its lexical spelling through the entry.
+    lexical = entry / "cores" / "dut.sv"
+    inputs = (
+        TargetInput(str(lexical), "acme:lib:dut:1", "systemVerilogSource", ("tb",), False, {}),
+    )
+    planned = dataclasses.replace(inspection, inputs=inputs)
+
+    if linked == "below":
+        with pytest.raises(SimulationCampaignIntegrityError, match="escapes Project Root"):
+            _plan(handle, planned, preview, ("reset", "count"))
+        return
+    document = _plan(handle, planned, preview, ("reset", "count"))
+    closure = document["build_variants"][0]["source_closure"]  # type: ignore[index]
+    assert [entry_["path"] for entry_ in closure] == [".booley/cores/dut.sv"]

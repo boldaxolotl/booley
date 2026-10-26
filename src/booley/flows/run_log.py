@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -31,12 +32,14 @@ def begin_run_log(
     target: str,
     run: str | None = None,
     owner: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> Path:
     """Open a fresh run log with ownership and in-progress markers."""
     path = Path(work_dir, RUN_LOG_NAME)
     absolute = Path(os.path.abspath(path))  # noqa: PTH100 — preserve links
     for ancestor in (absolute, *absolute.parents):
-        if ancestor.is_symlink():
+        # The exact Booley Directory entry may be a link (#2191); any other stays refused.
+        if ancestor.is_symlink() and not is_booley_dir_entry(ancestor, booley_dir):
             raise OSError("run log path contains a symbolic link")
         if owner is None or ancestor == owner:
             break
@@ -60,18 +63,27 @@ class RunLogIdentity:
     run: str
     attempt: str
     fingerprint: tuple[int, ...]
+    booley_dir: Path | None = None
 
     @classmethod
     def create(
-        cls, root: Path, target: str, attempt: str, allowed: tuple[Path, ...]
+        cls,
+        root: Path,
+        target: str,
+        attempt: str,
+        allowed: tuple[Path, ...],
+        *,
+        booley_dir: Path | None = None,
     ) -> RunLogIdentity:
         path = Path(os.path.abspath(root / RUN_LOG_NAME))  # noqa: PTH100 — preserve links
         owner = next((parent for parent in allowed if path.is_relative_to(parent)), None)
         if owner is None:
             raise OSError("run log lies outside the owned evidence roots")
         run = current_run_token()
-        path = begin_run_log(root, flow="sim", target=target, run=run, owner=owner)
-        return cls(path, target, run, attempt, cls._fingerprint(path))
+        path = begin_run_log(
+            root, flow="sim", target=target, run=run, owner=owner, booley_dir=booley_dir
+        )
+        return cls(path, target, run, attempt, cls._fingerprint(path), booley_dir)
 
     @staticmethod
     def _fingerprint(path: Path) -> tuple[int, ...]:
@@ -86,7 +98,11 @@ class RunLogIdentity:
         try:
             fingerprint = self._fingerprint(self.path)
             if fingerprint != self.fingerprint:
-                with os.fdopen(open_regular_nofollow(self.path), "r", encoding="utf-8") as stream:
+                with os.fdopen(
+                    open_regular_nofollow(self.path, booley_dir=self.booley_dir),
+                    "r",
+                    encoding="utf-8",
+                ) as stream:
                     fields = parse_run_log_header(stream.readline(4096))
                 if fields is None or any(
                     fields.get(key) != value
