@@ -277,6 +277,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   execution` after a work item passed. Another lane could reclaim the finished
   work item's Job Slot in the moment between recording it finished and the final
   lease check; the lease is now checked before the work item is recorded finished.
+- The project site and user docs moved to <https://booley.dev/>. Links Booley
+  prints, the README, and the PyPI project links now point there. Old
+  `boldaxolotl.github.io/booley/` links redirect to the same page.
 
 ## 0.3.1 - 05 OCT 2026
 
