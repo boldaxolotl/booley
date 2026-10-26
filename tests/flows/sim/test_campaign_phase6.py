@@ -59,11 +59,13 @@ from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 _STAMP = "2026-09-22T00:00:00Z"
 
@@ -893,7 +895,11 @@ def _seed_legacy_campaign(source, schema):
 
 
 def _retained_invocation(
-    tmp_path: Path, *, reports: Path | None = None, legacy_schema: str | None = None
+    tmp_path: Path,
+    *,
+    reports: Path | None = None,
+    legacy_schema: str | None = None,
+    booley_dir: Path | None = None,
 ) -> tuple[Path, Path, CampaignStore]:
     source = tmp_path / "source"
     source.mkdir()
@@ -908,7 +914,10 @@ def _retained_invocation(
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
     shutil.move(str(source_store.root), target / "campaign")
-    store = CampaignStore(target / "campaign")
+    # Reports under a symlinked Booley Directory entry need the store to follow it (#2191).
+    store = CampaignStore(
+        target / "campaign", **({"booley_dir": booley_dir} if booley_dir else {})
+    )
     store.regenerate_summary()
     manifest = store.load_manifest().document
     manifest_target = manifest["target"]
@@ -1010,6 +1019,51 @@ def test_complete_campaign_pruning_releases_exact_project_child_pair(
     assert not (project_children / "entries" / f"{execution_id}.json").exists()
     assert not (project_children / "retired" / f"{execution_id}.json").exists()
     assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+
+
+@pytest.mark.parametrize("layout", ["runtime", "flow-reports", "below"])
+def test_prune_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    """#2191: pruning follows a symlinked ``.booley`` entry and refuses a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    entry = project / ".booley"
+    if layout == "below":
+        # Reports live physically elsewhere; ``.runtime`` below the entry is the link.
+        real_runtime = tmp_path / "real-runtime"
+        real_runtime.mkdir()
+        (external / ".runtime").symlink_to(real_runtime, target_is_directory=True)
+        reports, _unused, store = _retained_invocation(
+            tmp_path, reports=real_runtime / "flow-reports"
+        )
+        reports = entry / ".runtime" / "flow-reports"
+    else:
+        reports_dir = (
+            entry / ".runtime" / "flow-reports" if layout == "runtime" else entry / "flow-reports"
+        )
+        reports, _unused, store = _retained_invocation(
+            tmp_path, reports=reports_dir, booley_dir=entry
+        )
+    if layout == "flow-reports":
+        # The retention CLI runs from the Project; ownership inference reads the cwd.
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        monkeypatch.chdir(project)
+        reset_cache()
+    execution_id = _publish_retired_child(entry, store)
+
+    if layout == "below":
+        with pytest.raises((CampaignRetentionError, SimulationCampaignIntegrityError)):
+            prune_invocation(reports, 1)
+        assert (reports / "sim/1").is_dir()
+        return
+    prune_invocation(reports, 1)
+
+    children = entry / ".runtime" / "campaign-child-executions"
+    assert not (children / "entries" / f"{execution_id}.json").exists()
+    assert not (children / "retired" / f"{execution_id}.json").exists()
+    assert (reports / "sim" / ".pruned-1").is_dir()
 
 
 @pytest.mark.usefixtures("mandatory_file_locks")
@@ -1198,7 +1252,7 @@ def test_detached_copy_pruning_never_recovers_producer_resources(
     monkeypatch.setattr(
         campaign_retention,
         "recover_retained_campaign_resources",
-        lambda status, resolved: recovered.append((status.manifest_path, resolved)),
+        lambda status, resolved, **_kwargs: recovered.append((status.manifest_path, resolved)),
     )
 
     prune_invocation(detached_reports, 1, project_data=project_data)

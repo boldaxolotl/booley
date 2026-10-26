@@ -7,6 +7,8 @@ import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     parse_run_cwd_template,
     resolve_pre_sim_build_access,
@@ -329,9 +331,13 @@ def _variant_document(
 
 def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str, object]]:
     entries = []
+    booley_dir = simulation_booley_dir(root)
     for item in inputs:
         path = Path(item.path)
         resolved = (path if path.is_absolute() else root / path).resolve()
+        if booley_dir is not None:
+            # Inputs behind a symlinked Booley Directory stay project-relative (#2191).
+            resolved = lexical_booley_path(booley_dir, resolved)
         try:
             relative = resolved.relative_to(root).as_posix()
             raw = resolved.read_bytes()

@@ -1,6 +1,10 @@
 """Tests for the Flow-neutral durable run-log interface."""
 
+import pytest
+
 from booley.flows import run_log
+from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 # ---------------------------------------------------------------------------
 # write_run_log
@@ -239,3 +243,29 @@ def test_identity_checks_only_through_owning_root(tmp_path):
     identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (owner,))
     assert "previous run" not in identity.path.read_text(encoding="utf-8")
     assert identity.pointer(work, "attempt", owner)["live"] is True
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_run_log_identity_follows_only_the_booley_dir_entry(tmp_path, linked):
+    """#2191: the run log crosses the Booley Directory link, never a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (.runtime) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        symlink_or_skip(entry / ".runtime", outside, target_is_directory=True)
+    work = entry / ".runtime" / "attempt"
+    work.mkdir(parents=True, exist_ok=True)
+
+    if linked == "below":
+        with pytest.raises(OSError, match="symbolic link"):
+            run_log.RunLogIdentity.create(work, "sim", "attempt", (project,), booley_dir=entry)
+        return
+    identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (project,), booley_dir=entry)
+    # Appending changes the fingerprint, so pointer() re-opens through the entry.
+    with identity.path.open("a", encoding="utf-8") as stream:
+        stream.write("output\n")
+    assert identity.pointer(work, "attempt", project) is not None

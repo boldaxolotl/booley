@@ -40,7 +40,9 @@ from booley.flows.sim.execution.engine import (
     PreparedOrdinaryGroup,
     SimulationBuildSlotError,
 )
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_campaign_manifest_codec import _manifest, _selection_test_runs, _sha
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 
 def _admission() -> AdmissionContext:
@@ -1331,3 +1333,35 @@ def test_publication_does_not_decode_its_own_bytes(
     assert len(records) == 1
     assert records[0].document["status"] == status
     assert records[0].document["returncode"] == returncode
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
+    """#2191: a Campaign store crosses the Booley Directory link, never a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (flow-reports) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        symlink_or_skip(entry / "flow-reports", outside, target_is_directory=True)
+    else:
+        (entry / "flow-reports").mkdir()
+    store = CampaignStore(
+        entry / "flow-reports" / "sim" / "1" / "targets" / "sim" / "campaign", booley_dir=entry
+    )
+    manifest = _manifest_for(("smoke",))
+
+    if linked == "below":
+        with pytest.raises(SimulationCampaignIntegrityError, match="contains a link"):
+            store.publish_manifest(manifest)
+        return
+    digest = store.publish_manifest(manifest)
+    assert store.load_manifest().document == manifest.document
+    assert store.manifest_sha256() == digest
+    store.regenerate_summary()
+    assert store.load_summary()["complete"] is False
+    with store.mutation_lock():
+        assert (store.root / ".lock").exists()

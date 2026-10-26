@@ -24,6 +24,7 @@ from booley.config.tests_toml_rules import (
     validate_env_table,
 )
 from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
@@ -59,6 +60,7 @@ from booley.flows.sim.build_session import (
     snapshot_generation_files,
     verify_existing_build_inputs,
 )
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
     literal_run_cwd_problem,
@@ -392,8 +394,14 @@ class PreparedOrdinaryGroup:
         identities: set[Path] = set()
         root = self._attempt.prepared.build_root.resolve()
         project_root = self._handle.project_root.resolve()
+        # The Booley Directory entry spelled under the resolved root, so sources that
+        # physically sit behind a symlinked entry stay project-relative (#2191).
+        entry = simulation_booley_dir(self._handle.project_root)
+        booley_dir = None if entry is None else entry.parent.resolve() / entry.name
         for item in self._attempt.prepared.resolved.files:
             source = item.absolute(root)
+            if booley_dir is not None:
+                source = lexical_booley_path(booley_dir, source)
             try:
                 is_packaged_dump = _is_packaged_dump_source(self._attempt, source, project_root)
                 if not source.is_file() or not (

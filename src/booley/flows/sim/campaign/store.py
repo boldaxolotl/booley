@@ -21,6 +21,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TypeVar, cast
 
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
     require_bool_value,
@@ -142,7 +143,7 @@ def _is_link(path: Path) -> bool:
     )
 
 
-def _require_safe_parents(path: Path, root: Path) -> None:
+def _require_safe_parents(path: Path, root: Path, booley_dir: Path | None = None) -> None:
     try:
         path.absolute().relative_to(root.absolute())
     except ValueError as exc:
@@ -151,7 +152,7 @@ def _require_safe_parents(path: Path, root: Path) -> None:
     current = Path(absolute.anchor)
     for component in absolute.parts[1:]:
         current /= component
-        if _is_link(current):
+        if _is_link(current) and not is_booley_dir_entry(current, booley_dir):
             raise SimulationCampaignIntegrityError(f"campaign path contains a link: {current}")
 
 
@@ -174,13 +175,13 @@ def _replace_projection(path: Path, raw: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _read_regular(path: Path, *, limit: int) -> bytes:
+def _read_regular(path: Path, *, limit: int, booley_dir: Path | None = None) -> bytes:
     if _is_link(path):
         raise SimulationCampaignIntegrityError(f"authoritative path is a link: {path}")
     descriptor: int | None = None
     current_descriptor: int | None = None
     try:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
         initial = _regular_identity(os.fstat(descriptor), path, limit)
         raw = bytearray()
         while len(raw) <= limit:
@@ -193,7 +194,7 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
                 f"authoritative file exceeds size ceiling: {path}"
             )
         final = _regular_identity(os.fstat(descriptor), path, limit)
-        current_descriptor = open_regular_nofollow(path)
+        current_descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
         current = _regular_identity(os.fstat(current_descriptor), path, limit)
         if initial != final or final != current or len(raw) != final[2]:
             raise SimulationCampaignIntegrityError(
@@ -228,8 +229,10 @@ def _regular_identity(
 class CampaignStore:
     """Append-only authoritative storage rooted at one ``campaign`` directory."""
 
-    def __init__(self, campaign_directory: Path) -> None:
+    def __init__(self, campaign_directory: Path, *, booley_dir: Path | None = None) -> None:
         self.root = campaign_directory.absolute()
+        # The one link component the store may cross (#2191); ``None`` is strict.
+        self.booley_dir = booley_dir
         self._authenticated_files: set[Path] = set()
 
     @property
@@ -238,7 +241,7 @@ class CampaignStore:
         return tuple(sorted(self._authenticated_files))
 
     def _read(self, path: Path, *, limit: int) -> bytes:
-        raw = _read_regular(path, limit=limit)
+        raw = _read_regular(path, limit=limit, booley_dir=self.booley_dir)
         self._authenticated_files.add(path.absolute())
         return raw
 
@@ -257,19 +260,19 @@ class CampaignStore:
 
     def publish_manifest(self, manifest: SimulationCampaignManifest) -> str:
         raw = encode_simulation_campaign_manifest(manifest)
-        _require_safe_parents(self.manifest_path, self.root)
+        _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
         _create_immutable(self.manifest_path, raw)
         return _manifest_sha256(manifest)
 
     def load_manifest(self) -> SimulationCampaignManifest:
-        _require_safe_parents(self.manifest_path, self.root)
+        _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
         return decode_simulation_campaign_manifest(
             self._read(self.manifest_path, limit=MANIFEST_MAX_BYTES)
         )
 
     def load_summary(self) -> Mapping[str, object]:
         """Load the bounded retention fields from the existing summary projection."""
-        _require_safe_parents(self.summary_path, self.root)
+        _require_safe_parents(self.summary_path, self.root, self.booley_dir)
         raw = self._read(self.summary_path, limit=SUMMARY_MAX_BYTES)
         try:
             document = require_dict(json.loads(raw), field="campaign summary")
@@ -300,11 +303,11 @@ class CampaignStore:
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
         """Fail immediately when another scheduler owns this campaign."""
-        _require_safe_parents(self.root, self.root)
+        _require_safe_parents(self.root, self.root, self.booley_dir)
         if not self.root.is_dir():
             raise SimulationCampaignIntegrityError("Simulation Campaign directory disappeared")
         path = self.root / ".lock"
-        _require_safe_parents(path, self.root)
+        _require_safe_parents(path, self.root, self.booley_dir)
         with path.open("a+", encoding="utf-8") as stream, nonblocking_file_lock(stream):
             yield
 
@@ -447,7 +450,7 @@ class CampaignStore:
         if document["state"] == "design_failure":
             return None, None
         bundle = self._load_shared_bundle(directory, attempt, result, expected)
-        execution = _load_build_execution(directory, document)
+        execution = _load_build_execution(directory, document, self.booley_dir)
         return bundle, execution
 
     def _load_shared_bundle(self, directory, attempt, result, expected) -> SimulatorBundle:
@@ -476,7 +479,7 @@ class CampaignStore:
     ) -> Path:
         """Durably create a contained attempt sidecar without replacing an existing firing."""
         path = directory / "pre-sim" / f"{ordinal:04d}.json"
-        _require_safe_parents(path, self.root)
+        _require_safe_parents(path, self.root, self.booley_dir)
         if len(raw) > MANIFEST_MAX_BYTES:
             raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
         _create_immutable(path, raw)
@@ -530,7 +533,7 @@ class CampaignStore:
             )
             decoder = PreSimFiringDecoder(manifest)
             for path in paths:
-                _require_safe_parents(path, directory)
+                _require_safe_parents(path, directory, self.booley_dir)
                 raw = self._read(path, limit=MANIFEST_MAX_BYTES)
                 firings.append(
                     PreSimFiring(
@@ -566,7 +569,7 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError("prior hook manifest changed")
         if item is None:
             raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
-        _require_safe_parents(directory, self.root)
+        _require_safe_parents(directory, self.root, self.booley_dir)
         if directory.parent != self._work_item_directory(item) / "attempts":
             raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
         snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, None)
@@ -636,7 +639,7 @@ class CampaignStore:
 
     def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
         path = root / cast(str, reference["path"])
-        _require_safe_parents(path, root)
+        _require_safe_parents(path, root, self.booley_dir)
         size, digest = self._identity(path)
         if size != reference["bytes"] or digest != reference["sha256"]:
             raise SimulationCampaignIntegrityError(
@@ -644,7 +647,7 @@ class CampaignStore:
             )
 
     def _publish(self, path: Path, value: _T, encoder: Callable[[_T], bytes]) -> Path:
-        _require_safe_parents(path, self.root)
+        _require_safe_parents(path, self.root, self.booley_dir)
         _create_immutable(path, encoder(value))
         return path
 
@@ -814,7 +817,7 @@ class CampaignStore:
         raw = canonical_json_bytes(document)
         if len(raw) > MANIFEST_MAX_BYTES:
             raise SimulationCampaignIntegrityError("summary exceeds size ceiling")
-        _require_safe_parents(self.summary_path, self.root)
+        _require_safe_parents(self.summary_path, self.root, self.booley_dir)
         _replace_projection(self.summary_path, raw)
         return json.loads(raw)
 
@@ -822,7 +825,9 @@ class CampaignStore:
 _PRE_SIM_DAG_BOUND = 4096
 
 
-def collect_pre_sim_firings(*manifest_paths: Path) -> tuple[PreSimFiring, ...]:
+def collect_pre_sim_firings(
+    *manifest_paths: Path, booley_dir: Path | None = None
+) -> tuple[PreSimFiring, ...]:
     """Read every root's prerequisite DAG once and deduplicate by full firing identity.
 
     The key ``(campaign_id, work_item_id, attempt_id, ordinal)`` keeps Candidate
@@ -842,7 +847,7 @@ def collect_pre_sim_firings(*manifest_paths: Path) -> tuple[PreSimFiring, ...]:
         path, expected, ancestors = pending.pop()
         if path.name != "manifest.json" or path.parent.name != "campaign":
             raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
-        store = CampaignStore(path.parent)
+        store = CampaignStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
         if expected is not None and manifest_digest(manifest) != expected:
             raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
@@ -864,7 +869,9 @@ def collect_pre_sim_firings(*manifest_paths: Path) -> tuple[PreSimFiring, ...]:
     return tuple(firings.values())
 
 
-def reread_pre_sim_firings(prior: tuple[PreSimFiring, ...]) -> tuple[PreSimFiring, ...]:
+def reread_pre_sim_firings(
+    prior: tuple[PreSimFiring, ...], *, booley_dir: Path | None = None
+) -> tuple[PreSimFiring, ...]:
     """Freshly reread earlier-authenticated firings, one snapshot per attempt.
 
     No terminal record is consulted, so unrelated terminal corruption cannot
@@ -877,7 +884,7 @@ def reread_pre_sim_firings(prior: tuple[PreSimFiring, ...]) -> tuple[PreSimFirin
         attempts.setdefault(firing.path.parent.parent, []).append(firing)
     fresh = {}
     for manifest_path, attempts in by_manifest.items():
-        store = CampaignStore(manifest_path.parent)
+        store = CampaignStore(manifest_path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
         items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
         for directory, owned in attempts.items():
@@ -947,12 +954,16 @@ def _validate_shared_bundle(bundle, binding, attempt, expected) -> None:
         raise SimulationCampaignIntegrityError("shared Simulator Bundle binding disagrees")
 
 
-def _load_build_execution(directory: Path, result: Mapping[str, object]) -> Mapping[str, object]:
+def _load_build_execution(
+    directory: Path, result: Mapping[str, object], booley_dir: Path | None = None
+) -> Mapping[str, object]:
     references = cast(tuple[Mapping[str, object], ...], result["evidence"])
     matches = [item for item in references if item["kind"] == "simulation_build_execution"]
     if len(matches) != 1:
         raise SimulationCampaignIntegrityError("ready shared build lacks exact execution evidence")
-    raw = _read_regular(directory / cast(str, matches[0]["path"]), limit=RECORD_MAX_BYTES)
+    raw = _read_regular(
+        directory / cast(str, matches[0]["path"]), limit=RECORD_MAX_BYTES, booley_dir=booley_dir
+    )
     try:
         document = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

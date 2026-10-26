@@ -32,6 +32,7 @@ from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.test_build_reuse import _core_behind_linked_booley_dir
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -604,3 +605,17 @@ def test_generated_parameter_normalization_changes_build_identity(tmp_path):
             session.authorize_fresh_image(prepared, before)
         normalize_parameter_records(resolved)
         assert session.capture_inputs(prepared) == after
+
+
+@pytest.mark.parametrize("case", ["project_core", "stealth_core"])
+def test_icarus_core_file_through_the_booley_dir_entry_is_eligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A core named by a lexical ``..`` path stays project-relative behind the entry link."""
+    project, edam, core = _core_behind_linked_booley_dir(tmp_path, case)
+    # Isolate the core-path decision from source staging and recipe checks.
+    monkeypatch.setattr(build_session, "_has_unsupported_source", lambda *_: False)
+    monkeypatch.setattr(build_session, "_has_unsupported_icarus_recipe", lambda *_: False)
+    prepared = SimpleNamespace(resolved=SimpleNamespace(edam_path=edam))
+
+    assert build_session._eligible_core_file(prepared, project) == core
