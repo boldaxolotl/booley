@@ -3741,6 +3741,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     validated.path.parents[3] / "progress.json",
                     new_invocation=int(invocation.name),
                     new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+                    booley_dir=validated.booley_dir,
                 )
                 lifecycle.complete()
                 return outcome, None

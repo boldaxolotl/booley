@@ -85,9 +85,11 @@ def read_invocation_pre_sim_firings(
     return collect_pre_sim_firings(*paths, booley_dir=booley_dir)
 
 
-def authenticate_work_item(manifest_path: Path, work_item_id: str) -> CampaignWorkItemEvidence:
+def authenticate_work_item(
+    manifest_path: Path, work_item_id: str, *, booley_dir: Path | None = None
+) -> CampaignWorkItemEvidence:
     """Return one exact terminal result from an authenticated complete Campaign scan."""
-    store = _store_for_manifest(manifest_path)
+    store = _store_for_manifest(manifest_path, booley_dir)
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)

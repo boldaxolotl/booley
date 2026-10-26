@@ -328,12 +328,23 @@ def exec_argv(
 
 
 def _preflight(spec: dict, *, license_required: bool = False) -> None:
-    """Refuse to start when `booley init`'s Docker objects are absent."""
-    if not idk.network_exists(dc.EGRESS_NETWORK):
+    """Refuse to start when Booley's Docker objects are absent.
+
+    The spec was already validated against host ``[sandbox] egress``, so its
+    ``--network`` flags name the mode's network: the egress network must exist,
+    and the routed unproxied network is created on demand.
+    """
+    networks = _flag_values(spec.get("runArgs"), "--network")
+    if dc.EGRESS_NETWORK in networks and not idk.network_exists(dc.EGRESS_NETWORK):
         raise SessionError(
             f"the '{dc.EGRESS_NETWORK}' network does not exist — run `booley init` "
             "first (it creates the network, egress proxy, and idle reaper)"
         )
+    if dc.UNPROXIED_NETWORK in networks:
+        try:
+            idk.ensure_unproxied_network()
+        except RuntimeError as exc:
+            raise SessionError(f"cannot prepare {dc.UNPROXIED_NETWORK}: {exc}") from exc
     image = str(spec.get("image", ""))
     if image and not idk.image_exists(image):
         raise SessionError(
@@ -883,7 +894,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(
-            f"refusing Sandbox startup: {exc}; {sandbox_remedy(workspace)}"
+            f"refusing Sandbox startup: {exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}"
         ) from exc
     _warn_on_image_drift(spec, workspace)
     if image_override is not None and image_override != spec.get("image"):
@@ -1176,7 +1187,7 @@ def validate(workspace: Path) -> str:
     try:
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
-        raise SessionError(f"{exc}; {sandbox_remedy(workspace)}") from exc
+        raise SessionError(f"{exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}") from exc
     selected = resolve_running_sandbox(workspace)
     if selected is not None and not _container_matches_issuance(
         selected.container_id,
@@ -1286,10 +1297,29 @@ def _authenticate_quiesce_validate(
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         recovery = _quiesced_validation_recovery(quiesced)
-        raise SessionError(
-            f"refusing Sandbox preparation: {exc}; {sandbox_remedy(workspace)}{recovery}"
-        ) from exc
+        remedy = _spec_refusal_remedy(workspace, exc, vscode=True)
+        raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}{recovery}") from exc
     return issuance, quiesced
+
+
+def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> str:
+    """Name the host workflow that cures one Sandbox spec refusal."""
+    from booley.runtime import session_issuance as runtime_spec
+
+    if isinstance(exc, runtime_spec.HostPolicyError):
+        return f"fix {exc.path} on the host, then start the Sandbox again"
+    if isinstance(exc, runtime_spec.EgressDriftError):
+        if vscode:
+            return (
+                "on the host run `booley init --seed`, then reopen the folder in the "
+                "container (Dev Containers: Rebuild Container if it is running)"
+            )
+        return (
+            "host [sandbox] egress changed; on the host run `booley init --seed` to "
+            "reissue the Sandbox spec (run `booley session down` first if a headless "
+            "Sandbox is running), then start the Sandbox again"
+        )
+    return sandbox_remedy(workspace)
 
 
 def _same_host_path(actual: str, expected: Path) -> bool:

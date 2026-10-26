@@ -1273,6 +1273,7 @@ class _InteractiveSpecSources:
             mask_paths=list(self.mask_paths),
             mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
             local_timezone=self.timezone,
+            egress=inputs.egress,
         )
 
 

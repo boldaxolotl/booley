@@ -50,3 +50,28 @@ posture the safe default.
 **Silent fallback when the proxy is unreachable.** A Sandbox would lose
 mediation without anyone choosing it. Doctor FAILs instead and names the
 declaration that fixes it.
+
+## Amendments (2026-10-26)
+
+Recorded while implementing
+[#2214](https://github.com/boldaxolotl/booley/issues/2214), part of #2133.
+
+- **Booley writes the variable under an explicit host setting.** The Decision
+  said Booley "never writes the variable itself". That no longer holds: host
+  `config.toml [sandbox] egress = "unproxied"` makes Booley issue
+  `BOOLEY_EGRESS=unproxied` in `containerEnv`. The mode is still chosen
+  explicitly, never inferred. Absent or `"proxy"` issues today's spec
+  unchanged. `"unproxied"` with a non-empty `egress_allowlist` is invalid.
+- **Two issued spec shapes.** `proxy` joins the egress network and carries the
+  proxy environment. `unproxied` joins the Booley-managed routed network
+  `booley-unproxied-v1` in the same `--network` slot and carries no proxy
+  environment. That network is a plain user-defined bridge that session start
+  creates when missing. It is user-defined because Docker cannot attach the
+  default `bridge` together with the internal license network, so licensed
+  Sandboxes work in both modes.
+- **No automatic reissue.** Issuance accepts only the shape matching host
+  policy. After a switch, session start refuses the old spec and names
+  `booley init --seed`, which reissues it. Running Sandboxes keep their mode
+  until recreated.
+- The Decision's statement that the internal egress network denies direct
+  egress in a Booley-issued Sandbox holds under host `egress = "proxy"`.

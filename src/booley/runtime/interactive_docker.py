@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.config.settings import InteractiveConfig
-from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
+from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT, UNPROXIED_NETWORK
 
 if TYPE_CHECKING:
     from booley.runtime.image_identity import Comparison, ImageMetadata
@@ -470,6 +470,29 @@ def ensure_egress_network(name: str = EGRESS_NETWORK) -> bool:
     )
     if result.returncode != 0:
         raise RuntimeError(f"failed to create network {name}: {result.stderr.strip()}")
+    return True
+
+
+def ensure_unproxied_network() -> bool:
+    """Create the routed bridge every unproxied Sandbox joins, if missing.
+
+    Returns True if the network was created, False if it already existed.
+    Callers hold the host lifecycle lock, so no create race is handled here.
+    Raises :class:`RuntimeError` if creation fails or a network of that name
+    is ``--internal`` and so cannot route outside Docker.
+    """
+    if network_exists(UNPROXIED_NETWORK):
+        if not network_is_internal(UNPROXIED_NETWORK):
+            return False
+        raise RuntimeError(
+            f"network {UNPROXIED_NETWORK} cannot route outside Docker; remove it when no "
+            f"container uses it (`docker network rm {UNPROXIED_NETWORK}`) and start again"
+        )
+    result = _run_docker(["network", "create", "--driver", "bridge", UNPROXIED_NETWORK])
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to create network {UNPROXIED_NETWORK}: {result.stderr.strip()}"
+        )
     return True
 
 

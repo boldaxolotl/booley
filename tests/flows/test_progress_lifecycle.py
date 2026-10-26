@@ -319,7 +319,7 @@ def test_supersede_ignores_nonresumable_phase_and_write_failure(
     document["phase"] = "running"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    def fail_replace(*_args: object) -> None:
+    def fail_replace(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(progress_module, "_replace_if_unchanged", fail_replace)
@@ -356,3 +356,27 @@ def test_default_progress_reader_refuses_links_above_report_root(tmp_path):
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     assert read_progress_for_run((alias / "project/reports",), "sim", "one") is None
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_coverage_supersede_follows_only_the_booley_dir_entry(tmp_path: Path, linked: str) -> None:
+    real = tmp_path / "real-booley-dir"
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    real.mkdir()
+    symlink_or_skip(entry, real, target_is_directory=True)
+    reports = real / "flow-reports"
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(reports, tmp_path / "elsewhere", target_is_directory=True)
+    path = entry / "flow-reports" / "sim" / "1" / "progress.json"
+    _write_progress(path)
+
+    superseded = supersede_progress(
+        path, new_invocation=2, new_run_id="resume-run", booley_dir=entry
+    )
+
+    phase = json.loads(path.read_text(encoding="utf-8"))["phase"]
+    assert (superseded, phase) == (
+        (True, "superseded") if linked == "entry" else (False, "running")
+    )

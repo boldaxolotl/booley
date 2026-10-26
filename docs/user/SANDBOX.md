@@ -48,6 +48,7 @@ created automatically:
 idle_timeout_seconds = 7200
 max_sessions = 4
 egress_allowlist = []
+egress = "proxy"
 ```
 
 `idle_timeout_seconds` applies when no client Docker exec is running and the later of the last valid Booley heartbeat and container start time is older than the timeout (start time alone when the heartbeat is absent). Booley MCP calls and supervised commands update the heartbeat. Running execs used by Sandbox Attachments, such as VS Code and terminal shells, or other clients prevent reaping for their entire lifetime; the reaper's heartbeat reads do not. An inspection failure keeps the Sandbox for that pass. Closing an attachment does not reset the heartbeat timestamp.
@@ -58,6 +59,22 @@ limits, and invalid egress entries stop Host Bootstrap before mutation. Egress
 entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
 are rejected.
 
+`egress` chooses how issued Sandboxes reach the network: `"proxy"` (the
+default when absent) or `"unproxied"`. Any other value, or `"unproxied"` with a
+non-empty `egress_allowlist`, stops Host Bootstrap before mutation. Under
+`"unproxied"`, Booley issues **Unproxied Sandboxes**: no proxy variables,
+`BOOLEY_EGRESS=unproxied` in the spec's `containerEnv`, and the Booley-managed
+routed network `booley-unproxied-v1` instead of the egress network. The first
+session start creates that network; a licensed Sandbox joins it next to its
+private license network. After you switch modes, the next session start
+refuses the Sandbox spec issued for the other mode and asks you to run
+`booley init --seed` (then reopen the folder in the container, or use Dev
+Containers: Rebuild Container if VS Code is running it). A running Sandbox
+keeps its mode until it is recreated; until then, headless `booley session
+enter` and `booley auth` refuse it with the same remedy. Like Docker's default
+`bridge`, `booley-unproxied-v1` also lets Sandboxes reach services listening on
+the host's Docker gateway address.
+
 Host `config.toml [sandbox]` and Project `booley.toml [sandbox]` have different
 keys: host limits and egress belong only in the host file; Project image and
 memory settings belong only in the Project file. Init and Doctor reject
@@ -65,8 +82,9 @@ host-only keys placed in Project `[sandbox]`.
 
 This Sandbox Policy applies to the whole Docker daemon, across all Projects
 and both Goal Mode and Interactive Mode. The
-timeout and admission cap cover all Booley Sandboxes, and every extra
-egress hostname becomes reachable from every Project.
+timeout and admission cap cover all Booley Sandboxes, every extra
+egress hostname becomes reachable from every Project, and `egress` applies to
+every Project's issued Sandboxes.
 
 `max_sessions` is checked before a start would add a live Sandbox. At the limit,
 the command refuses, lists live Projects and ages, and explains how to free capacity
@@ -79,7 +97,7 @@ canceling the editor operation.
 ## Sandbox (`[sandbox]`)
 
 This is the Project table in `booley.toml`. Host-wide `idle_timeout_seconds`,
-`max_sessions`, and `egress_allowlist` belong in
+`max_sessions`, `egress_allowlist`, and `egress` belong in
 [`config.toml [sandbox]`](#host-configuration-configtoml).
 
 One container, one memory limit:
@@ -198,7 +216,10 @@ Inside a Sandbox, Booley points every agent and tool at its egress proxy
 (`booley-proxy`) by setting the `HTTP_PROXY` family of variables. A Sandbox
 that cannot use that proxy, such as a Codespace you wrote the devcontainer
 spec for, declares an **Unproxied Sandbox** instead. Booley-issued Sandboxes
-are always proxied; this variable is for hand-written specs.
+are proxied unless the host sets `[sandbox] egress = "unproxied"` in
+[`config.toml`](#host-configuration-configtoml), which issues
+`BOOLEY_EGRESS=unproxied` for you; set the variable yourself only in
+hand-written specs.
 
 | `BOOLEY_EGRESS` | Effect |
 |---|---|
@@ -212,11 +233,11 @@ variable is read only inside a Sandbox (`BOOLEY_CONTAINER=1`) and is never
 inferred from platform signals such as `CODESPACES`.
 
 It is a declaration, not a security boundary. Any process in a Sandbox can set
-it for itself; in a Booley-issued Sandbox the internal network still denies
-direct egress, and Booley never removes a proxy variable the Sandbox
-delivered, so doing so only stops Booley adding its own proxy variables in that
-process and turns Doctor's unresolved-proxy FAIL into the waivable WARN for
-that run.
+it for itself; in a Sandbox Booley issued under host `egress = "proxy"` the
+internal network still denies direct egress, and Booley never removes a proxy
+variable the Sandbox delivered, so doing so only stops Booley adding its own
+proxy variables in that process and turns Doctor's unresolved-proxy FAIL into
+the waivable WARN for that run.
 
 Doctor reports the mode in the Sandbox checks:
 
