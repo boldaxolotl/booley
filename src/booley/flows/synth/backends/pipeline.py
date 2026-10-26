@@ -158,7 +158,7 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
     if runs_openroad(spec.timing.mode):
         report_dir = build_dir / "reports" / "timing"
         report_dir.mkdir(parents=True, exist_ok=True)
-        sdc_paths = tuple(Path(posix_relpath(path, build_dir)) for path in spec.timing.sdc)
+        sdc_paths = tuple(Path(_rel(path, build_dir)) for path in spec.timing.sdc)
         # Relative script-internal paths: the recipes run with cwd=build_dir.
         openroad_timing.write_openroad_script(
             spec.design_name,
@@ -218,8 +218,18 @@ def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
 
 
 def _rel(path: Path, build_dir: Path) -> str:
-    """POSIX path of *path* relative to the build dir (recipes run with -C)."""
-    return posix_relpath(path, build_dir)
+    """POSIX path of *path* relative to the build dir (recipes run with -C).
+
+    The tools walk each ``..`` physically from their cwd. Under a symlinked
+    Booley Directory entry (a Codespace's ``/work/.booley``) the lexical
+    ``..`` climbs out of the link target instead of back to ``/work``, so when
+    the lexical path does not reach *path*, recompute it from the build dir's
+    physical location. *path* keeps its own spelling either way.
+    """
+    lexical = posix_relpath(path, build_dir)
+    if (build_dir / lexical).resolve() == Path(path).resolve():
+        return lexical
+    return posix_relpath(Path(path).absolute(), build_dir.resolve())
 
 
 def _write_yosys_script(spec: SynthSpec, build_dir: Path) -> None:

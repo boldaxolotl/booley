@@ -104,7 +104,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
             "--provider",
             "codex",
             "--auth",
-            "subscription",
+            "auto",
             "--skip-credentials",
         ],
         ["doctor"],

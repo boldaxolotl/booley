@@ -152,8 +152,10 @@ def validate(
                 "--no-asic",
                 "--provider",
                 "codex",
+                # The runner has no agent credential. A pinned policy without its
+                # credential is a Doctor failure by design, so keep the default.
                 "--auth",
-                "subscription",
+                "auto",
                 "--skip-credentials",
             ],
             project=project,

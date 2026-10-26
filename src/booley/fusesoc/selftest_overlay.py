@@ -16,6 +16,9 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
+from booley.core.booley_dir_links import is_booley_dir_entry, lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
+
 INTERNAL_KIND_ENV = "BOOLEY_INTERNAL_SELFTEST_KIND"
 BAD_KIND = "bad"
 _BAD_OVERLAY_DIR = "bad-overlay"
@@ -47,14 +50,16 @@ def _validated_generation_parent(project_root: Path, generation_parent: Path) ->
         raise SelftestOverlayError(
             f"Doctor generation parent is outside the Project: {generation_parent}"
         )
+    # Only the Booley Directory entry itself (a Codespace's /work/.booley) may be a link.
+    entry = root / BOOLEY_DIR_NAME
     current = root
     for part in relative.parts:
         current /= part
-        if current.is_symlink():
+        if current.is_symlink() and not is_booley_dir_entry(current, entry):
             raise SelftestOverlayError(f"Doctor generation parent is a symlink: {current}")
-    if parent.is_symlink():
+    if parent.is_symlink() and not is_booley_dir_entry(parent, entry):
         raise SelftestOverlayError(f"Doctor generation parent is a symlink: {parent}")
-    if not parent.resolve().is_relative_to(root):
+    if not lexical_booley_path(entry, parent.resolve()).is_relative_to(root):
         raise SelftestOverlayError(
             f"Doctor generation parent is outside the Project: {generation_parent}"
         )
