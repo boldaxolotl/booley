@@ -1132,11 +1132,24 @@ def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
     assert invocation_booley_dir(project / "out" / "flow-reports" / "sim" / "1") is None
 
 
-@pytest.mark.parametrize("reports_name", ["flow-reports", "custom"])
+@pytest.mark.parametrize(
+    "reports_name",
+    [
+        "flow-reports",
+        ".runtime/flow-reports",
+        "tmp/doctor/flow-reports",
+        "custom",
+        "tmp/flow-reports",
+    ],
+)
 def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports_name: str
 ) -> None:
-    """#2191: a custom report root under a linked entry is refused at the lock, not later."""
+    """#2191: a custom report root under a linked entry is refused at the lock, not later.
+
+    Booley-owned roots are derivable: the default ones and deep Doctor's own
+    ``tmp/doctor/flow-reports`` (a Codespace links ``/work/.booley``).
+    """
     from booley.flows.sim.flow import SimulateFlow
     from booley.runtime.booley_dir import reset_cache
 
@@ -1149,7 +1162,7 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
     report_dir = project / ".booley" / reports_name
 
     flow = SimulateFlow()
-    if reports_name == "custom":
+    if reports_name in {"custom", "tmp/flow-reports"}:
         with pytest.raises(ValueError, match="must not contain symlinks"):
             flow._next_invocation_dir(report_dir)
         return

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -124,19 +125,27 @@ def invocation_booley_dir(root: Path) -> Path | None:
     """Return the Booley Directory entry an invocation root lives under, if it is one.
 
     *root* is ``<reports_root>/sim/<N>`` (or a sibling such as its quarantine). The
-    reports root is ``<entry>/flow-reports`` or ``<entry>/.runtime/flow-reports``; the
-    candidate counts only when it is exactly the configured Booley Directory of the
-    checkout containing it (#2191). Custom report roots get ``None`` and stay strict.
+    reports root is ``<entry>/flow-reports``, ``<entry>/.runtime/flow-reports``, or
+    deep Doctor's ``<entry>/tmp/doctor/flow-reports``; the candidate counts only when
+    it is exactly the configured Booley Directory of the checkout containing it
+    (#2191). Custom report roots get ``None`` and stay strict.
     """
     reports_root = root.parent.parent
     if reports_root.name != "flow-reports":
         return None
     candidate = reports_root.parent
-    if candidate.name == ".runtime":
+    if _ends_with(candidate, DOCTOR_TMP_DIR):
+        candidate = candidate.parents[len(DOCTOR_TMP_DIR.parts) - 1]
+    elif candidate.name == ".runtime":
         candidate = candidate.parent
     if simulation_booley_dir(candidate.parent) != candidate:
         return None
     return candidate
+
+
+def _ends_with(path: Path, suffix: Path) -> bool:
+    """Whether *path*'s last components are exactly *suffix*'s (lexical only)."""
+    return path.parts[-len(suffix.parts) :] == suffix.parts
 
 
 def _safe_tree(path: Path, booley_dir: Path | None) -> None:

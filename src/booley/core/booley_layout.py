@@ -14,6 +14,8 @@ from booley.core.user_paths import config_dir
 BOOLEY_DIR_NAME = ".booley"
 RETIRED_DIR_NAME = ".booley_project"
 RETIRED_ENV = "BOOLEY_PROJECT_DIR"
+# Doctor's scratch root inside the Booley Directory; deep checks write Flow reports below it.
+DOCTOR_TMP_DIR = Path("tmp") / "doctor"
 
 
 class BooleyLayoutError(RuntimeError):

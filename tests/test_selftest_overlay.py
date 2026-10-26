@@ -479,3 +479,36 @@ def test_doctor_runtime_view_rejects_invalid_attempt_token(tmp_path: Path) -> No
         selftest_overlay.SelftestOverlayError, match="invalid Doctor attempt token"
     ):
         selftest_overlay.doctor_runtime_view_path(tmp_path, tmp_path / "slot", "not-a-token")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
+def test_managed_runtime_view_follows_only_a_symlinked_booley_dir_entry(tmp_path: Path) -> None:
+    """A Codespace links ``/work/.booley``; links below the entry stay refused."""
+    checkout = tmp_path / "work"
+    data = tmp_path / "workspaces" / "repo"
+    elsewhere = tmp_path / "elsewhere"
+    for directory in (checkout, data, elsewhere):
+        directory.mkdir(parents=True)
+    (checkout / ".booley").symlink_to(data, target_is_directory=True)
+    booley_dir = checkout / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text("bad\n", encoding="utf-8")
+    run_cwd = checkout / "runtime-assets"
+    run_cwd.mkdir()
+    generation_parent = booley_dir / ".runtime" / "g"
+    generation_parent.mkdir(parents=True)
+
+    with selftest_overlay.managed_runtime_view(
+        checkout, booley_dir, "sim", run_cwd, generation_parent, "d" * 32
+    ) as view:
+        assert (view / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
+    assert not view.exists()
+
+    (data / "linked").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(
+        selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"
+    ):
+        selftest_overlay.doctor_runtime_view_path(checkout, booley_dir / "linked" / "g", "d" * 32)

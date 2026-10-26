@@ -233,6 +233,37 @@ class TestSecurity:
                 workspace_root=ws,
             )
 
+    def test_file_behind_symlinked_booley_dir_entry_accepted(self, ws: Path, tmp_path: Path):
+        """A Codespace links ``/work/.booley``; links below the entry stay refused."""
+        # The fixture workspace is tmp_path itself, so both link targets live beside it.
+        data = tmp_path.parent / f"{tmp_path.name}-linked-data"
+        elsewhere = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+        (data / "build").mkdir(parents=True)
+        elsewhere.mkdir()
+        symlink_or_skip(ws / ".booley", data)
+        symlink_or_skip(data / "linked", elsewhere)
+        staged = data / "build" / "src" / "top.sv"
+        staged.parent.mkdir()
+        staged.write_text("module top; endmodule\n")
+        (elsewhere / "top.sv").write_text("module top; endmodule\n")
+
+        edam = build_edam(
+            name="d",
+            files=[ws / ".booley" / "build" / "src" / "top.sv"],
+            toplevel="top",
+            eda_tool="verilator",
+            workspace_root=ws,
+        )
+        assert edam["files"][0]["name"] == str(staged.resolve())
+        with pytest.raises(EdamSecurityError, match="outside the workspace"):
+            build_edam(
+                name="d",
+                files=[ws / ".booley" / "linked" / "top.sv"],
+                toplevel="top",
+                eda_tool="verilator",
+                workspace_root=ws,
+            )
+
     def test_symlink_escape_rejected(self, ws: Path, tmp_path: Path):
         secret = tmp_path.parent / "secret.sv"
         secret.write_text("module secret; endmodule\n")
