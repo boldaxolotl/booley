@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign import (
     ProjectionTrust,
@@ -17,7 +16,7 @@ from booley.flows.sim.campaign import (
     resolve_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
-from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
+from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     FrozenJson,
@@ -93,10 +92,10 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
 
 
 def _safe_path(path: Path) -> None:
-    entry = crossed_booley_dir_entry(path)  # a symlinked .booley entry is followed
-    if ".." in path.parts or any(
-        is_report_link(item) and not is_booley_dir_entry(item, entry)
-        for item in (path, *path.parents)
+    # A symlinked .booley entry is followed; every other link is refused.
+    if (
+        ".." in path.parts
+        or report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
     ):
         raise CoverageAnalysisError(
             "Campaign and source paths must not contain links or traversal"

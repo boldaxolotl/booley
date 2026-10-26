@@ -12,7 +12,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -24,7 +23,7 @@ from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
-from .campaign_reports import is_report_link
+from .campaign_reports import report_link_ancestor
 from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
@@ -272,11 +271,8 @@ def _expected_scoring(collection: Mapping[str, object]) -> dict[str, object]:
 
 
 def _contains_link(path: Path) -> bool:
-    entry = crossed_booley_dir_entry(path)  # a symlinked .booley entry is followed
-    return any(
-        is_report_link(item) and not is_booley_dir_entry(item, entry)
-        for item in (path, *path.parents)
-    )
+    # A symlinked .booley entry is followed; every other link is refused.
+    return report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
 
 
 def _open_regular(path: Path) -> int:

@@ -636,12 +636,12 @@ def _role_waiver_label(
     current = project if role == "project" else rtl
     root = Path(value["root"])
     # The fingerprint root is physical; a role root below a symlinked entry is lexical.
-    spelling = next(
+    matched_base = next(
         (base for base in (current, current.resolve()) if root.is_relative_to(base)), None
     )
-    if spelling is None:
+    if matched_base is None:
         return False
-    value["root"] = str(Path(saved[role]["path"]) / root.relative_to(spelling))
+    value["root"] = str(Path(saved[role]["path"]) / root.relative_to(matched_base))
     value["digest"] = digest({key: val for key, val in value.items() if key != "digest"})
     return True
 
