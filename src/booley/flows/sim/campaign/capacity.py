@@ -66,6 +66,9 @@ class HeavyCapacity:
         # Child permits inside their work, and those whose lost lease was handled.
         self._held: dict[str, ChildHeavyPermit] = {}
         self._recovered_lost: set[str] = set()
+        # Lease IDs proven held after the child's work, so the child may be
+        # published terminal. A later token loss is then normal reaping.
+        self._confirmed: set[str] = set()
         self._gate = threading.Lock()
         self._cause: str | None = None
 
@@ -117,7 +120,7 @@ class HeavyCapacity:
             self._held[token.lease_id] = permit
         try:
             yield permit
-            if permit.lease_health.lost.is_set() or not store.renew(permit.token):
+            if not self._is_confirmed(permit) and not self.confirm_child_lease(permit):
                 raise LeaseLostError(f"heavy lease lost for child execution {child_execution_id}")
             if self._cancelled():
                 raise ClaimAbortedError("campaign cancellation requested")
@@ -126,7 +129,28 @@ class HeavyCapacity:
                 self._waiting.pop(token.lease_id, None)
                 self._held.pop(token.lease_id, None)
                 self._recovered_lost.discard(token.lease_id)
+                self._confirmed.discard(token.lease_id)
             self._release_after_terminal(store, permit)
+
+    def confirm_child_lease(self, permit: ChildHeavyPermit) -> bool:
+        """Prove the child's lease is still held; call before publishing it terminal.
+
+        Reaping reclaims the token of a terminal child, so a later check would
+        mistake that normal cleanup for a lost lease. Once confirmed, the work is
+        done: a token lost afterwards is reaping, not a lost lease, and neither
+        ``child_permit`` nor ``recover_lost_children`` treats it as one.
+        """
+        store = self._admission.slot_store
+        assert store is not None, "child permits exist only under managed admission"
+        held = not permit.lease_health.lost.is_set() and store.renew(permit.token)
+        if held:
+            with self._gate:
+                self._confirmed.add(permit.token.lease_id)
+        return held
+
+    def _is_confirmed(self, permit: ChildHeavyPermit) -> bool:
+        with self._gate:
+            return permit.token.lease_id in self._confirmed
 
     def _acquire_child(self, store, child_execution_id: ExecutionId) -> SlotToken:
         submitted: list[SlotToken] = []
@@ -208,14 +232,17 @@ class HeavyCapacity:
 
         Called from the scheduler's await loop, so recovery begins while the lane's
         work is still running. It never stops the campaign: a lost child lease is
-        scoped to that lane's item.
+        scoped to that lane's item. Confirmed children are skipped: their token
+        was reaped after the terminal record, so there is nothing to recover.
         """
         store = self._admission.slot_store
         with self._gate:
             lost = [
                 permit
                 for lease_id, permit in self._held.items()
-                if permit.lease_health.lost.is_set() and lease_id not in self._recovered_lost
+                if permit.lease_health.lost.is_set()
+                and lease_id not in self._recovered_lost
+                and lease_id not in self._confirmed
             ]
             self._recovered_lost.update(permit.token.lease_id for permit in lost)
         for permit in lost:

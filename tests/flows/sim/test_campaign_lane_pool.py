@@ -15,7 +15,13 @@ from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, CampaignSchedulingError
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.runtime.execution_records import ExecutionId
-from booley.runtime.job_slots import CLASS_HEAVY, QUEUED, ROLE_INTERACTIVE, SlotStore
+from booley.runtime.job_slots import (
+    CLASS_HEAVY,
+    QUEUED,
+    ROLE_INTERACTIVE,
+    SlotRecovery,
+    SlotStore,
+)
 from booley.runtime.supervised_execution import current_supervised_execution
 from tests.flows.sim.test_campaign_phase3 import _named_manifest
 from tests.flows.sim.test_campaign_phase4 import (
@@ -41,7 +47,16 @@ class _Campaign:
         project.mkdir()
         (project / ".booley").mkdir()
         self.registry = ChildExecutionRegistry(self.store, self.manifest, project)
-        self.slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=max_heavy))
+        # Like production, the store reads the child records the registry writes, so
+        # any reap reclaims a child token once that child is terminal.
+        terminal = SlotRecovery(
+            execution_is_terminal=lambda execution_id: self.registry.is_terminal(
+                ExecutionId(execution_id)
+            )
+        )
+        self.slots = SlotStore(
+            tmp_path / "slots", SlotCaps(max_heavy=max_heavy), recovery=terminal
+        )
         self.outer = self.slots.acquire(
             CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
         )
@@ -154,6 +169,86 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
     assert sorted(completed) == ["alpha", "gamma"]
     assert campaign.capacity.cancellation_cause() is None
     assert outer_scope_cancelled == [False, False]
+    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every running lane's cancellation watcher reaps the heavy class every 10 ms, so
+    # another lane can reclaim a child token right after its terminal record lands.
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    child_done = threading.Event()
+    reaped: list[str] = []
+    publish_terminal = campaign.registry.mark_terminal
+
+    def mark_terminal_then_reap(prepared, terminal_cause: str) -> None:
+        publish_terminal(prepared, terminal_cause)
+        reaped.extend(campaign.slots.reap(CLASS_HEAVY))
+
+    monkeypatch.setattr(campaign.registry, "mark_terminal", mark_terminal_then_reap)
+
+    def execute(_attempt, child_id) -> None:
+        if child_id is None:
+            # The outer lane waits so the child lane takes the second item.
+            assert child_done.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        child_done.set()
+
+    try:
+        campaign.scheduler(execute, timeout_seconds=30.0).run(campaign.items)
+    finally:
+        campaign.slots.release(campaign.outer)
+    assert len(reaped) == 1
+    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def test_lease_tick_after_terminal_reap_starts_no_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After the reap, a renewal tick marks the reaped lease lost. The await loop must
+    # not then cancel the already-terminal child (no stray cancel file).
+    from booley.runtime.execution_records import execution_paths
+
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    child_done = threading.Event()
+    confirmed: list = []
+    cancelled: list[ExecutionId] = []
+    publish_terminal = campaign.registry.mark_terminal
+
+    def mark_terminal_then_reap_and_tick(prepared, terminal_cause: str) -> None:
+        publish_terminal(prepared, terminal_cause)
+        assert len(campaign.slots.reap(CLASS_HEAVY)) == 1
+        (permit,) = confirmed
+        assert not campaign.slots.renew(permit.token)  # the tick sees the lease gone
+        campaign.capacity.recover_lost_children()
+
+    def execute(_attempt, child_id) -> None:
+        if child_id is None:
+            assert child_done.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        child_done.set()
+
+    monkeypatch.setattr(campaign.registry, "mark_terminal", mark_terminal_then_reap_and_tick)
+    monkeypatch.setattr(campaign.registry, "cancel", cancelled.append)
+    scheduler = campaign.scheduler(execute, timeout_seconds=30.0)
+    confirm = campaign.capacity.confirm_child_lease
+
+    def recording_confirm(permit) -> bool:
+        confirmed.append(permit)
+        return confirm(permit)
+
+    monkeypatch.setattr(campaign.capacity, "confirm_child_lease", recording_confirm)
+    try:
+        scheduler.run(campaign.items)
+    finally:
+        campaign.slots.release(campaign.outer)
+    (permit,) = confirmed
+    assert cancelled == []
+    child_paths = execution_paths(
+        permit.child_execution_id, booley_dir=campaign.registry.project_data
+    )
+    assert not child_paths.cancel.exists()
     assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
 
 

@@ -306,7 +306,7 @@ class BoundedCampaignScheduler:
                         f"heavy lease lost for child execution {child_id}"
                     ) from exc
                 raise
-            if permit.lease_health.lost.is_set():
+            if not self._capacity.confirm_child_lease(permit):
                 state.terminal_cause = "lease_lost"
             self._registry.mark_terminal(prepared, state.terminal_cause)
         if state.token is not None and not self._capacity.token_absent(state.token):

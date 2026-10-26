@@ -21,6 +21,7 @@ import ast
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ci_changes import DOCUMENTATION_CATEGORIES, classify
@@ -98,8 +99,21 @@ def _pieces(node: ast.expr, bindings: dict[str, ast.expr], expanding: frozenset[
     return []
 
 
-def _path_candidates(tree: ast.Module) -> set[str]:
-    """Return every string literal and every joined `/` chain in a module."""
+@dataclass(frozen=True)
+class _ModuleFacts:
+    """What the derivation needs from one parsed module, gathered in one AST walk.
+
+    Walking each tree once matters: the scan covers every tracked Python file,
+    and CI runs it under coverage tracing.
+    """
+
+    candidates: frozenset[str]  # every string literal and joined `/` chain
+    anchored: bool  # names `__file__`, so it can locate repository files
+    imports: tuple[ast.Import | ast.ImportFrom, ...]
+
+
+def _scan_module(tree: ast.Module) -> _ModuleFacts:
+    """Collect path candidates, the `__file__` anchor and imports in one walk."""
     bindings: dict[str, ast.expr] = {}
     for statement in tree.body:
         if isinstance(statement, ast.Assign) and isinstance(
@@ -109,6 +123,8 @@ def _path_candidates(tree: ast.Module) -> set[str]:
                 if isinstance(target, ast.Name):
                     bindings[target.id] = statement.value
     candidates: set[str] = set()
+    anchored = False
+    imports: list[ast.Import | ast.ImportFrom] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             candidates.add(_normalise(node.value))
@@ -116,7 +132,11 @@ def _path_candidates(tree: ast.Module) -> set[str]:
             pieces = _pieces(node, bindings, frozenset())
             if pieces:
                 candidates.add(_normalise("/".join(piece.strip("/") for piece in pieces)))
-    return candidates
+        elif isinstance(node, ast.Name):
+            anchored = anchored or node.id == "__file__"
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+    return _ModuleFacts(frozenset(candidates), anchored, tuple(imports))
 
 
 def _module_name(path: str) -> str:
@@ -127,7 +147,9 @@ def _module_name(path: str) -> str:
     return ".".join(parts)
 
 
-def _imports(path: str, tree: ast.Module, modules: dict[str, str]) -> set[str]:
+def _imports(
+    path: str, nodes: Iterable[ast.Import | ast.ImportFrom], modules: dict[str, str]
+) -> set[str]:
     """Return the repository files a module imports (by dotted name or sibling)."""
     package = _module_name(path).split(".")
     if PurePosixPath(path).name != "__init__.py":
@@ -142,12 +164,12 @@ def _imports(path: str, tree: ast.Module, modules: dict[str, str]) -> set[str]:
             if target:
                 found.add(target)
 
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 add(alias.name)
                 add(f"{sibling_root}.{alias.name}")
-        elif isinstance(node, ast.ImportFrom):
+        else:
             if node.level:
                 base = ".".join(
                     [
@@ -172,58 +194,59 @@ def _is_test_module(path: str) -> bool:
     )
 
 
-def _parse_python(repo: Path, files: Iterable[str]) -> dict[str, ast.Module]:
-    """Parse the repository's Python files; report each one that cannot be parsed."""
-    trees: dict[str, ast.Module] = {}
+def _parse_python(repo: Path, files: Iterable[str]) -> dict[str, _ModuleFacts]:
+    """Parse and scan the repository's Python files; report each unparsable one."""
+    modules: dict[str, _ModuleFacts] = {}
     for path in files:
         if not path.endswith(".py") or not path.startswith(
             (_SOURCE_PREFIX + "booley/", _TESTS_PREFIX)
         ):
             continue
         try:
-            trees[path] = ast.parse((repo / path).read_text(encoding="utf-8"), filename=path)
+            tree = ast.parse((repo / path).read_text(encoding="utf-8"), filename=path)
         except (OSError, SyntaxError, UnicodeDecodeError, ValueError) as error:
             # Skipped, but visibly: a file that cannot be parsed cannot be derived.
             print(f"warning: not parsed, skipped: {path}: {error}", file=sys.stderr)
-    return trees
+            continue
+        modules[path] = _scan_module(tree)
+    return modules
 
 
 def _direct_readers(
-    trees: dict[str, ast.Module], names: set[str], documents: set[str]
+    modules: dict[str, _ModuleFacts], names: set[str], documents: set[str]
 ) -> set[str]:
     """Return the Python files that themselves name documentation."""
     readers: set[str] = set()
-    for path, tree in trees.items():
+    for path, facts in modules.items():
         if path in _SYNTHETIC_CONFTESTS:
             continue
-        candidates = _path_candidates(tree)
+        candidates = facts.candidates
         if path.startswith(_SOURCE_PREFIX):
             # Source modules must name a documentation file and be anchored to
             # the repository through __file__; a bare word such as the "docs"
             # feedback bucket or CLI subcommand is not a read.
-            anchored = any(
-                isinstance(node, ast.Name) and node.id == "__file__" for node in ast.walk(tree)
-            )
-            if anchored and candidates & documents:
+            if facts.anchored and candidates & documents:
                 readers.add(path)
         elif candidates & names:
             readers.add(path)
     return readers
 
 
-def _propagate_through_tests(trees: dict[str, ast.Module], direct_readers: set[str]) -> set[str]:
+def _propagate_through_tests(
+    modules: dict[str, _ModuleFacts], direct_readers: set[str]
+) -> set[str]:
     """Add the tests that import a reader, until no more are found.
 
     Readership propagates through tests/ imports only; src -> src imports are
     not followed because they pull most of the runtime suite into this job.
     """
-    modules = {_module_name(path): path for path in trees}
-    imports = {path: _imports(path, trees[path], modules) for path in trees}
+    by_name = {_module_name(path): path for path in modules}
+    imports = {path: _imports(path, facts.imports, by_name) for path, facts in modules.items()}
     readers = set(direct_readers)
     changed = True
     while changed:  # terminates: `readers` only grows within a finite set
         changed = False
-        for path in trees:
+        for path in modules:
             if (
                 path.startswith(_TESTS_PREFIX)
                 and path not in readers
@@ -238,9 +261,9 @@ def _propagate_through_tests(trees: dict[str, ast.Module], direct_readers: set[s
 def derive(repo: Path) -> list[str]:
     """Return the sorted test modules a documentation-only change must run."""
     files = _tracked_files(repo)
-    trees = _parse_python(repo, files)
+    modules = _parse_python(repo, files)
     readers = _propagate_through_tests(
-        trees, _direct_readers(trees, narrow_names(files), documentation_files(files))
+        modules, _direct_readers(modules, narrow_names(files), documentation_files(files))
     )
     reader_conftests = {
         str(PurePosixPath(path).parent)
@@ -249,7 +272,7 @@ def derive(repo: Path) -> list[str]:
     }
     selected = {
         path
-        for path in trees
+        for path in modules
         if _is_test_module(path)
         and (
             path.startswith("tests/docs/")

@@ -273,6 +273,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   check ID: `sandbox.activity-hooks-unavailable`,
   `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
   the Target name).
+- A parallel Simulation Campaign no longer fails with `heavy lease lost for child
+  execution` after a work item passed. Another lane could reclaim the finished
+  work item's Job Slot in the moment between recording it finished and the final
+  lease check; the lease is now checked before the work item is recorded finished.
 
 ## 0.3.1 - 05 OCT 2026
 

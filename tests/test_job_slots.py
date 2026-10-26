@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -1107,7 +1108,8 @@ class TestGhostReaping:
         project.mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(project))
         runtime_booley_dir.reset_cache()
-        execution_id = "f" * 32
+        # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+        execution_id = uuid.uuid4().hex
         process = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(120)"],
             env={**os.environ, RUNTIME_EXECUTION_ENV: execution_id},

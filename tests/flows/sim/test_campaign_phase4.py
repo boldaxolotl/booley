@@ -73,6 +73,15 @@ from tests.flows.sim.test_campaign_manifest_codec import _sha
 from tests.flows.sim.test_campaign_phase3 import _build_execution, _two_item_manifest
 
 
+def _unique_execution_id() -> ExecutionId:
+    """A per-test runtime execution ID.
+
+    Real recovery scans every process on the host for its execution ID, so a
+    shared literal would let one xdist worker's recovery signal another's child.
+    """
+    return ExecutionId(uuid.uuid4().hex)
+
+
 def _unmanaged() -> AdmissionContext:
     return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
@@ -156,7 +165,7 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     ordinal, attempt = campaign_store.allocate_attempt_directory(
         str(item["work_item_id"]), attempt_id
     )
-    child_id = ExecutionId("e" * 32)
+    child_id = _unique_execution_id()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     prepared = registry.prepare(
         child_id,
@@ -545,7 +554,7 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
     attempt_id = "f" * 32
     ordinal, attempt = campaign_store.allocate_attempt_directory(work_item_id, attempt_id)
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
-    execution_id = ExecutionId("e" * 32)
+    execution_id = _unique_execution_id()
     publish_v030_child(
         registry,
         execution_id=execution_id,
@@ -647,7 +656,7 @@ def test_child_protocol_crash_prefixes_recover_exactly(tmp_path: Path, boundary:
     attempt_id = "f" * 32
     ordinal, attempt = campaign_store.allocate_attempt_directory(work_item_id, attempt_id)
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
-    execution_id = ExecutionId("e" * 32)
+    execution_id = _unique_execution_id()
     prepared = publish_v030_child(
         registry,
         execution_id=execution_id,
