@@ -33,7 +33,7 @@ from booley.goals.store import GoalStore
 from booley.harness import upgrade_review
 from booley.harness.dashboard.jobs import JobReader, JobSnapshot, target_arg
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
-from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace, observed_checkout
+from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
 from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.artifact_paths import available_paths
@@ -91,10 +91,6 @@ class DashboardSnapshot:
     # Reported activity by session key; a session without an entry is unknown.
     activity: Mapping[str, Activity] = field(default_factory=dict)
     session_handles: Mapping[str, str] = field(default_factory=dict)
-    # Checkout Booley calls target when they omit work_dir (the MCP server's
-    # Project root), with its branch. Sessions that never passed work_dir show it.
-    default_checkout: str = ""
-    default_branch: str = ""
 
 
 def _live_baseline_comparison(goal: GoalStatus, entry: Any) -> tuple[str, ...]:
@@ -372,7 +368,6 @@ class DashboardReader:
                     peak_memory=sample.peak_memory,
                 )
             measured.append(projected)
-        default_checkout, default_branch = observed_checkout(self.root)
         return DashboardSnapshot(
             sessions.rows,
             tuple(checking_goals(goal, jobs) for goal in goals),
@@ -383,8 +378,6 @@ class DashboardReader:
             now,
             self._activity(sessions.rows, now),
             handles,
-            default_checkout=default_checkout,
-            default_branch=default_branch,
         )
 
     def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:

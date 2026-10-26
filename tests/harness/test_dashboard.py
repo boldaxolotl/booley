@@ -636,31 +636,53 @@ def test_thread_without_process_proof_is_last_seen_and_own_fallback_is_not_other
     assert "WARNING" not in overview
 
 
-def test_session_without_work_dir_shows_the_default_checkout_and_branch():
-    """A session that never passed work_dir targets the Project root; show it, not a blank."""
-    bare = SessionRow(Attribution("pid:one", "process", "", ""), STAMP, STAMP)
+def test_session_without_work_dir_shows_its_default_checkout_and_branch():
+    """A session that never passed work_dir runs in its server cwd; show it, not a blank."""
+    bare = SessionRow(
+        Attribution("pid:one", "process", "", "", branch="booley", default_work_dir="/work"),
+        STAMP,
+        STAMP,
+    )
     pinned = SessionRow(
-        Attribution("pid:two", "process", "/work/wt", "wt", branch="experiment"), STAMP, STAMP
+        Attribution(
+            "pid:two", "process", "/work/wt", "wt", branch="experiment", default_work_dir="/work"
+        ),
+        STAMP,
+        STAMP,
+    )
+    unknown = SessionRow(Attribution("pid:three", "process", "", ""), STAMP, STAMP)
+    # A Goal's branch belongs to the Goal worktree, never to the default checkout.
+    goal = model.GoalView(
+        "fixture",
+        record=SimpleNamespace(
+            worktree=SimpleNamespace(key=""),
+            state=SimpleNamespace(value="active"),
+            branch="goal/fixture",
+        ),
     )
     app = DashboardApp(lambda: None)
     app.snapshot = model.DashboardSnapshot(
-        sessions=(bare, pinned),
-        observed_at=1791453900,
-        default_checkout="/work",
-        default_branch="booley",
+        sessions=(bare, pinned, unknown), goals=(goal,), observed_at=1791453900
     )
-    assert " · /work (default) · booley · " in app._overview_row(bare)
-    assert "branch —" not in app._overview_row(bare)
+    overview = app._overview_row(bare)
+    assert " · /work (default) · booley · " in overview
+    assert "goal/fixture" not in overview
     # An explicit work_dir association always wins over the default.
     pinned_row = app._overview_row(pinned)
     assert " · /work/wt · experiment · " in pinned_row and "(default)" not in pinned_row
+    # Rows from servers that predate default_work_dir keep the explicit placeholder.
+    assert "(default)" not in app._overview_row(unknown)
     app.navigation = Navigation("session", "pid:one")
     orientation, _ = app._session()
     assert " · /work (default) · booley · " in orientation
 
-    # A detached or unreadable default checkout keeps the explicit placeholder.
-    app.snapshot = replace(app.snapshot, default_branch="")
-    assert " · /work (default) · branch — · " in app._overview_row(bare)
+    # A detached default checkout has no branch to show.
+    app.snapshot = replace(
+        app.snapshot,
+        sessions=(SessionRow(replace(bare.attribution, branch=""), STAMP, STAMP),),
+        goals=(),
+    )
+    assert " · /work (default) · branch — · " in app._overview_row(app.snapshot.sessions[0])
 
 
 @pytest.mark.asyncio
