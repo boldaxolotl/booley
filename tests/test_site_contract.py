@@ -16,6 +16,7 @@ from pathlib import Path
 from booley.goals.model import parse_goal_args
 from booley.goals.presentation import goal_presentation
 from booley.goals.translate import translate_goals
+from booley.runtime.docs_links import SITE_URL
 from tests.docs.test_links import _destination_failure, _repository_path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,11 +107,11 @@ def test_demo_link_uses_the_contract_pinned_revision():
 
 def test_readme_links_resolve_to_site_sections_and_pages():
     """Every README link into the site names a home-page section, user doc, or page."""
-    links = re.findall(r"https://boldaxolotl\.github\.io/booley/([\w./-]*)(?:#([\w-]+))?", README)
+    links = re.findall(rf"{re.escape(SITE_URL)}([\w./-]*)(?:#([\w-]+))?", README)
     site_ids = set(re.findall(r'\bid="([a-z-]+)"', SITE))
     failures = []
     for page, anchor in links:
-        url = f"https://boldaxolotl.github.io/booley/{page}" + (f"#{anchor}" if anchor else "")
+        url = f"{SITE_URL}{page}" + (f"#{anchor}" if anchor else "")
         if not page:
             if anchor and anchor not in site_ids:
                 failures.append(url)

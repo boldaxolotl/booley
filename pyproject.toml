@@ -114,7 +114,9 @@ booley-mcp = "booley.mcp.server:main"
 bwave = "booley.bwave.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/boldaxolotl/Booley"
+Homepage = "https://booley.dev/"
+Documentation = "https://booley.dev/docs/"
+Source = "https://github.com/boldaxolotl/Booley"
 Issues = "https://github.com/boldaxolotl/Booley/issues"
 
 [tool.booley]
