@@ -440,6 +440,47 @@ def test_booley_directory_mirror_honors_its_ignore_rules(tmp_path: Path, version
         assert not (mirrored / ".git").exists()
 
 
+def test_booley_directory_mirror_ignores_global_excludes(tmp_path: Path, monkeypatch) -> None:
+    """A user's global ignore file must not silently drop an authored input."""
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("*.sdc\n", encoding="utf-8")
+    config = tmp_path / "global-config"
+    config.write_text(f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    _init_repo(tmp_path)
+    project = tmp_path / ".booley"
+    (project / "cores").mkdir()
+    (project / "cores" / "top.core").write_text("CAPI=2:\n", encoding="utf-8")
+    (project / "top.sdc").write_text("create_clock\n", encoding="utf-8")
+
+    with baseline_worktree(tmp_path, "HEAD") as wt:
+        assert (wt / ".booley" / "top.sdc").is_file()
+
+
+def test_versioned_booley_directory_submodule_is_mirrored(tmp_path: Path) -> None:
+    """A submodule inside the Booley Directory is copied as content, not as a file."""
+    _init_repo(tmp_path)
+    (tmp_path / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
+    project = tmp_path / ".booley"
+    (project / "cores").mkdir()
+    (project / "cores" / "top.core").write_text("CAPI=2:\n", encoding="utf-8")
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "t@example.invalid")
+    library = tmp_path.parent / f"{tmp_path.name}-library"
+    library.mkdir()
+    _init_repo(library)
+    _git(
+        project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(library), "lib"
+    )
+    _commit_all(project, "cores and library")
+
+    with baseline_worktree(tmp_path, "HEAD") as wt:
+        mirrored = wt / ".booley" / "lib"
+        assert (mirrored / "f.txt").read_text(encoding="utf-8") == "v2\n"
+        assert not (mirrored / ".git").exists()
+
+
 def test_link_within_the_cores_tree_stays_verbatim(tmp_path: Path) -> None:
     """A link between two mirrored cores resolves inside the copy already."""
     _init_repo(tmp_path)

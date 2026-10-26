@@ -34,7 +34,8 @@ from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.flows.terminal_progress import announce_unit
-from booley.fusesoc.fusesoc_registry import prepare_core_library_plan, state_cores_dir
+from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.project_gitignore import is_project_transient_path
 from booley.runtime.project_repositories import (
     is_standalone_git_repository,
@@ -370,12 +371,12 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
         return
     project_root = Path(os.path.normpath(str(project_root)))
     wt_dir = Path(os.path.normpath(str(wt_dir)))
-    dst = state_cores_dir(wt_dir).parent
+    dst = wt_dir / BOOLEY_DIR_NAME
     try:
         for relative in _authored_booley_paths(src):
             _copy_entry(src / relative, dst / relative)
         missing = _retarget_links(project_root, wt_dir, src, dst)
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
         raise BaselineWorktreeError(
             f"copying Booley Directory {src} into baseline worktree failed: {exc}"
         ) from exc
@@ -396,7 +397,8 @@ def _authored_booley_paths(booley_dir: Path) -> list[str]:
     throwaway index. Booley's canonical transient policy then also applies, so
     a stale project ignore file never lets run state into the copy.
     """
-    listing = ("ls-files", "-z", "--others", "--exclude-standard")
+    # A user's global ignore file must not silently drop authored inputs.
+    listing = ("-c", "core.excludesFile=", "ls-files", "-z", "--others", "--exclude-standard")
     if is_standalone_git_repository(booley_dir):
         listed = _git_output(booley_dir, *listing, "--cached")
     else:
@@ -418,10 +420,16 @@ def _authored_booley_paths(booley_dir: Path) -> list[str]:
 
 
 def _copy_entry(source: Path, destination: Path) -> None:
-    """Copy one file, or recreate one symlink verbatim (retargeted afterwards)."""
+    """Copy one listed entry; symlinks are recreated verbatim (retargeted afterwards).
+
+    A listed directory is a submodule of a Versioned Booley Directory: its
+    checked-out content is copied, without its Git metadata.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.is_symlink():
-        destination.symlink_to(source.readlink())
+        destination.symlink_to(source.readlink(), target_is_directory=source.is_dir())
+    elif source.is_dir():
+        shutil.copytree(source, destination, symlinks=True, ignore=shutil.ignore_patterns(".git"))
     else:
         shutil.copy2(source, destination)
 
@@ -429,7 +437,7 @@ def _copy_entry(source: Path, destination: Path) -> None:
 def _git_output(cwd: Path, *args: str) -> str:
     result = _git(cwd, *args, timeout=60)
     if result.returncode != 0:
-        raise subprocess.SubprocessError(
+        raise BaselineWorktreeError(
             f"git {' '.join(args)} failed in {cwd}: {(result.stderr or result.stdout).strip()}"
         )
     return result.stdout
@@ -546,7 +554,7 @@ def _repoint(link: Path, target: Path) -> None:
     project.
     """
     link.unlink()
-    link.symlink_to(os.path.relpath(target, link.parent))
+    link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=target.is_dir())
 
 
 def _git(cwd: Path, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:
