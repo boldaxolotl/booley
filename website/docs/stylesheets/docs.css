@@ -18,8 +18,6 @@
 .docs__head { grid-column: 1 / -1; }
 .docs__nav { grid-column: 2; grid-row: 2; }
 .docs .doc-prose { grid-column: 1; grid-row: 2; }
-.docs__home { color: inherit; text-decoration: none; }
-.docs__home:hover b { color: var(--mask); }
 
 /* docs list: sticky on desktop, a collapsed menu on phones */
 .docs__nav { position: sticky; top: 24px; align-self: start; margin-top: 34px;
