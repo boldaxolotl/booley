@@ -32,6 +32,8 @@ PROXY_CONTAINER = "booley-proxy"
 PROXY_IMAGE = "booley-egress-proxy"
 REAPER_CONTAINER = "booley-reaper"
 REAPER_IMAGE = "booley-reaper"
+# Refresh and rebuild park the replaced Session as ``<name>`` + this suffix.
+REFRESH_BACKUP_SUFFIX = "-pre-refresh"
 
 PROXY_ROLE_LABEL = "booley.role=egress-proxy"
 REAPER_ROLE_LABEL = "booley.role=reaper"
