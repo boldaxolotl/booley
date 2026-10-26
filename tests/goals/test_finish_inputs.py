@@ -398,6 +398,33 @@ def test_role_labels_keep_same_physical_rtl_project_tests_and_waiver_distinct(tm
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX namespace-spelling fixture uses symlinks")
+def test_role_waiver_label_follows_a_linked_booley_dir_entry(tmp_path):
+    """A worktree below a symlinked ``.booley`` keeps its rtl waiver label (#2192)."""
+    from booley.goals.input_identity import root_bindings
+    from booley.goals.input_view import _role_waiver_label
+    from booley.goals.proposals import digest
+
+    store = tmp_path / "store"
+    (store / "worktrees" / "wt" / ".booley").mkdir(parents=True)
+    main = tmp_path / "main"
+    main.mkdir()
+    (main / ".booley").symlink_to(store, target_is_directory=True)
+    current = main / ".booley" / "worktrees" / "wt"
+    saved_rtl = tmp_path / "saved-rtl"
+    saved_rtl.mkdir()
+    saved = root_bindings({"rtl": saved_rtl, "project": current / ".booley"})
+    config = {"anchor": "rtl_repository"}
+
+    value = {"root": str(store / "worktrees/wt/waivers"), "config": config, "files": []}
+    assert _role_waiver_label(value, saved, current, current / ".booley")
+    assert value["root"] == str(saved_rtl / "waivers")
+    assert value["digest"] == digest({key: val for key, val in value.items() if key != "digest"})
+
+    outside = {"root": str(tmp_path / "outside/waivers"), "config": config, "files": []}
+    assert not _role_waiver_label(outside, saved, current, current / ".booley")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX namespace-spelling fixture uses symlinks")
 def test_same_physical_rtl_project_root_requires_committed_snapshot(layout, tmp_path, monkeypatch):
     from booley.goals.input_view import snapshot_project
 
