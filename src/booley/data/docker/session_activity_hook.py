@@ -143,12 +143,14 @@ def _codex_key(payload: Mapping[str, object]) -> str | None:
 def _chat_aliases(project: Path) -> dict[str, str]:
     """Validate the session-map contract of runtime.handles.HandleStore, but stricter.
 
-    The host store follows a symlinked Booley Directory entry; this container-side
-    reader never sees one (Sandbox issuance refuses a linked mount source), so it
-    keeps refusing every link on the path.
+    Only the Booley Directory entry itself (*project*) may be a link, as in the host
+    store: the Sandbox ``BOOLEY_DIR=/booley-project`` is an image symlink to
+    ``/work/.booley``, and a host ``.booley`` may be a link. Links above or below
+    that entry stay refused. This file runs as ``python3 -I -S`` without Booley
+    imports, so the rule of ``booley.core.booley_dir_links`` is inlined.
     """
     path = project / "runtime/sessions/handles/map.json"
-    if any(part.is_symlink() for part in (path, *path.parents)):
+    if any(part.is_symlink() for part in (path, *path.parents) if part != project):
         raise ValueError("handle map is redirected")
     with path.open("rb") as stream:
         raw = stream.read(16 * 1024 * 1024 + 1)

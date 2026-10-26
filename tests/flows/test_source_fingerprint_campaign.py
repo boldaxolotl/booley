@@ -5,6 +5,7 @@ import pytest
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.domain import UnknownTargetError
+from tests.conftest import symlink_or_skip
 
 
 def _write_core(tmp_path, name: str, target: str, source: str) -> None:
@@ -41,6 +42,28 @@ def test_campaign_fingerprint_tracks_tests_and_selected_core(tmp_path) -> None:
         ".booley/tests.toml",
         "design.core",
     ]
+
+
+def test_campaign_fingerprint_names_files_through_symlinked_booley_dir(tmp_path) -> None:
+    root = tmp_path / "project"
+    (root / "rtl").mkdir(parents=True)
+    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    data = tmp_path / "booley-data"
+    (data / "cores").mkdir(parents=True)
+    (data / "tests.toml").write_text('[sim_unit]\ntests = ["smoke"]\n')
+    symlink_or_skip(root / ".booley", data)
+    reset_cache()
+    # A stealth core lives in the Booley Directory, whose target is outside the root.
+    (data / "cores" / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\n"
+        "filesets:\n  rtl: {files: [../../project/rtl/dut.sv]}\n"
+        "targets:\n  sim_unit: {filesets: [rtl], toplevel: dut}\n",
+        encoding="utf-8",
+    )
+
+    campaign = compute_source_fingerprint(root, target="sim_unit")["campaign"]
+
+    assert campaign["files"] == [".booley/cores/design.core", ".booley/tests.toml"]
 
 
 def test_campaign_fingerprint_tracks_transitive_core_changes(tmp_path) -> None:

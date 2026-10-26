@@ -670,6 +670,29 @@ class TestProjectGitHookMigration:
         bundle = tmp_path / "managed" / "bundle.pyz"
         assert result == f"BUNDLE={shlex.quote(str(bundle))}\n"
 
+    def test_shell_bundle_resolution_follows_only_the_booley_dir_entry(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        real = tmp_path / "real-booley-dir"
+        (real / ".managed").mkdir(parents=True)
+        (real / ".managed" / "bundle.pyz").write_bytes(b"bundle")
+        symlink_or_skip(root / ".booley", real)
+
+        linked = _shell_bundle_resolution(root, root / ".booley" / ".managed" / "bundle.pyz")
+        assert linked.splitlines()[0] == 'BUNDLE="$ROOT/.booley/.managed/bundle.pyz"'
+
+        # A link below the entry still points outside the checkout: absolute fallback.
+        plain = tmp_path / "plain"
+        (plain / ".booley").mkdir(parents=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "bundle.pyz").write_bytes(b"bundle")
+        symlink_or_skip(plain / ".booley" / ".managed", elsewhere)
+        below = _shell_bundle_resolution(plain, plain / ".booley" / ".managed" / "bundle.pyz")
+        assert below == f"BUNDLE={shlex.quote(str(elsewhere / 'bundle.pyz'))}\n"
+
     def test_check_only_lists_every_pending_action_without_writing(self, tmp_path: Path) -> None:
         hooks = self._seed(
             tmp_path, {"boundary.py": _legacy_source("boundary.py"), "run_command.py": b"edit\n"}

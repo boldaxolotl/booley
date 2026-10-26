@@ -23,6 +23,7 @@ from booley.feedback.redact import (
     redact_identifiers_enabled,
     residual_risks,
 )
+from tests.conftest import symlink_or_skip
 
 
 @pytest.fixture
@@ -56,6 +57,31 @@ class TestScrubbing:
         out, _ = redact(f"failed in {project}/rtl/foo.sv", project)
         assert str(project) not in out
         assert "<repo>" in out
+
+    @pytest.mark.parametrize("spelling", ["entry", "target"])
+    def test_symlinked_booley_dir_target_is_project_private(self, project, spelling):
+        target = project.parent / "booley-dir-elsewhere"
+        (project / ".booley").rename(target)
+        symlink_or_skip(project / ".booley", target)
+        booley_dir = project / ".booley" if spelling == "entry" else target
+
+        out, _ = apply_plan(f"see {target}/runtime/x.log", build_plan(project, booley_dir))
+
+        assert out == "see <repo>/.booley/runtime/x.log"
+
+    def test_symlinked_booley_dir_target_redacted_in_every_spelling(self, project):
+        real = project.parent / "real-data"
+        target = real / "prj-booley"
+        real.mkdir()
+        (project / ".booley").rename(target)
+        alias = project.parent / "alias-data"
+        symlink_or_skip(alias, real)
+        # The link text names the target through another link; resolve() would not.
+        symlink_or_skip(project / ".booley", alias / "prj-booley")
+
+        out, _ = apply_plan(f"{alias / 'prj-booley'}/x and {target}/y", build_plan(project))
+
+        assert out == "<repo>/.booley/x and <repo>/.booley/y"
 
     def test_git_remote_and_slug_are_replaced(self, project):
         text = "cloned git@github.com:acme-semi/rocketwidget.git — see acme-semi/rocketwidget"

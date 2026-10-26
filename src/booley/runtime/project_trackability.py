@@ -40,6 +40,23 @@ FIX = (
 HISTORY_PROBE = f"{BOOLEY_DIR_NAME}/goals/history/doctor-probe.md"
 
 
+def history_probe(root: Path) -> str | None:
+    """The RTL-relative Goal-history probe path, or ``None`` when RTL cannot publish it.
+
+    Git never looks beyond a symlink, so a symlinked Booley Directory entry is probed
+    at its physical target. A target outside the RTL checkout has no RTL path: the
+    owning checkout (or its absence) is reported by Project trackability instead.
+    """
+    entry = root / BOOLEY_DIR_NAME
+    if not entry.is_symlink():
+        return HISTORY_PROBE
+    try:
+        physical = entry.resolve() / "goals/history/doctor-probe.md"
+        return physical.relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class IgnoreMatch:
     """A positive effective exclude, with Git's exact source spelling."""
@@ -329,8 +346,9 @@ def inspect_project_trackability(
         for owner in tuple(owners):
             paths.extend(_managed_attributes(owner, errors))
         embedded = primary == rtl_owner
-        if embedded:
-            paths.append(root / HISTORY_PROBE)
+        probe = history_probe(root)
+        if embedded and probe is not None:
+            paths.append(root / probe)
         batches: dict[Path, list[str]] = {owner: [] for owner in sorted(owners)}
         for path in sorted(set(paths)):
             owner = max((o for o in owners if path.is_relative_to(o)), key=lambda o: len(o.parts))

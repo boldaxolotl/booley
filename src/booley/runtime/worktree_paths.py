@@ -29,7 +29,8 @@ def relative_worktree_paths(project_root: Path) -> bool:
     if not _git_supports_relative_paths() or (root / ".git").is_file():
         return False
     try:
-        worktree_state_dir(root).relative_to(root)
+        # Git writes relative metadata from physical paths, so test the physical location.
+        worktree_state_dir(root).resolve().relative_to(root)
     except ValueError:
         return False
     if root == Path("/work"):

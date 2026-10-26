@@ -69,6 +69,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.conftest import symlink_or_skip
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -2911,6 +2912,45 @@ class TestBuildSynthCmd:
 
         with pytest.raises(BoundaryError, match="escapes the selected checkout"):
             self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_sta_sdc_follows_symlinked_booley_dir_entry(self, flow_and_state, tmp_path: Path):
+        """A stealth core's SDC under a linked entry is named through the entry."""
+        flow, _ = flow_and_state
+        root = tmp_path / "project"
+        data = tmp_path / "booley-data"
+        elsewhere = tmp_path / "elsewhere"
+        for directory in (root, data / "cores", elsewhere):
+            directory.mkdir(parents=True)
+        symlink_or_skip(root / ".booley", data)
+        symlink_or_skip(data / "linked", elsewhere)
+        for sdc in (data / "cores" / "top.sdc", elsewhere / "top.sdc"):
+            sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+
+        def resolved_with(sdc: Path) -> fusesoc_registry.ResolvedTarget:
+            return dataclasses.replace(
+                _fake_synth_resolved(root),
+                files=(fusesoc_registry.ResolvedFile(name=str(sdc), file_type="SDC"),),
+            )
+
+        cmd: list[str] = []
+        flow._append_sta_constraint_args(
+            cmd,
+            resolved_with(root / ".booley" / "cores" / "top.sdc"),
+            "lite",
+            root,
+            SynthMode.PHYSICAL,
+        )
+        assert cmd == ["--sta-sdc", ".booley/cores/top.sdc"]
+
+        # A link below the entry still leaves the selected checkout.
+        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
+            flow._append_sta_constraint_args(
+                [],
+                resolved_with(root / ".booley" / "linked" / "top.sdc"),
+                "lite",
+                root,
+                SynthMode.PHYSICAL,
+            )
 
     def test_sdc_must_exist(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state

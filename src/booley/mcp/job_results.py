@@ -160,13 +160,17 @@ def _report_for_run_id(
 
 
 def _progress_for_run_id(
-    endpoint: str, run_id: str, *, report_dirs: tuple[Path, ...] | None = None
+    endpoint: str,
+    run_id: str,
+    *,
+    report_dirs: tuple[Path, ...] | None = None,
+    booley_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     """Newest run-scoped checkpoint when a killed matrix has no final report."""
     reports = _endpoint_report_dirs(_locate_job(run_id)) if report_dirs is None else report_dirs
     if not reports:
         return None
-    found = read_progress_for_run(reports, endpoint, run_id)
+    found = read_progress_for_run(reports, endpoint, run_id, booley_dir=booley_dir)
     if found is None:
         return None
     _path, report = found
@@ -443,9 +447,27 @@ class JobRepository:
             endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
         )
 
+    def report_booley_dir(self, located: LocatedJob | None) -> Path | None:
+        """The Booley Directory entry the Job's report roots live under, if any.
+
+        A Goal-bound Job's own directory, otherwise the session's. Jobs located
+        under another root fall into the session branch, so a linked entry there
+        stays refused (fail closed), as it was before the entry was followed.
+        """
+        if located is not None and located.record.binding is not None:
+            binding = job_binding(located.record)
+            assert binding is not None
+            return binding.booley_dir
+        store = project_goal_store()
+        return None if store is None else store.booley_dir
+
     def progress_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
+        located = self.locate(run_id)
         return _progress_for_run_id(
-            endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
+            endpoint,
+            run_id,
+            report_dirs=self.report_dirs(located),
+            booley_dir=self.report_booley_dir(located),
         )
 
     def report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:

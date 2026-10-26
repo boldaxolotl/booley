@@ -3428,16 +3428,17 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
         FIX,
-        HISTORY_PROBE,
+        history_probe,
         inspect_project_trackability,
     )
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
     inspection = inspect_project_trackability(root, booley_dir)
+    probe = history_probe(root)
     for group in inspection.ignored:
         # The existing outer publication check owns this exact synthetic path.
-        if group.history and HISTORY_PROBE in group.paths:
+        if group.history and probe is not None and probe in group.paths:
             continue
         check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
         _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
@@ -3468,12 +3469,13 @@ def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
 def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
-    from booley.runtime.booley_dir import BOOLEY_DIR_NAME
-    from booley.runtime.project_trackability import query_ignores
+    from booley.runtime.project_trackability import history_probe, query_ignores
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
-    relative = (Path(BOOLEY_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
+    relative = history_probe(root)
+    if relative is None:
+        return  # The RTL repository cannot publish that history; trackability owns the layout.
     inspect_warning = _warning_sink(_warn, "goals.history-inspection")
     try:
         matches = query_ignores(root, (relative,))

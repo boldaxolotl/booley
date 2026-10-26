@@ -19,6 +19,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from booley.core import boundary
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     classified_sources,
@@ -151,8 +153,9 @@ def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
 
 def _campaign_files(root: Path, target: str | None) -> list[tuple[str, Path]]:
     """Named configuration files that define a Target campaign's recipe."""
+    entry = root / BOOLEY_DIR_NAME
     files = [
-        (path.resolve().relative_to(root).as_posix(), path.resolve())
+        (lexical_booley_path(entry, path.resolve()).relative_to(root).as_posix(), path.resolve())
         for path in _campaign_core_files(root, target)
         if path.is_file()
     ]
@@ -162,7 +165,7 @@ def _campaign_files(root: Path, target: str | None) -> list[tuple[str, Path]]:
         return files
     if tests_toml.is_file():
         try:
-            label = tests_toml.resolve().relative_to(root).as_posix()
+            label = lexical_booley_path(entry, tests_toml.resolve()).relative_to(root).as_posix()
         except ValueError:
             label = "project-dir/tests.toml"
         files.append((label, tests_toml.resolve()))

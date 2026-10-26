@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.progress_lifecycle import progress_document
 from booley.mcp import endpoint_process, job_results
 from booley.mcp.call_context import CallContext
 from booley.mcp.job_lifecycle import JobLifecycle
@@ -21,6 +22,7 @@ from booley.runtime import job_records, job_slots
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
+from tests.conftest import symlink_or_skip
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
 pytestmark = pytest.mark.timeout(120)
@@ -168,6 +170,46 @@ def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeyp
     rec = job_records.JobRecord("goal-run", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
     JobLifecycle._stamp_context(rec, bound)
     assert HandleStore(project, jobs=True).load().entries == {"goal-run": "J-SIM1"}
+
+
+def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monkeypatch):
+    """Progress behind a Job report is read and repaired through the linked entry."""
+    real = tmp_path / "real-booley-dir"
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    symlink_or_skip(entry, real)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(entry / "runtime"))
+    monkeypatch.setattr(
+        job_results,
+        "project_goal_store",
+        lambda: SimpleNamespace(
+            booley_dir=entry, list_records=lambda: SimpleNamespace(records=())
+        ),
+    )
+    rec = job_records.JobRecord("run-1", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
+    job_records.write_record(rec, root=entry / "runtime" / "jobs")
+    checkpoint = real / "runtime" / "flow-reports" / "sim" / "1" / "progress.json"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="run-1",
+                phase="running",
+                targets=("sim_a",),
+                completed_targets=(),
+                detail={},
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    partial = job_results.JobRepository().progress_for_run("sim", "run-1")
+    assert partial is not None
+    assert partial["partial"] is True
+
+    JobLifecycle()._record_terminal(rec, 2, timed_out=False)
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "aborted"
 
 
 @pytest.mark.asyncio

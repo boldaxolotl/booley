@@ -16,11 +16,13 @@ import pytest
 
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
+    _retarget_links,
     baseline_worktree,
     git_full_sha,
     git_short_sha,
 )
 from booley.runtime.submodule_materialization import materialize_submodules
+from tests.conftest import symlink_or_skip
 
 
 @pytest.fixture(autouse=True)
@@ -321,6 +323,29 @@ def test_absolute_in_project_symlink_is_rebased_onto_the_worktree(tmp_path: Path
         copied = wt / ".booley" / "cores" / "ip" / "rtl"
         assert copied.is_symlink()
         assert (copied / "top.v").read_text(encoding="utf-8") == "baseline\n"
+
+
+def test_relative_link_through_symlinked_booley_dir_is_classified_physically(
+    tmp_path: Path,
+) -> None:
+    """The OS resolves a relative link from the entry's physical target, not from ``.booley``."""
+    root = tmp_path / "root"
+    data = tmp_path / "data"
+    (root / "rtl").mkdir(parents=True)
+    (data / "cores").mkdir(parents=True)
+    symlink_or_skip(root / ".booley", data)
+    # Physically ``data/cores/rtl`` -> ``<tmp>/root/rtl``: repository RTL.
+    symlink_or_skip(data / "cores" / "rtl", Path("../../root/rtl"))
+    wt = tmp_path / "wt"
+    (wt / "rtl").mkdir(parents=True)
+    copied = wt / ".booley" / "cores"
+    copied.mkdir(parents=True)
+    symlink_or_skip(copied / "rtl", Path("../../root/rtl"))
+
+    missing = _retarget_links(root, wt, root / ".booley" / "cores", copied)
+
+    assert missing == []
+    assert (copied / "rtl").resolve() == (wt / "rtl").resolve()
 
 
 def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path, monkeypatch) -> None:

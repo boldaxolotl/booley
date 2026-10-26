@@ -86,3 +86,33 @@ def test_hook_and_registry_both_reject_redirected_handle_map_ancestors(tmp_path,
         HandleStore(selected).load()
     with pytest.raises(ValueError, match="redirected"):
         hook._chat_aliases(selected)
+
+
+def test_hook_follows_symlinked_booley_dir_entry(tmp_path):
+    """The Booley Directory entry may be a link (``/booley-project`` alias, host ``.booley``)."""
+    proc = tmp_path / "proc"
+    owner = process(proc, 100, 1, executable="codex")
+    (proc / "100" / "cmdline").write_bytes(b"S1\0--no-daemon\0")
+    backend = process(proc, 102, owner.pid, executable="codex", args=("app-server",))
+    process(proc, 300, backend.pid, executable="python3")
+    real = tmp_path / "real-booley-dir"
+    chat_sessions.reserve_codex_chat(real, owner)
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    symlink_or_skip(entry, real)
+
+    assert hook.record(
+        "codex",
+        {"hook_event_name": "UserPromptSubmit", "session_id": "main"},
+        entry,
+        NOW,
+        proc_root=proc,
+        pid=300,
+    )
+
+    # Attributed to the reserved chat, not the ``codex:<thread>`` fallback key.
+    store = ActivityStore(real)
+    assert store.read("codex:main") is None
+    signal = store.read(activity.process_session_key(owner))
+    assert signal is not None
+    assert signal.state == activity.WORKING
