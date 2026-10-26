@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.core.booley_layout import INTERACTIVE_LOGS_DIR
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
@@ -2136,7 +2137,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
     if not booley_dir.is_dir():
         return
     session_id = _interactive_session_id()
-    logs_dir = booley_dir / ".interactive_logs" / session_id
+    logs_dir = booley_dir / INTERACTIVE_LOGS_DIR / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(

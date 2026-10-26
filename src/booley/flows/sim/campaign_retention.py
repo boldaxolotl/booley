@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from booley.core.booley_layout import DOCTOR_TMP_DIR
+from booley.core.booley_layout import DOCTOR_TMP_DIR, INTERACTIVE_LOGS_DIR
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -125,10 +125,11 @@ def invocation_booley_dir(root: Path) -> Path | None:
     """Return the Booley Directory entry an invocation root lives under, if it is one.
 
     *root* is ``<reports_root>/sim/<N>`` (or a sibling such as its quarantine). The
-    reports root is ``<entry>/flow-reports``, ``<entry>/.runtime/flow-reports``, or
-    deep Doctor's ``<entry>/tmp/doctor/flow-reports``; the candidate counts only when
-    it is exactly the configured Booley Directory of the checkout containing it
-    (#2191). Custom report roots get ``None`` and stay strict.
+    reports root is ``<entry>/flow-reports``, ``<entry>/.runtime/flow-reports``, deep
+    Doctor's ``<entry>/tmp/doctor/flow-reports``, or the Interactive Mode MCP server's
+    ``<entry>/.interactive_logs/<session>/.runtime/flow-reports``; the candidate counts
+    only when it is exactly the configured Booley Directory of the checkout containing
+    it (#2191). Custom report roots get ``None`` and stay strict.
     """
     reports_root = root.parent.parent
     if reports_root.name != "flow-reports":
@@ -138,6 +139,9 @@ def invocation_booley_dir(root: Path) -> Path | None:
         candidate = candidate.parents[len(DOCTOR_TMP_DIR.parts) - 1]
     elif candidate.name == ".runtime":
         candidate = candidate.parent
+        # MCP session logs: strip exactly one ``.interactive_logs/<session>`` pair.
+        if candidate.parent.name == INTERACTIVE_LOGS_DIR:
+            candidate = candidate.parent.parent
     if simulation_booley_dir(candidate.parent) != candidate:
         return None
     return candidate
