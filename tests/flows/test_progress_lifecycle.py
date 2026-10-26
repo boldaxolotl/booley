@@ -319,7 +319,7 @@ def test_supersede_ignores_nonresumable_phase_and_write_failure(
     document["phase"] = "running"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    def fail_replace(*_args: object) -> None:
+    def fail_replace(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(progress_module, "_replace_if_unchanged", fail_replace)
