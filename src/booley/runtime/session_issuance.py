@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -1493,7 +1494,10 @@ def _validate_project_data_source(
         raise RuntimeSpecError("BOOLEY_DIR must be an absolute host path")
     if any(char == "," or ord(char) < 32 for char in str(candidate)):
         raise RuntimeSpecError("Booley Directory path contains unsafe Docker mount grammar")
-    if any(part.is_symlink() for part in (candidate, *candidate.parents)):
+    # Only the default entry ``<project>/.booley`` itself may be a link; a link
+    # above it or any other linked spelling (e.g. a symlinked BOOLEY_DIR) is refused.
+    linked = candidate.is_symlink() and is_booley_dir_entry(candidate, project / ".booley")
+    if (candidate.is_symlink() and not linked) or any(p.is_symlink() for p in candidate.parents):
         raise RuntimeSpecError(
             "Booley Directory mount source or its ancestry must not be a symlink"
         )
@@ -1512,15 +1516,22 @@ def _validate_project_data_source(
     overlaps = (
         source == project or source in project.parents or (project in source.parents and not local)
     )
+    what = "symlink target" if linked else "mount source"
     if broad or overlaps:
         raise RuntimeSpecError(
-            f"Booley Directory mount source is too broad or overlaps the Project: {source}"
+            f"Booley Directory {what} is too broad or overlaps the Project: {source}"
         )
     if os.name != "nt" and info.st_uid != os.getuid():
         raise RuntimeSpecError(
             f"Booley Directory mount source is not owned by the host user: {source}"
         )
-    return source
+    if linked and not (source / "booley.toml").is_file():
+        raise RuntimeSpecError(
+            f"Booley Directory symlink target is not a Booley Directory (no booley.toml): {source}"
+        )
+    # Keep the entry spelling for a link so the mount pin and the /work/.booley
+    # shadow match the real-directory layout exactly.
+    return candidate if linked else source
 
 
 def _pin_project_data_mount(
