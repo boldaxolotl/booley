@@ -3108,3 +3108,60 @@ def test_job_report_coverage_metrics_match_campaign(tmp_path, monkeypatch):
         assert detail["target"] == selector and detail["abort_remaining"] is False
         assert detail["coverage_campaign"] and "coverage_overall" not in detail
     assert report["detail"]["targets"]["sim_0"]["coverage_metrics"]["line"]["met"] is True
+
+
+def _linked_coverage_project(tmp_path, monkeypatch):
+    """A coverage Project whose ``.booley`` is a symlink outside the Project Root (#2192)."""
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    revision = "a" * 40
+    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
+    root = tmp_path / "project"
+    (root / ".git").mkdir(parents=True)
+    project(root)
+    external = symlinked_booley_dir(root, tmp_path / "external-booley")
+    (external / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
+    return root, root / ".booley" / "flow-reports"
+
+
+def test_symlinked_booley_dir_publishes_and_analyses_coverage(tmp_path, monkeypatch):
+    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+
+    root, reports = _linked_coverage_project(tmp_path, monkeypatch)
+
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(target="sim_0", work_dir=root, coverage=True, report_dir=reports)
+    )
+
+    assert result.exit_code == 0
+    campaign_path = reports / "sim/1/targets/sim_0/coverage.json"
+    assert json.loads(campaign_path.read_text())["$schema"] == REFERENCE_SCHEMA
+    resolved = resolve_coverage_campaign_reference(campaign_path)
+    assert read_coverage_campaign(campaign_path).campaign == resolved.loaded.campaign
+
+
+def test_symlinked_booley_dir_coverage_resume_supersedes_origin_progress(tmp_path, monkeypatch):
+    root, reports = _linked_coverage_project(tmp_path, monkeypatch)
+
+    def checkpoint(actual):
+        if actual == "before:summary_replace":
+            raise KeyboardInterrupt("simulated publication interruption")
+
+    with pytest.raises(KeyboardInterrupt):
+        SimulateFlow(
+            coverage_execution=lambda *_args: NativeExecution(),
+            campaign_publication_checkpoint=checkpoint,
+        ).execute(SimRequest(target="sim_0", work_dir=root, coverage=True, report_dir=reports))
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(resume_from=manifest, work_dir=root, report_dir=reports)
+    )
+
+    assert result.exit_code == 0
+    progress = json.loads((reports / "sim/1/progress.json").read_text())
+    assert progress["phase"] == "superseded"
+    assert progress["superseded_by"]["invocation"] == 2

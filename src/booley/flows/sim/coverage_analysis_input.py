@@ -16,7 +16,7 @@ from booley.flows.sim.campaign import (
     resolve_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
-from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
+from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     FrozenJson,
@@ -33,6 +33,7 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
@@ -91,7 +92,11 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
 
 
 def _safe_path(path: Path) -> None:
-    if ".." in path.parts or any(is_report_link(item) for item in (path, *path.parents)):
+    # A symlinked .booley entry is followed; every other link is refused.
+    if (
+        ".." in path.parts
+        or report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
+    ):
         raise CoverageAnalysisError(
             "Campaign and source paths must not contain links or traversal"
         )
@@ -139,6 +144,7 @@ def _reference_projection(
     if projection.trust is ProjectionTrust.AUTHENTICATED:
         if document.get("campaign_id") != owner:
             raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
+        entry = crossed_booley_dir_entry(public_path)
         manifest_artifact = resolve_artifact_reference(
             document.get("campaign_manifest"),
             bases={"origin_target": public_path.parent},
@@ -146,6 +152,7 @@ def _reference_projection(
             expected_kind="simulation_campaign_manifest",
             expected_owner=owner,
             maximum=MANIFEST_MAX_BYTES,
+            booley_dir=entry,
         )
         coverage_artifact = resolve_artifact_reference(
             document.get("coverage_campaign"),
@@ -154,6 +161,7 @@ def _reference_projection(
             expected_kind="coverage_campaign_reference",
             expected_owner=owner,
             maximum=MAX_REFERENCE_BYTES,
+            booley_dir=entry,
         )
         if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
             raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")

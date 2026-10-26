@@ -910,3 +910,33 @@ def test_image_alias_analyst_traversal_uses_domain_error(project_alias) -> None:
     analyst = CoverageAnalystSpecialist()
     with pytest.raises(CoverageAnalysisError, match="traversal"):
         analyst.coverage_analyst(alias / "child/../coverage.json")
+
+
+@pytest.mark.parametrize("linked", ["worktree", "below"])
+def test_analysis_follows_only_the_booley_dir_entry(tmp_path, monkeypatch, linked):
+    """A Goal worktree below a symlinked ``.booley`` entry keeps verified sources (#2192)."""
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    worktrees = symlinked_booley_dir(project, tmp_path / "external-booley") / "worktrees"
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(worktrees, tmp_path / "elsewhere", target_is_directory=True)
+        worktrees = tmp_path / "elsewhere"
+    # Build the Goal worktree through its physical spelling; analyze it lexically.
+    physical = worktrees / "goal-x"
+    (physical / ".booley").mkdir(parents=True)
+    path = project / ".booley/worktrees/goal-x" / source_project(physical).relative_to(physical)
+    worktree = project / ".booley/worktrees/goal-x"
+    model = Model()
+    analyst = CoverageAnalystSpecialist(model=model)
+    analyst.parse_args(["--project", str(worktree), "--campaign", str(path)])
+
+    if linked == "below":
+        with pytest.raises(CoverageAnalysisError, match="links or traversal"):
+            analyst.coverage_analyst(path)
+        return
+    assert analyst.coverage_analyst(path).to_dict()["source_access"] == "verified"

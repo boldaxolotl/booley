@@ -205,10 +205,16 @@ def repair_progress_after_reap(
     return True
 
 
-def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> bool:
-    """Best-effort supersede an authenticated coverage progress projection."""
+def supersede_progress(
+    path: Path, *, new_invocation: int, new_run_id: str, booley_dir: Path | None = None
+) -> bool:
+    """Best-effort supersede an authenticated coverage progress projection.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused.
+    """
     try:
-        document = validate_coverage_origin_progress(path)
+        document = validate_coverage_origin_progress(path, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     phase = document.get("phase")
@@ -230,15 +236,21 @@ def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> b
     )
     validate_progress_shape(updated)
     try:
-        _replace_if_unchanged(path, document, updated)
+        _replace_if_unchanged(path, document, updated, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     return True
 
 
-def validate_coverage_origin_progress(path: Path) -> dict[str, Any]:
-    """Validate the exact authenticated invocation progress before recovery."""
-    document = _read_trusted_progress(path, (path.parents[2],))
+def validate_coverage_origin_progress(
+    path: Path, *, booley_dir: Path | None = None
+) -> dict[str, Any]:
+    """Validate the exact authenticated invocation progress before recovery.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused.
+    """
+    document = _read_trusted_progress(path, (path.parents[2],), booley_dir=booley_dir)
     if document is None or document.get("flow") != "sim" or document.get("coverage") is not True:
         raise ValueError("resume origin has no valid coverage progress")
     return document

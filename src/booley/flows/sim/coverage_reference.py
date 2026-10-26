@@ -21,6 +21,7 @@ from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
 )
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -106,7 +107,7 @@ def publish_coverage_campaign_reference(
     try:
         durable_create(path, raw)
     except FileExistsError:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
         with os.fdopen(descriptor, "rb") as stream:
             existing = stream.read(MAX_REFERENCE_BYTES + 1)
         decoded = decode_coverage_campaign_reference(existing)
@@ -273,10 +274,12 @@ def authenticate_coverage_campaign_owner(
 
     document = resolved.reference.document
     nested = cast(Mapping[str, object], document["coverage_campaign"])
+    manifest_path = resolved.reference_path.parent / "campaign" / "manifest.json"
     try:
         authenticated = authenticate_work_item(
-            resolved.reference_path.parent / "campaign" / "manifest.json",
+            manifest_path,
             cast(str, document["simulation_work_item_id"]),
+            booley_dir=crossed_booley_dir_entry(manifest_path),
         )
     except SimulationCampaignWorkItemError as exc:
         raise CoverageCampaignReferenceError(
@@ -445,7 +448,7 @@ def _contained_relative(root: Path, relative: str) -> Path:
 
 def _read_regular(path: Path, label: str, maximum: int) -> bytes:
     try:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
         with os.fdopen(descriptor, "rb") as stream:
             raw = stream.read(maximum + 1)
     except OSError as exc:

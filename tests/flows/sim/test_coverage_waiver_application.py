@@ -11,10 +11,12 @@ from booley.flows.sim.coverage_waiver_application import (
     strict_reevaluation,
 )
 from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, load_approved_waiver_set
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_coverage_waivers import (
     _TARGET,
     _campaign,
     _criterion,
+    _linked_booley_dir_roots,
     _roots,
     _write_valid_approval,
 )
@@ -72,3 +74,32 @@ def test_prediction_rejects_symlinks_without_changing_their_targets(tmp_path, li
         )
 
     assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_promoted_waivers_follow_only_the_booley_dir_entry(tmp_path, monkeypatch, linked):
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    roots = _linked_booley_dir_roots(tmp_path)
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(
+            roots.project_data_repository / _DIRECTORY,
+            tmp_path / "elsewhere",
+            target_is_directory=True,
+        )
+    _write_valid_approval(roots)
+
+    def promote():
+        return load_promoted_waiver_set(
+            CoverageWaiverConfig("project_data_repository", _DIRECTORY),
+            roots,
+            tmp_path / "overlay",
+            (_TARGET,),
+            {},
+        )
+
+    if linked == "below":
+        with pytest.raises(WaiverPlanError, match="symlink"):
+            promote()
+    else:
+        assert [waiver.waiver_id for waiver in promote().waivers] == ["counter-basic-block"]

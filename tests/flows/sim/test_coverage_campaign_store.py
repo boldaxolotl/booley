@@ -570,3 +570,31 @@ def test_the_per_run_projection_takes_variant_and_seed_from_the_run() -> None:
     )
     entry = _coverage_test_projection(run)  # type: ignore[arg-type]
     assert (entry["test_run"], entry["variant"], entry["seed"]) == ("reset+soak@7", "soak", 7)
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_store_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    """Publish and both readers cross the symlinked ``.booley`` entry, nothing else (#2192)."""
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(
+            external / "flow-reports", tmp_path / "elsewhere", target_is_directory=True
+        )
+    target_dir = project / ".booley/flow-reports/sim/1/targets/sim"
+
+    if linked == "below":
+        with pytest.raises(CoverageCampaignStoreError, match="contains a link"):
+            publish_coverage_campaign(target_dir, _campaign())
+        return
+    paths = publish_coverage_campaign(target_dir, _campaign())
+    assert load_coverage_campaign(paths.campaign, TARGET).campaign == _campaign()
+    assert _load_bytes(paths.campaign, TARGET).campaign == _campaign()

@@ -500,3 +500,46 @@ def test_observational_resolution_preserves_existing_selection(tmp_path, monkeyp
     expected = resolve_booley_dir(first)
     assert resolve_booley_dir(second, cache_result=False) == expected
     assert booley_dir._cache == expected
+
+
+def _crossing_case(tmp_path: Path, case: str) -> tuple[Path, Path | None]:
+    """Build one layout for the crossed-entry helper; return (path, expected entry)."""
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    external = tmp_path / "external-booley"
+    (external / "worktrees" / "goal-x" / ".booley").mkdir(parents=True)
+    entry = project / ".booley"
+    link = {"misnamed": project / ".booley-data", "nested": project / "sub" / ".booley"}.get(
+        case, entry
+    )
+    if case in {"plain", "below"}:
+        entry.mkdir()
+    else:
+        link.parent.mkdir(exist_ok=True)
+        symlink_or_skip(link, external, target_is_directory=True)
+    if case == "below":
+        symlink_or_skip(entry / "flow-reports", external, target_is_directory=True)
+    if case == "above":
+        symlink_or_skip(tmp_path / "alias", project, target_is_directory=True)
+    return {
+        "entry": (entry / "flow-reports/sim/1", entry),
+        "worktree": (entry / "worktrees/goal-x/.booley/cw", entry),
+        "plain": (entry / "flow-reports", None),
+        "below": (entry / "flow-reports/sim", None),
+        "above": (tmp_path / "alias/.booley/flow-reports", None),
+        "misnamed": (link / "flow-reports", None),
+        "nested": (link / "cw", None),
+    }[case]
+
+
+@pytest.mark.parametrize(
+    "case", ["entry", "worktree", "plain", "below", "above", "misnamed", "nested"]
+)
+def test_crossed_booley_dir_entry_names_only_the_entry(tmp_path, monkeypatch, case):
+    """Only the exact Booley Directory entry of a Git checkout counts as crossed (#2192)."""
+    from booley.runtime.booley_dir import crossed_booley_dir_entry
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    path, expected = _crossing_case(tmp_path, case)
+
+    assert crossed_booley_dir_entry(path) == expected
