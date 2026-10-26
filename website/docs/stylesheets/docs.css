@@ -6,6 +6,11 @@
    scoped under .docs or .search. Reference mode: scannable, not literary.
    ------------------------------------------------------------------ */
 
+/* Docs pages get a wider page than the datasheet (1120px): with both side
+   columns the prose would otherwise be under 600px, too tight for the
+   reference tables and code blocks. base.html sets .docs-page. */
+.docs-page { --page: 1320px; }
+
 /* three columns: docs list | prose | on this page */
 .docs { display: grid; grid-template-columns: 168px minmax(0, 1fr) 212px; gap: 0 40px; }
 .docs__head { grid-column: 1 / -1; }
