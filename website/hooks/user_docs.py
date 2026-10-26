@@ -147,7 +147,13 @@ def on_serve(server, config, builder):
 def on_env(env, config, files):
     """Expose the docs reading order to the templates."""
     env.globals["user_docs"] = [
-        {"title": doc.title, "url": f"docs/{doc.slug}/", "src_uri": f"docs/{doc.file}"}
+        {
+            "title": doc.title,
+            "section": doc.section,
+            "child": doc.parent is not None,
+            "url": f"docs/{doc.slug}/",
+            "src_uri": f"docs/{doc.file}",
+        }
         for doc in docs_links.USER_DOCS
     ]
     return env
@@ -162,7 +168,7 @@ def on_page_markdown(markdown, page, config, files):
     page.meta["doc_section"] = True  # base.html marks the header's Docs link current
     name = src_uri.removeprefix("docs/")
     if name not in {doc.file for doc in docs_links.USER_DOCS}:
-        return rewrite_links(markdown, None)  # the landing page: public URLs only
+        return rewrite_links(markdown, None)  # the landing page: no repository-relative links
     page.meta["doc_source"] = f"{GITHUB_BLOB}docs/user/{name}"
     return rewrite_links(markdown, PurePosixPath("docs/user"))
 

@@ -258,3 +258,35 @@ def test_text_meets_wcag_aa_contrast_in_both_themes():
     ]
 
     assert failures == []
+
+
+def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
+    """The docs landing table is hand-written HTML; keep it in step with USER_DOCS.
+
+    It must list every doc once, in reading order, under its sidebar section,
+    with rowspans that cover each section, and mark exactly the child docs.
+    """
+    from booley.runtime.docs_links import USER_DOCS
+
+    landing = (WEBSITE / "docs/docs/index.md").read_text(encoding="utf-8")
+    body = landing.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+    rows = re.findall(r"<tr>(.*?)</tr>", body)
+    sections: list[tuple[str, int]] = []
+    pages = []
+    for row in rows:
+        group = re.search(r'<th scope="rowgroup" rowspan="(\d+)">([^<]+)</th>', row)
+        if group:
+            sections.append((group.group(2), int(group.group(1))))
+        link = re.search(
+            r'<td>(<span class="docs__tree"[^>]*>└</span>)?<a href="([^"]+)">([^<]+)</a>', row
+        )
+        assert link, f"landing row without a page link: {row}"
+        pages.append((sections[-1][0], link.group(2), link.group(3), bool(link.group(1))))
+
+    expected = [
+        (doc.section, f"{doc.slug}/", doc.title, doc.parent is not None) for doc in USER_DOCS
+    ]
+    assert pages == expected
+    assert sum(span for _, span in sections) == len(rows)
+    for section, span in sections:
+        assert span == sum(doc.section == section for doc in USER_DOCS), section

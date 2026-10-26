@@ -165,7 +165,7 @@ instead of silently widening the mapping.
 - Inspect `.booley/hooks/post-setup.*` if present — evidence of
   project-specific sandbox setup.
 - Inspect the sandbox build recipe (the bundled `data/docker/Dockerfile`
-  above) and `docs/user/CONFIG.md` when considering image provisioning or the
+  above) and `docs/user/SANDBOX.md` when considering image provisioning or the
   Linux x86-64 host-provisioned Vivado policy. Treat floating FlexNet behavior
   as experimental until the required paid-site evidence exists.
 - Read representative RTL/testbench headers only as needed to identify source
@@ -655,7 +655,7 @@ Rules that differ from SV Targets:
 Per-Target test lists, an optional run-time selector, Test Variants, and
 seeds. A **Test Run** is one Test Variant simulated with one seed, written
 `test[+variant][@seed]`; every key below decides which Test Runs a Target can
-run. Full rules: CONFIG.md → "Tests (`tests.toml`)".
+run. Full rules: TESTS.md.
 
 **Template:** `../TESTS_TEMPLATE.toml`.
 
@@ -800,7 +800,7 @@ What goes here:
   `"… is not available!"`, `$fopen` failed — then `$finish`), not just its
   assertion failures. A pass sentinel that prints once per case has usually
   printed dozens of times before such a run dies, so without that entry the
-  run scores **PASS**. A fail sentinel wins ties (CONFIG.md), which is exactly
+  run scores **PASS**. A fail sentinel wins ties (FLOW-SIM.md), which is exactly
   what makes the fail-dominant set safe — prove it with the deliberate
   fail-path run below (delete an input, expect FAIL).
 - **Per-test non-RTL build steps** (the plan's row 6): declare them as

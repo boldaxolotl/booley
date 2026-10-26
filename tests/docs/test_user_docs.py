@@ -87,7 +87,7 @@ def _hook():
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
-        ("CONFIG.md#tests-teststoml", "CONFIG.md#tests-teststoml"),
+        ("TESTS.md#seeds-seed-default_seed", "TESTS.md#seeds-seed-default_seed"),
         ("../internals/WHY.md#why-docker", "{blob}docs/internals/WHY.md#why-docker"),
         ("../../README.md", "{blob}README.md"),
         ("https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#a", "USAGE.md#a"),

@@ -1,7 +1,7 @@
 # Troubleshooting
 
 For setup breakage, start with `booley doctor`. If you suspect agent-planted Git
-configuration or hooks, read the [known Sandbox escape warning](#known-sandbox-escape-through-shared-git-metadata)
+configuration or hooks, read the [known Sandbox escape warning](https://booley.dev/docs/sandbox/#known-sandbox-escape-through-shared-git-metadata)
 first: host-side Doctor can trigger that vulnerability.
 
 `booley doctor --deep` additionally runs real sim/lint/synthesis smoke checks. Plain
@@ -16,108 +16,56 @@ If Booley reports that its version changed, invoke `/booley-heal`.
 
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
 [SETUP.md](https://booley.dev/docs/setup/), for day-to-day driving see [USAGE.md](https://booley.dev/docs/usage/), and for
-the config knobs named below see [CONFIG.md](https://booley.dev/docs/config/). For the Booley-specific
+the config knobs named below see [CONFIG.md](https://booley.dev/docs/config/#where-each-setting-lives). For the Booley-specific
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
-## Known Sandbox escape through shared Git metadata
+## Installation and editor integration
 
-[Issue #1529](https://github.com/boldaxolotl/booley/issues/1529) tracks a known,
-unresolved escape hatch from the Sandbox. Shared Git metadata is writable from
-the container. A Developer Agent can plant executable configuration or hooks
-that run as the host user when Git later runs on the host, including through
-an editor or Booley. Stopping the Sandbox does not remove the planted metadata.
-The investigation also demonstrated that a substituted Git object-store symlink
-can redirect native host Git writes outside the Project. The exposure includes
-filesystem writes as well as execution of planted commands.
+### Installation fails with `externally-managed-environment`
 
-Doctor does not currently detect this tampering, and host-side Doctor can
-itself trigger it. A successful Doctor run or a review of tracked changes is
-not a security clearance: Git configuration and hooks need not appear in the diff.
+Recent distributions ship Python as an *externally managed* environment
+(PEP 668), where system Python refuses user package installation. On Ubuntu or
+Debian, install pipx from the distribution package; a pip-installed pipx fails
+there because stock Python has no `ensurepip` until the `python3-venv` package,
+which the `pipx` package depends on, is installed:
 
-Until this is fixed, keep Git inspection inside an already-running Sandbox after untrusted
-agent work, and avoid host Git operations on the affected checkout, including
-automatic editor Git integrations and Booley commands that invoke Git. Do not
-use host-side Doctor as a cleanup or validation step. For work requiring a
-stronger boundary, use a disposable VM or a separate machine without valuable
-host credentials or data; these precautions are not a fix for the vulnerability.
+```bash
+sudo apt install pipx
+pipx ensurepath
+```
 
-Host-side `booley init` and `booley session refresh` also invoke Git. There is
-currently no audited list of safe host Booley commands for an affected checkout;
-these precautions do not establish that opening or refreshing a Sandbox is safe.
+Reopen your terminal, then install Booley and prepare the host:
 
-Workspace tasks and `.envrc` are additional ways to execute Project-controlled
-code on the host. Do not approve host execution of untrusted Project files.
-Remediation of #1529 is deferred for reconsideration on **31 DEC 2026**, not
-promised for that date.
+```bash
+pipx install booley-rtl
+booley bootstrap
+```
 
-## Goal evidence and state recovery
+If you already have uv, use `uv tool install booley-rtl` instead.
+These persistent isolated wheel installs can own host state. Source/editable
+checkouts and temporary or ephemeral installs remain ineligible.
 
-Selected immutable producer observations govern Goal evidence. A lost or delayed
-state save recovers automatically when Booley reads or saves Goal state; status
-reads preserve the state file and immutable observations. If a Goal lacks a usable
-current observation, status names the Goal, the evidence fields, and the producer
-to rerun. For ELAB, rerun `sim mode=elab_only` for its Target; for REVIEW, follow
-the Goal's review category and focus. A fresh successful producer run publishes
-consistent evidence and state. If publication still fails, report the persistence
-failure. Report ledger validation corruption with its diagnostic; preserve state
-and evidence files instead of editing or removing them.
+### The wrong `booley` runs (stale install shadowing)
 
-## Monitoring Goal work
+Host commands use the canonical installed Booley launcher. Compare
+`booley --version` with `pipx list` or `uv tool list` for tool-managed installs;
+use the intended interpreter's `python -m pip show booley-rtl` for pip installs.
+An older launcher earlier on `PATH` can shadow the intended installation.
 
-Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
-Inspect records with `booley goal status`; ask the Developer Agent
-for `goal_status(rules=true)` to recover evidence and rules after interruption.
-Read the Review Package and Session Summary when Finish succeeds.
+Run `type -a booley` (or `where.exe booley` on Windows) and remove or
+upgrade older user or system installations that appear before the one you
+intend to use. Restore the canonical installed Booley launcher, run
+`pipx ensurepath` for pipx, and reopen the terminal. Then run
+`booley bootstrap`, or `booley bootstrap --update` after an intentional upgrade.
+The identity record refuses other installations until that explicit update.
 
-### The Dashboard does not open on Sandbox attach
+After a distro Python upgrade, repair pipx environments with
+`pipx reinstall-all`. Once the intended launcher works, run
+`booley bootstrap --update`: interpreter or distribution identity may have
+changed even if the package version did not.
 
-Use `booley dashboard` in the Sandbox to open it manually. Automatic opening uses
-the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
-VS Code's global permission for automatic tasks. After upgrading Booley, run
-`booley init` on the host and rebuild/reopen the Sandbox so its image contains
-the extension. A running container does not gain files from a newer image.
-
-Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
-startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
-preference of off, and the folder opt-out in `.vscode/settings.json` suppress
-opening. A deliberately removed or edited Dashboard task also stays an opt-out.
-To restore a removed owned shortcut, set `dashboard = false`, run `booley init`
-on the host, then set it to true and run init again.
-
-Automatic opening requires a Git Project Root. Untrusted windows wait for trust.
-Headless sessions open no editor terminal. Closing the Dashboard does not restart
-it in the same window session; reopen it manually or reload the window.
-
-If no Output channel appears, check **Developer: Show Running Extensions** for
-`booley.dashboard` running in the container. A disabled extension must be enabled
-there. Doctor checks whether the bundled VSIX matches the installed Booley code;
-missing/stale image artifacts require a Sandbox Image rebuild.
-
-For a user-managed `[sandbox].image`, install the current Booley wheel and run
-`RUN python3 -I -m booley.runtime.dashboard_extension` as root in the image recipe,
-then restore its usual `USER`. Set `dashboard = false` if the image cannot supply
-the VSIX; `booley dashboard` remains available manually.
-
-### A session shows `activity unknown`
-
-The Dashboard shows the activity that Claude Code or Codex reports through
-lifecycle hooks in the Sandbox Image. It never guesses, so a session reads
-`activity unknown` when:
-
-- the session has reported nothing since it first called Booley; the next
-  prompt or tool call fills it in;
-- the session has shown working or waiting for tool call for more than two
-  hours without a new event, which usually means the client stopped mid-turn;
-- the Sandbox Image has no activity hooks. `booley doctor` inside the Sandbox
-  warns about this; rebuild the image, then rebuild and reopen the Sandbox;
-- the agent client cannot be told apart from others in its worktree (the
-  Dashboard row says the shared-worktree attribution is unavailable).
-
-After you approve a permission request, the session keeps showing waiting for
-user input until the tool finishes.
-
-## VS Code says “A mount config is invalid” while reopening the container
+### VS Code says “A mount config is invalid” while reopening the container
 
 Booley validates every host bind in the current generated spec before Docker
 creates the Sandbox. The error names the missing or unavailable host
@@ -136,7 +84,7 @@ the container is headless, foreign, ambiguous, or one of multiple matches. If
 validation fails after the stop, the error includes the exact `docker start`
 recovery command.
 
-## `booley` is missing from `/mcp` in Claude Code or Codex
+### `booley` is missing from `/mcp` in Claude Code or Codex
 
 Run **Developer: Reload Window** so the Developer Agent session re-reads its MCP config.
 If it still doesn't appear, check the server is actually serving, from a
@@ -157,7 +105,7 @@ Sandbox restarts, run `booley init --seed` on the host and rebuild or
 reopen the container. A server that remains absent after that supported
 lifecycle is a Booley bug; report it with the Doctor output and MCP log.
 
-## A Booley skill name is occupied or points to an older installation
+### A Booley skill name is occupied or points to an older installation
 
 `booley bootstrap` preserves skill entries it cannot prove are safe to manage. A
 live link whose complete skill tree matches the active package is accepted
@@ -175,7 +123,7 @@ Booley-managed links carry ownership metadata for later upgrades. A corrupt
 file for diagnosis, repair or remove only the malformed metadata, and rerun
 `booley bootstrap`.
 
-## An MCP tool is missing from `/mcp`
+### An MCP tool is missing from `/mcp`
 
 Every valid built-in and custom MCP tool is discovered by default. To remove
 a Booley Flow from Developer Agent discovery and autonomous execution, set
@@ -204,291 +152,14 @@ For any other missing MCP tool:
 See [MCP-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/MCP-TOOLS.md#default-discovery-and-explicit-opt-out) for the complete
 discovery model.
 
-## `bwave gui` fails on a scoped view
+### Windows first-run problems
 
-A scoped view (`--signals` / `--group` / `--time` / `--cursor` / `--append`)
-drives a *running* VaporView over its WCP (Waveform Control Protocol) control
-server — the channel `bwave` uses to drive an already-open viewer — which the
-generated devcontainer spec enables and pins to port 54322 (override:
-`BOOLEY_WCP_PORT`).
-If nothing is listening there, the scoped view fails with a setup hint,
-deliberately, rather than silently opening the whole trace and letting you read
-the wrong picture. A bare `bwave gui` needs no WCP server: it falls back to
-launching the editor CLI on the file.
+Windows-only first-run traps, from an outdated Git to Microsoft Store Python
+aliases, are on the [Windows first-run problems](https://booley.dev/docs/windows/) page.
 
-Booley first checks whether VaporView is installed in the attached remote
-window. If it is missing, install it there with
-`code --install-extension lramseyer.vaporview`. If the Sandbox cannot
-reach the Marketplace, obtain the official VaporView VSIX on a networked host,
-from the matching version on the
-[official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
-(`vaporview-1.5.4.vsix` for Booley's currently verified VaporView 1.5.4), then
-use **Extensions: Install from VSIX...** in the attached remote window.
-After installation, the Sandbox's background watcher patches the
-extension automatically; then use **Developer: Reload Window**. Verify with
-`code --list-extensions --show-versions` in the remote terminal; it must list
-`lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
-`code` command may install locally instead of into the attached container.
+## Sandbox, Git, and worktrees
 
-The same repair applies when `--group` or a radix/color suffix reports missing
-`set_signal_layout`, `get_signal_layout`, or `get_viewer_state` capabilities.
-Stock VaporView 1.5.4 does not expose its recursive presentation state over WCP;
-Booley's compatibility patch adds the layout write/readback pair to create and
-verify groups, radixes, and colors. That adapter is restricted to the exact
-official 1.5.4 bundle fingerprint; a different or partially modified bundle is
-left untouched and reported as unsupported rather than rewritten heuristically.
-
-When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
-not a rebuild. VaporView only
-wakes up for a waveform tab, so Booley patches its manifest to start on every
-window instead — but that patch runs from `postAttachCommand`, which VS Code
-runs *after* it has already started the extension host. On the first window of a
-fresh container the patch therefore lands one beat too late and takes effect on
-the next extension-host start. When Marketplace installation is delayed, the
-attach hook leaves one background watcher until VaporView arrives. It patches
-VS Code's hidden staging copy before the completed install is published, so the
-next extension-host activation cannot race an unpatched manifest. A rebuild
-puts you back in exactly that first window; one reload does not. Watcher
-diagnostics are written to `~/.booley/vaporview-install-watch.log` if automatic
-repair cannot complete. `booley doctor` probes the port and says so
-("VaporView WCP server reachable ..."), so you find out before `bwave gui` does.
-
-Do **not** use `WCP: Start Server` while Booley's auto-start setting is enabled.
-VaporView 1.5.4 starts WCP during command-triggered activation but loses that
-server reference, so the command tries the same port again and falsely reports
-`EADDRINUSE` even though the first start succeeded. Booley disables that command
-in auto-start mode after the manifest patch takes effect; Reload Window is the
-reliable first-window recovery.
-
-A view that opens but is missing signals is a different thing: signals the viewer
-has no netlist entry for are dropped and named in a WARNING on stderr; the trace
-itself is fine and still queryable.
-
-## Installation fails with `externally-managed-environment`
-
-Recent distributions ship Python as an *externally managed* environment
-(PEP 668), where system Python refuses user package installation. On Ubuntu or
-Debian, install pipx from the distribution package; a pip-installed pipx fails
-there because stock Python has no `ensurepip` until the `python3-venv` package,
-which the `pipx` package depends on, is installed:
-
-```bash
-sudo apt install pipx
-pipx ensurepath
-```
-
-Reopen your terminal, then install Booley and prepare the host:
-
-```bash
-pipx install booley-rtl
-booley bootstrap
-```
-
-If you already have uv, use `uv tool install booley-rtl` instead.
-These persistent isolated wheel installs can own host state. Source/editable
-checkouts and temporary or ephemeral installs remain ineligible.
-
-## The wrong `booley` runs (stale install shadowing)
-
-Host commands use the canonical installed Booley launcher. Compare
-`booley --version` with `pipx list` or `uv tool list` for tool-managed installs;
-use the intended interpreter's `python -m pip show booley-rtl` for pip installs.
-An older launcher earlier on `PATH` can shadow the intended installation.
-
-Run `type -a booley` (or `where.exe booley` on Windows) and remove or
-upgrade older user or system installations that appear before the one you
-intend to use. Restore the canonical installed Booley launcher, run
-`pipx ensurepath` for pipx, and reopen the terminal. Then run
-`booley bootstrap`, or `booley bootstrap --update` after an intentional upgrade.
-The identity record refuses other installations until that explicit update.
-
-After a distro Python upgrade, repair pipx environments with
-`pipx reinstall-all`. Once the intended launcher works, run
-`booley bootstrap --update`: interpreter or distribution identity may have
-changed even if the package version did not.
-
-## Windows first-run problems
-
-The CLI runs **natively on Windows** (repo on `C:\...`, Windows Python), not
-from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Six
-first-run traps:
-
-This supported layout prioritizes normal Windows editor and Git access. The
-checkout is bind-mounted into the Linux Sandbox, so metadata-heavy EDA
-builds may perform differently from Linux-native storage. That performance is
-still being qualified; a slow simulation should be reported with its phase
-timings rather than attributed to the bind mount from total elapsed time alone.
-A checkout hosted inside a user WSL distribution is an optional performance
-experiment, not a setup requirement.
-
-- **Git is older than 2.37.2.** Upgrade Git for Windows from
-  [git-scm.com](https://git-scm.com/downloads/win), open a new terminal, and
-  rerun `booley init`. Older releases can exhaust their small pool of temporary
-  names when Booley stages a large checkout for line-ending repair; bootstrap
-  now stops early with the installed and required versions instead.
-- **`python`/`py` open the Microsoft Store instead of running.** A fresh
-  Windows has no real interpreter, only Store aliases. Install one first:
-  `winget install Python.Python.3.13`.
-- **`docker` isn't found even though Docker Desktop is installed.** Its CLI
-  joins `PATH` only after the app has started: launch Docker Desktop, then open
-  a **new** terminal before `booley init`. Init treats a missing CLI or stopped
-  daemon as fatal and exits before creating or changing project files.
-- **The container sees a fully modified tree / phantom diffs.** Git for
-  Windows' `core.autocrlf=true` default checks files out with CRLF, which the
-  Linux container reads as every file modified. `booley init` handles it: it
-  inspects both the RTL repository and the Booley Directory's repository
-  when they are separate. In each repository it sets
-  `core.autocrlf=false` locally. With Stealth enabled, the Project Root's
-  `* text=auto eol=lf` default goes in Git's common `info/attributes`, local to
-  the repository and shared by linked worktrees; it does not travel through
-  commits. Existing upstream attributes policy suppresses that default to
-  preserve its rules. If a sibling worktree's user attributes or Git's system
-  attributes path cannot be inspected, init also defers a new shared default
-  and preserves existing local rules and registrations. Doctor reports this
-  limitation as `git.attributes-policy-unknown`, independently of real policy
-  conflicts. Inspect the policy from an environment where its source is
-  accessible; see [Doctor health](https://booley.dev/docs/doctor/) for source-specific guidance and
-  waiver behavior. Normal init remains nonfatal, while unknown-only
-  `booley init --check` exits 1 for incomplete inspection.
-  With Stealth disabled, and in a Versioned Booley Directory, init adds the default as the first line of root `.gitattributes`
-  unless the root already owns a whole-tree policy. `text=auto` preserves Git's
-  binary-file detection, and later rules in that file can override the default.
-  **Commit only published root `.gitattributes` files** to share their policy.
-  On Stealth opt-out, init migrates its replayable local default to root
-  `.gitattributes`, unless the root already owns a whole-tree policy, and
-  preserves compatible comments and export attributes in the local file.
-  Init still warns about a prior untracked root default, a local default
-  conflicting with upstream rules while Stealth is enabled, or non-replayable
-  local content on opt-out. Inspect those files and remove or migrate the
-  default if appropriate; init preserves them because ownership cannot be proven.
-
-    Files already on disk with CRLF are a separate matter. From a clean tracked
-    tree, init stages Git-filtered LF replacements, verifies that the affected
-    files have not changed since inspection and that replacements change only
-    CRLF to LF, then atomically replaces them and reconciles Git's cached metadata
-    for only those paths. Content edits made while init runs are preserved and
-    reported as unsafe. This preserves
-    filesystem metadata, leaves the index content unchanged, and leaves untracked
-    and unaffected tracked files alone. Init refuses dirty trees, Git-protected
-    affected paths, and hard-linked candidates. The one exception is Booley's own
-    Windows guidance fallback: when the root `AGENTS.md`/`CLAUDE.md` are untracked
-    hardlinks to the resolved Booley Directory's `AGENTS.md`, init releases them,
-    normalizes the canonical file, and recreates the links. Failed tracking
-    inspections preserve the links; a partial release is reconciled even if
-    another link is locked. Any other hardlink to a candidate
-    still blocks the repair. If reconciliation remains unsafe,
-    normal init reports setup incomplete and names the affected repository and
-    refusal; `--check-only` reports pending work without changing files. Commit
-    or stash changes and rerun:
-
-    ```bash
-    booley init
-    ```
-
-    `booley doctor` re-asks both repositories every run and identifies which one
-    is unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
-    index metadata left by an earlier repair gets caught rather than surfacing as
-    phantom diffs in the container. `--fix-line-endings` is accepted; clean
-    CRLF checkouts receive the same automatic repair with or without it.
-
-    (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
-    is **not** enough. With the clean filter in place the worktree files already
-    match the index, so Git decides nothing needs rewriting and leaves the CRLF on
-    disk. Init materializes filtered replacements separately and applies them only
-    after all safety checks pass; it never deletes the originals.)
-
-- **Init cannot resolve the trusted host Booley executable.** A per-user Python
-  install normally places `booley.exe` under the user scripts directory rather
-  than the interpreter's system `Scripts` directory. Current Booley releases
-  inspect both trusted locations even when the user scripts directory is not on
-  `PATH`. If the error remains, restore the canonical installed Booley launcher
-  (check `pipx list` or `uv tool list` for isolated installs), or add its scripts
-  directory to `PATH`, open a new
-  terminal, and rerun init.
-
-- **The first sandbox image build takes over an hour.** First builds compile
-  EDA tools from source and can take well over an hour on a WSL2-backed Docker;
-  the build timeout is overridable via `BOOLEY_IMAGE_BUILD_TIMEOUT` (seconds,
-  default 7200).
-
-- **An image build is refused for insufficient disk capacity.** Booley checks
-  Docker's reported storage filesystem before the complete known build sequence
-  and again before each remaining build. The error names the sequence and shows
-  available and required space, each image estimate, one safety reserve, and
-  current/reclaimable build-cache usage. `docker builder prune` can free unused
-  cache, but it can also evict layers the planned retry needs to rebuild; inspect
-  the complete-sequence estimate before choosing that tradeoff. This is related
-  to the recovery behavior discussed in [issue #790](https://github.com/boldaxolotl/booley/issues/790).
-  Booley never prunes cache or removes images, volumes, Project artifacts, or
-  user data automatically. To explicitly accept disk-exhaustion risk, or when
-  Docker's reported root is not the filesystem that actually stores its data,
-  bypass only that invocation with
-  `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1`; any other value keeps the check enabled.
-
-- **Docker reports `No space left on device` after the capacity preflight
-  passed.** An image recipe can grow beyond the conservative estimate. Booley
-  retains Docker's error and warns that pruning may discard reusable layers.
-  Recheck the complete sequence after cleanup. A completed preflight is not
-  permission to delete cache, images, volumes, or the contents of the Booley Directory.
-
-## Lint or ASIC synth fails with an interface parameter mismatch
-
-If the module you point `lint` or `synth` at carries **SystemVerilog
-interface ports** (`my_axis_if.snk s_axis`), especially if it reads their
-parameters hierarchically (`localparam W = s_axis.DATA_W`), it **cannot be
-elaborated standalone**. With no interface bound, its ports take the interface's
-*default* parameters and the design's own elaboration checks fire
-(`Error: Interface DATA_W parameter mismatch`). That reads like a bug in the IP,
-but isn't: both flows elaborate the toplevel on its own, and upstream IP rarely
-ships a standalone-elaboratable top because in-tree it's only ever instantiated
-inside a board design or testbench that supplies the interfaces.
-
-Fix: add a thin **flat-port wrapper**, a module that declares the interface
-instances with real parameters, instantiates the DUT, and exposes plain signals
-on its own ports, then point `lint` and `synth` at the wrapper. `sim` is
-unaffected: a cocotb testbench brings its own wrapper, since its BFMs must bind
-to interface *instances* anyway. `booley doctor` flags this at setup time. Cost:
-one small file.
-
-## A `.core` library `depend:` won't resolve
-
-A `depend:` on a core from a FuseSoC
-*library* (`vlog_tb_utils`, `wiredelay`, …) fails in the sandbox: it ships zero
-FuseSoC libraries, and the egress proxy blocks fetching them, so
-`fusesoc run --setup` fails with a clear conflict naming the missing core.
-Either vendor the dependency into the repo as a real `.core`, or drop it; often
-the testbench already guards its use behind an `ifdef`, or defines the module
-locally, making the dependency vestigial. Check before you strip.
-
-## RISC-V firmware won't assemble against the sandbox GCC
-
-The RISC-V sandbox image ships a modern GCC (currently 15), and two `-march`
-mismatches show up when building a core's boot software:
-
-- **The base ISA lost its CSR instructions.** GCC 15 split the CSR
-  instructions out of the base ISA, so an older project's default
-  `-march=rv32imc` fails to assemble its own startup code. Add the explicit
-  extension: `-march=rv32imc_zicsr` (e.g. `make ... ARCH=rv32imc_zicsr`).
-- **A vendor ISA string is rejected outright.** A generic multilib GCC rejects
-  vendor `-march` strings like `rv64imafdcxtheadc` (OpenC910); the only fix is
-  baking the vendor's own toolchain into a project sandbox image.
-
-Don't stop at "a RISC-V toolchain exists in the image". **Test the project's
-exact compile flags** against the sandbox compiler on one real file before
-writing config. Run the probe directly in the Sandbox shell:
-
-```bash
-riscv-none-elf-gcc -march=<theirs> ...
-```
-
-Better to plan for it during setup planning (Step 0 of the
-[`booley-setup`](https://booley.dev/docs/setup/#the-booley-setup-skill) skill, whose setup plan
-carries this probe on its execution-time checks list) than to learn it after
-the config is written. For the image
-contents and how to layer EDA tools on top, see
-[CONFIG.md → RISC-V toolchain image](https://booley.dev/docs/config/#risc-v-toolchain-image-booley-sandbox-riscv).
-
-## Developer Agents and Specialists turn into "Not logged in" partway through an unattended run
+### Developer Agents and Specialists turn into "Not logged in" partway through an unattended run
 
 The credential Claude Code and Codex ship with by default **refreshes, and refreshing
 rotates it**. The host and the container hold copies of the same refresh token,
@@ -512,14 +183,14 @@ re-seeds the devcontainer spec; Booley then injects it on every container start.
 options are in [USAGE.md](https://booley.dev/docs/usage/#auth--billing);
 choosing between several credentials is in [CONFIG.md](https://booley.dev/docs/config/#pinning-what-bills-agent-auth).
 
-## Two Developer Agents keep clobbering each other's edits
+### Two Developer Agents keep clobbering each other's edits
 
 Use one linked worktree per Developer Agent that edits code. Create it with
 `booley worktree new <name>` in the Sandbox, then enter Goal Mode there with
 `/booley-goal`. Tabs and terminals in the same worktree share files; the
 Dashboard warns about shared-worktree activity but does not isolate it.
 
-## Worktrees show as `prunable` on the host
+### Worktrees show as `prunable` on the host
 
 Use Git inside the Sandbox to inspect its worktrees. A container path can be
 unreachable from the host and appear `prunable` there. Do not prune an active
@@ -527,7 +198,7 @@ worktree based on that label. Inspect the Goal Record and preserve branch and
 Project commits before removing a workspace. For Paired Checkout
 removal, follow the absolute Git commands printed by `booley worktree new`.
 
-## `git` cannot see files under `.booley/`
+### `git` cannot see files under `.booley/`
 
 ```
 $ git checkout -- .booley/booley.toml
@@ -550,7 +221,7 @@ The same applies to `tests.toml`, `goalsets/*.md`, `criteria.toml`, and the `.co
 repository on this machine and those files were never version-controlled: copy
 one aside before you edit it.
 
-## Doctor reports files under `tickets/` or guidance files
+### Doctor reports files under `tickets/` or guidance files
 
 `Project checks` reports `tickets.leftover-board` for nonempty
 `tickets/{board,state,logs,locks,waiver-candidates}` under the Booley Directory.
@@ -563,207 +234,7 @@ Delete a file that matches the shipped template. For edited or unfamiliar
 content, move its rules into a Goalset under `.booley/goalsets/`, then
 delete it. Both warning IDs can be narrowly waived in `doctor-waivers.toml`.
 
-## RTL simulates cleanly but `synth` rejects it under `slang`
-
-The `slang` frontend is stricter than Verilator, so RTL that simulates fine can
-still fail at synthesis, and the error often names the wrong culprit. The known
-case: `$size()` on an array of interface instances
-(`my_axis_if #(...) stat_if[2]();` used as `.S_COUNT($size(stat_if))`) fails
-with `error: 'stat_if' cannot be used in an expression`, naming the array rather
-than the `$size` call. **Workaround:** hoist the count into a named constant
-(`localparam STAT_CNT = 2;`) and use it at both the declaration and the
-instantiation. This is not a Booley bug and not a dead end; the fix is usually a
-two-line RTL change. The running list of `slang` limitations (and where to add a
-new one) is in
-[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
-If you don't need `slang`, stay on the default `sv2v` frontend.
-
-## `flow sim` refuses a seed, a Test Variant or a Test Run selector
-
-A Test Run is one Test Variant simulated with one seed, written
-`test[+variant][@seed]`. `booley flow sim` checks every `--test` selector and
-`--seed` before it builds anything. See
-[Test Runs, Test Variants and seeds](https://booley.dev/docs/flow-reference/#test-runs-test-variants-and-seeds)
-for the forms it accepts.
-
-| Message | Cause | Fix |
-|---|---|---|
-| `--seed cannot be combined with a --test that names a seed` | The request names a seed twice: `--seed` and `test@seed` or `test@xN`. | Name the seed in one place. |
-| `--seed applies to simulation, not to an elaboration mode` | `--seed` with `--mode elab-only` or `elab-only-standalone`. | Drop `--seed`. |
-| `Target '<t>' is unseeded` | The Target cannot apply a seed: it is an Icarus Target with an HDL testbench and no `seed` template in `tests.toml`. | Add a `seed` template that the testbench reads, for example `seed = "+seed={seed}"`, or drop the seed. |
-| `has no Test Variant` / `declares no Test Variants` | The selector names a Variant that `tests.toml` does not declare for that Test. | Use a declared Variant, or declare one under `[<target>.variants.<test>]`. |
-| `selects Test Run '<name>' more than once` | Two selectors resolve to the same Test Run, such as `stress` and its default Variant `stress+short`. | Name each Test Run once. |
-| `asks for more than 1000 Test Runs of Target` | One request may run at most 1000 Test Runs of one Target. | Split the request into several. |
-| `seed count <N> exceeds the limit of 1000` | `test@xN` accepts N from 1 to 1000. | Use a smaller N. |
-| `seed <n> is out of range` / `must not have leading zeros` | A seed is a decimal number from 1 to 2147483647 without a sign or leading zeros. | Write the seed in that form. |
-
-`booley doctor` reports a `tests.toml` that cannot be loaded, or that a Target
-cannot apply, as a `tests.toml` failure that names the Target and the key. The
-rules are in [Tests (`tests.toml`)](https://booley.dev/docs/config/#tests-teststoml).
-
-## A Goal that names Test Runs stays unmet
-
-Simulation, Cycle Count and coverage Goals require exact Test Runs that Goal
-Mode freezes at entry
-([Goals that name Test Runs](https://booley.dev/docs/usage/#goals-that-name-test-runs)).
-`goal_status` shows each Goal's frozen Test Runs with their outcomes, and one
-of these reasons when the Goal is unmet. A coverage Goal is decided by its
-coverage floors alone, so it never shows `goal-test-run-incomplete`,
-`goal-test-run-failed` or `goal-campaign-unaccounted`; it can be met while
-`goal_status` lists a failed Test Run under it.
-
-| Reason | Meaning | What to do |
-|---|---|---|
-| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet, or the evidence has no Test Run rows. | Run them. For a Goal that covers every Test of its Target, run the whole Target. For a Goal with a `test@xN` selector, run `--test` with that selector. For any other Goal, run `--test` with each frozen Test Run name that `goal_status` lists. |
-| `goal-test-run-failed` | A frozen Test Run failed at the current file contents. A later pass at the same contents does not clear it, including when an interrupted run is recovered. | Fix the cause and run again. `goal_status` prints a rerun command for each failed Test Run. |
-| `goal-test-run-pending` | The Goal names a Target, Test or Test Variant that does not exist yet. | Add it. Booley freezes the Test Run at the next Flow run or status read. |
-| `goal-test-run-unresolvable` | The pending part cannot be frozen: `tests.toml` cannot be loaded or applied to the Target, the Goal names a seed and the Target is unseeded, or the Goal names a Test that `tests.toml` skips. | Fix `tests.toml` as the message says, or ask for a Goal change. |
-| `goal-simulation-suite-empty` | The Goal covers every Test of its Target, and the Target runs none: every registered Test is skipped. | Register a Test, or remove it from `skip`. |
-| `goal-test-run-missing` | A frozen Test Run's Target, Test or Test Variant is gone, its Test is skipped, or the Target cannot apply its seed. | Restore the declaration, or ask the Developer Agent to propose a `retarget`. When the message says the Test is skipped and the Goal names that Test, remove it from `skip` or ask for a Goal change that drops it; a retarget is refused. |
-| `goal-test-run-changed` | The declared arguments or environment of a frozen Test Run changed in `tests.toml`. | Restore them, or ask the Developer Agent to propose a `retarget`. |
-| `goal-test-run-metric-missing` | The latest run recorded Test Run outcomes but did not measure the Goal's Cycle Count or coverage. | Cycle Count: run the Goal's frozen Test Run. Coverage: run exactly the Goal's frozen Test Runs in one `--coverage` run. |
-| `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A Simulation Campaign registration that cannot be read is moved aside only when you approve a Goal change. |
-
-A `retarget` that leaves the Goal as written freezes its Test Runs again from
-the Target as it is now; it is refused when the Goal names a Test the Target
-skips. Like every Goal change it needs your approval, and the Goal's Test Run
-outcomes start again.
-
-A failing Test Run that is not one of a Goal's frozen Test Runs is
-**diagnostic**. The Flow report lists it under `Diagnostic failures`, and it
-blocks no Goal. Ask for a Goal change if that Test Run should become required.
-
-A run with `--diagnostic` records nothing, so a frozen Test Run that passes or
-fails in it keeps the outcome `goal_status` showed before. The Flow report
-names the Goals whose frozen Test Runs ran and the ones that failed. Run again
-without `--diagnostic` to record them.
-
-Inside Goal Mode, Booley registers a Simulation Campaign before its first
-Test Run starts when its Target has a simulation or Cycle Count Goal: one
-`booley.goal-campaign/v1` document per Simulation Campaign under
-`logs/acceptance/campaigns/` of the Goal Record. Booley does not register a
-baseline Simulation Campaign. When a registered
-Simulation Campaign is cancelled or killed, the next Flow run or status read
-reads the results it finished and adds them to the Test Run outcomes of
-simulation and Cycle Count Goals; a failure it saw counts. Do not edit or delete these documents. One that cannot
-be read gives every simulation and Cycle Count Goal the reason
-`goal-campaign-unaccounted`, and Booley moves it to `quarantine/` beside the
-others when you approve a Goal change.
-
-The Review Package lists the Test Runs that Booley froze after entry, under
-the heading `Test Runs resolved after entry`, and every Simulation Campaign
-whose results were never fully accounted for.
-
-## Simulation stalls at time zero without results
-
-cocotb's VPI/VHPI run loop is compiled against the simulator, so pinning a prior
-cocotb release does not guarantee compatibility with the image's current
-Verilator. The failure can be silent: cocotb 1.5.1 under an older Verilator builds,
-imports, and registers its VPI callbacks, but the timed callbacks never fire,
-simulation time stays at `0.00 ns`, and the run consumes its timeout without
-producing `results.xml`.
-
-No Python-package pin fixes that simulator pairing. Usually the cheapest fix is
-to modernize the testbench for cocotb 1.9+ or 2.x (`cocotb.fork` becomes
-`cocotb.start_soon`, with a few import moves). The more expensive alternative is
-a project image containing a mutually compatible prior Verilator and Python
-stack. The supported selection dialects and current image versions are in
-[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#built-in-flows).
-
-## Yosys rejects transpiled Verilog after `sv2v` succeeds
-
-`sv2v` is a source-to-source transpiler, so some failures appear only when Yosys
-parses the transpiled Verilog; the error can point at a line you never wrote. A
-known case is an array of internal interface instances, such as
-`router_if r_if[N]();` inside `gen_x[…].u_router`. It can produce port-width
-expressions containing hierarchical function calls such as
-`top.gen_noc_x_lines[0].u_router.my_pkg_MinBitWidth(2)`, which Yosys's Verilog
-parser rejects even though `sv2v` exited successfully.
-
-Switch the synthesis Target to `frontend = "slang"`, which reads the interfaces
-natively. This is an upstream `sv2v` limitation rather than something the flow
-can repair. Frontend selection and requirements are in
-[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
-
-## Verilator reports timing or enum errors
-
-The image ships Verilator 5. Check these diagnostics when a build fails:
-
-- **`%Error-NEEDTIMINGOPT`** — the testbench uses delays or event controls
-  (`#10` or `@(posedge clk)` in an event-driven testbench). Add `--timing` to
-  the Target's `verilator_options`, or `--no-timing` for cycle-driven
-  simulation.
-- **`%Error-ENUMVALUE`** — a value outside an enum's declared members is assigned
-  to or compared with an enum-typed variable, usually through an implicit
-  conversion. Prefer an explicit RTL cast; if the use is intentional, waive it
-  per Target with `-Wno-ENUMVALUE`.
-
-Waiver lists must name the emitted warning code. Verilator 5 uses
-`WIDTHTRUNC` and `WIDTHEXPAND` for width findings; a `-Wno-WIDTH` entry may
-not silence the warning you expect. Read the code
-from the failing `%Error-<CODE>` or `%Warning-<CODE>` line and either fix the RTL
-or add the corresponding `-Wno-<CODE>` to that Target's `verilator_options`.
-
-## Pre-Sim Commands fail with `Syntax error: Bad fd number`
-
-Make defaults to `/bin/sh` (dash), where a recipe using `>&` redirection
-(`make all >& build.log`) dies with `Syntax error: Bad fd number`. If the
-project Makefile assumes bash, pass `SHELL=/bin/bash` on the make command
-line (e.g. in a `[flows.sim].pre_run_commands` entry) or invoke via
-`bash -c`.
-
-## Yosys or Verilator fails with `Define not defined`
-
-A header that defines project-wide macros (e.g. `` `PA_WIDTH ``) relies on being
-compiled **first, in the same compilation unit**; `` `define `` does not persist
-across separate `read_verilog` calls or separate Verilator units. Feeding files
-one-per-`read_verilog` (Yosys) or as separate units breaks with `Define not
-defined`. Compile the whole filelist (headers first) as **one** unit — in a
-`.core`, list the `` `define `` headers first in the fileset.
-
-## A pytest selftest under `.booley/` crashes at collection
-
-A pytest-based selftest fixture under `.booley/` dies at collection when
-the project's pytest config sets `--import-mode=importlib`:
-
-```
-TypeError: the 'package' argument is required to perform a relative import
-for '.booley.selftest'
-```
-
-importlib mode derives a module name from the path, and the directory's leading
-dot parses as a relative import. **Work around it** by passing
-`--import-mode=prepend` on the pytest command line **for the selftest node
-only**, leaving the project's configured mode untouched for its own test tree.
-Any pytest fixture under a dotted directory hits this.
-
-## Host-provisioned Vivado will not start
-
-Run `booley doctor` on the host, then rerun it with `--deep` inside the Sandbox. Confirm that the Project has an exact Grant, the opaque Vivado
-installation registration still points to a supported Linux x86-64 Vivado 2025.2
-release, and the generated Sandbox specification has not drifted. Reseed the
-Sandbox only after the host authority has been corrected.
-
-Do not attempt to expose a host daemon, a Docker socket, a direct license-server
-address, or a license environment variable to repair this. Those paths are not
-part of the product and a failed registration/licensing check deliberately fails
-closed. Use `booley eda installation list`, `booley eda license list`, and
-`booley projects` to inspect administrator-owned records and see each Project's
-Grants together.
-
-If a granted Project Root was deleted, do not recreate it just to revoke
-authority. Run `booley projects`, copy the missing root's exact absolute path,
-then run:
-
-```bash
-booley eda grant revoke --kind vivado /exact/deleted/project
-```
-
-After every Grant for that root is gone, remove the obsolete inventory entry
-with `booley projects forget /exact/deleted/project`.
-
-
-## Retained issued Sandbox Images
+### Retained issued Sandbox Images
 
 `booley session down` and Grant revocation retain issued-image keeper tags.
 `booley projects forget <project>` first checks that no live Grants remain,
@@ -837,8 +308,412 @@ freed. External Docker changes cannot be atomic with these checks. A partial
 failure reports tags already released and returns an error; preview again before
 retrying. Doctor only reports retained keepers and never removes them.
 
+### Recover sources hidden by an interrupted older run
 
-## Coverage Campaign diagnostics and retention
+Doctor WARNs with `workspace.legacy-source-stash` when a stash record names this
+worktree. It only reads the record. Recover manually inside the original
+Sandbox, before rebuilding it or clearing its temp directory:
+
+1. Back up the worktree, including untracked files.
+2. Open the reported `booley_isolation_*.manifest.json` or
+   `booley_hide_files_*.manifest.json`, including `.retired` records. Each
+   `moved` pair lists the original path, then the stashed path under
+   `stash_dir`.
+3. If the stash directory has mode `000`, run `chmod u+rwx <stash-dir>`. Copy
+   back only missing sources; never overwrite a present one.
+4. Delete the stash and its record once the sources are confirmed.
+
+## Goal Mode
+
+### Goal evidence and state recovery
+
+Selected immutable producer observations govern Goal evidence. A lost or delayed
+state save recovers automatically when Booley reads or saves Goal state; status
+reads preserve the state file and immutable observations. If a Goal lacks a usable
+current observation, status names the Goal, the evidence fields, and the producer
+to rerun. For ELAB, rerun `sim mode=elab_only` for its Target; for REVIEW, follow
+the Goal's review category and focus. A fresh successful producer run publishes
+consistent evidence and state. If publication still fails, report the persistence
+failure. Report ledger validation corruption with its diagnostic; preserve state
+and evidence files instead of editing or removing them.
+
+### Monitoring Goal work
+
+Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
+Inspect records with `booley goal status`; ask the Developer Agent
+for `goal_status(rules=true)` to recover evidence and rules after interruption.
+Read the Review Package and Session Summary when Finish succeeds.
+
+#### The Dashboard does not open on Sandbox attach
+
+Use `booley dashboard` in the Sandbox to open it manually. Automatic opening uses
+the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
+VS Code's global permission for automatic tasks. After upgrading Booley, run
+`booley init` on the host and rebuild/reopen the Sandbox so its image contains
+the extension. A running container does not gain files from a newer image.
+
+Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
+startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
+preference of off, and the folder opt-out in `.vscode/settings.json` suppress
+opening. A deliberately removed or edited Dashboard task also stays an opt-out.
+To restore a removed owned shortcut, set `dashboard = false`, run `booley init`
+on the host, then set it to true and run init again.
+
+Automatic opening requires a Git Project Root. Untrusted windows wait for trust.
+Headless sessions open no editor terminal. Closing the Dashboard does not restart
+it in the same window session; reopen it manually or reload the window.
+
+If no Output channel appears, check **Developer: Show Running Extensions** for
+`booley.dashboard` running in the container. A disabled extension must be enabled
+there. Doctor checks whether the bundled VSIX matches the installed Booley code;
+missing/stale image artifacts require a Sandbox Image rebuild.
+
+For a user-managed `[sandbox].image`, install the current Booley wheel and run
+`RUN python3 -I -m booley.runtime.dashboard_extension` as root in the image recipe,
+then restore its usual `USER`. Set `dashboard = false` if the image cannot supply
+the VSIX; `booley dashboard` remains available manually.
+
+#### A session shows `activity unknown`
+
+The Dashboard shows the activity that Claude Code or Codex reports through
+lifecycle hooks in the Sandbox Image. It never guesses, so a session reads
+`activity unknown` when:
+
+- the session has reported nothing since it first called Booley; the next
+  prompt or tool call fills it in;
+- the session has shown working or waiting for tool call for more than two
+  hours without a new event, which usually means the client stopped mid-turn;
+- the Sandbox Image has no activity hooks. `booley doctor` inside the Sandbox
+  warns about this; rebuild the image, then rebuild and reopen the Sandbox;
+- the agent client cannot be told apart from others in its worktree (the
+  Dashboard row says the shared-worktree attribution is unavailable).
+
+After you approve a permission request, the session keeps showing waiting for
+user input until the tool finishes.
+
+### A Goal that names Test Runs stays unmet
+
+Simulation, Cycle Count and coverage Goals require exact Test Runs that Goal
+Mode freezes at entry
+([Goals that name Test Runs](https://booley.dev/docs/goal-mode/#goals-that-name-test-runs)).
+`goal_status` shows each Goal's frozen Test Runs with their outcomes, and one
+of these reasons when the Goal is unmet. A coverage Goal is decided by its
+coverage floors alone, so it never shows `goal-test-run-incomplete`,
+`goal-test-run-failed` or `goal-campaign-unaccounted`; it can be met while
+`goal_status` lists a failed Test Run under it.
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet, or the evidence has no Test Run rows. | Run them. For a Goal that covers every Test of its Target, run the whole Target. For a Goal with a `test@xN` selector, run `--test` with that selector. For any other Goal, run `--test` with each frozen Test Run name that `goal_status` lists. |
+| `goal-test-run-failed` | A frozen Test Run failed at the current file contents. A later pass at the same contents does not clear it, including when an interrupted run is recovered. | Fix the cause and run again. `goal_status` prints a rerun command for each failed Test Run. |
+| `goal-test-run-pending` | The Goal names a Target, Test or Test Variant that does not exist yet. | Add it. Booley freezes the Test Run at the next Flow run or status read. |
+| `goal-test-run-unresolvable` | The pending part cannot be frozen: `tests.toml` cannot be loaded or applied to the Target, the Goal names a seed and the Target is unseeded, or the Goal names a Test that `tests.toml` skips. | Fix `tests.toml` as the message says, or ask for a Goal change. |
+| `goal-simulation-suite-empty` | The Goal covers every Test of its Target, and the Target runs none: every registered Test is skipped. | Register a Test, or remove it from `skip`. |
+| `goal-test-run-missing` | A frozen Test Run's Target, Test or Test Variant is gone, its Test is skipped, or the Target cannot apply its seed. | Restore the declaration, or ask the Developer Agent to propose a `retarget`. When the message says the Test is skipped and the Goal names that Test, remove it from `skip` or ask for a Goal change that drops it; a retarget is refused. |
+| `goal-test-run-changed` | The declared arguments or environment of a frozen Test Run changed in `tests.toml`. | Restore them, or ask the Developer Agent to propose a `retarget`. |
+| `goal-test-run-metric-missing` | The latest run recorded Test Run outcomes but did not measure the Goal's Cycle Count or coverage. | Cycle Count: run the Goal's frozen Test Run. Coverage: run exactly the Goal's frozen Test Runs in one `--coverage` run. |
+| `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A Simulation Campaign registration that cannot be read is moved aside only when you approve a Goal change. |
+
+A `retarget` that leaves the Goal as written freezes its Test Runs again from
+the Target as it is now; it is refused when the Goal names a Test the Target
+skips. Like every Goal change it needs your approval, and the Goal's Test Run
+outcomes start again.
+
+A failing Test Run that is not one of a Goal's frozen Test Runs is
+**diagnostic**. The Flow report lists it under `Diagnostic failures`, and it
+blocks no Goal. Ask for a Goal change if that Test Run should become required.
+
+A run with `--diagnostic` records nothing, so a frozen Test Run that passes or
+fails in it keeps the outcome `goal_status` showed before. The Flow report
+names the Goals whose frozen Test Runs ran and the ones that failed. Run again
+without `--diagnostic` to record them.
+
+Inside Goal Mode, Booley registers a Simulation Campaign before its first
+Test Run starts when its Target has a simulation or Cycle Count Goal: one
+`booley.goal-campaign/v1` document per Simulation Campaign under
+`logs/acceptance/campaigns/` of the Goal Record. Booley does not register a
+baseline Simulation Campaign. When a registered
+Simulation Campaign is cancelled or killed, the next Flow run or status read
+reads the results it finished and adds them to the Test Run outcomes of
+simulation and Cycle Count Goals; a failure it saw counts. Do not edit or delete these documents. One that cannot
+be read gives every simulation and Cycle Count Goal the reason
+`goal-campaign-unaccounted`, and Booley moves it to `quarantine/` beside the
+others when you approve a Goal change.
+
+The Review Package lists the Test Runs that Booley froze after entry, under
+the heading `Test Runs resolved after entry`, and every Simulation Campaign
+whose results were never fully accounted for.
+
+## Targets and simulation
+
+### A `.core` library `depend:` won't resolve
+
+A `depend:` on a core from a FuseSoC
+*library* (`vlog_tb_utils`, `wiredelay`, …) fails in the sandbox: it ships zero
+FuseSoC libraries, and the egress proxy blocks fetching them, so
+`fusesoc run --setup` fails with a clear conflict naming the missing core.
+Either vendor the dependency into the repo as a real `.core`, or drop it; often
+the testbench already guards its use behind an `ifdef`, or defines the module
+locally, making the dependency vestigial. Check before you strip.
+
+### `flow sim` refuses a seed, a Test Variant or a Test Run selector
+
+A Test Run is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`. `booley flow sim` checks every `--test` selector and
+`--seed` before it builds anything. See
+[Test Runs, Test Variants and seeds](https://booley.dev/docs/flow-sim/#test-runs-test-variants-and-seeds)
+for the forms it accepts.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `--seed cannot be combined with a --test that names a seed` | The request names a seed twice: `--seed` and `test@seed` or `test@xN`. | Name the seed in one place. |
+| `--seed applies to simulation, not to an elaboration mode` | `--seed` with `--mode elab-only` or `elab-only-standalone`. | Drop `--seed`. |
+| `Target '<t>' is unseeded` | The Target cannot apply a seed: it is an Icarus Target with an HDL testbench and no `seed` template in `tests.toml`. | Add a `seed` template that the testbench reads, for example `seed = "+seed={seed}"`, or drop the seed. |
+| `has no Test Variant` / `declares no Test Variants` | The selector names a Variant that `tests.toml` does not declare for that Test. | Use a declared Variant, or declare one under `[<target>.variants.<test>]`. |
+| `selects Test Run '<name>' more than once` | Two selectors resolve to the same Test Run, such as `stress` and its default Variant `stress+short`. | Name each Test Run once. |
+| `asks for more than 1000 Test Runs of Target` | One request may run at most 1000 Test Runs of one Target. | Split the request into several. |
+| `seed count <N> exceeds the limit of 1000` | `test@xN` accepts N from 1 to 1000. | Use a smaller N. |
+| `seed <n> is out of range` / `must not have leading zeros` | A seed is a decimal number from 1 to 2147483647 without a sign or leading zeros. | Write the seed in that form. |
+
+`booley doctor` reports a `tests.toml` that cannot be loaded, or that a Target
+cannot apply, as a `tests.toml` failure that names the Target and the key. The
+rules are in [Tests (`tests.toml`)](https://booley.dev/docs/tests/).
+
+### Simulation stalls at time zero without results
+
+cocotb's VPI/VHPI run loop is compiled against the simulator, so pinning a prior
+cocotb release does not guarantee compatibility with the image's current
+Verilator. The failure can be silent: cocotb 1.5.1 under an older Verilator builds,
+imports, and registers its VPI callbacks, but the timed callbacks never fire,
+simulation time stays at `0.00 ns`, and the run consumes its timeout without
+producing `results.xml`.
+
+No Python-package pin fixes that simulator pairing. Usually the cheapest fix is
+to modernize the testbench for cocotb 1.9+ or 2.x (`cocotb.fork` becomes
+`cocotb.start_soon`, with a few import moves). The more expensive alternative is
+a project image containing a mutually compatible prior Verilator and Python
+stack. The supported selection dialects and current image versions are in
+[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#built-in-flows).
+
+### Verilator reports timing or enum errors
+
+The image ships Verilator 5. Check these diagnostics when a build fails:
+
+- **`%Error-NEEDTIMINGOPT`** — the testbench uses delays or event controls
+  (`#10` or `@(posedge clk)` in an event-driven testbench). Add `--timing` to
+  the Target's `verilator_options`, or `--no-timing` for cycle-driven
+  simulation.
+- **`%Error-ENUMVALUE`** — a value outside an enum's declared members is assigned
+  to or compared with an enum-typed variable, usually through an implicit
+  conversion. Prefer an explicit RTL cast; if the use is intentional, waive it
+  per Target with `-Wno-ENUMVALUE`.
+
+Waiver lists must name the emitted warning code. Verilator 5 uses
+`WIDTHTRUNC` and `WIDTHEXPAND` for width findings; a `-Wno-WIDTH` entry may
+not silence the warning you expect. Read the code
+from the failing `%Error-<CODE>` or `%Warning-<CODE>` line and either fix the RTL
+or add the corresponding `-Wno-<CODE>` to that Target's `verilator_options`.
+
+### Pre-Sim Commands fail with `Syntax error: Bad fd number`
+
+Make defaults to `/bin/sh` (dash), where a recipe using `>&` redirection
+(`make all >& build.log`) dies with `Syntax error: Bad fd number`. If the
+project Makefile assumes bash, pass `SHELL=/bin/bash` on the make command
+line (e.g. in a `[flows.sim].pre_run_commands` entry) or invoke via
+`bash -c`.
+
+### A pytest selftest under `.booley/` crashes at collection
+
+A pytest-based selftest fixture under `.booley/` dies at collection when
+the project's pytest config sets `--import-mode=importlib`:
+
+```
+TypeError: the 'package' argument is required to perform a relative import
+for '.booley.selftest'
+```
+
+importlib mode derives a module name from the path, and the directory's leading
+dot parses as a relative import. **Work around it** by passing
+`--import-mode=prepend` on the pytest command line **for the selftest node
+only**, leaving the project's configured mode untouched for its own test tree.
+Any pytest fixture under a dotted directory hits this.
+
+### RISC-V firmware won't assemble against the sandbox GCC
+
+The RISC-V sandbox image ships a modern GCC (currently 15), and two `-march`
+mismatches show up when building a core's boot software:
+
+- **The base ISA lost its CSR instructions.** GCC 15 split the CSR
+  instructions out of the base ISA, so an older project's default
+  `-march=rv32imc` fails to assemble its own startup code. Add the explicit
+  extension: `-march=rv32imc_zicsr` (e.g. `make ... ARCH=rv32imc_zicsr`).
+- **A vendor ISA string is rejected outright.** A generic multilib GCC rejects
+  vendor `-march` strings like `rv64imafdcxtheadc` (OpenC910); the only fix is
+  baking the vendor's own toolchain into a project sandbox image.
+
+Don't stop at "a RISC-V toolchain exists in the image". **Test the project's
+exact compile flags** against the sandbox compiler on one real file before
+writing config. Run the probe directly in the Sandbox shell:
+
+```bash
+riscv-none-elf-gcc -march=<theirs> ...
+```
+
+Better to plan for it during setup planning (Step 0 of the
+[`booley-setup`](https://booley.dev/docs/setup/#the-booley-setup-skill) skill, whose setup plan
+carries this probe on its execution-time checks list) than to learn it after
+the config is written. For the image
+contents and how to layer EDA tools on top, see
+[SANDBOX.md → RISC-V toolchain image](https://booley.dev/docs/sandbox/#risc-v-toolchain-image-booley-sandbox-riscv).
+
+### `bwave gui` fails on a scoped view
+
+A scoped view (`--signals` / `--group` / `--time` / `--cursor` / `--append`)
+drives a *running* VaporView over its WCP (Waveform Control Protocol) control
+server — the channel `bwave` uses to drive an already-open viewer — which the
+generated devcontainer spec enables and pins to port 54322 (override:
+`BOOLEY_WCP_PORT`).
+If nothing is listening there, the scoped view fails with a setup hint,
+deliberately, rather than silently opening the whole trace and letting you read
+the wrong picture. A bare `bwave gui` needs no WCP server: it falls back to
+launching the editor CLI on the file.
+
+Booley first checks whether VaporView is installed in the attached remote
+window. If it is missing, install it there with
+`code --install-extension lramseyer.vaporview`. If the Sandbox cannot
+reach the Marketplace, obtain the official VaporView VSIX on a networked host,
+from the matching version on the
+[official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
+(`vaporview-1.5.4.vsix` for Booley's currently verified VaporView 1.5.4), then
+use **Extensions: Install from VSIX...** in the attached remote window.
+After installation, the Sandbox's background watcher patches the
+extension automatically; then use **Developer: Reload Window**. Verify with
+`code --list-extensions --show-versions` in the remote terminal; it must list
+`lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
+`code` command may install locally instead of into the attached container.
+
+The same repair applies when `--group` or a radix/color suffix reports missing
+`set_signal_layout`, `get_signal_layout`, or `get_viewer_state` capabilities.
+Stock VaporView 1.5.4 does not expose its recursive presentation state over WCP;
+Booley's compatibility patch adds the layout write/readback pair to create and
+verify groups, radixes, and colors. That adapter is restricted to the exact
+official 1.5.4 bundle fingerprint; a different or partially modified bundle is
+left untouched and reported as unsupported rather than rewritten heuristically.
+
+When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
+not a rebuild. VaporView only
+wakes up for a waveform tab, so Booley patches its manifest to start on every
+window instead — but that patch runs from `postAttachCommand`, which VS Code
+runs *after* it has already started the extension host. On the first window of a
+fresh container the patch therefore lands one beat too late and takes effect on
+the next extension-host start. When Marketplace installation is delayed, the
+attach hook leaves one background watcher until VaporView arrives. It patches
+VS Code's hidden staging copy before the completed install is published, so the
+next extension-host activation cannot race an unpatched manifest. A rebuild
+puts you back in exactly that first window; one reload does not. Watcher
+diagnostics are written to `~/.booley/vaporview-install-watch.log` if automatic
+repair cannot complete. `booley doctor` probes the port and says so
+("VaporView WCP server reachable ..."), so you find out before `bwave gui` does.
+
+Do **not** use `WCP: Start Server` while Booley's auto-start setting is enabled.
+VaporView 1.5.4 starts WCP during command-triggered activation but loses that
+server reference, so the command tries the same port again and falsely reports
+`EADDRINUSE` even though the first start succeeded. Booley disables that command
+in auto-start mode after the manifest patch takes effect; Reload Window is the
+reliable first-window recovery.
+
+A view that opens but is missing signals is a different thing: signals the viewer
+has no netlist entry for are dropped and named in a WARNING on stderr; the trace
+itself is fine and still queryable.
+
+## Lint, synthesis, and FPGA
+
+### Lint or ASIC synth fails with an interface parameter mismatch
+
+If the module you point `lint` or `synth` at carries **SystemVerilog
+interface ports** (`my_axis_if.snk s_axis`), especially if it reads their
+parameters hierarchically (`localparam W = s_axis.DATA_W`), it **cannot be
+elaborated standalone**. With no interface bound, its ports take the interface's
+*default* parameters and the design's own elaboration checks fire
+(`Error: Interface DATA_W parameter mismatch`). That reads like a bug in the IP,
+but isn't: both flows elaborate the toplevel on its own, and upstream IP rarely
+ships a standalone-elaboratable top because in-tree it's only ever instantiated
+inside a board design or testbench that supplies the interfaces.
+
+Fix: add a thin **flat-port wrapper**, a module that declares the interface
+instances with real parameters, instantiates the DUT, and exposes plain signals
+on its own ports, then point `lint` and `synth` at the wrapper. `sim` is
+unaffected: a cocotb testbench brings its own wrapper, since its BFMs must bind
+to interface *instances* anyway. `booley doctor` flags this at setup time. Cost:
+one small file.
+
+### RTL simulates cleanly but `synth` rejects it under `slang`
+
+The `slang` frontend is stricter than Verilator, so RTL that simulates fine can
+still fail at synthesis, and the error often names the wrong culprit. The known
+case: `$size()` on an array of interface instances
+(`my_axis_if #(...) stat_if[2]();` used as `.S_COUNT($size(stat_if))`) fails
+with `error: 'stat_if' cannot be used in an expression`, naming the array rather
+than the `$size` call. **Workaround:** hoist the count into a named constant
+(`localparam STAT_CNT = 2;`) and use it at both the declaration and the
+instantiation. This is not a Booley bug and not a dead end; the fix is usually a
+two-line RTL change. The running list of `slang` limitations (and where to add a
+new one) is in
+[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
+If you don't need `slang`, stay on the default `sv2v` frontend.
+
+### Yosys rejects transpiled Verilog after `sv2v` succeeds
+
+`sv2v` is a source-to-source transpiler, so some failures appear only when Yosys
+parses the transpiled Verilog; the error can point at a line you never wrote. A
+known case is an array of internal interface instances, such as
+`router_if r_if[N]();` inside `gen_x[…].u_router`. It can produce port-width
+expressions containing hierarchical function calls such as
+`top.gen_noc_x_lines[0].u_router.my_pkg_MinBitWidth(2)`, which Yosys's Verilog
+parser rejects even though `sv2v` exited successfully.
+
+Switch the synthesis Target to `frontend = "slang"`, which reads the interfaces
+natively. This is an upstream `sv2v` limitation rather than something the flow
+can repair. Frontend selection and requirements are in
+[SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
+
+### Yosys or Verilator fails with `Define not defined`
+
+A header that defines project-wide macros (e.g. `` `PA_WIDTH ``) relies on being
+compiled **first, in the same compilation unit**; `` `define `` does not persist
+across separate `read_verilog` calls or separate Verilator units. Feeding files
+one-per-`read_verilog` (Yosys) or as separate units breaks with `Define not
+defined`. Compile the whole filelist (headers first) as **one** unit — in a
+`.core`, list the `` `define `` headers first in the fileset.
+
+### Host-provisioned Vivado will not start
+
+Run `booley doctor` on the host, then rerun it with `--deep` inside the Sandbox. Confirm that the Project has an exact Grant, the opaque Vivado
+installation registration still points to a supported Linux x86-64 Vivado 2025.2
+release, and the generated Sandbox specification has not drifted. Reseed the
+Sandbox only after the host authority has been corrected.
+
+Do not attempt to expose a host daemon, a Docker socket, a direct license-server
+address, or a license environment variable to repair this. Those paths are not
+part of the product and a failed registration/licensing check deliberately fails
+closed. Use `booley eda installation list`, `booley eda license list`, and
+`booley projects` to inspect administrator-owned records and see each Project's
+Grants together.
+
+If a granted Project Root was deleted, do not recreate it just to revoke
+authority. Run `booley projects`, copy the missing root's exact absolute path,
+then run:
+
+```bash
+booley eda grant revoke --kind vivado /exact/deleted/project
+```
+
+After every Grant for that root is gone, remove the obsolete inventory entry
+with `booley projects forget /exact/deleted/project`.
+
+## Coverage
+
+### Coverage Campaign diagnostics and retention
 
 Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
 `coverage: true`. The numbered Target's `coverage.json` is a
@@ -874,7 +749,7 @@ interrupted native result database. Non-Campaign and elaboration-only invocation
 `.pruned-N` directories reserve historical invocation numbers and should be
 retained.
 
-### A Simulation Campaign will not resume
+#### A Simulation Campaign will not resume
 
 Always pass the exact printed `campaign/manifest.json` path. Do not pass a
 Target name, `simulation.json`, `summary.json`, `coverage.json`, an invocation
@@ -932,7 +807,7 @@ invocation report, not a stable Campaign pointer. A later failed run can
 replace its `detail` with an empty object. Select evidence through the numbered
 `<reports>/sim/<N>/...` paths instead.
 
-### Coverage Analyst input and model availability
+#### Coverage Analyst input and model availability
 
 Call the `coverage_analyst` Specialist from your Developer Agent session with
 `campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
@@ -970,7 +845,7 @@ then retry. Analysis fails closed instead of starting a Specialist with executio
 capabilities. Claude analysis also disables built-in tools; both backends expose only
 the Campaign-bound evidence tool.
 
-### Coverage collection and evaluation failures
+#### Coverage collection and evaluation failures
 
 - Preflight errors: select only Verilator Simulation Targets, use simulation
   mode, and place reset/hook controls in `flow_options.booley.coverage`.
@@ -997,13 +872,13 @@ the Campaign-bound evidence tool.
   `coverage_waivers.json` is expected; use a canonical Campaign and the configured
   human-approved waiver directory.
 
-### Waiver Candidates at review
+#### Waiver Candidates at review
 
 - Coverage remains unmet after Analyst screening: candidates are proposals,
   not approvals. Ask the Developer Agent to use `goal_propose_change(kind="waiver")` and
   inspect the exact candidate before deciding.
 - `[coverage.waivers] is not configured`: select the
-  [approval directory](https://booley.dev/docs/config/#approved-coverage-waivers) before approval.
+  [approval directory](https://booley.dev/docs/coverage/#approved-coverage-waivers) before approval.
   Configuration is protected during Goal Mode; arrange it before entry.
 - A proposal remains pending: a cancelled or invalid form makes no decision.
   Resume its exact proposal ID; if chat fallback is needed, give an explicit
@@ -1012,18 +887,3 @@ the Campaign-bound evidence tool.
   the current source and Campaign. Do not copy candidate bytes into approval files.
 - Approval succeeded but the Goal is unmet: rerun coverage for fresh strict
   evidence, then inspect `goal_status`. Approval alone cannot satisfy it.
-
-## Recover sources hidden by an interrupted older run
-
-Doctor WARNs with `workspace.legacy-source-stash` when a stash record names this
-worktree. It only reads the record. Recover manually inside the original
-Sandbox, before rebuilding it or clearing its temp directory:
-
-1. Back up the worktree, including untracked files.
-2. Open the reported `booley_isolation_*.manifest.json` or
-   `booley_hide_files_*.manifest.json`, including `.retired` records. Each
-   `moved` pair lists the original path, then the stashed path under
-   `stash_dir`.
-3. If the stash directory has mode `000`, run `chmod u+rwx <stash-dir>`. Copy
-   back only missing sources; never overwrite a present one.
-4. Delete the stash and its record once the sources are confirmed.

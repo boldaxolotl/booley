@@ -59,7 +59,7 @@ def test_rtl_cpp_refusal_lists_interactive_supported_kinds():
     with pytest.raises(ReviewContractError) as caught:
         resolve_review_scope(["rtl/source.cpp"], category="rtl")
     assert ".svh" in str(caught.value)
-    assert "USAGE" in str(caught.value)
+    assert "CLI-REFERENCE" in str(caught.value)
 
 
 def test_goal_arbitrary_support_is_not_cpp():

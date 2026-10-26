@@ -218,7 +218,7 @@ Depends on: baseline.retention.
 ### 7. cov-goal — TB gap closure and separate waiver decisions (~65 min)
 Intent: only fresh strict coverage evidence meets a Goal; an approval cannot replace collection.
 Depends on: area 1's working collection; read
-`docs/user/FLOW_REFERENCE.md#coverage-waivers-at-review` before proposals.
+`docs/user/COVERAGE.md#coverage-waivers-at-review` before proposals.
 Try:
 - Before entry, install `../../shared/coverage/goals/tests.toml` (`sim_generated`
   = `[gap]` only), copy `../../shared/coverage/goals/close-test-gap.md` to

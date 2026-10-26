@@ -61,7 +61,7 @@ conditions. Project-owned Goalsets become concrete Goals at entry; one linked
 worktree and Goal Branch hold the work. Only Booley Flow and Specialist evidence
 meets Goals. Human-approved changes are recorded in the Change Log, and Finish
 returns a Review Package and Session Summary. The same session supports guided
-or unattended work. See [Goal Mode](USAGE.md#goal-mode).
+or unattended work. See [Goal Mode](GOAL-MODE.md#goal-mode).
 
 ## Structured Booley Flow Contracts
 
@@ -110,7 +110,7 @@ booley flow sim --target sim --test test_edge_cases+soak@42   # one Test Variant
 booley flow sim --target sim --test test_edge_cases@x20       # 20 drawn seeds
 ```
 
-There is no option for free-form simulator arguments, so a pass always belongs to a declared configuration, and a failure prints the command that reruns it with the same seed. A simulation Goal can require a Test Run, or N seeds of one (`test+variant@xN`): Booley draws the seeds once at entry and the Goal is met when all of them have passed. Cycle Count and coverage Goals name Test Runs the same way and are decided by their thresholds and floors. See [Test Runs, Test Variants and seeds](FLOW_REFERENCE.md#test-runs-test-variants-and-seeds).
+There is no option for free-form simulator arguments, so a pass always belongs to a declared configuration, and a failure prints the command that reruns it with the same seed. A simulation Goal can require a Test Run, or N seeds of one (`test+variant@xN`): Booley draws the seeds once at entry and the Goal is met when all of them have passed. Cycle Count and coverage Goals name Test Runs the same way and are decided by their thresholds and floors. See [Test Runs, Test Variants and seeds](FLOW-SIM.md#test-runs-test-variants-and-seeds).
 
 The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `SIM:{target}` keeps its meaning.
 
@@ -120,7 +120,7 @@ Every Goal is mandatory. Booley decides whether it is met from valid Flow or
 Specialist evidence at the current code, and stale evidence requires another
 run. Thresholds can enforce area, timing, cycle count, coverage, and mutation
 budgets. The Developer Agent can propose a change; only the human can approve it.
-See [Working with evidence](USAGE.md#working-with-evidence).
+See [Working with evidence](GOAL-MODE.md#working-with-evidence).
 
 ## Docker Sandboxing
 
@@ -136,14 +136,14 @@ Long single-context Developer Agent sessions degrade: the model loses the thread
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. A Cocotb Target always traces through a VCD file that Booley converts to FST after the run; see [Tracing a Cocotb Target](CONFIG.md#tracing-a-cocotb-target). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. A Cocotb Target always traces through a VCD file that Booley converts to FST after the run; see [Tracing a Cocotb Target](TARGETS.md#tracing-a-cocotb-target). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
 
 ## Goal recovery
 
 After interruption or context compaction, `goal_status(rules=true)` recovers the
 record and working rules in the same worktree. Saved proposal and Finish IDs
 make retries recoverable. Quiet presence does not end a Goal; abandonment
-requires explicit human instruction. See [Recovery](USAGE.md#recovery-unattended-work-and-parallel-sessions).
+requires explicit human instruction. See [Recovery](GOAL-MODE.md#recovery-unattended-work-and-parallel-sessions).
 
 ## Multi-Category Code Review
 
@@ -154,7 +154,7 @@ Code review is split into focus categories with severity-stratified issue tracki
 - Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes; advisory findings remain visible at Finish.
 - Testbench code gets its own separate review.
 
-The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for reviews requiring a clean verdict. See [USAGE.md: reviewer](USAGE.md#reviewer) for the supported review kinds.
+The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for reviews requiring a clean verdict. See [CLI-REFERENCE.md: reviewer](CLI-REFERENCE.md#reviewer) for the supported review kinds.
 
 ## Mutation Testing
 
@@ -165,14 +165,14 @@ Booley includes a mutation testing framework to validate test quality, which mat
 The biggest issue with lint EDA tools is signal-to-noise ratio: dangerous warnings get buried under tons of false positives, and engineers respond by ignoring lint altogether. Working through every message is exactly the tedium automation can afford and a human can't; delegating lint-output triage is what makes lint useful in practice. The `lint` Booley Flow runs the linter selected by each lint Target, normalizes its findings, and deduplicates them across Targets so the same issue isn't reported many times. Built-in support currently covers Verilator for structural and semantic checks and Verible for style and naming rules; the same lint contract is designed to accommodate other EDA tools, including licensed programs such as SpyGlass, in the future. Waivers remain native to the selected linter (`.vlt` waiver lines for Verilator, rule configuration and waiver files for Verible). During autonomous development, the Developer decides, per finding, whether to fix the RTL, add a justified waiver, or leave it for human attention. The result is a clean lint report instead of noise. See the [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md#built-in-flows) for the current engines.
 
 To attach waivers to a lint Target, see the
-[Verilator](CONFIG.md#verilator-lint-target) and
-[Verible](CONFIG.md#verible-lint-target) recipes.
+[Verilator](TARGETS.md#verilator-lint-target) and
+[Verible](TARGETS.md#verible-lint-target) recipes.
 
 ## LLM Backend Selection
 
 Booley works with either Developer Agent client: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). Pick one per project via `booley.toml [agent] provider`; the Developer Agent and every Specialist then run on that single provider. Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
 
-Both backends support **subscription-based auth** alongside API billing: a Claude Pro/Max subscription (Claude Code) or a ChatGPT/Codex subscription (Codex CLI). That means you can run Booley on an existing subscription instead of paying per-token API costs, which matters for a token-hungry workflow like RTL development. See the Auth & billing note in [USAGE.md](USAGE.md) for details.
+Both backends support **subscription-based auth** alongside API billing: a Claude Pro/Max subscription (Claude Code) or a ChatGPT/Codex subscription (Codex CLI). That means you can run Booley on an existing subscription instead of paying per-token API costs, which matters for a token-hungry workflow like RTL development. See the Auth & billing note in [USAGE.md](USAGE.md#auth--billing) for details.
 
 ## Expert-Written RTL Guides
 
@@ -237,7 +237,7 @@ set `ignore_native_cores = true` to resolve only through the stealth-authored
 cores. Disable the feature with
 `[stealth] enabled = false`. Everything stays on your machine.
 
-### Native coverage collection and analysis
+## Native coverage collection and analysis
 
 The Coverage Analyst explains one retained native Coverage Campaign, keeping
 observed counts and stored verdicts separate from causal hypotheses. It can
@@ -252,5 +252,5 @@ Campaign analyzable. Explicit `sim --coverage` (alias `--cov`) collects native
 Verilator evidence with or without a Coverage Criterion. Gated collection applies
 exact-suite metric thresholds and the project-wide Approved Waiver Set; simulation
 and coverage verdicts stay independent. See the [collection and retention
-reference](FLOW_REFERENCE.md#coverage) and [waivers at
-review](FLOW_REFERENCE.md#coverage-waivers-at-review).
+reference](COVERAGE.md) and [waivers at
+review](COVERAGE.md#coverage-waivers-at-review).

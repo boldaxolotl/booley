@@ -205,7 +205,7 @@ BOOLEY_TOML_SKELETON = f"""\
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...). Reference:
-# {docs_url("CONFIG.md", "pre-sim-commands-flowssimpre_run_commands")}
+# {docs_url("FLOW-SIM.md", "pre-sim-commands-flowssimpre_run_commands")}
 #
 # [flows.sim]
 # pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]

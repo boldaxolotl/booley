@@ -4,7 +4,7 @@ document: Evaluation designs
 ---
 
 <!-- Title block: same strip as the application note, labelled as an evaluation-kit document -->
-<div class="strip"><span><b>EVAL</b>Evaluation designs</span><span>Booley product family &middot; booley-rtl</span></div>
+<div class="strip"><span><a class="strip__home" href="./"><b>EVAL</b>Evaluation designs</a></span><span>Booley product family &middot; booley-rtl</span></div>
 <h1>Evaluation designs</h1>
 <p class="lede">Open-source designs already set up for Booley. Clone one, open it in VS Code, and give the agent a task. They are examples, not the only designs Booley supports: you can set up any RTL project the same way.</p>
 

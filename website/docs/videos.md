@@ -3,7 +3,7 @@ title: Videos
 document: Video walkthroughs
 ---
 
-<div class="strip"><span><b>VIDEO</b>Video walkthroughs</span><span>Booley product family &middot; booley-rtl</span></div>
+<div class="strip"><span><a class="strip__home" href="./"><b>VIDEO</b>Video walkthroughs</a></span><span>Booley product family &middot; booley-rtl</span></div>
 <h1>Video walkthroughs</h1>
 <p class="lede">An engineer drives Booley on a demo project, start to finish. I recorded both videos, then replaced my narration with text-to-speech to stay anonymous for now.</p>
 

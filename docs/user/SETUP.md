@@ -29,9 +29,12 @@ Two paths, sharing everything up to that handoff:
   toolchain; see [Ports](#ports).
 
 Both paths begin with a host-side bootstrap, then use their own skill mode. For
-what each configuration field *means* (`booley.toml`, `.core`, `tests.toml`,
-sentinels—the log-pattern strings that decide a simulation's pass/fail
-verdict—and `enabled`/EDA provisioning), see [CONFIG.md](CONFIG.md).
+what each configuration field *means*, see [CONFIG.md](CONFIG.md) for
+`booley.toml` and `enabled`, [TARGETS.md](TARGETS.md) for `.core` and
+`tests.toml`, [FLOW-SIM.md](FLOW-SIM.md#simulation--passfail-sentinels-flowssim)
+for sentinels (the log-pattern strings that decide a simulation's pass/fail
+verdict), and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
+provisioning.
 
 > This guide is written for a person setting up a project. A Claude Code or Codex session can follow
 > it too: point it at this file. After the bootstrap it hands off to the
@@ -238,7 +241,7 @@ What lands, wired together and ready to run:
   `synth` (plus SDC in physical mode), `fpga` + XDC)
 - `.booley/booley.toml` and `tests.toml`, populated rather than
   skeletons. The scaffolded config also turns
-  [stealth mode](CONFIG.md#stealth-mode-stealth) off, since this repo exists to
+  [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
   exercise Booley and commit messages should stay verbatim (set
   `[stealth] enabled = true` to opt in)
 
@@ -305,8 +308,8 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[USAGE.md](USAGE.md) to enter your first Goal Mode with `/booley-goal`, or start an Interactive
-Mode session.
+[GOAL-MODE.md](GOAL-MODE.md) to enter your first Goal Mode with `/booley-goal`, or start an
+[Interactive Mode](USAGE.md#interactive-mode) session.
 
 ### A new IP: greenfield mode
 
@@ -325,7 +328,7 @@ Booley Flows, it skips config authoring and runs:
   warning, then `booley doctor --deep`, fix, and re-run until both exit 0 with
   zero active warnings; the skill does **not** declare the project ready before
   that. A deliberate project constraint can be recorded in a reviewed
-  [`doctor-waivers.toml`](CONFIG.md#doctor-waivers-doctor-waiverstoml) entry;
+  [`doctor-waivers.toml`](DOCTOR.md#doctor-waivers-doctor-waiverstoml) entry;
   warnings are never merely ignored. For a scaffolded project the
   sim, lint, and synthesis smoke checks should pass before you've written a
   line. Logical synthesis qualifies with completed mapped-area evidence; physical
@@ -348,8 +351,8 @@ to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the doctor gate
 whenever the shape of the project changes (new Target, new flow, new
 constraints). From there, drive development the normal way: see
-[USAGE.md](USAGE.md) to enter your first Goal Mode with `/booley-goal`, or start an Interactive
-Mode session.
+[GOAL-MODE.md](GOAL-MODE.md) to enter your first Goal Mode with `/booley-goal`, or start an
+[Interactive Mode](USAGE.md#interactive-mode) session.
 
 ## Notes
 
@@ -367,12 +370,12 @@ protected terms; it does **not** force a
 `type(scope): summary` subject, so human and upstream-style commits on code you
 don't own land as-is. A team that wants that convention across its own history
 turns it on with `[stealth] enforce_convention = true` (see
-[CONFIG.md](CONFIG.md#enforcing-the-subject-convention-enforce_convention)).
+[STEALTH.md](STEALTH.md#enforcing-the-subject-convention-enforce_convention)).
 Once enabled, `BOOLEY_SKIP_COMMIT_VALIDATION=1` lands one non-conforming commit
 anyway: it skips validation but not attribution rejection or sanitization
 (unlike `git commit --no-verify`, which disables the hook entirely and lets
 project details leak into history). Stealth mode itself is covered in
-[CONFIG.md](CONFIG.md#stealth-mode-stealth).
+[STEALTH.md](STEALTH.md#stealth-mode).
 
 With Stealth enabled, init stores the RTL repository's line-ending default in
 Git's common `info/attributes`, shared by linked worktrees and local to this
@@ -387,8 +390,11 @@ including relocated data.
 
 - [README installation](../../README.md#installation): host prerequisites and CLI installation.
 - [CONFIG.md](CONFIG.md): configuration field reference and advanced setups
-  (custom image/EDA tools and post-setup hook).
+  (custom MCP tools and worktree setup hooks).
+- [SANDBOX.md](SANDBOX.md): custom Sandbox image and commercial EDA tools.
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at
   which boundary. The reference the skill's plan step checks against.
-- [USAGE.md](USAGE.md): CLI reference and Goal Mode.
+- [USAGE.md](USAGE.md): day-to-day use and Interactive Mode.
+- [CLI-REFERENCE.md](CLI-REFERENCE.md): CLI reference.
+- [GOAL-MODE.md](GOAL-MODE.md): Goal Mode.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): symptoms and their fixes when something misbehaves.

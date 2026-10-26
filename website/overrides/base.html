@@ -55,7 +55,7 @@
     <script src="{{ 'pagefind/pagefind-ui.js' | url }}" defer></script>
     {% block extrahead %}{% endblock %}
   </head>
-  <body>
+  <body{% if page and page.meta and page.meta.doc_section %} class="docs-page"{% endif %}>
     <a class="skip" href="#content">Skip to content</a>
 
     {% block header %}
