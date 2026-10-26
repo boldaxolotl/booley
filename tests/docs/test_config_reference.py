@@ -4,24 +4,12 @@ import re
 from pathlib import Path
 
 import pytest
+from tests.config_docs_support import CONFIG_PAGES
 
 from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
 
 USER_DOCS = Path(__file__).resolve().parents[2] / "docs/user"
 CONFIG_REFERENCE = USER_DOCS / "CONFIG.md"
-# CONFIG.md is the hub; these pages document the booley.toml tables it links to.
-CONFIG_PAGES = (
-    "CONFIG.md",
-    "TARGETS.md",
-    "TESTS.md",
-    "SANDBOX.md",
-    "STEALTH.md",
-    "FLOW-SIM.md",
-    "COVERAGE.md",
-    "FLOW-LINT.md",
-    "FLOW-SYNTH.md",
-    "FLOW-FPGA.md",
-)
 
 
 def _config_pages_text() -> str:

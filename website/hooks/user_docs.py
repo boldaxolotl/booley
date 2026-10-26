@@ -168,7 +168,7 @@ def on_page_markdown(markdown, page, config, files):
     page.meta["doc_section"] = True  # base.html marks the header's Docs link current
     name = src_uri.removeprefix("docs/")
     if name not in {doc.file for doc in docs_links.USER_DOCS}:
-        return rewrite_links(markdown, None)  # the landing page: public URLs only
+        return rewrite_links(markdown, None)  # the landing page: no repository-relative links
     page.meta["doc_source"] = f"{GITHUB_BLOB}docs/user/{name}"
     return rewrite_links(markdown, PurePosixPath("docs/user"))
 

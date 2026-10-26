@@ -66,6 +66,17 @@ def test_user_docs_table_matches_docs_user() -> None:
     assert len(set(slugs)) == len(slugs)
 
 
+def test_each_sidebar_section_is_contiguous() -> None:
+    """The sidebar starts a new group whenever the section changes."""
+    sections = [doc.section for doc in USER_DOCS]
+    starts = [
+        section
+        for index, section in enumerate(sections)
+        if index == 0 or section != sections[index - 1]
+    ]
+    assert len(starts) == len(set(starts)), starts
+
+
 def test_child_docs_follow_their_parent_in_the_same_section() -> None:
     """The sidebar indents a child doc under its parent, so it follows the parent or a sibling."""
     for previous, doc in pairwise(USER_DOCS):

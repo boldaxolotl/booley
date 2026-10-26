@@ -1,4 +1,4 @@
-# Booley Flow reference
+# Running Flows
 
 Booley ships four built-in Flows. Each has its own page:
 

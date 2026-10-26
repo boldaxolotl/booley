@@ -53,28 +53,34 @@ def _reference_text(doc: Path = REFERENCE) -> str:
     return doc.read_text(encoding="utf-8")
 
 
-def _flow_section(flow_name: str, doc: Path | None = None) -> str:
-    """Return a Flow's user-doc pages, or the ``## `<flow>` `` chapter of *doc*."""
-    if doc is None:
-        return "\n".join(_reference_text(USER_DOCS / page) for page in FLOW_PAGES[flow_name])
-    text = _reference_text(doc)
+def _flow_section(flow_name: str) -> str:
+    """Return the text of a Flow's user-doc pages."""
+    return "\n".join(_reference_text(USER_DOCS / page) for page in FLOW_PAGES[flow_name])
+
+
+def _shared_section() -> str:
+    """Return the shared Flow page."""
+    return _reference_text()
+
+
+def _report_flow_chapter(flow_name: str) -> str:
+    """Return the ``## `<flow>` `` chapter of FLOW_REPORTS.md."""
+    text = _reference_text(REPORTS)
     start = text.index(f"## `{flow_name}`")
     end = text.find("\n## ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
 
-def _shared_section(doc: Path | None = None) -> str:
-    """Return the shared Flow page, or everything in *doc* before its first Flow chapter."""
-    if doc is None:
-        return _reference_text()
-    return _reference_text(doc).split("\n## `sim`", maxsplit=1)[0]
+def _report_shared_chapter() -> str:
+    """Return everything in FLOW_REPORTS.md before its first Flow chapter."""
+    return _reference_text(REPORTS).split("\n## `sim`", maxsplit=1)[0]
 
 
 def _documented_fields(flow_name: str) -> set[str]:
     """Identifiers named in code spans of the report-schema chapter for a Flow."""
     code_spans = re.findall(
         r"(?<!`)`([^`\n]+)`(?!`)",
-        _shared_section(REPORTS) + _flow_section(flow_name, REPORTS),
+        _report_shared_chapter() + _report_flow_chapter(flow_name),
     )
     return {
         identifier
@@ -264,7 +270,7 @@ def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
 def test_lint_warning_row_fields_stay_documented() -> None:
     warning_row = next(
         line
-        for line in _flow_section("lint", REPORTS).splitlines()
+        for line in _report_flow_chapter("lint").splitlines()
         if line.startswith("| `warnings[]` |")
     )
     assert "`targets`" in warning_row

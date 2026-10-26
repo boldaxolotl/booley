@@ -25,22 +25,10 @@ import re
 from pathlib import Path
 
 from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
+from tests.config_docs_support import CONFIG_PAGES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_DOCS = REPO_ROOT / "docs" / "user"
-# CONFIG.md is the hub; these pages document the booley.toml tables it links to.
-CONFIG_PAGES = (
-    "CONFIG.md",
-    "TARGETS.md",
-    "TESTS.md",
-    "SANDBOX.md",
-    "STEALTH.md",
-    "FLOW-SIM.md",
-    "COVERAGE.md",
-    "FLOW-LINT.md",
-    "FLOW-SYNTH.md",
-    "FLOW-FPGA.md",
-)
 SRC_ROOT = REPO_ROOT / "src" / "booley"
 
 # Documented knobs with no code reader, each with a reviewed justification.

@@ -1,8 +1,7 @@
 # Windows first-run problems
 
 The CLI runs **natively on Windows** (repo on `C:\...`, Windows Python), not
-from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Six
-first-run traps:
+from inside WSL. Docker Desktop's WSL2 backend only hosts the containers.
 
 This supported layout prioritizes normal Windows editor and Git access. The
 checkout is bind-mounted into the Linux Sandbox, so metadata-heavy EDA
@@ -12,11 +11,13 @@ timings rather than attributed to the bind mount from total elapsed time alone.
 A checkout hosted inside a user WSL distribution is an optional performance
 experiment, not a setup requirement.
 
+Eight first-run traps:
+
 - **Git is older than 2.37.2.** Upgrade Git for Windows from
   [git-scm.com](https://git-scm.com/downloads/win), open a new terminal, and
   rerun `booley init`. Older releases can exhaust their small pool of temporary
-  names when Booley stages a large checkout for line-ending repair; bootstrap
-  now stops early with the installed and required versions instead.
+  names when Booley stages a large checkout for line-ending repair, so bootstrap
+  stops early and names the installed and required versions.
 - **`python`/`py` open the Microsoft Store instead of running.** A fresh
   Windows has no real interpreter, only Store aliases. Install one first:
   `winget install Python.Python.3.13`.

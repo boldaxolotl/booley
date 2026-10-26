@@ -2,7 +2,7 @@
 
 Keeps your AI-assisted workflow out of the git history (see
 [FEATURES.md: Stealth Mode](FEATURES.md#stealth-mode)).
-This table belongs only to an initialized Project. Booley's own Source Checkout
+The `[stealth]` table in `booley.toml` belongs only to an initialized Project. Booley's own Source Checkout
 is never a Project, does not read this policy, and must not own
 `.booley/` or Project Git hooks.
 
