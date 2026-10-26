@@ -203,6 +203,55 @@ def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
     assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
 
 
+def test_lease_tick_after_terminal_reap_starts_no_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After the reap, a renewal tick marks the reaped lease lost. The await loop must
+    # not then cancel the already-terminal child (no stray cancel file).
+    from booley.runtime.execution_records import execution_paths
+
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    child_done = threading.Event()
+    confirmed: list = []
+    cancelled: list[ExecutionId] = []
+    publish_terminal = campaign.registry.mark_terminal
+
+    def mark_terminal_then_reap_and_tick(prepared, terminal_cause: str) -> None:
+        publish_terminal(prepared, terminal_cause)
+        assert len(campaign.slots.reap(CLASS_HEAVY)) == 1
+        (permit,) = confirmed
+        assert not campaign.slots.renew(permit.token)  # the tick sees the lease gone
+        campaign.capacity.recover_lost_children()
+
+    def execute(_attempt, child_id) -> None:
+        if child_id is None:
+            assert child_done.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        child_done.set()
+
+    monkeypatch.setattr(campaign.registry, "mark_terminal", mark_terminal_then_reap_and_tick)
+    monkeypatch.setattr(campaign.registry, "cancel", cancelled.append)
+    scheduler = campaign.scheduler(execute, timeout_seconds=30.0)
+    confirm = campaign.capacity.confirm_child_lease
+
+    def recording_confirm(permit) -> bool:
+        confirmed.append(permit)
+        return confirm(permit)
+
+    monkeypatch.setattr(campaign.capacity, "confirm_child_lease", recording_confirm)
+    try:
+        scheduler.run(campaign.items)
+    finally:
+        campaign.slots.release(campaign.outer)
+    (permit,) = confirmed
+    assert cancelled == []
+    child_paths = execution_paths(
+        permit.child_execution_id, booley_dir=campaign.registry.project_data
+    )
+    assert not child_paths.cancel.exists()
+    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+
+
 def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: Path) -> None:
     campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
     cancelled = threading.Event()

@@ -1095,7 +1095,8 @@ def test_full_pruning_reclaims_unretired_v030_child_token(
     registry = ChildExecutionRegistry.from_project_data(store, manifest, project_data)
     work_item_id = str(manifest.document["work_items"][0]["work_item_id"])
     attempt_id = "550e8400-e29b-41d4-a716-446655440099"
-    child = ExecutionId("c" * 32)
+    # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+    child = ExecutionId(uuid.uuid4().hex)
     legacy = publish_v030_child(
         registry,
         execution_id=child,
@@ -1193,7 +1194,8 @@ def test_full_pruning_recovers_interrupted_lane_before_run_directory_cleanup(
     from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 
     reports, project_data, store = _retained_invocation(tmp_path)
-    lane = ExecutionId("d" * 32)
+    # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+    lane = ExecutionId(uuid.uuid4().hex)
     run_path, document = _interrupt_latest_attempt(tmp_path, reports, store, str(lane))
     registry = ChildExecutionRegistry.from_project_data(store, store.load_manifest(), project_data)
     registry.prepare(

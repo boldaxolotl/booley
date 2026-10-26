@@ -211,7 +211,8 @@ def test_recovers_execution_after_supervisor_is_killed(
 def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> None:
     """A parallel Campaign lane has a context sidecar and no Project child entry."""
     booley_dir = tmp_path / ".booley"
-    execution_id = ExecutionId("e" * 32)
+    # Unique: recovery signals every host process carrying this ID (xdist workers too).
+    execution_id = ExecutionId(uuid.uuid4().hex)
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     atomic_write_json(
         paths.context,

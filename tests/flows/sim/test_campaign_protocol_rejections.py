@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -131,10 +132,13 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
         "parent_execution_id": ExecutionId("a" * 32),
     }
 
+    # Unique: recovery signals every host process carrying this ID (xdist workers too).
+    execution_id = ExecutionId(uuid.uuid4().hex)
+
     def cycle() -> None:
         # Publish, verify the identical records (second prepare), then recover a 0.3.0 entry.
-        publish_v030_child(registry, execution_id=ExecutionId("e" * 32), **fields)
-        registry.prepare(ExecutionId("e" * 32), **fields)
+        publish_v030_child(registry, execution_id=execution_id, **fields)
+        registry.prepare(execution_id, **fields)
         registry.recover_unretired(None)
 
     if layout != "entry":
@@ -142,7 +146,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
             cycle()
         return
     cycle()
-    retired = f"{'e' * 32}.json"
+    retired = f"{execution_id}.json"
     assert (external / ".runtime/campaign-child-executions/retired" / retired).is_file()
     assert (store.root / "child-executions/retired" / retired).is_file()
 
@@ -377,7 +381,8 @@ def _lane_registry(tmp_path: Path):
 
 def test_recover_lane_finishes_a_waiting_lane(tmp_path: Path) -> None:
     registry, prepare = _lane_registry(tmp_path)
-    lane = prepare("e" * 32)
+    # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+    lane = prepare(uuid.uuid4().hex)
     assert not registry.is_terminal(lane.execution_id)
 
     registry.recover_lane(lane.execution_id)
