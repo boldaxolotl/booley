@@ -6,13 +6,13 @@
    scoped under .docs or .search. Reference mode: scannable, not literary.
    ------------------------------------------------------------------ */
 
-/* Docs pages get a wider page than the datasheet (1120px): with both side
-   columns the prose would otherwise be under 600px, too tight for the
-   reference tables and code blocks. base.html sets .docs-page. */
-.docs-page { --page: 1320px; }
+/* Docs pages get a slightly wider page than the datasheet (1120px), so the
+   prose next to the docs list fits reference tables and code blocks.
+   base.html sets .docs-page. */
+.docs-page { --page: 1200px; }
 
-/* three columns: docs list | prose | on this page */
-.docs { display: grid; grid-template-columns: 168px minmax(0, 1fr) 212px; gap: 0 40px; }
+/* two columns: docs list (with the open doc's sections) | prose */
+.docs { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 0 48px; }
 .docs__head { grid-column: 1 / -1; }
 
 /* docs list: sticky on desktop, a collapsed menu on phones */
@@ -59,23 +59,15 @@
 .docs__pager a[rel="next"] { margin-left: auto; text-align: right; }
 .docs__source { margin: 14px 0 0; font: 400 14px/1.4 var(--sans); color: var(--ink-2); }
 
-/* on this page: h2 list; the scroll-spy (data-spy) shows only the current section's h3s */
-.docs .toc { position: sticky; top: 24px; align-self: start; margin-top: 34px; max-height: calc(100vh - 48px);
-  overflow-y: auto; font: 400 14px/1.4 var(--sans); }
-.docs .toc__h { font-weight: 650; margin: 0 0 10px; }
-.docs .toc ol { list-style: none; margin: 0; padding: 0; }
-.docs .toc > ol { border-left: 1px solid var(--rule-soft); }
-.docs .toc a { display: block; padding: 4px 0 4px 14px; margin-left: -1px; border-left: 2px solid transparent;
-  color: var(--ink-2); text-decoration: none; }
-.docs .toc ol ol a { padding-left: 26px; font-size: 13.5px; }
-.docs .toc a:hover { color: var(--ink); }
-.docs .toc a.on { color: var(--ink); border-left-color: var(--mask); }
-.docs .toc[data-spy] li:not(.open) > ol { display: none; }
+/* the open doc's sections, nested under its entry in the docs list; the
+   scroll-spy (data-spy) shows only the current section's h3s */
+.docs__nav .docs__toc { margin: 2px 0 8px; font-size: 14px; }
+.docs__nav .docs__toc, .docs__nav .docs__toc ol { border-left: 0; }
+.docs__nav .docs__toc a { padding: 3px 0 3px 26px; color: var(--ink-2); font-weight: 400; }
+.docs__nav .docs__toc ol a { padding-left: 38px; font-size: 13.5px; }
+.docs__nav .docs__toc a.on { color: var(--ink); border-left-color: var(--mask); }
+.docs__toc[data-spy] li:not(.open) > ol { display: none; }
 
-@media (max-width: 1100px) {
-  .docs { grid-template-columns: 168px minmax(0, 1fr); }
-  .docs .toc { display: none; }
-}
 @media (max-width: 860px) {
   .docs { grid-template-columns: minmax(0, 1fr); }
   .docs__nav { position: static; max-height: none; margin-top: 18px; }

@@ -1,6 +1,7 @@
 {#-
   One user-docs page (docs/user/*.md, published by hooks/user_docs.py) or the
-  /docs/ landing page: docs list | prose | "On this page". The hook sets this
+  /docs/ landing page: docs list | prose. The open doc's sections nest under
+  its entry in the docs list, so there is no separate "On this page". The hook sets this
   template; the docs list and prev/next follow the reading order in
   src/booley/runtime/docs_links.py (the `user_docs` global).
 -#}
@@ -29,7 +30,31 @@
             <ol>
             {% set group.section = doc.section %}
           {% endif %}
-            <li><a href="{{ doc.url | url }}"{% if doc.src_uri == page.file.src_uri %} aria-current="page"{% endif %}>{{ doc.title }}</a></li>
+          {% if doc.src_uri == page.file.src_uri %}
+            <li><a href="{{ doc.url | url }}" aria-current="page">{{ doc.title }}</a>
+              {#- The open doc's h2 sections, each with its h3 list. The
+                  scroll-spy shows only the current section's h3s; without
+                  it, every h3 is listed. -#}
+              {% set sections = page.toc | map(attribute="children") | sum(start=[]) %}
+              {% if sections %}
+                <ol class="docs__toc" aria-label="On this page">
+                  {% for section in sections %}
+                    <li><a href="{{ section.url }}">{{ section.title }}</a>
+                      {% if section.children %}
+                        <ol>
+                          {% for item in section.children %}
+                            <li><a href="{{ item.url }}">{{ item.title }}</a></li>
+                          {% endfor %}
+                        </ol>
+                      {% endif %}
+                    </li>
+                  {% endfor %}
+                </ol>
+              {% endif %}
+            </li>
+          {% else %}
+            <li><a href="{{ doc.url | url }}">{{ doc.title }}</a></li>
+          {% endif %}
         {% endfor %}
         </ol>
       </details>
@@ -59,46 +84,35 @@
       {% endif %}
     </article>
 
-    {#- "On this page": the h2 sections under the page title, each with its h3
-        list. The script shows only the current section's h3s; without it,
-        every h3 is listed. -#}
-    {% set sections = page.toc | map(attribute="children") | sum(start=[]) %}
-    {% if sections %}
-      <aside class="toc" aria-label="On this page" data-pagefind-ignore="all">
-        <p class="toc__h">On this page</p>
-        <ol>
-          {% for section in sections %}
-            <li><a href="{{ section.url }}">{{ section.title }}</a>
-              {% if section.children %}
-                <ol>
-                  {% for item in section.children %}
-                    <li><a href="{{ item.url }}">{{ item.title }}</a></li>
-                  {% endfor %}
-                </ol>
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ol>
-      </aside>
-      <script>
-        /* Scroll-spy: mark the heading being read and open its section. */
-        (function () {
-          var toc = document.querySelector(".docs .toc");
-          var links = Array.prototype.slice.call(toc.querySelectorAll("a"));
-          var heads = links.map(function (a) { return document.getElementById(decodeURIComponent(a.hash.slice(1))); });
-          toc.dataset.spy = "";
-          function mark() {
-            var current = 0;
-            heads.forEach(function (h, i) { if (h && h.getBoundingClientRect().top < 120) current = i; });
-            links.forEach(function (a, i) { a.classList.toggle("on", i === current); });
-            toc.querySelectorAll(":scope > ol > li").forEach(function (li) {
-              li.classList.toggle("open", li.contains(links[current]));
-            });
+    {#- Scroll-spy for the open doc's sections in the docs list. -#}
+    <script>
+      (function () {
+        var toc = document.querySelector(".docs__toc");
+        if (!toc) return;
+        var nav = document.querySelector(".docs__nav");
+        var links = Array.prototype.slice.call(toc.querySelectorAll("a"));
+        var heads = links.map(function (a) { return document.getElementById(decodeURIComponent(a.hash.slice(1))); });
+        toc.dataset.spy = "";
+        var current = -1;
+        function mark() {
+          var now = -1;
+          heads.forEach(function (h, i) { if (h && h.getBoundingClientRect().top < 120) now = i; });
+          if (now === current) return;
+          current = now;
+          links.forEach(function (a, i) { a.classList.toggle("on", i === current); });
+          toc.querySelectorAll(":scope > li").forEach(function (li) {
+            li.classList.toggle("open", current >= 0 && li.contains(links[current]));
+          });
+          /* Keep the marked entry visible inside the sticky list, without scrolling the page. */
+          var on = links[current];
+          if (on && nav.scrollHeight > nav.clientHeight) {
+            var top = on.getBoundingClientRect().top - nav.getBoundingClientRect().top + nav.scrollTop;
+            if (top < nav.scrollTop || top > nav.scrollTop + nav.clientHeight - 40) nav.scrollTop = top - nav.clientHeight / 3;
           }
-          window.addEventListener("scroll", mark, { passive: true });
-          mark();
-        })();
-      </script>
-    {% endif %}
+        }
+        window.addEventListener("scroll", mark, { passive: true });
+        mark();
+      })();
+    </script>
   </div>
 {% endblock %}
