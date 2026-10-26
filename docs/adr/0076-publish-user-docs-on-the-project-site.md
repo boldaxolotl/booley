@@ -64,5 +64,5 @@ domain, `https://booley.dev/`. The slugs, anchors, and `docs/assets/` paths are
 unchanged; only `SITE_URL` changed. GitHub Pages redirects every old URL to the
 same path on `booley.dev` while the repository's Pages custom domain is set, so
 links printed by earlier releases keep working. Removing that setting, or letting
-the domain lapse, breaks them. A test fails if a tracked file other than release
-history and this record names the old host.
+the domain lapse, breaks them. A test fails if a tracked file outside its short
+allowlist (release history, this record, the Pages workflow) names the old host.

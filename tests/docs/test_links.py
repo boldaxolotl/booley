@@ -45,6 +45,7 @@ def _markdown_files() -> list[Path]:
         check=True,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     frozen = _frozen_upstream_documents()
     return [
@@ -306,6 +307,7 @@ def test_tracked_files_name_the_site_by_its_current_domain() -> None:
         check=False,  # exit 1 means no match, checked below
         capture_output=True,
         text=True,
+        timeout=60,
     )
     assert result.returncode in (0, 1), result.stderr
     stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
