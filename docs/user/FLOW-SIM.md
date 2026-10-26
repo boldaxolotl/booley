@@ -60,7 +60,7 @@ time.
 
 A **Test Variant** is a Test with a fixed set of extra run-time arguments and
 environment, declared in
-[`tests.toml`](TARGETS.md#test-variants-variants). A **Test Run** is one Test
+[`tests.toml`](TESTS.md#test-variants-variants). A **Test Run** is one Test
 Variant simulated with one seed. Every result, report row and Goal names a
 Test Run, written `test[+variant][@seed]`: `reset@1`, `stress+soak@42`.
 
@@ -75,7 +75,7 @@ Test Run, written `test[+variant][@seed]`: `reset@1`, `stress+soak@42`.
 
 A seed is a decimal number from 1 to 2147483647, written without a sign or
 leading zeros. The **Default Seed** is `1` unless the Target sets
-[`default_seed`](TARGETS.md#seeds-seed-default_seed). A run of the whole Target
+[`default_seed`](TESTS.md#seeds-seed-default_seed). A run of the whole Target
 (no `--test`) runs the default Test Variant of every Test that is not skipped,
 each at the Default Seed.
 
@@ -298,7 +298,7 @@ booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 
 Simulation settings live under `[flows.sim]` in `.booley/booley.toml`.
 Coverage settings are on the [Coverage](COVERAGE.md#configuration) page, and
-the tests themselves are declared in [`tests.toml`](TARGETS.md#tests-teststoml).
+the tests themselves are declared in [`tests.toml`](TESTS.md).
 
 ### Simulation build, Pre-Sim, and run timeouts
 
@@ -564,7 +564,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_TARGET` | always | the Target being run |
 | `BOOLEY_TEST_NAME` | single-test runs only | the selected Test, as its bare name |
 | `BOOLEY_TEST_NAMES` | always | the bare names of the run's Tests, space-joined |
-| `BOOLEY_TEST_RUN_NAMES` | firings that prepare a Test Run | the names of the [Test Runs](TARGETS.md#seeds-seed-default_seed) this firing prepares (`test[+variant][@seed]`), space-joined |
+| `BOOLEY_TEST_RUN_NAMES` | firings that prepare a Test Run | the names of the [Test Runs](TESTS.md#seeds-seed-default_seed) this firing prepares (`test[+variant][@seed]`), space-joined |
 | `BOOLEY_TEST_RUN_NAME` | one Test Run only | that Test Run's name |
 | `BOOLEY_TEST_VARIANT` | one Test Run whose Test declares Test Variants | the Test Variant that runs |
 | `BOOLEY_TEST_SEED` | one Test Run on a seeded Target | the seed, in decimal |

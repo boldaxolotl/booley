@@ -278,7 +278,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   work item's Job Slot in the moment between recording it finished and the final
   lease check; the lease is now checked before the work item is recorded finished.
 - The user guide is split into smaller pages. Goal Mode, the CLI reference,
-  each Flow, Coverage, Targets and tests, the Sandbox, Stealth Mode, and Windows
+  each Flow, Simulation tests and coverage, Targets, the Sandbox, Stealth Mode, and Windows
   first-run problems now have their own pages, and Troubleshooting is grouped by
   area. Links printed by earlier releases that name a section that moved open
   the old page instead of that section; Config's "Where each setting lives"

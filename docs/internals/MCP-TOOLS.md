@@ -17,7 +17,8 @@ The documentation is split by responsibility, not by reader type:
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of the built-in Flows |
 | [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
-| [TARGETS.md](../user/TARGETS.md) | The `.core` design description, Targets, and `tests.toml` |
+| [TARGETS.md](../user/TARGETS.md) | The `.core` design description and Targets |
+| [TESTS.md](../user/TESTS.md) | `tests.toml`: Tests, Test Variants, and seeds |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 This document may show small configuration fragments when an extension contract
@@ -31,7 +32,7 @@ This is an implementation-level guide. It assumes the vocabulary and whole-syste
 - **[GLOSSARY-MAP.md](../../GLOSSARY-MAP.md)** — the controlled-vocabulary
   index. This guide uses the shared Booley, Goal Mode, and Simulation Coverage glossaries.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the agent session, Specialists, and the Booley Flow contract fit together at run time.
-- **[CONFIG.md](../user/CONFIG.md)** — the `booley.toml` configuration reference. `.core` files and `tests.toml` are in [TARGETS.md](../user/TARGETS.md), EDA provisioning in [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning), and Pre-Sim Commands in [FLOW-SIM.md](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
+- **[CONFIG.md](../user/CONFIG.md)** — the `booley.toml` configuration reference. `.core` files are in [TARGETS.md](../user/TARGETS.md), `tests.toml` in [TESTS.md](../user/TESTS.md), EDA provisioning in [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning), and Pre-Sim Commands in [FLOW-SIM.md](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
 - **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.
 - **[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
 - **[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)** — which EDA tools and provisioning sources are supported and what each requires.

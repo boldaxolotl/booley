@@ -32,6 +32,7 @@ USER_DOCS = REPO_ROOT / "docs" / "user"
 CONFIG_PAGES = (
     "CONFIG.md",
     "TARGETS.md",
+    "TESTS.md",
     "SANDBOX.md",
     "STEALTH.md",
     "FLOW-SIM.md",

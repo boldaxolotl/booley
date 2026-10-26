@@ -55,6 +55,8 @@
 /* wide tables scroll inside their own box (the hook adds the wrapper) */
 .doc-table { overflow-x: auto; margin: 0 0 1.3em; }
 .doc-table table { min-width: 32rem; }
+/* "└" before a page that belongs to the one above it (docs landing table) */
+.doc-prose .docs__tree { color: var(--ink-2); margin-right: 6px; font-family: var(--mono); }
 
 /* previous / next */
 .docs__pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 56px; padding-top: 16px;

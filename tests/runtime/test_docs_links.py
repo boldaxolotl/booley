@@ -67,10 +67,11 @@ def test_user_docs_table_matches_docs_user() -> None:
 
 
 def test_child_docs_follow_their_parent_in_the_same_section() -> None:
-    """The sidebar indents a child doc under the doc right before it."""
+    """The sidebar indents a child doc under its parent, so it follows the parent or a sibling."""
     for previous, doc in pairwise(USER_DOCS):
         if doc.parent is not None:
-            assert (previous.file, previous.section) == (doc.parent, doc.section), doc.file
+            assert doc.parent in (previous.file, previous.parent), doc.file
+            assert previous.section == doc.section, doc.file
     assert USER_DOCS[0].parent is None
 
 

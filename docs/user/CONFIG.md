@@ -42,7 +42,8 @@ tell the `/booley-feedback` skill in your Developer Agent chat. See
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
 | `[feedback]`, `[agent]`, `[models]` | below |
 | `[goals]` | [Dashboard and quiet Goal presence](#dashboard-and-quiet-goal-presence-goals), below |
-| `.core` files, `tests.toml`, Cocotb Targets | [TARGETS.md](TARGETS.md) |
+| `.core` files, Cocotb Targets | [TARGETS.md](TARGETS.md) |
+| `tests.toml` | [TESTS.md](TESTS.md) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
 Doctor and `booley init` report retired or deprecated settings with the exact fix.
@@ -53,7 +54,7 @@ Project identity, Flow selection, and Developer Agent and Specialist configurati
 `.booley/booley.toml`. A per-knob reference follows, section by section.
 
 `[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
-[Per-Target environment](TARGETS.md#per-target-environment-env) for the last one, which is
+[Per-Target environment](TESTS.md#per-target-environment-env) for the last one, which is
 about testbench file-existence checks rather than identity. The sections below
 cover the shared settings, starting with `enabled` for Booley Flows and
 Specialists; per-Flow tables are on the pages listed in
@@ -453,7 +454,7 @@ they do not establish client inactivity or abandonment and never end Goal Mode.
 ## Advanced setups
 
 Every flow builds from a mandatory FuseSoC `.core` Target (see [Design
-description](TARGETS.md#design-description-core-and-tests-teststoml)). The two escape
+description](TARGETS.md#design-description-core)). The two escape
 hatches that remain, and what each is for:
 
 - a **per-test non-RTL build step** (compiling the selected test's firmware,

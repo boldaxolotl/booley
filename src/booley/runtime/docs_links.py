@@ -22,7 +22,7 @@ class UserDoc(NamedTuple):
     """One user doc: its file in ``docs/user/``, site slug, nav label, and sidebar group.
 
     ``parent`` names the file of the doc this one belongs to; the sidebar
-    indents it under that doc, which must come right before it.
+    indents it under that doc. A child follows its parent or a sibling.
     """
 
     file: str
@@ -41,12 +41,13 @@ USER_DOCS = (
     UserDoc("GOAL-MODE.md", "goal-mode", "Goal Mode", "Get started"),
     UserDoc("FLOW_REFERENCE.md", "flow-reference", "Running Flows", "Flows"),
     UserDoc("FLOW-SIM.md", "flow-sim", "Simulation", "Flows"),
+    UserDoc("TESTS.md", "tests", "Tests", "Flows", parent="FLOW-SIM.md"),
     UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows", parent="FLOW-SIM.md"),
     UserDoc("FLOW-LINT.md", "flow-lint", "Lint", "Flows"),
     UserDoc("FLOW-SYNTH.md", "flow-synth", "ASIC synthesis", "Flows"),
     UserDoc("FLOW-FPGA.md", "flow-fpga", "FPGA implementation", "Flows"),
     UserDoc("CONFIG.md", "config", "Config", "Reference"),
-    UserDoc("TARGETS.md", "targets", "Targets and tests", "Reference"),
+    UserDoc("TARGETS.md", "targets", "Targets", "Reference"),
     UserDoc("SANDBOX.md", "sandbox", "Sandbox", "Reference"),
     UserDoc("STEALTH.md", "stealth", "Stealth Mode", "Reference"),
     UserDoc("CLI-REFERENCE.md", "cli-reference", "CLI reference", "Reference"),

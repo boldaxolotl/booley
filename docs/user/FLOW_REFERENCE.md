@@ -4,6 +4,8 @@ Booley ships four built-in Flows. Each has its own page:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
   whether each one passed.
+    - [Simulation tests](TESTS.md): declare a sim Target's tests, Test Variants,
+      and seeds in `tests.toml`.
     - [Simulation coverage](COVERAGE.md): measure how much of the RTL your
       tests exercise, and find what they miss.
 - [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
@@ -18,7 +20,7 @@ its progress, choosing Targets, and reading the result.
 
 Related references:
 
-- [TARGETS.md](TARGETS.md): Targets, tests, and the `.core` files Flows build from.
+- [TARGETS.md](TARGETS.md): Targets and the `.core` files Flows build from.
 - [CONFIG.md](CONFIG.md): Project-wide `booley.toml` settings.
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools and versions
   each Flow supports.

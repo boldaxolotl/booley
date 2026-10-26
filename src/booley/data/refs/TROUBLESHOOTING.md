@@ -477,7 +477,7 @@ for the forms it accepts.
 
 `booley doctor` reports a `tests.toml` that cannot be loaded, or that a Target
 cannot apply, as a `tests.toml` failure that names the Target and the key. The
-rules are in [Tests (`tests.toml`)](https://boldaxolotl.github.io/booley/docs/targets/#tests-teststoml).
+rules are in [Tests (`tests.toml`)](https://boldaxolotl.github.io/booley/docs/tests/).
 
 ### Simulation stalls at time zero without results
 

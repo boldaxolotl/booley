@@ -655,7 +655,7 @@ Rules that differ from SV Targets:
 Per-Target test lists, an optional run-time selector, Test Variants, and
 seeds. A **Test Run** is one Test Variant simulated with one seed, written
 `test[+variant][@seed]`; every key below decides which Test Runs a Target can
-run. Full rules: TARGETS.md → "Tests (`tests.toml`)".
+run. Full rules: TESTS.md.
 
 **Template:** `../TESTS_TEMPLATE.toml`.
 

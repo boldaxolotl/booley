@@ -17,7 +17,8 @@ The documentation is split at the public-interface seam:
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
 | [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
-| [TARGETS.md](../user/TARGETS.md) | The `.core` design description, Targets, and `tests.toml` |
+| [TARGETS.md](../user/TARGETS.md) | The `.core` design description and Targets |
+| [TESTS.md](../user/TESTS.md) | `tests.toml`: Tests, Test Variants, and seeds |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 Public behavior is mentioned only where an implementation invariant needs
@@ -298,7 +299,7 @@ active-Project cache.
 per-Target test list and run-time selector; the FuseSoC Target holds the build
 inputs and simulator choice. [FLOW-SIM.md](../user/FLOW-SIM.md#simulation--passfail-sentinels-flowssim)
 owns the exact simulation keys and defaults, while its
-[design-description section](../user/TARGETS.md#design-description-core-and-tests-teststoml)
+[design-description section](../user/TARGETS.md#design-description-core)
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (repeatable exact include), `--tests-file`, `--trace`

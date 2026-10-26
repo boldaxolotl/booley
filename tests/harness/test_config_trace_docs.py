@@ -5,7 +5,7 @@ from pathlib import Path
 TARGETS_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "TARGETS.md"
 DESIGN_SECTION = (
     TARGETS_MD.read_text(encoding="utf-8")
-    .split("## Design description (`.core`) and tests (`tests.toml`)", 1)[1]
+    .split("## Design description (`.core`)", 1)[1]
     .split("\n## ", 1)[0]
 )
 CORE_EXAMPLE = DESIGN_SECTION.split("```yaml", 1)[1].split("```", 1)[0]

@@ -13,6 +13,7 @@ CONFIG_REFERENCE = USER_DOCS / "CONFIG.md"
 CONFIG_PAGES = (
     "CONFIG.md",
     "TARGETS.md",
+    "TESTS.md",
     "SANDBOX.md",
     "STEALTH.md",
     "FLOW-SIM.md",
