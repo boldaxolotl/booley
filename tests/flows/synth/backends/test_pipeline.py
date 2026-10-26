@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -195,6 +196,10 @@ class TestConfigureSynthesis:
         assert "read_sdc {" in sta_tcl
         assert "constraints/dut.sdc}" in sta_tcl
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Win32 folds '..' lexically before following links; recipes run in the Linux Sandbox",
+    )
     def test_paths_reach_sources_from_a_build_dir_behind_a_linked_entry(self, tmp_path: Path):
         """A Codespace links ``/work/.booley``; ``..`` from the build dir is walked physically."""
         work = tmp_path / "work"
