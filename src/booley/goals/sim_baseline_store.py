@@ -174,7 +174,7 @@ def relative_path(value: object) -> Path:
 def capture_entry_inputs(booley_dir: Path, record: GoalRecord) -> None:
     """Capture declarations at entry; errors become report facts, never an entry gate."""
     path = record_paths(booley_dir, record.id).root / INPUTS_FILE
-    root = Path(record.worktree_path)
+    root = Path(record.worktree_path).resolve()
     try:
         project = resolve_checkout_booley_dir(root)
         # Values are hex contents; ``None`` marks a protected non-file entry.
@@ -222,7 +222,7 @@ def _capture_protected(
     """Retain checkout-local protected programs as well as Project configuration."""
     from booley.goals.protected_inputs import ProtectedInputRoots, ProtectedPath
 
-    root = Path(record.worktree_path)
+    root = Path(record.worktree_path).resolve()
     project = resolve_checkout_booley_dir(root)
     roots = ProtectedInputRoots(root, booley_dir)
     main = roots.main_checkout()

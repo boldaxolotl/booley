@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import require_dict, require_str_value
 from booley.goals.proposals import ProposalError, text
 from booley.runtime.atomic_files import atomic_replace_bytes, durable_unlink
@@ -45,18 +46,24 @@ class FileEffect:
             text(raw["label"], "effect.label"),
         )
 
-    def require_expected(self) -> None:
-        """Refuse unexpected external bytes or symlink ancestors without mutation."""
-        if any(path.is_symlink() for path in (self.path, *self.path.parents)):
+    def require_expected(self, *, booley_dir: Path | None = None) -> None:
+        """Refuse unexpected external bytes or symlink ancestors without mutation.
+
+        Only ``booley_dir``, the exact Booley Directory entry, may be a symlink.
+        """
+        if any(
+            path.is_symlink() and not is_booley_dir_entry(path, booley_dir)
+            for path in (self.path, *self.path.parents)
+        ):
             raise ProposalError(f"recovery conflict: symlink destination {self.path}")
         if read_bytes(self.path) not in (self.before, self.after):
             raise ProposalError(
                 f"recovery conflict at {self.path}: expected captured before/after bytes; restore those bytes before retrying"
             )
 
-    def apply(self) -> None:
+    def apply(self, *, booley_dir: Path | None = None) -> None:
         """An idempotent atomic replacement; caller owns lifecycle/storage locks."""
-        self.require_expected()
+        self.require_expected(booley_dir=booley_dir)
         if read_bytes(self.path) == self.after:
             return
         if self.after is None:
