@@ -283,6 +283,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   area. Links printed by earlier releases that name a section that moved open
   the old page instead of that section; Config's "Where each setting lives"
   table lists the new homes.
+- The project site and user docs moved to <https://booley.dev/>. Links Booley
+  prints, the README, and the PyPI project links now point there. Old
+  `boldaxolotl.github.io/booley/` links redirect to the same page.
 
 ## 0.3.1 - 05 OCT 2026
 

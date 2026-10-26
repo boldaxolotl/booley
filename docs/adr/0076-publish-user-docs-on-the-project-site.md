@@ -1,6 +1,6 @@
 # Publish the user docs on the project site
 
-Status: accepted
+Status: accepted (amended 2026-10-26: site domain, see Amendments)
 
 ## Context
 
@@ -19,7 +19,8 @@ references, and agents that read the files directly in the repository.
 ## Decision
 
 The project site is the canonical human-facing URL for the user docs. It
-publishes each `docs/user/<FILE>.md` at `https://boldaxolotl.github.io/booley/docs/<slug>/`
+publishes each `docs/user/<FILE>.md` at `https://booley.dev/docs/<slug>/`
+(amended 2026-10-26, see Amendments)
 and its assets at `docs/assets/`, with heading anchors equal to GitHub's.
 `booley.runtime.docs_links` holds the one `SITE_URL` constant and the
 file-to-slug table; Booley's printed links and the README call or follow it.
@@ -55,3 +56,13 @@ one more place for the slug table to diverge.
   allowlisted agent-facing modules.
 - A docs fix reaches the site on merge to `main`, before the next release, so
   site readers can see behavior newer than their installed version.
+
+## Amendments (2026-10-26)
+
+The project site moved from `https://boldaxolotl.github.io/booley/` to its own
+domain, `https://booley.dev/`. The slugs, anchors, and `docs/assets/` paths are
+unchanged; only `SITE_URL` changed. GitHub Pages redirects every old URL to the
+same path on `booley.dev` while the repository's Pages custom domain is set, so
+links printed by earlier releases keep working. Removing that setting, or letting
+the domain lapse, breaks them. A test fails if a tracked file outside its short
+allowlist (release history, this record, the Pages workflow) names the old host.
