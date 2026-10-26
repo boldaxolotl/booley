@@ -55,8 +55,6 @@
 /* wide tables scroll inside their own box (the hook adds the wrapper) */
 .doc-table { overflow-x: auto; margin: 0 0 1.3em; }
 .doc-table table { min-width: 32rem; }
-/* a page that belongs to the one above it (docs landing table) */
-.doc-prose td.docs__child { padding-left: 2em; }
 
 /* previous / next */
 .docs__pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 56px; padding-top: 16px;
