@@ -11,9 +11,15 @@
    base.html sets .docs-page. */
 .docs-page { --page: 1200px; }
 
-/* two columns: docs list (with the open doc's sections) | prose */
-.docs { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 0 48px; }
+/* two columns: prose | docs list (with the open doc's sections), the
+   sidebar on the right like the blog's contents. The list comes first in
+   the markup so phones show its menu above the prose. */
+.docs { display: grid; grid-template-columns: minmax(0, 1fr) 248px; gap: 0 48px; }
 .docs__head { grid-column: 1 / -1; }
+.docs__nav { grid-column: 2; grid-row: 2; }
+.docs .doc-prose { grid-column: 1; grid-row: 2; }
+.docs__home { color: inherit; text-decoration: none; }
+.docs__home:hover b { color: var(--mask); }
 
 /* docs list: sticky on desktop, a collapsed menu on phones */
 .docs__nav { position: sticky; top: 24px; align-self: start; margin-top: 34px;
@@ -70,6 +76,7 @@
 
 @media (max-width: 860px) {
   .docs { grid-template-columns: minmax(0, 1fr); }
+  .docs__nav, .docs .doc-prose { grid-column: 1; grid-row: auto; }
   .docs__nav { position: static; max-height: none; margin-top: 18px; }
   .docs__menu { border: 1px solid var(--rule); }
   .docs__menu > summary { display: block; cursor: pointer; padding: 10px 14px; background: var(--fill); font-weight: 650; }

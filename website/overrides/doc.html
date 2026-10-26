@@ -1,6 +1,6 @@
 {#-
   One user-docs page (docs/user/*.md, published by hooks/user_docs.py) or the
-  /docs/ landing page: docs list | prose. The open doc's sections nest under
+  /docs/ landing page: prose | docs list (right, like the blog's contents). The open doc's sections nest under
   its entry in the docs list, so there is no separate "On this page". The hook sets this
   template; the docs list and prev/next follow the reading order in
   src/booley/runtime/docs_links.py (the `user_docs` global).
@@ -11,7 +11,7 @@
   <div class="docs">
     <div class="docs__head">
       <div class="strip">
-        <span><b>DOCS</b>Booley user guide</span>
+        <span><a class="docs__home" href="{{ 'docs/' | url }}"><b>DOCS</b>Booley user guide</a></span>
         <span>Tracks the main branch</span>
       </div>
     </div>
