@@ -7,7 +7,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.runtime.execution_records import ExecutionId
@@ -45,6 +45,9 @@ class ChildHeavyPermit:
     child_execution_id: ExecutionId
     token: SlotToken
     lease_health: LeaseHealth
+    # Set once the lease is proven held through the child's work. From then on the
+    # child may be published terminal, and any reap may reclaim its token.
+    lease_confirmed: threading.Event = field(default_factory=threading.Event)
 
 
 class HeavyCapacity:
@@ -117,7 +120,7 @@ class HeavyCapacity:
             self._held[token.lease_id] = permit
         try:
             yield permit
-            if permit.lease_health.lost.is_set() or not store.renew(permit.token):
+            if not permit.lease_confirmed.is_set() and not self.confirm_child_lease(permit):
                 raise LeaseLostError(f"heavy lease lost for child execution {child_execution_id}")
             if self._cancelled():
                 raise ClaimAbortedError("campaign cancellation requested")
@@ -127,6 +130,19 @@ class HeavyCapacity:
                 self._held.pop(token.lease_id, None)
                 self._recovered_lost.discard(token.lease_id)
             self._release_after_terminal(store, permit)
+
+    def confirm_child_lease(self, permit: ChildHeavyPermit) -> bool:
+        """Prove the child's lease is still held; call before publishing it terminal.
+
+        Reaping reclaims the token of a terminal child, so a later check would
+        mistake that normal cleanup for a lost lease.
+        """
+        store = self._admission.slot_store
+        assert store is not None, "child permits exist only under managed admission"
+        held = not permit.lease_health.lost.is_set() and store.renew(permit.token)
+        if held:
+            permit.lease_confirmed.set()
+        return held
 
     def _acquire_child(self, store, child_execution_id: ExecutionId) -> SlotToken:
         submitted: list[SlotToken] = []
