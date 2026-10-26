@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.harness import bootstrap
-from booley.runtime import runtime_context
+from booley.runtime import runtime_context, session_admission
 from booley.runtime.host_install import (
     HostInstallationError,
     current_host_installation,
@@ -58,8 +58,40 @@ def inspect_host() -> HostDiagnosticResult:
             for finding in result.findings
         )
         docker_exe = shutil.which("docker") if docker_ready else None
+        if result.policy is not None:
+            _inspect_sandbox_egress(result.policy.egress, docker_ready, report)
         _add_environment(host_environment.probe_host_clock(), report)
     return HostDiagnosticResult(report.report(), docker_exe)
+
+
+def _inspect_sandbox_egress(host_egress: str, docker_ready: bool, report: Findings) -> None:
+    """Report the host egress mode and each running Sandbox issued for the other mode."""
+    report.pass_(f"host Sandbox egress mode: {host_egress}")
+    if not docker_ready:
+        report.skip("running Sandbox egress check skipped - Docker is not ready")
+        return
+    try:
+        sandboxes = session_admission.running_sandboxes()
+    except session_admission.AdmissionError as exc:
+        report.fail(
+            f"cannot check running Sandboxes against host egress mode: {exc}",
+            "resolve the reported Sandbox problem (Sandbox starts are refused for the same "
+            "reason), then rerun booley doctor",
+        )
+        return
+    mismatched = [item for item in sandboxes if item.egress != host_egress]
+    for item in mismatched:
+        report.warn(
+            f"Sandbox {item.name} (Project {item.project_root}) runs with egress "
+            f"'{item.egress}' but host [sandbox] egress = '{host_egress}'",
+            session_admission.recreate_remedy(item),
+            check_id="host.sandbox-egress-mismatch",
+            subject=item.project_root,
+        )
+    if not mismatched:
+        report.pass_(
+            f"{len(sandboxes)} running Booley Sandbox(es) match host egress mode {host_egress}"
+        )
 
 
 def _inspect_host_installation(report: Findings) -> None:

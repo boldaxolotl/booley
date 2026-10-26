@@ -7,6 +7,7 @@ import pytest
 
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import Severity
+from booley.config.host_config import SandboxHostPolicy
 from booley.harness import host_diagnostics
 from booley.runtime import runtime_context
 from booley.runtime.host_install import HostInstallationIdentity
@@ -69,6 +70,53 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, state, s
         assert (finding.check_id, finding.subject) == ("host.bootstrap-pending", "docker")
     elif state == "WARNING":
         assert (finding.check_id, finding.subject) == ("host.bootstrap-warning", "docker")
+
+
+@pytest.mark.parametrize(
+    ("docker_state", "policy", "expected_egress_messages"),
+    [
+        pytest.param(
+            "ERROR",
+            SandboxHostPolicy(egress="unproxied"),
+            [
+                "host Sandbox egress mode: unproxied",
+                "running Sandbox egress check skipped - Docker is not ready",
+            ],
+            id="docker-not-ready-skips-inventory",
+        ),
+        pytest.param("CURRENT", None, [], id="unparsed-host-config-reports-no-egress"),
+    ],
+)
+def test_host_egress_check_never_lists_sandboxes_without_ready_docker_and_policy(
+    monkeypatch, docker_state, policy, expected_egress_messages
+):
+    """The Sandbox inventory runs only when Docker is ready and the host policy parsed."""
+    bootstrap = host_diagnostics.bootstrap
+    finding = bootstrap.BootstrapFinding("docker", bootstrap.BootstrapState[docker_state], "seen")
+    monkeypatch.setattr(
+        bootstrap,
+        "reconcile_bootstrap",
+        lambda intent: bootstrap.BootstrapResult(intent, (finding,), policy=policy),
+    )
+    monkeypatch.setattr(
+        host_diagnostics.session_admission,
+        "running_sandboxes",
+        lambda **_kw: pytest.fail("Sandbox inventory listed"),
+    )
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    identity = _identity()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(
+        host_environment,
+        "probe_host_clock",
+        lambda: host_environment.EnvironmentFinding(
+            host_environment.EnvironmentSeverity.SKIP, "offline"
+        ),
+    )
+    findings = host_diagnostics.inspect_host().report.findings
+    egress_messages = [f.message for f in findings if "egress" in f.message]
+    assert egress_messages == expected_egress_messages
 
 
 def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch):

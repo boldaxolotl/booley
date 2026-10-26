@@ -30,6 +30,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.core.differences import format_differences
+from booley.core.egress_modes import declared_egress
 from booley.core.private_store import PrivateStore
 from booley.core.project_identity import project_label_id
 from booley.core.user_paths import config_dir
@@ -1203,8 +1204,9 @@ def _validate_issued_mounts(
 def _validate_egress_mode(spec: dict[str, Any], egress: str) -> None:
     """Refuse a spec issued for the other host egress mode before any shape check."""
     container = spec.get("containerEnv")
-    declared = container.get("BOOLEY_EGRESS") if isinstance(container, dict) else None
-    actual = "unproxied" if declared == "unproxied" else "proxy"
+    actual = declared_egress(
+        container.get("BOOLEY_EGRESS") if isinstance(container, dict) else None
+    )
     if actual != egress:
         raise EgressDriftError(
             f"Sandbox spec egress mode '{actual}' differs from host [sandbox] egress = '{egress}'"
