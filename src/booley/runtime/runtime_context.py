@@ -1,14 +1,17 @@
 """Sandbox detection and entry-point guards.
 
-Booley workflows execute inside the per-project Sandbox.  This
-stdlib-only module sits at the bottom of the import graph so every entry point
-can detect that runtime and restore its fixed egress proxy environment.
+Booley workflows execute inside the per-project Sandbox.  This module
+depends only on the stdlib and ``booley.core``, so it sits at the bottom of the
+import graph and every entry point can detect that runtime and restore its
+fixed egress proxy environment.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+from booley.core.egress_modes import EGRESS_MODES
 
 
 def inside_session_runtime() -> bool:
@@ -20,9 +23,6 @@ def inside_session_runtime() -> bool:
 
 _PROXY_URL = "http://booley-proxy:8080"
 _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
-
-
-EGRESS_MODES = ("proxy", "unproxied")
 
 
 class EgressModeError(ValueError):
