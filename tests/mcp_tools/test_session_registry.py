@@ -785,3 +785,40 @@ async def test_claude_peer_recovery_keeps_shared_worktree_presence_separate(
         assert (labels[fallback.key], labels[peer.key]) == ("S1", "S2")
     finally:
         observer.close()
+
+
+def test_omitted_work_dir_records_the_server_cwd_and_reads_its_live_branch(tmp_path, monkeypatch):
+    """Presentation-only default checkout; identity stays unattributed to a worktree."""
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/booley\n")
+    nested = tmp_path / "rtl"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    facts = session_registry.resolve_attribution(None, metadata={}, client_name="")
+    assert facts.default_work_dir == str(nested)
+    assert (facts.work_dir, facts.worktree_key, facts.branch) == ("", "", "")
+    shown = session_registry.canonical_attribution(facts)
+    assert (shown.default_work_dir, shown.branch) == (str(tmp_path.resolve()), "booley")
+    assert (shown.work_dir, shown.worktree_key, shown.key) == ("", "", facts.key)
+    (git / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n")
+    assert session_registry.canonical_attribution(facts).branch == ""
+
+    # An explicit work_dir never records a default.
+    explicit = session_registry.resolve_attribution(tmp_path, metadata={}, client_name="")
+    assert explicit.default_work_dir == ""
+    # The field round-trips through the durable row.
+    row = session_registry.SessionRow(facts, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z")
+    assert session_registry._parse_row(row.payload()).attribution == facts
+
+
+def test_deleted_server_cwd_records_no_default_checkout(monkeypatch):
+    """A vanished cwd leaves the default unknown instead of failing attribution."""
+
+    def deleted_cwd():
+        raise FileNotFoundError("cwd removed")
+
+    monkeypatch.setattr(session_registry.Path, "cwd", deleted_cwd)
+    facts = session_registry.resolve_attribution(None, metadata={}, client_name="")
+    assert facts.default_work_dir == ""
+    assert session_registry.canonical_attribution(facts) == facts

@@ -578,16 +578,27 @@ class DashboardApp(App[None]):
             else ("WARNING: shared worktree" if shared else "")
         )
         last = row.calls[-1] if row.calls else None
-        branch = facts.branch or (goal.record.branch if goal and goal.record else "")
+        checkout, branch = self._checkout_label(facts, goal)
         connection = (
             _connection_label(row, self.snapshot.observed_at) if connected else "disconnected"
         )
         return (
-            f"{self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch unavailable'} · "
+            f"{self._session_handle(facts.key)} · {checkout} · {branch or 'branch unavailable'} · "
             f"{'Goal Mode' if goal else 'Interactive'} · {connection} · Started {format_age(row.started_at, now=self.snapshot.observed_at)}\n"
             f"{_sentence(self._activity_label(facts.key))} · {warning}\nLast Booley call: {last.tool if last else '—'} "
             f"· {format_age(row.last_call_at, now=self.snapshot.observed_at)}\nSession key: {facts.key}"
         ), goal
+
+    @staticmethod
+    def _checkout_label(facts: Attribution, goal: GoalView | None) -> tuple[str, str]:
+        """Checkout and branch a session's Booley calls target, for display.
+
+        A session that never passed ``work_dir`` runs every call in its MCP
+        server's cwd, so it shows that checkout and branch, marked as the default.
+        """
+        if not facts.work_dir and facts.default_work_dir:
+            return f"{facts.default_work_dir} (default)", facts.branch
+        return facts.work_dir, facts.branch or (goal.record.branch if goal and goal.record else "")
 
     def _activity_label(self, key: str) -> str:
         return activity_label(
@@ -800,9 +811,9 @@ class DashboardApp(App[None]):
             if self._owned_by(job, facts.key) and job.state == "running"
         ]
         running = "; ".join(_job_summary(job, self.snapshot.observed_at) for job in jobs)
-        branch = facts.branch or (goal.record.branch if goal and goal.record else "")
+        checkout, branch = self._checkout_label(facts, goal)
         return (
-            f"{self.shortcuts.get(facts.key, '·')} · {self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch —'} · "
+            f"{self.shortcuts.get(facts.key, '·')} · {self._session_handle(facts.key)} · {checkout} · {branch or 'branch —'} · "
             f"{'Goal Mode' if goal else 'Interactive'} · Started {format_age(row.started_at, now=self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
             + summary
             + warning

@@ -45,6 +45,8 @@ class Attribution:
     branch: str = ""
     process: ProcessIdentity | None = None
     namespace: str = ""
+    # Server cwd that calls omitting work_dir run in; presentation only, never identity.
+    default_work_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,9 @@ def _parse_row(raw: bytes) -> SessionRow:
         require_str_value(facts.get("branch", ""), field="branch", allow_empty=True),
         process,
         require_str_value(facts.get("namespace", ""), field="namespace", allow_empty=True),
+        require_str_value(
+            facts.get("default_work_dir", ""), field="default_work_dir", allow_empty=True
+        ),
     )
     started, latest = require_str(data, "started_at"), require_str(data, "last_call_at")
     if (
@@ -492,9 +497,16 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
 
 
 def canonical_attribution(facts: Attribution) -> Attribution:
-    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records."""
+    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records.
+
+    A row without a work_dir reports the live checkout root and branch of its
+    default_work_dir instead, so presentation shows where its calls run.
+    """
     if not facts.work_dir:
-        return facts
+        if not facts.default_work_dir:
+            return facts
+        root, _, branch = _worktree_facts(Path(facts.default_work_dir))
+        return replace(facts, default_work_dir=str(root), branch=branch)
     root, key, branch = _worktree_facts(Path(facts.work_dir))
     if facts.worktree_key.startswith("path:"):
         return replace(
@@ -505,6 +517,14 @@ def canonical_attribution(facts: Attribution) -> Attribution:
             key="worktree:" + key if facts.kind == "worktree" else facts.key,
         )
     return replace(facts, branch=branch or facts.branch)
+
+
+def _process_cwd() -> str:
+    """This process's cwd, or empty when it no longer exists."""
+    try:
+        return str(Path.cwd())
+    except OSError:
+        return ""
 
 
 def resolve_attribution(
@@ -519,6 +539,8 @@ def resolve_attribution(
     root, worktree_key, branch = (
         _worktree_facts(work_dir) if work_dir is not None else (None, "", "")
     )
+    # Calls without work_dir run in this process's cwd (call_context.resolve_work_dir).
+    default_work_dir = "" if work_dir is not None else _process_cwd()
     thread = metadata.get("threadId")
     codex = "codex" in client_name.lower() or thread is not None
     scope = namespace(proc_root)
@@ -531,6 +553,7 @@ def resolve_attribution(
             branch=branch,
             process=peer,
             namespace=scope,
+            default_work_dir=default_work_dir,
         )
     if (
         not codex
@@ -548,6 +571,7 @@ def resolve_attribution(
             branch=branch,
             process=peer,
             namespace=scope,
+            default_work_dir=default_work_dir,
         )
     return Attribution(
         "worktree:" + worktree_key,
@@ -556,6 +580,7 @@ def resolve_attribution(
         worktree_key,
         branch=branch,
         namespace=scope,
+        default_work_dir=default_work_dir,
     )
 
 
