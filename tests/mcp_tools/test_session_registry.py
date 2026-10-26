@@ -810,3 +810,15 @@ def test_omitted_work_dir_records_the_server_cwd_and_reads_its_live_branch(tmp_p
     # The field round-trips through the durable row.
     row = session_registry.SessionRow(facts, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z")
     assert session_registry._parse_row(row.payload()).attribution == facts
+
+
+def test_deleted_server_cwd_records_no_default_checkout(monkeypatch):
+    """A vanished cwd leaves the default unknown instead of failing attribution."""
+
+    def deleted_cwd():
+        raise FileNotFoundError("cwd removed")
+
+    monkeypatch.setattr(session_registry.Path, "cwd", deleted_cwd)
+    facts = session_registry.resolve_attribution(None, metadata={}, client_name="")
+    assert facts.default_work_dir == ""
+    assert session_registry.canonical_attribution(facts) == facts
