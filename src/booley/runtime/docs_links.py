@@ -19,23 +19,36 @@ SITE_URL = "https://boldaxolotl.github.io/booley/"
 
 
 class UserDoc(NamedTuple):
-    """One user doc: its file in ``docs/user/``, site slug, and nav label."""
+    """One user doc: its file in ``docs/user/``, site slug, nav label, and sidebar group."""
 
     file: str
     slug: str
     title: str
+    section: str
 
 
-# Reading order: the site's docs sidebar and prev/next links follow it.
+# Reading order: the site's docs sidebar and prev/next links follow it. The
+# sidebar groups consecutive docs that share a section.
 USER_DOCS = (
-    UserDoc("FEATURES.md", "features", "Features"),
-    UserDoc("SETUP.md", "setup", "Setup"),
-    UserDoc("USAGE.md", "usage", "Usage"),
-    UserDoc("FLOW_REFERENCE.md", "flow-reference", "Flow reference"),
-    UserDoc("CONFIG.md", "config", "Config"),
-    UserDoc("SUPPORTED-EDA-TOOLS.md", "supported-eda-tools", "Supported EDA tools"),
-    UserDoc("DOCTOR.md", "doctor", "Doctor"),
-    UserDoc("TROUBLESHOOTING.md", "troubleshooting", "Troubleshooting"),
+    UserDoc("FEATURES.md", "features", "Features", "Get started"),
+    UserDoc("SETUP.md", "setup", "Setup", "Get started"),
+    UserDoc("USAGE.md", "usage", "Usage", "Get started"),
+    UserDoc("GOAL-MODE.md", "goal-mode", "Goal Mode", "Get started"),
+    UserDoc("FLOW_REFERENCE.md", "flow-reference", "Running Flows", "Flows"),
+    UserDoc("FLOW-SIM.md", "flow-sim", "Simulation", "Flows"),
+    UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows"),
+    UserDoc("FLOW-LINT.md", "flow-lint", "Lint", "Flows"),
+    UserDoc("FLOW-SYNTH.md", "flow-synth", "ASIC synthesis", "Flows"),
+    UserDoc("FLOW-FPGA.md", "flow-fpga", "FPGA implementation", "Flows"),
+    UserDoc("CONFIG.md", "config", "Config", "Reference"),
+    UserDoc("TARGETS.md", "targets", "Targets and tests", "Reference"),
+    UserDoc("SANDBOX.md", "sandbox", "Sandbox", "Reference"),
+    UserDoc("STEALTH.md", "stealth", "Stealth Mode", "Reference"),
+    UserDoc("CLI-REFERENCE.md", "cli-reference", "CLI reference", "Reference"),
+    UserDoc("SUPPORTED-EDA-TOOLS.md", "supported-eda-tools", "Supported EDA tools", "Reference"),
+    UserDoc("DOCTOR.md", "doctor", "Doctor", "Help"),
+    UserDoc("TROUBLESHOOTING.md", "troubleshooting", "Troubleshooting", "Help"),
+    UserDoc("WINDOWS.md", "windows", "Windows", "Help"),
 )
 _SLUGS = {doc.file: doc.slug for doc in USER_DOCS}
 

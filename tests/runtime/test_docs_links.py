@@ -26,7 +26,7 @@ _REPO_PATH_ALLOWED = {
     # Locates the packaged TROUBLESHOOTING.md mirror on disk.
     "runtime/paths.py",
     # Maintainer tooling: syncs the packaged mirror / renders Markdown embedded in
-    # docs/user/USAGE.md (a relative link there), not printed links.
+    # docs/user/CLI-REFERENCE.md (a relative link there), not printed links.
     "dev_support/reference_docs.py",
     "dev_support/flow_specialist_reference.py",
 }

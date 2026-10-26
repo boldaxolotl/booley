@@ -7,7 +7,7 @@ Apply these rules to every mission area that uses a Goal child.
   mission prompt. Claude children use `/booley-goal`. The operator never
   implements the child's design work. Read
   `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
-  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
+  `docs/user/GOAL-MODE.md` from the candidate build for the workflow.
 - The operator is the deciding human for disposable QA proposals: answer entry
   choices and approve or reject the exact proposal with a reason, through the
   client form or a message the child quotes as `approval_quote`. A proposal

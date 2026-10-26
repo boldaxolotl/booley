@@ -13,10 +13,11 @@ The documentation is split by responsibility, not by reader type:
 | Document | Owns |
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools and built-in Specialist evidence contracts |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How RTL developers run built-in Booley Flows and interpret their results |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How RTL developers run built-in Booley Flows and interpret their results |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of the built-in Flows |
-| [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
+| [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
+| [TARGETS.md](../user/TARGETS.md) | The `.core` design description, Targets, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 This document may show small configuration fragments when an extension contract
@@ -30,7 +31,7 @@ This is an implementation-level guide. It assumes the vocabulary and whole-syste
 - **[GLOSSARY-MAP.md](../../GLOSSARY-MAP.md)** — the controlled-vocabulary
   index. This guide uses the shared Booley, Goal Mode, and Simulation Coverage glossaries.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the agent session, Specialists, and the Booley Flow contract fit together at run time.
-- **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Sim Commands.
+- **[CONFIG.md](../user/CONFIG.md)** — the `booley.toml` configuration reference. `.core` files and `tests.toml` are in [TARGETS.md](../user/TARGETS.md), EDA provisioning in [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning), and Pre-Sim Commands in [FLOW-SIM.md](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
 - **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.
 - **[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
 - **[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)** — which EDA tools and provisioning sources are supported and what each requires.
@@ -127,7 +128,7 @@ Write a Custom Flow or custom MCP tool when:
 - You need a project-specific check that doesn't belong in the framework (DRC, protocol compliance, custom linting)
 - You need an LLM-powered specialist with project-specific prompting
 
-First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Sim Commands](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
+First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Sim Commands](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
 
 ---
 
@@ -588,7 +589,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/USAGE.md#working-with-evidence) lists the tools that accept none.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/GOAL-MODE.md#working-with-evidence) lists the tools that accept none.
 
 #### Diagnose a Flow Through the Direct CLI
 
@@ -661,7 +662,7 @@ Interactive session logs land under `.booley/.interactive_logs/<session-id>/`. A
 
 Goals are Goal Mode's mandatory success conditions. Only bound Booley Flow or
 Specialist evidence can meet them; Finish checks current evidence for every Goal
-(see [USAGE.md](../user/USAGE.md#working-with-evidence)). The implementation
+(see [GOAL-MODE.md](../user/GOAL-MODE.md#working-with-evidence)). The implementation
 translates Goals into shared Criteria definitions and evidence keys, then routes
 producer `set_criterion()` updates to the declared Goals.
 [Criterion](../GLOSSARY.md#execution-and-evidence) is the internal policy/evaluation vocabulary in shared Criteria and evidence code used by Goal Mode and Specialists.
@@ -851,11 +852,11 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | I want to... | Do this |
 |-------------|---------|
 | Add an in-container endpoint | Write a `BooleyFlow`, `Specialist`, or direct `McpTool` subclass in `.booley/mcp_tools/`; discovery is automatic |
-| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) |
-| Use host-provisioned Vivado | Follow [CONFIG.md](../user/CONFIG.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
+| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([FLOW-SIM.md](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)) |
+| Use host-provisioned Vivado | Follow [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
-| Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
+| Configure a built-in Booley Flow | Use the Configuration section of its Flow page: [sim](../user/FLOW-SIM.md#configuration-flowssim), [lint](../user/FLOW-LINT.md#configuration-flowslint), [synth](../user/FLOW-SYNTH.md#configuration-flowssynth), [fpga](../user/FLOW-FPGA.md#configuration-flowsfpga) |
 | Try a custom MCP tool | Request a fresh MCP tool list, then ask the Interactive Mode agent to invoke it |
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect shared endpoint-validation diagnostics |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |

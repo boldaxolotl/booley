@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-CONFIG_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "CONFIG.md"
+TARGETS_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "TARGETS.md"
 DESIGN_SECTION = (
-    CONFIG_MD.read_text(encoding="utf-8")
+    TARGETS_MD.read_text(encoding="utf-8")
     .split("## Design description (`.core`) and tests (`tests.toml`)", 1)[1]
     .split("\n## ", 1)[0]
 )

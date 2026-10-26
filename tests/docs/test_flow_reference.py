@@ -29,7 +29,15 @@ from booley.flows.sim.flow import (
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
+USER_DOCS = REPO_ROOT / "docs" / "user"
+# Shared Flow behavior lives in FLOW_REFERENCE.md; each Flow has its own page.
+REFERENCE = USER_DOCS / "FLOW_REFERENCE.md"
+FLOW_PAGES = {
+    "sim": ("FLOW-SIM.md", "COVERAGE.md"),
+    "lint": ("FLOW-LINT.md",),
+    "synth": ("FLOW-SYNTH.md",),
+    "fpga": ("FLOW-FPGA.md",),
+}
 REPORTS = REPO_ROOT / "docs" / "internals" / "FLOW_REPORTS.md"
 MCP_TOOLS = REPO_ROOT / "docs" / "internals" / "MCP-TOOLS.md"
 FLOW_TYPES = (
@@ -45,16 +53,20 @@ def _reference_text(doc: Path = REFERENCE) -> str:
     return doc.read_text(encoding="utf-8")
 
 
-def _flow_section(flow_name: str, doc: Path = REFERENCE) -> str:
-    """Return the top-level ``## `<flow>` `` chapter of *doc*."""
+def _flow_section(flow_name: str, doc: Path | None = None) -> str:
+    """Return a Flow's user-doc pages, or the ``## `<flow>` `` chapter of *doc*."""
+    if doc is None:
+        return "\n".join(_reference_text(USER_DOCS / page) for page in FLOW_PAGES[flow_name])
     text = _reference_text(doc)
     start = text.index(f"## `{flow_name}`")
     end = text.find("\n## ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
 
-def _shared_section(doc: Path = REFERENCE) -> str:
-    """Return everything in *doc* before its first per-Flow chapter."""
+def _shared_section(doc: Path | None = None) -> str:
+    """Return the shared Flow page, or everything in *doc* before its first Flow chapter."""
+    if doc is None:
+        return _reference_text()
     return _reference_text(doc).split("\n## `sim`", maxsplit=1)[0]
 
 
@@ -150,7 +162,7 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
 
 def test_sim_configured_skip_control_stays_documented() -> None:
     section = " ".join(_flow_section("sim").split())
-    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+    config = " ".join(_reference_text(USER_DOCS / "TARGETS.md").split())
     assert "exact explicit suite" in section
     assert "overrides those entries" in section
     assert "fails preflight instead of passing vacuously" in section
@@ -159,7 +171,7 @@ def test_sim_configured_skip_control_stays_documented() -> None:
 
 def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
     shared = " ".join(_shared_section().split())
-    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+    config = " ".join(_flow_section("sim").split())
 
     assert "[flows.sim].build_timeout_ms" in shared
     assert "recipe `build_timeout_ms`" in shared
@@ -339,8 +351,8 @@ def test_synth_help_lists_live_policy_keys():
 
 
 def test_target_omission_rule_matches_usage_and_reference() -> None:
-    usage = REFERENCE.parent / "USAGE.md"
-    for document in (REFERENCE, usage):
+    cli_reference = USER_DOCS / "CLI-REFERENCE.md"
+    for document in (REFERENCE, cli_reference):
         text = " ".join(document.read_text(encoding="utf-8").split())
         assert all(
             fragment in text

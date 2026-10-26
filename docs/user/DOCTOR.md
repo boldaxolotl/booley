@@ -174,7 +174,7 @@ from quiet attributable session presence; quiet does not prove abandonment.
   declares, arguments or a `seed` template on a Cocotb Target, or
   `default_seed` on an unseeded Target. A section key that names no Target,
   or two keys that name one Target, also fail and name the key or keys. See
-  [Tests (`tests.toml`)](CONFIG.md#tests-teststoml).
+  [Tests (`tests.toml`)](TARGETS.md#tests-teststoml).
 - `tickets.leftover-board`: nonempty `tickets/board`, `tickets/state`,
   `tickets/logs`, `tickets/locks`, or `tickets/waiver-candidates` is reported
   by directory name. Preserve needed work, then delete that directory. Empty
@@ -191,3 +191,56 @@ fix. These settings do not configure Goal Mode.
 Doctor WARNs with `workspace.legacy-source-stash` when an interrupted run left
 a source stash record for this worktree; see
 [manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run).
+
+## Doctor waivers (`doctor-waivers.toml`)
+
+`booley doctor` reserves `WARN` for an actionable failure mode. A clean setup
+has no active warnings: fix the cause, or explicitly accept a deliberate
+project constraint in `.booley/doctor-waivers.toml`. Waived findings
+remain visible as `WAIVED` and are counted separately; the file does not hide
+output or change failures.
+
+Each warning prints a stable identity at the end of its line:
+
+```text
+WARN  trace unavailable for sim_fast [sim.trace-unavailable:sim_fast]
+```
+
+The part before the colon is `check`; the part after it is the optional
+`subject`. Match that identity exactly:
+
+```toml
+version = 1
+
+[[waiver]]
+check = "sim.trace-unavailable"
+subject = "sim_fast"
+reason = "The upstream C++ harness has no trace switch; functional simulation is sufficient."
+expires = 2026-11-01
+
+[[waiver]]
+check = "project.git-excludes-missing"
+subject = ".booley"
+reason = "This project deliberately tracks .booley in its parent repository."
+permanent = true
+```
+
+The schema is intentionally strict:
+
+- `version` must be the integer `1`.
+- Every `[[waiver]]` needs a lowercase dot/dash-separated `check` and a
+  non-empty `reason`.
+- `subject`, when present, is an exact string match. Without it, the entry
+  matches every subject for that check; use that broad scope only when one
+  justification genuinely applies to all findings.
+- Set exactly one of `expires` (a TOML date, active through that date) or
+  `permanent = true`. Prefer expiration for temporary environment or upstream
+  constraints.
+- A duplicate `check`/`subject` pair, unknown key, invalid type, or malformed
+  TOML makes Doctor fail rather than silently ignoring the intended policy.
+
+Expired entries do not match; Doctor emits a note and reports the warning
+again. `booley doctor --verbose` also notes active entries that matched no
+current warning, which is the cue to delete stale waivers. Waivers apply only
+to warnings—never failures or notes—and match structured IDs rather than
+human-readable message text.

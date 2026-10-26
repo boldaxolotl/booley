@@ -13,10 +13,11 @@ The documentation is split at the public-interface seam:
 | Document | Owns |
 |---|---|
 | **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How to run those built-in Flows and interpret their verdicts and Criteria |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run those built-in Flows and interpret their verdicts and Criteria |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
-| [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
+| [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
+| [TARGETS.md](../user/TARGETS.md) | The `.core` design description, Targets, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 Public behavior is mentioned only where an implementation invariant needs
@@ -72,8 +73,9 @@ Configuration is split across three files by **owner and concern**:
 | `.booley/tests.toml` | Booley | Verification intent: per-Target test lists and the run-time test selector (e.g. a `+test_id=` plusarg template; a plusarg is a `+name=value` simulator argument) |
 | `.booley/booley.toml` | Booley | Project metadata, source dirs, per-Flow policy, and approved EDA provisioning requests |
 
-[CONFIG.md](../user/CONFIG.md) owns the exact schemas, defaults, and configuration
-examples for all three. The table is repeated here only because ownership of an
+[TARGETS.md](../user/TARGETS.md) owns the exact schemas, defaults, and
+examples for the `.core` and `tests.toml`; [CONFIG.md](../user/CONFIG.md) and the
+per-Flow pages own them for `booley.toml`. The table is repeated here only because ownership of an
 input determines which layer may interpret it.
 
 Every Flow command executes inside the Sandbox. Most EDA binaries ship
@@ -294,9 +296,9 @@ active-Project cache.
 
 `[flows.sim]` holds execution and verdict policy; `tests.toml` holds the
 per-Target test list and run-time selector; the FuseSoC Target holds the build
-inputs and simulator choice. [CONFIG.md](../user/CONFIG.md#simulation--passfail-sentinels-flowssim)
+inputs and simulator choice. [FLOW-SIM.md](../user/FLOW-SIM.md#simulation--passfail-sentinels-flowssim)
 owns the exact simulation keys and defaults, while its
-[design-description section](../user/CONFIG.md#design-description-core-and-tests-teststoml)
+[design-description section](../user/TARGETS.md#design-description-core-and-tests-teststoml)
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (repeatable exact include), `--tests-file`, `--trace`
@@ -486,7 +488,7 @@ never "Verilator-clean".
 
 The Target selects the linter and owns its rules and waivers. `[flows.lint]`
 holds execution policy, including whether warnings affect the process exit.
-[CONFIG.md](../user/CONFIG.md#lint-flowslint) owns the exact keys and defaults.
+[FLOW-LINT.md](../user/FLOW-LINT.md#configuration-flowslint) owns the exact keys and defaults.
 
 Lint *policy*, which rules fire and what is waived, is design description,
 not Booley config, so it lives on the Target. For Verilator, that is a `.vlt`
@@ -586,7 +588,7 @@ The `.core` Target owns the persistent recipe and timing inputs: frontend,
 profile, flattening, synthesis mode, backend overrides, source files, SDC, and
 toplevel. `[flows.synth]` owns execution and verdict policy such as the default
 Target, timeout, and intentional-latch allowance.
-[CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth) owns the exact keys, defaults,
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth) owns the exact keys, defaults,
 and examples.
 
 `ppa_profile` and `synth_mode` are the main synthesis controls. The built-in
@@ -594,7 +596,7 @@ backend translates the profile to Yosys and OpenROAD settings; backend-specific
 knobs live under `advanced_settings_yosys` and `advanced_settings_openroad`.
 Per-call profile and expert overrides are resolved before command generation;
 their precedence and profile contents are part of the
-[configuration reference](../user/CONFIG.md#asic-synthesis-flowssynth).
+[configuration reference](../user/FLOW-SYNTH.md#configuration-flowssynth).
 
 Timing intent lives in the Target's SDC fileset (below), not in config scalars.
 
@@ -604,7 +606,7 @@ Timing constraints are **design intent** (clock period, I/O delays,
 false/multicycle paths), so they live on the FuseSoC Target as a `file_type:
 SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
 FPGA XDC is a Target fileset. The configuration shape and example live in
-[CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth).
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth).
 
 A physical Target with **no** SDC fileset is a **hard error**, not a silent
 default: the run fails before EDA execution, naming the Target and the fix,
@@ -778,7 +780,7 @@ timing is met.
 The selected Target owns FPGA build intent: device part, portable PPA profile,
 out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
-policy; every invocation still names its Target. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
+policy; every invocation still names its Target. [FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)
 owns the exact keys, defaults, and examples.
 
 The Target's `fpga` name axis is the drivability discriminator. Its declared
@@ -833,7 +835,7 @@ fileset.
 The source is a `file_type: xdc` fileset in the `.core`:
 source-controlled and per-target. Multiple XDC files are supported; the
 configuration shape and example live in
-[CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga).
+[FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga).
 
 The `file_type: xdc` fileset is the **sole** source: a Target with no such
 fileset is a hard error naming the Target and the fix. XDC is mandatory, and
@@ -846,7 +848,7 @@ single global Flow section from silently applying the wrong device to another
 Target.
 
 The public controls and baseline behavior are documented in
-[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#fpga). The implementation receives
+[FLOW-FPGA.md](../user/FLOW-FPGA.md#fpga-implementation-fpga). The implementation receives
 those already-validated arguments from the common Flow interface.
 
 All build-time inputs come from the Target, not the Flow policy section: the
@@ -934,7 +936,7 @@ period is unknown.
 Timing thresholds (`fpga_impl_ok`) gate on these per-clock values. A **flat**
 `critical_path_ps_max` / `fmax_mhz_min` gates the timing-worst clock, so every
 clock must pass, while a **clock-scoped** `clk_i.fmax_mhz_min` gates just
-clock `clk_i` (see [USAGE.md](../user/USAGE.md#threshold-parameters)).
+clock `clk_i` (see [GOAL-MODE.md](../user/GOAL-MODE.md#threshold-parameters)).
 
 ### Verdict semantics
 

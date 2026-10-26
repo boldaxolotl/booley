@@ -18,7 +18,7 @@ Keep Project Root as the default, as chosen in the
 Projects can select a literal directory with `[flows.sim].run_cwd`. Durable
 ordinary-HDL Simulation Campaigns also support `{campaign}`, `{target}`, `{test}`,
 and `{attempt}` placeholders for Booley-owned attempt directories. The
-[configuration reference](../user/CONFIG.md#sim-working-directory-flowssimrun_cwd)
+[configuration reference](../user/FLOW-SIM.md#sim-working-directory-flowssimrun_cwd)
 describes their lifecycle and validation.
 
 Expose fileset `copyto:` runtime inputs in that resolved directory so

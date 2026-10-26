@@ -147,7 +147,12 @@ def on_serve(server, config, builder):
 def on_env(env, config, files):
     """Expose the docs reading order to the templates."""
     env.globals["user_docs"] = [
-        {"title": doc.title, "url": f"docs/{doc.slug}/", "src_uri": f"docs/{doc.file}"}
+        {
+            "title": doc.title,
+            "section": doc.section,
+            "url": f"docs/{doc.slug}/",
+            "src_uri": f"docs/{doc.file}",
+        }
         for doc in docs_links.USER_DOCS
     ]
     return env

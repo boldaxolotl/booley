@@ -20,10 +20,17 @@
     <nav class="docs__nav" aria-label="Documentation" data-pagefind-ignore="all">
       <details class="docs__menu" open>
         <summary>All docs</summary>
-        <ol>
-          {% for doc in user_docs %}
+        {#- One list per sidebar group; consecutive docs share a section. -#}
+        {% set group = namespace(section=None) %}
+        {% for doc in user_docs %}
+          {% if doc.section != group.section %}
+            {% if not loop.first %}</ol>{% endif %}
+            <p class="docs__group">{{ doc.section }}</p>
+            <ol>
+            {% set group.section = doc.section %}
+          {% endif %}
             <li><a href="{{ doc.url | url }}"{% if doc.src_uri == page.file.src_uri %} aria-current="page"{% endif %}>{{ doc.title }}</a></li>
-          {% endfor %}
+        {% endfor %}
         </ol>
       </details>
     </nav>
