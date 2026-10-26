@@ -10,10 +10,22 @@ from contextlib import suppress
 from pathlib import Path
 
 
+def _read_source_document(source: Path, attempts: int = 100) -> dict:
+    """Read the gate source, retrying while a live-file fallback is still mid-write."""
+    for attempt in range(attempts):
+        try:
+            return json.loads(source.read_text())
+        except json.JSONDecodeError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
+
+
 def should_fail(source: Path, gate: str, baseline: set[str]) -> bool:
     if gate == "any":
         return True
-    document = json.loads(source.read_text())
+    document = _read_source_document(source)
     if gate == "complete":
         return document.get("complete") is True
     return bool(set(document.get("acceptance_transactions", [])) - baseline)
