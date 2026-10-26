@@ -706,7 +706,7 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
             + sandbox_remedy(workspace, runtime_only=True)
         )
     _ensure_unlicensed_refresh(workspace, issuance, labels)
-    backup = f"{name}-pre-refresh"
+    backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
     if _strict_refresh_container(backup) is not None:
         raise SessionError(
             f"cannot refresh while recovery container {backup!r} exists; inspect it first"
@@ -841,7 +841,7 @@ def discard_refresh_candidate(workspace: Path, issuance: Issuance) -> None:
 
 def _park_session_for_rebuild(name: str) -> ParkedSession:
     """Stop and rename an unlicensed Session so refresh can roll it back."""
-    backup = f"{name}-pre-refresh"
+    backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
     if idk.container_exists(backup):
         raise SessionError(
             f"cannot refresh while recovery container {backup!r} exists; inspect it first"

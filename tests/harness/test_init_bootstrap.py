@@ -505,3 +505,32 @@ def test_auth_reseed_classifies_image_repair(tmp_path, monkeypatch, capsys, host
     output = capsys.readouterr().out
     assert ("booley bootstrap" in output) == host
     assert "booley init" in output
+
+
+def test_seed_accepts_absent_proxy_and_network_under_unproxied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.config.host_config import SandboxHostPolicy
+    from booley.harness import host_sidecars
+    from tests.harness.test_bootstrap import _wire_current
+    from tests.harness.test_host_sidecars import _egress_docker
+
+    reconcile_sidecars = host_sidecars.reconcile_sidecars
+    _wire_current(monkeypatch)
+    monkeypatch.setattr(host_sidecars, "reconcile_sidecars", reconcile_sidecars)
+    policy = SandboxHostPolicy(egress="unproxied")
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: policy)
+    docker = _egress_docker(monkeypatch)
+    docker.add_sidecar(
+        host_sidecars.legacy.REAPER_CONTAINER,
+        "reaper",
+        host_sidecars.legacy.REAPER_IMAGE,
+        policy,
+    )
+    ctx = init_cmd.InitContext(project_root=tmp_path)
+
+    result = init_cmd._reconcile_init_bootstrap(ctx, _args(seed=True))
+
+    assert result is not None, "absent proxy and network are current under unproxied"
+    assert "run `booley bootstrap`" not in capsys.readouterr().out
+    assert docker.mutations() == []

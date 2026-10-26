@@ -61,11 +61,30 @@ After upgrading Booley, run `booley bootstrap --update` instead.
 It validates Git, Docker, and VS Code; installs or verifies VS Code's Dev
 Containers extension; deploys packaged skills; verifies the shared Nangate45
 cache; reconciles the base Sandbox Image; and converges the
-single global egress network, proxy, and reaper. It neither discovers a Project
+single global egress network, proxy, and reaper (under unproxied egress, only
+the reaper; see below). It neither discovers a Project
 nor selects an agent provider. `booley bootstrap --check-only` performs no
 writes and returns 1 when required work is pending; warnings from optional
 extensions remain non-blocking. `--force` refreshes Booley-managed host
 resources while preserving caches and user-owned files.
+
+Under host `[sandbox] egress = "unproxied"` (see
+[host configuration](SANDBOX.md#host-configuration-configtoml)), Bootstrap
+builds and runs only the reaper, never the egress proxy. It removes an existing
+`booley-proxy` container and `booley-egress-v2` network only when no Booley
+Sandbox is running and no Sandbox parked by an interrupted refresh or rebuild
+remains. Otherwise it lists each one with its repair command and exits 2, as
+for other sidecar drift. `--check-only` treats an absent proxy and network as
+current. It reports leftover ones as pending, or as an error naming what blocks
+their removal.
+`booley init` and `booley init --seed` accept both, so reissuing one Project
+never waits for other Projects' Sandboxes. The setting is daemon-wide: the
+removal affects every Project on the Docker daemon. A stopped Sandbox still
+attached to the removed network cannot start again; recreate it with `booley
+session down`, then `booley session up` (or Dev Containers: Rebuild Container
+when VS Code owns it). Switching back to `"proxy"` makes the next Bootstrap
+recreate the network and proxy. Bootstrap leaves the proxy image and the
+`booley-unproxied-v1` network in place.
 
 Bootstrap treats stable release tags in the official
 `ghcr.io/boldaxolotl/booley-sandbox` repository as temporary acquisition names.

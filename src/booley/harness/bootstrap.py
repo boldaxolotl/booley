@@ -306,7 +306,10 @@ def _reconcile_bootstrap_images(
     plan = None
     if intent is not Intent.CHECK:
         try:
-            requests = (*host_capacity_requests(intent), *host_sidecars.plan_image_builds(intent))
+            requests = (
+                *host_capacity_requests(intent),
+                *host_sidecars.plan_image_builds(intent, egress=policy.egress),
+            )
             if requests:
                 plan = DockerBuildPlan(requests)
                 ensure_docker_build_capacity(

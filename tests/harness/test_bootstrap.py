@@ -51,7 +51,9 @@ def _wire_current(
 ) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
-    monkeypatch.setattr(bootstrap.host_sidecars, "plan_image_builds", lambda _intent: ())
+    monkeypatch.setattr(
+        bootstrap.host_sidecars, "plan_image_builds", lambda _intent, **_kwargs: ()
+    )
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
     monkeypatch.setattr(
@@ -135,7 +137,7 @@ def test_bootstrap_refuses_aggregate_image_plan_before_first_build(
     monkeypatch.setattr(
         bootstrap.host_sidecars,
         "plan_image_builds",
-        lambda _intent: (proxy, reaper),
+        lambda _intent, **_kwargs: (proxy, reaper),
     )
     observed = []
 
@@ -168,7 +170,7 @@ def test_bootstrap_threads_aggregate_plan_through_every_build(
     monkeypatch.setattr(
         bootstrap.host_sidecars,
         "plan_image_builds",
-        lambda _intent: (proxy,),
+        lambda _intent, **_kwargs: (proxy,),
     )
     monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", lambda *_a, **_kw: None)
     observed = []
@@ -187,6 +189,37 @@ def test_bootstrap_threads_aggregate_plan_through_every_build(
 
     assert bootstrap.reconcile_bootstrap(Intent.ENSURE).ready
     assert [plan.requests for plan in observed] == [(base, proxy), (base, proxy)]
+
+
+def test_unproxied_capacity_plan_omits_proxy_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    sidecars = bootstrap.host_sidecars
+    plan_image_builds = sidecars.plan_image_builds
+    _wire_current(monkeypatch)
+    monkeypatch.setattr(sidecars, "plan_image_builds", plan_image_builds)
+    monkeypatch.setattr(
+        bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy(egress="unproxied")
+    )
+    monkeypatch.setattr(
+        sidecars,
+        "_docker_adapter",
+        lambda: Mock(
+            run=Mock(return_value=subprocess.CompletedProcess([], 1, "", "No such image"))
+        ),
+    )
+    observed = []
+
+    def refuse(*_args, **kwargs):
+        observed.extend(kwargs["remaining_plan"].requests)
+        raise DockerCapacityError("capacity refused")
+
+    monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", refuse)
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    assert result.findings[-1].resource == "image-capacity"
+    assert [request.output_tag for request in observed] == [sidecars.legacy.REAPER_IMAGE], (
+        "the capacity plan must not charge the unused egress-proxy image"
+    )
 
 
 def test_noncanonical_install_stops_before_host_mutation(
