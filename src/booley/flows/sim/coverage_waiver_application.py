@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     DurableTargetIdentity,
@@ -28,6 +29,7 @@ from booley.flows.sim.coverage_waivers import (
     CoverageRepositoryRoots,
     load_approved_waiver_set,
 )
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 
 
 class WaiverPlanError(ValueError):
@@ -36,8 +38,9 @@ class WaiverPlanError(ValueError):
 
 def _reject_symlinks(anchor_root: Path, approval_dir: Path) -> None:
     """Never traverse writable links while predicting or promoting approvals."""
+    entry = crossed_booley_dir_entry(approval_dir)  # the anchor may be a linked .booley
     for path in (approval_dir, *approval_dir.parents):
-        if path.is_symlink():
+        if path.is_symlink() and not is_booley_dir_entry(path, entry):
             raise WaiverPlanError(f"approval directory contains a symlink: {path}")
         if path == anchor_root:
             break

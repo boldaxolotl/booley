@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -19,6 +20,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.runtime.atomic_files import atomic_write_once
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -270,12 +272,16 @@ def _expected_scoring(collection: Mapping[str, object]) -> dict[str, object]:
 
 
 def _contains_link(path: Path) -> bool:
-    return any(is_report_link(item) for item in (path, *path.parents))
+    entry = crossed_booley_dir_entry(path)  # a symlinked .booley entry is followed
+    return any(
+        is_report_link(item) and not is_booley_dir_entry(item, entry)
+        for item in (path, *path.parents)
+    )
 
 
 def _open_regular(path: Path) -> int:
     try:
-        return open_regular_nofollow(path)
+        return open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
     except OSError as exc:
         raise CoverageCampaignStoreError(
             "COV_PATH_UNSAFE", f"Cannot open retained regular file: {path}"
