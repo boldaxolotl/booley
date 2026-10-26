@@ -9,6 +9,7 @@ import pytest
 
 from booley.harness import booley as cli
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.docs_links import SITE_URL
 
 
 def _command_paths(parser, prefix=()):
@@ -178,7 +179,7 @@ def test_bare_host_help_precedes_project_and_runtime_work(
         "booley bootstrap",
         "booley init",
         "devcontainer",
-        "https://boldaxolotl.github.io/booley/docs/setup/",
+        f"{SITE_URL}docs/setup/",
     ):
         assert text in output.out
 

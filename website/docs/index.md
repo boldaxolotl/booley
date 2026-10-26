@@ -57,7 +57,7 @@ document: Booley product datasheet
         </div>
         <div>
           <h3>Goal Mode</h3>
-          <p>You set mandatory Goals up front, such as <code>SYNTH:synth_fifo (area increase ≤ 10%)</code> or <code>COVERAGE:sim_fifo (line ≥ 90%, tests all)</code>. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent’s claim of success (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode">details</a>).</p>
+          <p>You set mandatory Goals up front, such as <code>SYNTH:synth_fifo (area increase ≤ 10%)</code> or <code>COVERAGE:sim_fifo (line ≥ 90%, tests all)</code>. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent’s claim of success (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/GOAL-MODE.md#goal-mode">details</a>).</p>
         </div>
         <div>
           <h3>Waveform queries</h3>

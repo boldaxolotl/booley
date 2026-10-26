@@ -5493,7 +5493,7 @@ def _literal_sim_run_cwd(project: ProjectAudit) -> str | None:
 def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
     """Warn when a literal ``[flows.sim].run_cwd`` will be missing at run time.
 
-    Booley never creates a literal ``run_cwd`` (docs/user/CONFIG.md), so it must
+    Booley never creates a literal ``run_cwd`` (docs/user/FLOW-SIM.md), so it must
     exist in every checkout and Goal worktree. That means a real directory that
     holds at least one *committed* file: an empty directory, a gitignored one, or
     one whose placeholder is only staged vanishes in a fresh checkout. Unset,

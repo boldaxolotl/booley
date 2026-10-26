@@ -243,6 +243,22 @@ class TestBuildSpec:
         assert f"source=/empty,target={dc.WORK_DIR}/a/b,type=bind,readonly" in spec["mounts"]
         assert f"source=/empty,target={dc.WORK_DIR}/c/d,type=bind,readonly" in spec["mounts"]
 
+    def test_unproxied_spec_joins_routed_network_without_proxy_environment(self):
+        spec = dc.build_devcontainer_spec(dc.APP_NONE, egress="unproxied")
+        networks = [
+            spec["runArgs"][i + 1] for i, a in enumerate(spec["runArgs"]) if a == "--network"
+        ]
+        assert networks == [dc.UNPROXIED_NETWORK]
+        proxy_keys = {"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY"}
+        assert not proxy_keys & set(spec["remoteEnv"])
+        assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
+        assert "BOOLEY_EGRESS" not in spec["remoteEnv"]
+
+    def test_proxy_egress_leaves_spec_byte_identical(self):
+        base = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        proxied = dc.build_devcontainer_spec(dc.APP_CLAUDE, egress="proxy")
+        assert json.dumps(base) == json.dumps(proxied)
+
     def test_no_mask_paths_leaves_spec_byte_identical(self):
         # The empty default must be a no-op: existing installs re-seed the
         # exact same spec they had before the knob existed.

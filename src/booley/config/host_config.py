@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_int, require_list
+from booley.core.egress_modes import EGRESS_MODES
 from booley.core.user_paths import config_dir
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 7200
@@ -24,7 +25,7 @@ HOST_POLICY_MIGRATION_GUIDANCE = (
 )
 
 _TOP_LEVEL_KEYS = frozenset({"sandbox", "interactive"})
-_SANDBOX_KEYS = frozenset({"idle_timeout_seconds", "max_sessions", "egress_allowlist"})
+_SANDBOX_KEYS = frozenset({"idle_timeout_seconds", "max_sessions", "egress_allowlist", "egress"})
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
 
@@ -35,6 +36,8 @@ class SandboxHostPolicy:
     idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS
     max_sessions: int = DEFAULT_MAX_SESSIONS
     egress_allowlist: tuple[str, ...] = ()
+    # "proxy" (default) or "unproxied"; one policy for every Project on the daemon.
+    egress: str = "proxy"
 
 
 class HostConfigError(ValueError):
@@ -79,6 +82,7 @@ def _parse_document(document: object, path: Path) -> SandboxHostPolicy:
     table = "sandbox" if "sandbox" in root else "interactive"
     section = _table(root.get(table, {}), path, table)
     _reject_unknown(section, _SANDBOX_KEYS, path, table)
+    allowlist = _egress_allowlist(section, path, table)
     return SandboxHostPolicy(
         idle_timeout_seconds=_positive_int(
             section,
@@ -94,7 +98,8 @@ def _parse_document(document: object, path: Path) -> SandboxHostPolicy:
             path,
             table,
         ),
-        egress_allowlist=_egress_allowlist(section, path, table),
+        egress_allowlist=allowlist,
+        egress=_egress_mode(section, path, table, allowlist),
     )
 
 
@@ -157,6 +162,22 @@ def _egress_allowlist(section: Mapping[str, Any], path: Path, table: str) -> tup
             raise HostConfigError(path, field, "must be a hostname string")
         domains.append(_hostname(hostname, path, field))
     return tuple(domains)
+
+
+def _egress_mode(
+    section: Mapping[str, Any], path: Path, table: str, allowlist: tuple[str, ...]
+) -> str:
+    """Validate the host egress mode; the proxy allowlist is meaningless unproxied."""
+    mode = section.get("egress", "proxy")
+    if mode not in EGRESS_MODES:
+        raise HostConfigError(path, f"{table}.egress", 'must be "proxy" or "unproxied"')
+    if mode == "unproxied" and allowlist:
+        raise HostConfigError(
+            path,
+            f"{table}.egress",
+            "unproxied cannot be combined with a non-empty egress_allowlist",
+        )
+    return mode
 
 
 def _hostname(value: str, path: Path, field: str) -> str:

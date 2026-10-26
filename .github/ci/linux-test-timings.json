@@ -25,7 +25,7 @@
     "tests/ci/test_test_profiles.py::test_unprofiled_native_ci_filter_keeps_native_selection": 1.382,
     "tests/dev_support/test_build_development_wheel.py::test_source_launcher_runs_from_unrelated_cwd": 1.943,
     "tests/dev_support/test_flow_specialist_reference.py::test_cheatsheet_keeps_tools_and_specialists_in_separate_blocks": 1.26,
-    "tests/dev_support/test_flow_specialist_reference.py::test_committed_block_matches_registry[USAGE.md]": 1.251,
+    "tests/dev_support/test_flow_specialist_reference.py::test_committed_block_matches_registry[CLI-REFERENCE.md]": 1.251,
     "tests/dev_support/test_flow_specialist_reference.py::test_docs_render_links_flow_reference_instead_of_controls": 1.36,
     "tests/dev_support/test_flow_specialist_reference.py::test_docs_render_uses_session_runtime_only_shape": 1.521,
     "tests/dev_support/test_flow_specialist_reference.py::test_every_builtin_flow_has_key_controls": 1.346,

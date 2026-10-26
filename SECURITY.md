@@ -15,7 +15,7 @@ This affects human and editor Git commands as well as Booley's host-side Git
 calls. Doctor does not currently detect this tampering and can itself trigger it.
 
 Remediation is deferred for reconsideration on **31 DEC 2026**; that is a review
-date, not a promised fix date. See the [current precautions](docs/user/TROUBLESHOOTING.md#known-sandbox-escape-through-shared-git-metadata).
+date, not a promised fix date. See the [current precautions](docs/user/SANDBOX.md#known-sandbox-escape-through-shared-git-metadata).
 
 ## Reporting a vulnerability
 

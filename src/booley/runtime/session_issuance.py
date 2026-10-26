@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
+from booley.config.host_config import HostConfigError, load_host_policy
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
@@ -39,6 +40,7 @@ from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPIL
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
     EGRESS_NETWORK,
+    UNPROXIED_NETWORK,
     devcontainer_path,
     render_devcontainer_json,
 )
@@ -107,14 +109,21 @@ _FIXED_RUN_ARGS = (
     "--pids-limit",
     "4096",
 )
+# Host ``[sandbox] egress = "unproxied"``: the routed network takes the slot.
+_UNPROXIED_RUN_ARGS = tuple(
+    UNPROXIED_NETWORK if item == EGRESS_NETWORK else item for item in _FIXED_RUN_ARGS
+)
 _AGENT_APPS = frozenset({"claude", "codex", "none"})
+# Proxy environment: required and fixed under host egress "proxy", absent unproxied.
+_PROXY_REMOTE_ENV = {
+    "HTTP_PROXY": "http://booley-proxy:8080",
+    "HTTPS_PROXY": "http://booley-proxy:8080",
+    "http_proxy": "http://booley-proxy:8080",
+    "https_proxy": "http://booley-proxy:8080",
+    "NO_PROXY": "localhost,127.0.0.1",
+}
 _REQUIRED_REMOTE_ENV = frozenset(
     {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "NO_PROXY",
         "BOOLEY_MCP_MODE",
         "BOOLEY_DIR",
         COMPILER_CACHE_ROOT_ENV,
@@ -123,6 +132,7 @@ _REQUIRED_REMOTE_ENV = frozenset(
 )
 _ALLOWED_REMOTE_ENV = (
     _REQUIRED_REMOTE_ENV
+    | set(_PROXY_REMOTE_ENV)
     | set(git_identity_environment(GitIdentity("Dev", "dev@localhost")))
     | {
         "ANTHROPIC_API_KEY",
@@ -134,11 +144,6 @@ _ALLOWED_REMOTE_ENV = (
     }
 )
 _FIXED_REMOTE_ENV = {
-    "HTTP_PROXY": "http://booley-proxy:8080",
-    "HTTPS_PROXY": "http://booley-proxy:8080",
-    "http_proxy": "http://booley-proxy:8080",
-    "https_proxy": "http://booley-proxy:8080",
-    "NO_PROXY": "localhost,127.0.0.1",
     "BOOLEY_MCP_MODE": "interactive",
     "BOOLEY_DIR": BOOLEY_DIR_TARGET,
     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
@@ -155,6 +160,18 @@ class RuntimeSpecError(RuntimeError):
 
 class IssuanceUnavailableError(RuntimeSpecError):
     """The host cannot authenticate a predecessor for managed refresh."""
+
+
+class HostPolicyError(RuntimeSpecError):
+    """The host config.toml carrying the Sandbox Policy is invalid."""
+
+    def __init__(self, error: HostConfigError) -> None:
+        super().__init__(str(error))
+        self.path = error.path
+
+
+class EgressDriftError(RuntimeSpecError):
+    """A Sandbox spec was issued for the other host ``[sandbox] egress`` mode."""
 
 
 @dataclass(frozen=True)
@@ -187,6 +204,7 @@ class SessionSpecInputs:
     fixed_container_environment: tuple[tuple[str, str], ...]
     installation_name: str | None
     license_profile_name: str | None
+    egress: str = "proxy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,10 +493,13 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
     """Add host-derived networks and issuance labels to a generated spec.
 
     Docker 29 accepts repeated ``--network`` flags for user-defined networks,
-    which lets VS Code create a licensed runtime atomically on both the normal
-    restricted egress network and its pre-created private license network.
+    which lets VS Code create a licensed runtime atomically on both its egress
+    network (the restricted egress network under host ``[sandbox] egress =
+    "proxy"``, the routed unproxied network otherwise) and its pre-created
+    private license network.
     """
     project = project_root.resolve(strict=True)
+    egress = _host_egress_mode()
     project_data_path = authorized_project_data_source(project)
     _pin_initialize_command(project, spec)
     _pin_project_data_mount(
@@ -490,7 +511,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
     _pin_devcontainer_mount(spec, project)
     try:
         with _issuance_requirements(project, spec, include_relay_identity=False) as requirements:
-            return _seal_with_requirements(project, spec, project_data_path, requirements)
+            return _seal_with_requirements(project, spec, project_data_path, requirements, egress)
     except (
         FlowConfigError,
         authority.AuthorityError,
@@ -504,6 +525,7 @@ def _seal_with_requirements(
     spec: dict[str, Any],
     project_data_path: Path,
     requirements: eda_requirements.SessionEdaRequirements,
+    egress: str,
 ) -> str:
     _pin_git_identity(spec, project_data_path)
     run_args = spec.get("runArgs")
@@ -524,7 +546,7 @@ def _seal_with_requirements(
     )
     for label in labels(provisional):
         run_args += ["--label", label]
-    _validate_generated_spec(project, spec, requirements, provisional)
+    _validate_generated_spec(project, spec, requirements, provisional, egress)
     return digest
 
 
@@ -610,7 +632,7 @@ def _prepare_spec(
         project_data_path,
     )
     _pin_devcontainer_mount(spec, project)
-    digest = _seal_with_requirements(project, spec, project_data_path, requirements)
+    digest = _seal_with_requirements(project, spec, project_data_path, requirements, inputs.egress)
     # The Booley Directory layout is derived from the sealed spec (and the pinned
     # image's alias capability), so it belongs to the prospective issuance, not
     # to the host inputs: issue_prepared re-derives the issuance and compares
@@ -670,7 +692,16 @@ def _session_spec_inputs(
         license_profile_name=(
             requirements.license_profile.name if requirements.license_profile else None
         ),
+        egress=_host_egress_mode(),
     )
+
+
+def _host_egress_mode() -> str:
+    """Return host ``[sandbox] egress``; an invalid host config refuses issuance."""
+    try:
+        return load_host_policy().egress
+    except HostConfigError as exc:
+        raise HostPolicyError(exc) from exc
 
 
 def _revalidate_prepared(
@@ -885,7 +916,7 @@ def _issue_document_with_requirements(
         file_sha256=_file_sha256(spec_path),
         project_data_source=project_data_source,
     )
-    _validate_generated_spec(project, spec, requirements, issuance)
+    _validate_generated_spec(project, spec, requirements, issuance, _host_egress_mode())
     _validate_bind_sources(spec["mounts"])
     image = _require_string(spec, "image")
     image_id = _resolve_image_id(image)
@@ -949,12 +980,13 @@ def _validate_grant_identity(
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
     """Validate every authority-bearing field against the current host issuance."""
     project = project_root.resolve(strict=True)
+    egress = _host_egress_mode()
     stamp = authenticate(project, spec, spec_path)
     try:
         with _issuance_requirements(
             project, spec, stamp, include_relay_identity=True
         ) as requirements:
-            _validate_generated_spec(project, spec, requirements, stamp)
+            _validate_generated_spec(project, spec, requirements, stamp, egress)
             _validate_bind_sources(spec["mounts"])
             _validate_image_identity(project, spec, stamp)
             _validate_grant_identity(stamp, requirements)
@@ -1108,10 +1140,12 @@ def _validate_generated_spec(
     spec: dict[str, Any],
     requirements: eda_requirements.SessionEdaRequirements,
     issuance: Issuance,
+    egress: str,
 ) -> None:
     unknown = set(spec) - _ALLOWED_TOP_LEVEL_KEYS
     if unknown or any(key in spec for key in _ESCAPE_KEYS - {"workspaceFolder"}):
         raise RuntimeSpecError("devcontainer.json contains an unsupported escape surface")
+    _validate_egress_mode(spec, egress)
     app = _validate_spec_identity(spec)
     expected_workspace = "source=${localWorkspaceFolder},target=/work,type=bind"
     if spec.get("workspaceMount") != expected_workspace:
@@ -1122,6 +1156,26 @@ def _validate_generated_spec(
     if spec.get("updateRemoteUserUID") is not False:
         raise RuntimeSpecError("devcontainer.json immutable user policy has drifted")
     _validate_lifecycle(spec)
+    _validate_issued_mounts(project, spec, requirements, issuance, app)
+    assert issuance.project_data_source is not None
+    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
+    _validate_environment(spec, requirements.license_environment, egress)
+    _validate_run_args(
+        spec.get("runArgs"),
+        expected_labels=labels(issuance),
+        private_network=requirements.private_network,
+        egress=egress,
+    )
+
+
+def _validate_issued_mounts(
+    project: Path,
+    spec: dict[str, Any],
+    requirements: eda_requirements.SessionEdaRequirements,
+    issuance: Issuance,
+    app: str,
+) -> None:
+    """Check every mount against the host issuance and its EDA authorization."""
     mounts = spec.get("mounts")
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
@@ -1144,14 +1198,17 @@ def _validate_generated_spec(
         raise RuntimeSpecError("devcontainer.json exposes Vivado without host authorization")
     _validate_overlaps(mounts)
     _validate_mount_surfaces(mounts, project_data_workspace_target)
-    assert issuance.project_data_source is not None
-    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
-    _validate_environment(spec, requirements.license_environment)
-    _validate_run_args(
-        spec.get("runArgs"),
-        expected_labels=labels(issuance),
-        private_network=requirements.private_network,
-    )
+
+
+def _validate_egress_mode(spec: dict[str, Any], egress: str) -> None:
+    """Refuse a spec issued for the other host egress mode before any shape check."""
+    container = spec.get("containerEnv")
+    declared = container.get("BOOLEY_EGRESS") if isinstance(container, dict) else None
+    actual = "unproxied" if declared == "unproxied" else "proxy"
+    if actual != egress:
+        raise EgressDriftError(
+            f"Sandbox spec egress mode '{actual}' differs from host [sandbox] egress = '{egress}'"
+        )
 
 
 def _validate_run_args(
@@ -1159,6 +1216,7 @@ def _validate_run_args(
     *,
     expected_labels: tuple[str, ...],
     private_network: str | None,
+    egress: str,
 ) -> None:
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
@@ -1171,12 +1229,13 @@ def _validate_run_args(
     }
     if any(item in forbidden for item in raw):
         raise RuntimeSpecError("devcontainer.json requests forbidden host authority")
-    cursor = len(_FIXED_RUN_ARGS)
-    if tuple(raw[:cursor]) != _FIXED_RUN_ARGS:
+    fixed = _FIXED_RUN_ARGS if egress == "proxy" else _UNPROXIED_RUN_ARGS
+    cursor = len(fixed)
+    if tuple(raw[:cursor]) != fixed:
         raise RuntimeSpecError(
             "devcontainer.json run arguments differ from fixed runtime hardening: "
             + format_differences(
-                {"fixed_hardening": _FIXED_RUN_ARGS},
+                {"fixed_hardening": fixed},
                 {"fixed_hardening": tuple(raw[:cursor])},
             )
         )
@@ -1240,10 +1299,14 @@ def _environment_sections(spec: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     return container, remote
 
 
-def _validate_remote_environment(remote: dict[str, Any]) -> None:
-    if not _REQUIRED_REMOTE_ENV.issubset(remote):
-        expected_presence = dict.fromkeys(sorted(_REQUIRED_REMOTE_ENV), "present")
-        actual_presence = {key: "present" for key in sorted(_REQUIRED_REMOTE_ENV) if key in remote}
+def _validate_remote_environment(remote: dict[str, Any], egress: str) -> None:
+    proxy_env = _PROXY_REMOTE_ENV if egress == "proxy" else {}
+    required = _REQUIRED_REMOTE_ENV | set(proxy_env)
+    allowed_remote = _ALLOWED_REMOTE_ENV - (set(_PROXY_REMOTE_ENV) - set(proxy_env))
+    fixed_remote = {**proxy_env, **_FIXED_REMOTE_ENV}
+    if not required.issubset(remote):
+        expected_presence = dict.fromkeys(sorted(required), "present")
+        actual_presence = {key: "present" for key in sorted(required) if key in remote}
         raise RuntimeSpecError(
             "devcontainer.json is missing fixed Sandbox environment: "
             + format_differences(expected_presence, actual_presence)
@@ -1252,20 +1315,20 @@ def _validate_remote_environment(remote: dict[str, Any]) -> None:
         not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
     ):
         raise RuntimeSpecError("devcontainer.json environment must contain strings only")
-    if set(remote) - _ALLOWED_REMOTE_ENV:
+    if set(remote) - allowed_remote:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported Sandbox environment: "
             + format_differences(
                 {"unsupported_environment_keys": []},
-                {"unsupported_environment_keys": sorted(set(remote) - _ALLOWED_REMOTE_ENV)},
+                {"unsupported_environment_keys": sorted(set(remote) - allowed_remote)},
             )
         )
-    if any(remote.get(key) != value for key, value in _FIXED_REMOTE_ENV.items()):
+    if any(remote.get(key) != value for key, value in fixed_remote.items()):
         raise RuntimeSpecError(
             "devcontainer.json fixed Sandbox environment has drifted: "
             + format_differences(
-                _FIXED_REMOTE_ENV,
-                {key: remote.get(key) for key in _FIXED_REMOTE_ENV},
+                fixed_remote,
+                {key: remote.get(key) for key in fixed_remote},
             )
         )
     app = remote.get("BOOLEY_AGENT_APP")
@@ -1340,7 +1403,9 @@ def _validate_credential_seed_sources(spec: dict[str, Any], app: str, policy: st
                 raise RuntimeSpecError(str(exc)) from exc
 
 
-def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
+def _validate_environment(
+    spec: dict[str, Any], license_environment: str | None, egress: str
+) -> None:
     container, remote = _environment_sections(spec)
     # Checked before the exact key set so a Sandbox issued before the shared
     # compiler cache gets the actionable refresh hint, not a generic key diff.
@@ -1356,6 +1421,9 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
     }
     if license_environment is not None:
         allowed_container.add("XILINXD_LICENSE_FILE")
+    if egress == "unproxied":
+        # Its value was already checked by _validate_egress_mode.
+        allowed_container.add("BOOLEY_EGRESS")
     if set(container) != allowed_container:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported container environment: "
@@ -1364,7 +1432,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
                 {"container_environment_keys": sorted(container)},
             )
         )
-    _validate_remote_environment(remote)
+    _validate_remote_environment(remote, egress)
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:

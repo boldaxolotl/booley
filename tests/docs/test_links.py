@@ -45,6 +45,7 @@ def _markdown_files() -> list[Path]:
         check=True,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     frozen = _frozen_upstream_documents()
     return [
@@ -283,3 +284,31 @@ def test_agent_instruction_document_paths_resolve() -> None:
     ]
     missing = [path.relative_to(REPO_ROOT) for path in doc_paths if not path.is_file()]
     assert not missing, f"missing documents referenced by AGENTS.md: {missing}"
+
+
+# The site moved from GitHub's project-site host to its own domain. GitHub
+# redirects the old URLs, but new text must name SITE_URL so that links do not
+# depend on that redirect. These files name the old host on purpose.
+_RETIRED_SITE_HOST = "boldaxolotl.github.io"
+_RETIRED_HOST_ALLOWED = {
+    "CHANGELOG.md",  # release history records the move
+    "src/booley/data/refs/CHANGELOG.md",  # packaged copy of the release history
+    "docs/adr/0076-publish-user-docs-on-the-project-site.md",  # amendment records the move
+    ".github/workflows/pages.yml",  # documents the redirect setting
+    "tests/docs/test_links.py",  # this guard
+}
+
+
+def test_tracked_files_name_the_site_by_its_current_domain() -> None:
+    """Old-host links pass the link check above (another host), so catch them here."""
+    result = subprocess.run(
+        ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST],
+        cwd=REPO_ROOT,
+        check=False,  # exit 1 means no match, checked below
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
+    assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"

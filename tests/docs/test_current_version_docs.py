@@ -62,7 +62,7 @@ ALLOWLIST = (
         2,
     ),
     ExceptionRule(
-        "docs/user/CONFIG.md",
+        "docs/user/FLOW-SIM.md",
         "legacy-per-test",
         "A supported literal value selecting per-test build access.",
         3,

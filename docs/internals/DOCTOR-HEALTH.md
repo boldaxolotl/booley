@@ -4,7 +4,7 @@ How Doctor's checks are split across owners, what each owner may touch, and how
 Doctor, MCP and the Dashboard read one shared health observation. The import
 rules that keep these owners apart are in
 [the source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md#doctor-diagnostic-boundary);
-waiver syntax is in [CONFIG.md](../user/CONFIG.md#doctor-waivers-doctor-waiverstoml).
+waiver syntax is in [DOCTOR.md](../user/DOCTOR.md#doctor-waivers-doctor-waiverstoml).
 
 ## Diagnostic owners
 

@@ -263,6 +263,31 @@ class TestEgressNetwork:
 # ===========================================================================
 
 
+class TestUnproxiedNetwork:
+    def test_creates_routed_network_when_missing(self, fake_docker):
+        fd = fake_docker([(lambda a: a[:2] == ["network", "inspect"], _cp(1))])
+        assert idk.ensure_unproxied_network() is True
+        assert ["network", "create", "--driver", "bridge", idk.UNPROXIED_NETWORK] in fd.calls
+
+    def test_keeps_existing_routed_network(self, fake_docker):
+        fd = fake_docker(
+            [
+                (
+                    lambda a: a[:2] == ["network", "inspect"] and "{{.Internal}}" in a,
+                    _cp(0, stdout="false\n"),
+                ),
+            ]
+        )
+        assert idk.ensure_unproxied_network() is False
+        assert not fd.ran("network", "create")
+
+    def test_rejects_internal_network_with_routed_name(self, fake_docker):
+        fd = fake_docker([(lambda a: a[:2] == ["network", "inspect"], _cp(0, stdout="true\n"))])
+        with pytest.raises(RuntimeError, match=f"docker network rm {idk.UNPROXIED_NETWORK}"):
+            idk.ensure_unproxied_network()
+        assert not fd.ran("network", "create")
+
+
 class TestProxyImage:
     def test_skips_build_when_image_present(self, fake_docker, tmp_path):
         fd = fake_docker(

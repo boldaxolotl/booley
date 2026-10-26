@@ -369,7 +369,7 @@ script lines) as you go.
      and lift the exact wording of every early-exit path.
   **Then check how often the pass sentinel prints.** A per-case `TEST SUCCEEDED`
   that fires ~96× in one run means the whole verdict rests on the tie-breaking
-  rule: **a fail sentinel wins ties** (CONFIG.md → sentinels). That is what makes
+  rule: **a fail sentinel wins ties** (FLOW-SIM.md → sentinels). That is what makes
   a fail-dominant sentinel set safe with a repeating pass string — and what makes
   a *missing* category-4 sentinel fatal. Record in row 5 that the set is
   fail-dominant by design, so nobody later "cleans up" the fail list.
@@ -447,7 +447,7 @@ script lines) as you go.
   `git -C .booley submodule status` too. If either has any, add a
   decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
-  cloned, so private SSH URLs are not consulted (mechanics in CONFIG.md →
+  cloned, so private SSH URLs are not consulted (mechanics in TARGETS.md →
   "Submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
@@ -553,7 +553,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Enumerate the full
    Target list here**, not just a name per intent: each Target with its intent,
    toplevel, and test list. The counting rule depends on the TB flavor (row 4);
-   `CONFIG.md` is authoritative:
+   `TARGETS.md` is authoritative:
    - **Classic sentinel SV/UVM TB** — one Target per *intent* (sim / lint /
      asic / fpga). A distinct config (parameter/define set) or a distinct
      toplevel gets its own Target; nothing else does.
@@ -626,7 +626,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    proposed pattern, and record their agreement in this row. Step 2 writes
    `[project].protected_inputs` only from that agreement; see CONFIG.md →
    "Additional Protected Inputs". Two shape constraints to plan against, both
-   from CONFIG.md: `pre_run_commands` and `run_cwd` live under
+   from FLOW-SIM.md: `pre_run_commands` and `run_cwd` live under
    `[flows.sim]` and are therefore **global to the Flow — one value shared
    by every sim Target**, not per-Target knobs. Per-Target behavior has to come
    from *inside* the commands, branching on the exported `$BOOLEY_TARGET` (also
@@ -995,7 +995,7 @@ compile-flag probe.
 
    For the image contents, how to pull or build it, and how to layer extra
   EDA tools on top with `# booley:keep` (needed when a repo like ibex also bakes
-   Python deps), see CONFIG.md → "RISC-V toolchain image".
+   Python deps), see SANDBOX.md → "RISC-V toolchain image".
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
    `.hex`. A Project setup script can run inside the container after a Goal

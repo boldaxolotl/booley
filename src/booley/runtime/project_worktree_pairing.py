@@ -89,7 +89,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
                 "in the same Sandbox, preserve needed work and evidence first "
-                "(see docs/user/USAGE.md), then remove it with "
+                "(see docs/user/CLI-REFERENCE.md), then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
@@ -301,7 +301,7 @@ def worktree_removal_instructions(
         "WARNING: usable host removal commands are unavailable; "
         "these absolute paths are Sandbox paths.",
         "First preserve needed evidence and other ignored/untracked files outside "
-        "this worktree (see docs/user/USAGE.md).",
+        "this worktree (see docs/user/CLI-REFERENCE.md).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
         "Git refuses to remove a worktree that holds populated submodules without "

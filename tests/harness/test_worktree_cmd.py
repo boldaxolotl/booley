@@ -161,7 +161,7 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     assert command in output.err, "Snapshot removal instructions missing"
     assert "Snapshot" in output.err and "same Sandbox" in output.err
     assert "WARNING: usable host removal commands are unavailable" in output.err
-    assert "preserve" in output.err and "docs/user/USAGE.md" in output.err
+    assert "preserve" in output.err and "docs/user/CLI-REFERENCE.md" in output.err
     assert output.err.count("git -C") == 1 and "branch -D" not in output.err
     assert "populated submodules" in output.err and "--force" in output.err
     assert (worktree / ".git").is_file()

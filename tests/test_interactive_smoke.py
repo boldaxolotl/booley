@@ -574,6 +574,38 @@ class TestInitInteractive:
             "type=bind,readonly" in spec["mounts"]
         )
 
+    def test_spec_builder_applies_input_egress_mode(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley.harness import init_cmd
+        from booley.runtime import devcontainer as dc
+        from booley.runtime import session_issuance as runtime_spec
+
+        def preview(project, build_spec, *, expected_image_id=None):
+            del expected_image_id
+            inputs = runtime_spec.SessionSpecInputs(
+                project.resolve() / ".booley", (), (), None, None, egress="unproxied"
+            )
+            spec = build_spec(inputs)
+            return runtime_spec.PreparedSessionSpec(
+                spec, "test-spec-digest", inputs, SimpleNamespace(license_profile=None)
+            )
+
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+        monkeypatch.setattr(runtime_spec, "preview", preview)
+
+        init_cmd._step_interactive(self._ctx(tmp_path))
+
+        spec = json.loads(
+            (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
+        )
+        assert dc.UNPROXIED_NETWORK in spec["runArgs"]
+        assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
+        assert "HTTP_PROXY" not in spec["remoteEnv"]
+
     def test_session_spec_reissue_reuses_bootstrap_pdk(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
 

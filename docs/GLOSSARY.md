@@ -123,7 +123,7 @@ The isolation rules applied to a Sandbox: mounted paths, network access, credent
 _Avoid_: per-Flow network policy
 
 **Unproxied Sandbox**:
-A **Sandbox** whose spec declares `BOOLEY_EGRESS=unproxied`. Booley neither sets nor forces the egress proxy environment there, so agents and tools reach the network the platform provides, such as a Codespace. It is an explicit opt-in, never inferred from platform signals, and Doctor keeps it visible as the waivable WARN `sandbox.unproxied`. The declaration is not the isolation boundary: a Booley-issued Sandbox's network stays default-deny whatever the variable says.
+A **Sandbox** whose spec declares `BOOLEY_EGRESS=unproxied`, either hand-written or issued by Booley under host `[sandbox] egress = "unproxied"`. Booley neither sets nor forces the egress proxy environment there, so agents and tools reach the network the platform provides, such as a Codespace. It is an explicit opt-in, never inferred from platform signals, and Doctor keeps it visible as the waivable WARN `sandbox.unproxied`. The declaration is not the isolation boundary: a Sandbox Booley issued under host `egress = "proxy"` keeps its default-deny network whatever the variable says; under host `egress = "unproxied"` Booley issues it on a routed network.
 _Avoid_: no proxy, open egress, direct egress
 
 **Host-Provisioned Sandbox EDA Tool**:
@@ -258,7 +258,7 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:

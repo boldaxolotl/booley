@@ -209,13 +209,13 @@ def test_setup_surrogate_validation_runs_no_pruning_probe():
 
 def test_surrogate_reference_docs_state_registered_data_dependence():
     root = Path(__file__).resolve().parents[2]
-    config = " ".join((root / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+    synth = " ".join((root / "docs/user/FLOW-SYNTH.md").read_text(encoding="utf-8").split())
     for required in (
         "through registers only",
         "no combinational write-to-read arc",
         "no-pruning probe",
     ):
-        assert required in config
+        assert required in synth
     template = (skills_dir() / "booley-setup" / "CORE_TEMPLATE.yaml").read_text(encoding="utf-8")
     comments = " ".join(
         line.strip().lstrip("#") for line in template.splitlines() if line.strip().startswith("#")

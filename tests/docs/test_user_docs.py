@@ -13,6 +13,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from booley.runtime.docs_links import SITE_URL
+
 ROOT = Path(__file__).resolve().parents[2]
 _MARKER = re.compile(r"^( *)(?:[-*+]|\d+[.)]) +\S")
 _FENCE = re.compile(r"^ *(```+|~~~+)")
@@ -85,13 +87,13 @@ def _hook():
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
-        ("CONFIG.md#tests-teststoml", "CONFIG.md#tests-teststoml"),
+        ("TESTS.md#seeds-seed-default_seed", "TESTS.md#seeds-seed-default_seed"),
         ("../internals/WHY.md#why-docker", "{blob}docs/internals/WHY.md#why-docker"),
         ("../../README.md", "{blob}README.md"),
         ("https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#a", "USAGE.md#a"),
-        ("https://boldaxolotl.github.io/booley/docs/usage/#a", "USAGE.md#a"),
-        ("https://boldaxolotl.github.io/booley/docs/assets/x.png", "assets/x.png"),
-        ("https://boldaxolotl.github.io/booley/#limitations", None),  # not a user doc
+        (f"{SITE_URL}docs/usage/#a", "USAGE.md#a"),
+        (f"{SITE_URL}docs/assets/x.png", "assets/x.png"),
+        (f"{SITE_URL}#limitations", None),  # not a user doc
     ],
 )
 def test_hook_points_doc_links_where_they_work_on_the_site(
@@ -111,4 +113,4 @@ def test_hook_leaves_fenced_code_alone() -> None:
 
 def test_hook_rejects_site_links_to_unpublished_docs() -> None:
     with pytest.raises(ValueError, match="no published user doc"):
-        _hook().rewrite_links("[x](https://boldaxolotl.github.io/booley/docs/nope/)", None)
+        _hook().rewrite_links(f"[x]({SITE_URL}docs/nope/)", None)

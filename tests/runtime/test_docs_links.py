@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from itertools import pairwise
 from pathlib import Path
 
 from tests.docs.test_links import _markdown_anchors
@@ -26,7 +27,7 @@ _REPO_PATH_ALLOWED = {
     # Locates the packaged TROUBLESHOOTING.md mirror on disk.
     "runtime/paths.py",
     # Maintainer tooling: syncs the packaged mirror / renders Markdown embedded in
-    # docs/user/USAGE.md (a relative link there), not printed links.
+    # docs/user/CLI-REFERENCE.md (a relative link there), not printed links.
     "dev_support/reference_docs.py",
     "dev_support/flow_specialist_reference.py",
 }
@@ -63,6 +64,26 @@ def test_user_docs_table_matches_docs_user() -> None:
     slugs = [doc.slug for doc in USER_DOCS]
     assert sorted(files) == sorted(path.name for path in USER_DOCS_DIR.glob("*.md"))
     assert len(set(slugs)) == len(slugs)
+
+
+def test_each_sidebar_section_is_contiguous() -> None:
+    """The sidebar starts a new group whenever the section changes."""
+    sections = [doc.section for doc in USER_DOCS]
+    starts = [
+        section
+        for index, section in enumerate(sections)
+        if index == 0 or section != sections[index - 1]
+    ]
+    assert len(starts) == len(set(starts)), starts
+
+
+def test_child_docs_follow_their_parent_in_the_same_section() -> None:
+    """The sidebar indents a child doc under its parent, so it follows the parent or a sibling."""
+    for previous, doc in pairwise(USER_DOCS):
+        if doc.parent is not None:
+            assert doc.parent in (previous.file, previous.parent), doc.file
+            assert previous.section == doc.section, doc.file
+    assert USER_DOCS[0].parent is None
 
 
 def test_docs_url_calls_name_published_docs_and_headings() -> None:

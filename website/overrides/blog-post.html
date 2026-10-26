@@ -16,9 +16,9 @@
   <div class="post doc">
     <div class="doc__head">
       <div class="strip">
-        <span><b>{{ number }}</b>
+        <span><a class="strip__home" href="{{ 'blog/' | url }}"><b>{{ number }}</b>
           {#- The AND gate, shrunk to a document mark. -#}
-          <svg class="glyph" viewBox="0 0 34 20" aria-hidden="true" focusable="false"><path d="M0 6 H8 M0 14 H8" stroke="currentColor" stroke-width="1.4"/><path d="M8 1 h7 a9 9 0 0 1 0 18 h-7 z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M24 10 H34" stroke="var(--mask)" stroke-width="2.4"/></svg>Booley application note</span>
+          <svg class="glyph" viewBox="0 0 34 20" aria-hidden="true" focusable="false"><path d="M0 6 H8 M0 14 H8" stroke="currentColor" stroke-width="1.4"/><path d="M8 1 h7 a9 9 0 0 1 0 18 h-7 z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M24 10 H34" stroke="var(--mask)" stroke-width="2.4"/></svg>Booley application note</a></span>
         <span><time datetime="{{ page.config.date.created }}">{{ page.config.date.created.strftime("%-d %B %Y") }}</time>
           {%- if page.config.readtime %} &middot; {{ page.config.readtime }} min read{% endif %}</span>
       </div>
