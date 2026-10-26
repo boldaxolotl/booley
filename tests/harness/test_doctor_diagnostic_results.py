@@ -15,7 +15,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp
+from booley.runtime import doctor_stamp, session_admission
 from tests.harness.test_doctor import _patch_environment, _write_project
 
 # The exact host-wide Sandbox inventory listing owned by session_admission.
@@ -125,26 +125,29 @@ def test_host_doctor_reports_host_egress_mode(egress, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("host", "editor", "stale", "fix_steps"),
+    ("host", "editor", "stale", "fix_commands"),
     [
         pytest.param(
             "unproxied",
             False,
             None,
-            ("booley session down --project", "booley init --seed --project"),
+            (
+                ["booley", "session", "down", "--project"],
+                ["booley", "init", "--seed", "--project"],
+            ),
             id="host-unproxied-headless-proxy",
         ),
         pytest.param(
             "proxy",
             True,
             "unproxied",
-            ("booley init --seed --project", "Rebuild Container"),
+            (["booley", "init", "--seed", "--project"],),
             id="host-proxy-editor-unproxied",
         ),
     ],
 )
 def test_host_doctor_warns_for_each_mismatched_running_sandbox(
-    host, editor, stale, fix_steps, tmp_path, monkeypatch
+    host, editor, stale, fix_commands, tmp_path, monkeypatch
 ):
     stale_root = tmp_path / "stale-project"
     current_root = tmp_path / "current-project"
@@ -169,9 +172,11 @@ def test_host_doctor_warns_for_each_mismatched_running_sandbox(
         f"Sandbox stale-sandbox (Project {stale_root.resolve()}) runs with egress "
         f"'{sandbox_mode}' but host [sandbox] egress = '{host}'"
     )
-    for step in fix_steps:
-        assert step in finding.fix
-    assert str(stale_root.resolve()) in finding.fix
+    # Each recreate command names the stale Project, quoted for the host shell
+    # (POSIX shells or PowerShell on Windows).
+    for command in fix_commands:
+        assert session_admission._command([*command, str(stale_root.resolve())]) in finding.fix
+    assert ("Rebuild Container" in finding.fix) is editor
     assert result.exit_code == 0
     assert inventory_calls == [_INVENTORY_ARGV]
 
