@@ -438,8 +438,10 @@ def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = 
 def _container_egress(raw_env: object) -> str:
     """Return the egress mode a container's ``Config.Env`` declares.
 
-    Docker reports a null ``Env`` for containers without environment entries;
-    the environment classifies the mode, ownership stays the label check.
+    Docker reports a null ``Env`` for a container without environment entries,
+    which declares ``proxy``. A repeated ``BOOLEY_EGRESS`` entry resolves to the
+    last one, as Docker's own last-wins environment does. The environment only
+    classifies the mode; Sandbox ownership is still proven by the labels.
     """
     prefix = "BOOLEY_EGRESS="
     values = [

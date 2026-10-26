@@ -237,8 +237,10 @@ delete it. Both warning IDs can be narrowly waived in `doctor-waivers.toml`.
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
 Host Doctor prints the host's egress mode under `Host checks`, for example
-`host Sandbox egress mode: unproxied`. It then checks every running Booley
-Sandbox on the host. A Sandbox still issued for the other mode after you changed
+`host Sandbox egress mode: unproxied`. When Docker is ready, it then checks
+every running Booley Sandbox on the host; otherwise it reports
+`running Sandbox egress check skipped - Docker is not ready`. A Sandbox still
+issued for the other mode after you changed
 [`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml)
 gets a `host.sandbox-egress-mismatch` warning that names the Sandbox, its
 Project, and both modes.
@@ -254,8 +256,10 @@ until you resolve it. Recreate the Sandbox from a freshly issued spec:
 
 Booley never recreates a Sandbox automatically. The warning clears once the
 Sandbox is recreated or stopped. To keep one running in the other mode
-deliberately, waive `host.sandbox-egress-mismatch` in `doctor-waivers.toml`
-with `subject` set to that Project's root. If Doctor instead fails with
+deliberately, waive `host.sandbox-egress-mismatch` with `subject` set to that
+Project's root, in the `.booley/doctor-waivers.toml` of each Project where you
+run Doctor. Write a Windows path as a single-quoted TOML string so its
+backslashes stay literal. If Doctor instead fails with
 `cannot check running Sandboxes against host egress mode`, resolve the problem
 it names; Sandbox starts are refused for the same reason.
 
