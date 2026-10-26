@@ -260,7 +260,9 @@ def _entry_target_spellings(entry: Path) -> set[str]:
     try:
         spellings.add(str(entry.resolve()))
         # One hop as written, joined to the link's parent, without following further links.
-        spellings.add(os.path.normpath(entry.parent / entry.readlink()))
+        linked = os.path.normpath(entry.parent / entry.readlink())
+        # Windows reports link text in the extended-length form, which no log shows.
+        spellings.add(linked.removeprefix("\\\\?\\"))
     except (OSError, RuntimeError):  # unreadable link or a loop (RuntimeError before 3.13)
         pass
     return spellings
