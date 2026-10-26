@@ -119,10 +119,11 @@ Doctor reports the mode in the Sandbox checks:
 Project identity, Flow selection, and Developer Agent and Specialist configuration live in
 `.booley/booley.toml`. A per-knob reference follows, section by section.
 
-The `.booley` entry may itself be a symlink to a directory elsewhere, such as a separate
-clone of your Booley files. The directory it points to must contain `booley.toml`. Booley
-uses that directory on the host, and in the Sandbox both `/booley-project` and
-`/work/.booley` reach it. Cores you keep there still load only from its `cores/` folder.
+The `.booley` entry may itself be a symlink to a Booley Directory elsewhere, such as a
+separate clone of your Booley Directory. The directory it points to must contain
+`booley.toml`. Booley uses that directory on the host, and in the Sandbox both
+`/booley-project` and `/work/.booley` reach it. Cores you keep there still load only from
+its `cores/` folder.
 
 `[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is

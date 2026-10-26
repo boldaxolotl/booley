@@ -1496,15 +1496,16 @@ def _validate_project_data_source(
         raise RuntimeSpecError("Booley Directory path contains unsafe Docker mount grammar")
     # Only the default entry ``<project>/.booley`` itself may be a link; a link
     # above it or any other linked spelling (e.g. a symlinked BOOLEY_DIR) is refused.
-    linked = candidate.is_symlink() and is_booley_dir_entry(candidate, project / ".booley")
-    if (candidate.is_symlink() and not linked) or any(p.is_symlink() for p in candidate.parents):
+    is_link = candidate.is_symlink()
+    linked = is_link and is_booley_dir_entry(candidate, project / ".booley")
+    if (is_link and not linked) or any(p.is_symlink() for p in candidate.parents):
         raise RuntimeSpecError(
             "Booley Directory mount source or its ancestry must not be a symlink"
         )
     try:
         source = candidate.resolve(strict=True)
         info = source.stat()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:  # Python < 3.13 reports a link loop as RuntimeError
         raise RuntimeSpecError(
             f"Booley Directory mount source is unavailable: {candidate}: {exc}"
         ) from exc
@@ -1516,16 +1517,18 @@ def _validate_project_data_source(
     overlaps = (
         source == project or source in project.parents or (project in source.parents and not local)
     )
-    what = "symlink target" if linked else "mount source"
+    source_label = "symlink target" if linked else "mount source"
     if broad or overlaps:
         raise RuntimeSpecError(
-            f"Booley Directory {what} is too broad or overlaps the Project: {source}"
+            f"Booley Directory {source_label} is too broad or overlaps the Project: {source}"
         )
     if os.name != "nt" and info.st_uid != os.getuid():
         raise RuntimeSpecError(
             f"Booley Directory mount source is not owned by the host user: {source}"
         )
-    if linked and not (source / "booley.toml").is_file():
+    # The marker must be a regular file: a link below the entry is never followed.
+    marker = source / "booley.toml"
+    if linked and (marker.is_symlink() or not marker.is_file()):
         raise RuntimeSpecError(
             f"Booley Directory symlink target is not a Booley Directory (no booley.toml): {source}"
         )

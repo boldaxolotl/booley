@@ -2079,6 +2079,8 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
         pytest.param(
             "target-without-booley-toml", "not a Booley Directory", id="target-without-booley-toml"
         ),
+        pytest.param("linked-booley-toml", "not a Booley Directory", id="linked-booley-toml"),
+        pytest.param("link-loop", "unavailable", id="link-loop"),
     ],
 )
 def test_symlinked_booley_dir_entry_keeps_mount_safety_refusals(
@@ -2107,6 +2109,14 @@ def test_symlinked_booley_dir_entry_keeps_mount_safety_refusals(
         unrelated = tmp_path / "unrelated-config"
         unrelated.mkdir()
         _link_booley_dir_entry(project, unrelated)
+    elif case == "linked-booley-toml":
+        # The marker itself may not be a link into an unrelated file.
+        (booley_files / "booley.toml").unlink()
+        (booley_files / "booley.toml").symlink_to(tmp_path / "unrelated.toml")
+        (tmp_path / "unrelated.toml").write_text("", encoding="utf-8")
+        _link_booley_dir_entry(project, booley_files)
+    elif case == "link-loop":
+        _link_booley_dir_entry(project, project / ".booley")
     else:
         _link_booley_dir_entry(project, booley_files)
     if case == "link-not-entry":
