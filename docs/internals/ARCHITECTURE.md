@@ -96,7 +96,7 @@ Booley is backend-agnostic. One provider—Claude or Codex—is configured for a
 
 ## Security & Trust Model
 
-Booley treats Developer Agent behavior as untrusted, whether caused by error or adversarial input. Developer Agents, MCP tools, Flows, and EDA subprocesses run inside the hardened Sandbox with no direct host command channel. The container receives the Project Root, its Booley Directory, linked worktrees, and explicitly authorized resources; it has no host home, SSH state, or Docker socket, and runs non-root with dropped capabilities, `no-new-privileges`, memory and PID limits, and default-deny egress.
+Booley treats Developer Agent behavior as untrusted, whether caused by error or adversarial input. Developer Agents, MCP tools, Flows, and EDA subprocesses run inside the hardened Sandbox with no direct host command channel. The container receives the Project Root, its Booley Directory, linked worktrees, and explicitly authorized resources; it has no host home, SSH state, or Docker socket, and runs non-root with dropped capabilities, `no-new-privileges`, memory and PID limits, and default-deny egress (unless the host opts into Unproxied Sandboxes; see [`config.toml`](../user/CONFIG.md#host-configuration-configtoml)).
 
 **Known escape hatch:** shared Git metadata remains writable from the Sandbox.
 An agent can plant executable configuration or hooks that a later host Git

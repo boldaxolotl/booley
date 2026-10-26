@@ -50,6 +50,10 @@ EGRESS_NETWORK = "booley-egress-v2"
 PROXY_HOST = "booley-proxy"
 PROXY_PORT = 8080
 PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
+# The routed user-defined network every Sandbox joins under host
+# ``[sandbox] egress = "unproxied"``. User-defined so it can sit next to the
+# internal license network, which Docker's default ``bridge`` cannot.
+UNPROXIED_NETWORK = "booley-unproxied-v1"
 
 # Label the idle reaper (WS2) matches to find/own Sandboxes.
 INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
@@ -726,15 +730,22 @@ def _build_remote_env(
     app: str,
     forward_oauth_token: bool,
     local_timezone: str,
+    egress: str,
 ) -> dict[str, str]:
     """Build the ``remoteEnv`` dict for :func:`build_devcontainer_spec`."""
-    remote_env = {
-        # Egress is forced through the dual-homed proxy on the --internal network.
-        "HTTP_PROXY": PROXY_URL,
-        "HTTPS_PROXY": PROXY_URL,
-        "http_proxy": PROXY_URL,
-        "https_proxy": PROXY_URL,
-        "NO_PROXY": "localhost,127.0.0.1",
+    remote_env = (
+        {
+            # Egress is forced through the dual-homed proxy on the --internal network.
+            "HTTP_PROXY": PROXY_URL,
+            "HTTPS_PROXY": PROXY_URL,
+            "http_proxy": PROXY_URL,
+            "https_proxy": PROXY_URL,
+            "NO_PROXY": "localhost,127.0.0.1",
+        }
+        if egress == "proxy"
+        else {}
+    )
+    remote_env |= {
         # Container-side MCP runs in interactive mode and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
         "BOOLEY_DIR": BOOLEY_DIR_TARGET,
@@ -758,7 +769,7 @@ def _build_remote_env(
     return remote_env
 
 
-def _build_run_args(memory: str) -> list[str]:
+def _build_run_args(memory: str, egress: str) -> list[str]:
     """Build the ``runArgs`` list for :func:`build_devcontainer_spec`."""
     # --network wires egress; the label lets the reaper own this container.
     # --cap-drop ALL + no-new-privileges + a pids ceiling harden the runtime where
@@ -769,7 +780,7 @@ def _build_run_args(memory: str) -> list[str]:
     run_args = [
         "--init",
         "--network",
-        EGRESS_NETWORK,
+        EGRESS_NETWORK if egress == "proxy" else UNPROXIED_NETWORK,
         "--label",
         INTERACTIVE_ROLE_LABEL,
         "--cap-drop",
@@ -927,6 +938,7 @@ def build_devcontainer_spec(
     mask_source: str = "",
     local_timezone: str = "",
     dashboard: bool = False,
+    egress: str = "proxy",
 ) -> dict:
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
@@ -993,6 +1005,12 @@ def build_devcontainer_spec(
         local_timezone: host IANA timezone name (or fixed ``+HH:MM`` fallback)
             passed into the runtime so human-visible timestamps use the user's
             local time rather than the container image's UTC default.
+        egress: host ``[sandbox] egress`` mode. ``"proxy"`` (the default)
+            joins :data:`EGRESS_NETWORK` with the proxy environment and leaves
+            the spec byte-identical to before the setting existed;
+            ``"unproxied"`` joins :data:`UNPROXIED_NETWORK`, sets no proxy
+            environment, and declares ``BOOLEY_EGRESS=unproxied`` in
+            ``containerEnv`` so bare ``docker exec`` calls see it too.
 
     The spec uses only Booley's fixed ``initializeCommand``.  It validates the
     host-issued spec and, when licensed EDA is granted, prepares the fixed relay
@@ -1033,10 +1051,10 @@ def build_devcontainer_spec(
     )
     mounts = _policy_state_mounts(app, project_id, mounts, credential_plan)
     identity_env = _git_environment(booley_dir_source, fixed_container_env)
-    remote_env = _build_remote_env(app, forward_oauth_token, local_timezone)
+    remote_env = _build_remote_env(app, forward_oauth_token, local_timezone, egress)
     _policy_remote_environment(remote_env, credential_plan)
     remote_env.update(identity_env)
-    run_args = _build_run_args(memory)
+    run_args = _build_run_args(memory, egress)
 
     spec: dict = {
         "name": f"Booley Interactive ({app})",
@@ -1070,6 +1088,8 @@ def build_devcontainer_spec(
         **identity_env,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
     }
+    if egress == "unproxied":
+        spec["containerEnv"]["BOOLEY_EGRESS"] = "unproxied"
 
     seed_source = _creds_seed_target_for_app(app)
     post_create = _build_post_create_command(

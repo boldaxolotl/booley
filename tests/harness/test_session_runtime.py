@@ -2097,6 +2097,21 @@ class TestUp:
 
         assert "replacement succeeded" in caplog.text
 
+    def test_refresh_to_unproxied_spec_needs_no_egress_network(self, wired):
+        workspace, _run = wired
+        _write_spec(workspace, _spec(egress="unproxied"))
+        name = sr.session_container_name(workspace)
+        exists = iter([False, False, False])
+        with (
+            patch.object(sr.idk, "network_exists", return_value=False),
+            patch.object(sr.idk, "ensure_unproxied_network", return_value=False) as ensure,
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(sr.idk, "container_running", return_value=False),
+            patch.object(sr, "verify_refreshed_session"),
+        ):
+            assert sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh") == name
+        ensure.assert_called_once_with()
+
     def test_licensed_refresh_fails_before_parking_existing_runtime(self, wired):
         workspace, run = wired
         with (
@@ -2719,6 +2734,18 @@ class TestPreflight:
     def test_missing_spec_names_booley_init(self, workspace: Path):
         with pytest.raises(sr.SessionError, match="run `booley init`"):
             sr.up(workspace)
+
+    def test_unproxied_spec_ensures_routed_network_without_egress_network(self, wired):
+        workspace, _run = wired
+        _write_spec(workspace, _spec(egress="unproxied"))
+        with (
+            patch.object(sr.idk, "network_exists", return_value=False),
+            patch.object(sr.idk, "ensure_unproxied_network", return_value=True) as ensure,
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(sr.idk, "container_running", return_value=False),
+        ):
+            assert sr.up(workspace) == sr.session_container_name(workspace)
+        ensure.assert_called_once_with()
 
 
 class TestImageDriftWarning:
@@ -4052,6 +4079,48 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
     ) is (drift is None)
 
 
+@pytest.mark.parametrize(
+    "network_constant, matches",
+    [
+        pytest.param("UNPROXIED_NETWORK", True, id="unproxied-on-routed-network"),
+        pytest.param("EGRESS_NETWORK", False, id="unproxied-on-egress-network"),
+    ],
+)
+def test_container_resume_matches_issued_egress_topology(
+    tmp_path, monkeypatch, network_constant, matches
+):
+    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
+    network = getattr(dc, network_constant)
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
+    environment = {**spec["remoteEnv"], **spec["containerEnv"]}
+    state = {
+        "Image": "sha256:test",
+        "Config": {
+            "Image": "sha256:test",
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+        },
+        "HostConfig": {"Memory": 0},
+        "NetworkSettings": {"Networks": {network: {}}},
+    }
+    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
+    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
+    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        sr,
+        "_docker_stdout",
+        lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
+    )
+    assert (
+        sr._container_matches_issuance(
+            "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
+        )
+        is matches
+    )
+
+
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
     spec = dc.build_devcontainer_spec(dc.APP_NONE)
     argv = sr.docker_run_argv(spec, tmp_path, "test")
@@ -4073,6 +4142,56 @@ def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_spec, "validate", refuse)
     with pytest.raises(sr.SessionError, match=r"\[agent.git\].*refresh and recreate"):
         sr._validate_up_request(tmp_path, None)
+
+
+def test_startup_egress_drift_names_init_seed(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
+
+    def refuse(*_args):
+        raise runtime_spec.EgressDriftError(
+            "Sandbox spec egress mode 'proxy' differs from host [sandbox] egress = 'unproxied'"
+        )
+
+    monkeypatch.setattr(runtime_spec, "validate", refuse)
+    with pytest.raises(sr.SessionError) as raised:
+        sr._validate_up_request(tmp_path, None)
+    message = str(raised.value)
+    assert "egress = 'unproxied'" in message
+    assert "`booley init --seed`" in message
+    assert "`booley session down`" in message
+
+
+def test_vscode_prepare_names_init_seed_for_egress_drift(tmp_path, monkeypatch):
+    authenticated = SimpleNamespace(project_root=str(tmp_path), project_data_source=str(tmp_path))
+    monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: authenticated)
+    monkeypatch.setattr(sr, "_quiesce_legacy_vscode_container", lambda *_args: None)
+
+    def refuse(*_args):
+        raise runtime_spec.EgressDriftError("Sandbox spec egress mode differs from host policy")
+
+    monkeypatch.setattr(runtime_spec, "validate", refuse)
+    with pytest.raises(sr.SessionError) as raised:
+        sr._authenticate_quiesce_validate(tmp_path, {})
+    message = str(raised.value)
+    assert "`booley init --seed`" in message
+    assert "Rebuild Container" in message
+    assert "session refresh" not in message
+
+
+def test_startup_host_config_error_names_file_without_teardown(tmp_path, monkeypatch):
+    from booley.config.host_config import host_config_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    config = host_config_path()
+    config.parent.mkdir(parents=True)
+    config.write_text('[sandbox]\negress = "proxied"\n', encoding="utf-8")
+    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
+    with pytest.raises(sr.SessionError) as raised:
+        sr._validate_up_request(tmp_path, None)
+    message = str(raised.value)
+    assert str(config) in message
+    assert "sandbox.egress" in message
+    assert "session down" not in message
 
 
 def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypatch):
