@@ -127,5 +127,6 @@ refresh; no new mount is introduced. There is no host Booley Directory fallback.
 
 The shared subtree is outside all mutable build generations. Setup cleanup
 removes only its marker-guarded run root under `tmp/setup/<run-id>/` and never
-touches the shared subtree. Baseline core copying only copies the core subtree;
+touches the shared subtree. Baseline checkouts of a Project with stealth cores mirror only
+authored Booley Directory files, never transient state such as `.runtime`;
 ordinary Project Git ignores exclude `.runtime` from source snapshots.

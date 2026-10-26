@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -159,3 +160,50 @@ permanent = true
 
     assert reporter.counts["warn"] == 0
     assert reporter.counts["waived"] == 1
+
+
+def _linked_worktree(tmp_path: Path, *, versioned: bool, paired: bool) -> Path:
+    """A primary checkout with a linked worktree whose ``.booley`` is a copy or a pair."""
+    root, booley_dir = _repositories(tmp_path, "main", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "commit", "--allow-empty", "-m", "base")
+    if versioned:
+        _commit(booley_dir, "booley.toml")
+    else:
+        shutil.rmtree(booley_dir / ".git")
+    worktree = tmp_path / "linked"
+    _git(root, "worktree", "add", "--detach", str(worktree), "HEAD")
+    if paired:
+        _git(booley_dir, "worktree", "add", "--detach", str(worktree / ".booley"), "HEAD")
+    else:
+        (worktree / ".booley").mkdir()
+        (worktree / ".booley" / "booley.toml").write_text("copy\n", encoding="utf-8")
+    return worktree
+
+
+def _pairing_warnings(worktree: Path) -> list:
+    reporter = doctor._Reporter.create()
+    doctor._check_worktree_booley_pairing(worktree, reporter)
+    return [finding for finding in reporter.findings or () if finding.severity == "warn"]
+
+
+def test_plain_copy_of_versioned_booley_directory_in_linked_worktree_warns(
+    tmp_path: Path,
+) -> None:
+    warnings = _pairing_warnings(_linked_worktree(tmp_path, versioned=True, paired=False))
+
+    assert [finding.check_id for finding in warnings] == ["project-data.worktree-unpaired"]
+    assert "Paired Checkout" in warnings[0].message
+    assert "booley worktree new" in warnings[0].fix
+
+
+@pytest.mark.parametrize(
+    ("versioned", "paired"),
+    [(True, True), (False, False)],
+    ids=["paired-checkout", "snapshot-of-unversioned"],
+)
+def test_expected_worktree_booley_layouts_do_not_warn(
+    tmp_path: Path, versioned: bool, paired: bool
+) -> None:
+    assert _pairing_warnings(_linked_worktree(tmp_path, versioned=versioned, paired=paired)) == []
