@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from booley.config.host_config import SandboxHostPolicy
+from booley.harness import bootstrap
 from booley.harness import host_sidecars as sidecars
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.image_lifecycle import Intent
@@ -973,3 +976,435 @@ def test_check_only_pending_container_keeps_differences(monkeypatch, tmp_path, c
     status, output = _run_inspection(capsys)
     assert "image_identity" in output, "pending containers must explain desired-state differences"
     assert status == 1
+
+
+# --- Host Bootstrap under host ``[sandbox] egress = "unproxied"`` (issue #2215) ---
+
+_UNPROXIED = SandboxHostPolicy(egress="unproxied")
+_SIDECAR_RESOURCES = ["proxy-image", "reaper-image", "network", "proxy", "reaper"]
+
+
+class _EgressDocker:
+    """Stateful Docker fake covering the sidecar, network, and Session commands."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.images: dict[str, tuple[str, dict[str, str]]] = {}
+        self.containers: dict[str, dict[str, object]] = {}
+        self.network = False
+
+    def add_current_image(self, reference: str) -> None:
+        spec = next(spec for spec in sidecars._image_specs(None) if spec.reference == reference)
+        self.images[reference] = (f"sha256:{reference}", sidecars._image_labels(spec))
+
+    def add_container(
+        self,
+        name: str,
+        *,
+        image: str = "sha256:unrelated",
+        labels: dict[str, str] | None = None,
+        running: bool = True,
+        networks: tuple[str, ...] = (),
+    ) -> None:
+        self.containers[name] = {
+            "image": image,
+            "labels": dict(labels or {}),
+            "running": running,
+            "networks": set(networks),
+        }
+
+    def add_sidecar(self, name: str, role: str, image: str, policy: SandboxHostPolicy) -> None:
+        self.add_current_image(image)
+        self.add_container(
+            name,
+            image=self.images[image][0],
+            labels={
+                sidecars.ROLE_LABEL: role,
+                sidecars.LABEL_POLICY_FINGERPRINT: sidecars.policy_fingerprint(policy),
+            },
+            networks=(sidecars.legacy.EGRESS_NETWORK,) if role == "egress-proxy" else (),
+        )
+
+    def add_session(
+        self,
+        name: str,
+        *,
+        running: bool = True,
+        networks: tuple[str, ...] = (),
+        state: str | None = None,
+    ) -> None:
+        """Add a Sandbox; ``state`` overrides the ``ps -a`` State derived from ``running``."""
+        self.add_container(
+            name,
+            labels={
+                sidecars.ROLE_LABEL: sidecars.SESSION_ROLE,
+                sidecars._DEVCONTAINER_FOLDER_LABEL: "/projects/a",
+            },
+            running=running,
+            networks=networks,
+        )
+        if state is not None:
+            self.containers[name]["state"] = state
+
+    def mutations(self) -> list[list[str]]:
+        return [call for call in self.calls if "inspect" not in call and call[0] != "ps"]
+
+    def run(self, args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        del timeout
+        self.calls.append(list(args))
+        handler = {
+            ("image", "inspect"): self._inspect_image,
+            ("container", "inspect"): self._inspect_container,
+            ("network", "inspect"): self._inspect_network,
+            ("network", "create"): self._create_network,
+            ("network", "rm"): self._remove_network,
+            ("network", "connect"): self._connect,
+        }.get((args[0], args[1]))
+        if handler is not None:
+            return handler(args)
+        return {
+            "ps": self._ps,
+            "rm": self._remove,
+            "build": self._build,
+            "run": self._run,
+            "start": lambda _args: _cp(),
+        }[args[0]](args)
+
+    def _inspect_image(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args[2] not in self.images:
+            return _cp(1, stderr="No such image")
+        image_id, labels = self.images[args[2]]
+        return _cp(stdout=json.dumps({"Id": image_id, "Config": {"Labels": labels}}))
+
+    def _inspect_container(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        entry = self.containers.get(args[2])
+        if entry is None:
+            return _cp(1, stderr="No such container")
+        document = {
+            "Image": entry["image"],
+            "Config": {"Labels": entry["labels"]},
+            "State": {"Running": entry["running"]},
+            "NetworkSettings": {"Networks": {name: {} for name in entry["networks"]}},
+            "Mounts": [],
+        }
+        return _cp(stdout=json.dumps(document))
+
+    def _inspect_network(self, _args: list[str]) -> subprocess.CompletedProcess[str]:
+        if not self.network:
+            return _cp(1, stderr="network booley-egress-v2 not found")
+        attached = {
+            f"id-{name}": {"Name": name}
+            for name, entry in self.containers.items()
+            if entry["running"] and sidecars.legacy.EGRESS_NETWORK in entry["networks"]
+        }
+        document = {
+            "Internal": True,
+            "Options": {
+                sidecars.legacy.GATEWAY_MODE_OPTION: sidecars.legacy.GATEWAY_MODE_ISOLATED
+            },
+            "Containers": attached,
+        }
+        return _cp(stdout=json.dumps(document))
+
+    def _create_network(self, _args: list[str]) -> subprocess.CompletedProcess[str]:
+        self.network = True
+        return _cp()
+
+    def _remove_network(self, _args: list[str]) -> subprocess.CompletedProcess[str]:
+        self.network = False
+        return _cp()
+
+    def _connect(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        self.containers[args[3]]["networks"].add(args[2])  # type: ignore[union-attr]
+        return _cp()
+
+    def _ps(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        rows = []
+        for name, entry in sorted(self.containers.items()):
+            role = entry["labels"].get(sidecars.ROLE_LABEL)  # type: ignore[union-attr]
+            if role != sidecars.SESSION_ROLE:
+                continue
+            if "-a" in args:
+                state = entry.get("state") or ("running" if entry["running"] else "exited")
+                rows.append(f"{name}\t{name}\t{state}")
+            elif entry["running"]:
+                rows.append(f"{name}\t{name}")
+        return _cp(stdout="".join(f"{row}\n" for row in rows))
+
+    def _remove(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        self.containers.pop(args[-1], None)
+        return _cp()
+
+    def _build(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        labels = dict(
+            args[index + 1].split("=", 1) for index, arg in enumerate(args) if arg == "--label"
+        )
+        self.images[args[2]] = (f"sha256:built-{args[2]}", labels)
+        return _cp()
+
+    def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        labels = dict(
+            args[index + 1].split("=", 1) for index, arg in enumerate(args) if arg == "--label"
+        )
+        image = args[-1]
+        self.add_container(
+            args[args.index("--name") + 1], image=self.images[image][0], labels=labels
+        )
+        return _cp()
+
+
+def _egress_docker(monkeypatch: pytest.MonkeyPatch) -> _EgressDocker:
+    docker = _EgressDocker()
+    monkeypatch.setattr(sidecars, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(sidecars, "ensure_docker_build_capacity", lambda *_a, **_kw: None)
+    return docker
+
+
+def _leftover_egress(docker: _EgressDocker, *, reaper: bool = True) -> None:
+    """Give the fake a proxy-mode installation: images, network, proxy, reaper."""
+    docker.network = True
+    docker.add_sidecar(
+        sidecars.legacy.PROXY_CONTAINER, "egress-proxy", sidecars.legacy.PROXY_IMAGE, _UNPROXIED
+    )
+    docker.add_current_image(sidecars.legacy.REAPER_IMAGE)
+    if reaper:
+        docker.add_sidecar(
+            sidecars.legacy.REAPER_CONTAINER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED
+        )
+
+
+def _states(result: sidecars.SidecarResult) -> list[tuple[str, sidecars.SidecarState]]:
+    return [(finding.resource, finding.state) for finding in result.findings]
+
+
+def test_policy_fingerprint_ignores_egress_mode() -> None:
+    proxy = SandboxHostPolicy(600, 2, egress="proxy")
+    unproxied = SandboxHostPolicy(600, 2, egress="unproxied")
+    assert sidecars.policy_fingerprint(proxy) == sidecars.policy_fingerprint(unproxied)
+
+
+def test_unproxied_bootstrap_builds_and_runs_only_the_reaper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = _egress_docker(monkeypatch)
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    current, changed = sidecars.SidecarState.CURRENT, sidecars.SidecarState.CHANGED
+    assert _states(result) == list(
+        zip(_SIDECAR_RESOURCES, [current, changed, current, current, changed], strict=True)
+    ), "unproxied Bootstrap must build and run only the reaper"
+    assert result.ready
+    built = [call[2] for call in docker.calls if call[0] == "build"]
+    assert built == [sidecars.legacy.REAPER_IMAGE], "only the reaper image may be built"
+    started = [call[call.index("--name") + 1] for call in docker.calls if call[0] == "run"]
+    assert started == [sidecars.legacy.REAPER_CONTAINER], "only the reaper may run"
+    assert not any(call[:2] == ["network", "create"] for call in docker.calls)
+    assert not any(sidecars.legacy.PROXY_IMAGE in call for call in docker.calls)
+
+
+def test_unproxied_bootstrap_removes_idle_proxy_and_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    current, changed = sidecars.SidecarState.CURRENT, sidecars.SidecarState.CHANGED
+    assert _states(result) == list(
+        zip(_SIDECAR_RESOURCES, [current, current, changed, changed, current], strict=True)
+    ), "an idle leftover proxy and network must be removed"
+    assert docker.mutations() == [
+        ["rm", "-f", sidecars.legacy.PROXY_CONTAINER],
+        ["network", "rm", sidecars.legacy.EGRESS_NETWORK],
+    ]
+    assert sidecars.legacy.PROXY_CONTAINER not in docker.containers
+    assert not docker.network
+
+
+@pytest.mark.parametrize("blocker", ["running", "parked-predecessor", "foreign-attachment"])
+def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
+    monkeypatch: pytest.MonkeyPatch, blocker: str
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker, reaper=False)
+    if blocker == "running":
+        docker.add_session("booley-session-a", networks=(sidecars.legacy.EGRESS_NETWORK,))
+        expected = ["booley-session-a", "/projects/a", "booley session down --project"]
+    elif blocker == "parked-predecessor":
+        name = "booley-session-a-pre-refresh"
+        docker.add_session(name, running=False)
+        expected = [name, "/projects/a", "docker rename", "booley bootstrap"]
+    else:
+        docker.add_container("someone-else", networks=(sidecars.legacy.EGRESS_NETWORK,))
+        expected = ["someone-else", "detach foreign containers"]
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    current, changed = sidecars.SidecarState.CURRENT, sidecars.SidecarState.CHANGED
+    error = sidecars.SidecarState.ERROR
+    assert _states(result) == list(
+        zip(_SIDECAR_RESOURCES, [current, current, error, error, changed], strict=True)
+    ), "blockers must keep the leftover egress; the reaper is still reconciled"
+    for finding in result.findings[2:4]:
+        for fragment in expected:
+            assert fragment in finding.detail
+    assert not any(call[0] == "rm" or call[:2] == ["network", "rm"] for call in docker.calls)
+    assert docker.network
+    assert sidecars.legacy.PROXY_CONTAINER in docker.containers
+
+
+def test_unproxied_mode_flip_keeps_current_reaper(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = _egress_docker(monkeypatch)
+    docker.add_sidecar(
+        sidecars.legacy.REAPER_CONTAINER,
+        "reaper",
+        sidecars.legacy.REAPER_IMAGE,
+        SandboxHostPolicy(),
+    )
+
+    result = sidecars.reconcile_sidecars(
+        replace(SandboxHostPolicy(), egress="unproxied"), Intent.ENSURE
+    )
+
+    assert _states(result) == [
+        (resource, sidecars.SidecarState.CURRENT) for resource in _SIDECAR_RESOURCES
+    ], "a mode flip must leave every sidecar row current"
+    assert docker.mutations() == [], "a mode flip alone must not touch the reaper"
+
+
+def test_readiness_check_accepts_unproxied_leftover_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    docker.add_session("booley-session-a", networks=(sidecars.legacy.EGRESS_NETWORK,))
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.CHECK)
+
+    assert _states(result) == [
+        (resource, sidecars.SidecarState.CURRENT) for resource in _SIDECAR_RESOURCES
+    ]
+    assert not any(call[0] == "ps" for call in docker.calls), "readiness never enumerates"
+    assert docker.mutations() == []
+
+
+def _unproxied_inspection(monkeypatch, tmp_path) -> _EgressDocker:
+    from tests.harness.test_bootstrap import _inspection_environment
+
+    _inspection_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: _UNPROXIED)
+    docker = _egress_docker(monkeypatch)
+    docker.add_sidecar(
+        sidecars.legacy.REAPER_CONTAINER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED
+    )
+    return docker
+
+
+def test_check_only_unproxied_absent_proxy_and_network_are_current(monkeypatch, tmp_path, capsys):
+    from tests.harness.test_bootstrap import _assert_complete, _run_inspection
+
+    docker = _unproxied_inspection(monkeypatch, tmp_path)
+
+    status, output = _run_inspection(capsys)
+
+    _assert_complete(output)
+    for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper"):
+        assert f"[--] {resource}:" in output, f"{resource} must be current"
+    assert not any(sidecars.legacy.PROXY_IMAGE in call for call in docker.calls)
+    assert status == 1, "only the helper's stale base image stays pending"
+    assert docker.mutations() == []
+
+
+@pytest.mark.parametrize("blocker", ["idle", "running"])
+def test_check_only_unproxied_reports_leftover_proxy_and_network(
+    monkeypatch, tmp_path, capsys, blocker
+):
+    from tests.harness.test_bootstrap import _assert_complete, _run_inspection
+
+    docker = _unproxied_inspection(monkeypatch, tmp_path)
+    _leftover_egress(docker)
+    if blocker == "running":
+        docker.add_session("booley-session-a", networks=(sidecars.legacy.EGRESS_NETWORK,))
+
+    status, output = _run_inspection(capsys)
+
+    _assert_complete(output)
+    glyph = "[!!]" if blocker == "idle" else "[XX]"
+    for resource in ("network", "proxy"):
+        line = next(line for line in output.splitlines() if f" {resource}:" in line)
+        assert glyph in line, f"leftover {resource} must be {blocker}-reported"
+        assert "booley bootstrap" in line
+        if blocker == "running":
+            assert "booley-session-a" in line
+    assert status == (1 if blocker == "idle" else 2)
+    assert docker.mutations() == []
+
+
+@pytest.mark.parametrize(
+    ("intent", "lead"),
+    [
+        (Intent.ENSURE, "Bootstrap's recovery left it in place; rename it back"),
+        (Intent.CHECK, "run `booley bootstrap` to recover it; if it remains, rename it back"),
+    ],
+    ids=["mutating", "check-only"],
+)
+def test_parked_predecessor_remedy_reflects_whether_recovery_ran(
+    monkeypatch: pytest.MonkeyPatch, intent: Intent, lead: str
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    docker.add_session("booley-session-a-pre-refresh", running=False)
+
+    if intent is Intent.CHECK:
+        result = sidecars.inspect_sidecars(_UNPROXIED)
+    else:
+        result = sidecars.reconcile_sidecars(_UNPROXIED, intent)
+
+    proxy = next(finding for finding in result.findings if finding.resource == "proxy")
+    assert proxy.state is sidecars.SidecarState.ERROR
+    assert lead in proxy.detail, "mutating Bootstrap already ran recovery; never re-prescribe it"
+
+
+def test_restarting_predecessor_is_listed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    name = "booley-session-a-pre-refresh"
+    docker.add_session(name, state="restarting")
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    proxy = next(finding for finding in result.findings if finding.resource == "proxy")
+    assert proxy.state is sidecars.SidecarState.ERROR
+    assert proxy.detail.count(name) == 1, "an active predecessor must not also be listed parked"
+
+
+def test_unproxied_reaper_image_error_skips_retirement(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker, reaper=False)
+    docker.images[sidecars.legacy.REAPER_IMAGE] = ("sha256:foreign", {})
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    assert _states(result) == [
+        ("proxy-image", sidecars.SidecarState.CURRENT),
+        ("reaper-image", sidecars.SidecarState.ERROR),
+    ]
+    assert docker.mutations() == [], "an image error must stop before any retirement mutation"
+
+
+def test_unproxied_network_removal_failure_reports_removed_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker)
+    monkeypatch.setattr(docker, "_remove_network", lambda _args: _cp(1, stderr="in use"))
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    rows = {finding.resource: finding for finding in result.findings}
+    assert rows["network"].state is sidecars.SidecarState.ERROR
+    assert "in use" in rows["network"].detail
+    assert rows["proxy"].state is sidecars.SidecarState.CHANGED
+    assert sidecars.legacy.PROXY_CONTAINER not in docker.containers
