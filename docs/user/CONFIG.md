@@ -2,8 +2,9 @@
 
 Reference for `.booley/booley.toml`: the "what each knob means" companion to
 [SETUP.md](SETUP.md), which is the ordered list of setup **steps**. This page
-covers Project-wide settings and links to the pages that own the rest. You do
-not fill these files by hand: the `booley-setup` skill authors them
+covers Project-wide settings. Per-Flow, Sandbox, and Stealth settings have
+their own pages; [Where each setting lives](#where-each-setting-lives) lists
+them. You do not fill these files by hand: the `booley-setup` skill authors them
 interactively, and `booley doctor` validates them. When a step needs the
 meaning of a field, it links here.
 

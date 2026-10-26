@@ -22,8 +22,8 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="flow-lint/">Lint</a></td><td>Check RTL for structural, semantic, and style problems.</td></tr>
 <tr><td><a href="flow-synth/">ASIC synthesis</a></td><td>Estimate ASIC area and timing quickly while you iterate on RTL.</td></tr>
 <tr><td><a href="flow-fpga/">FPGA implementation</a></td><td>Implement the design for an FPGA and report resources and timing.</td></tr>
-<tr><th scope="rowgroup" rowspan="6">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> knobs, and where the rest live.</td></tr>
-<tr><td><a href="targets/">Targets and tests</a></td><td><code>.core</code> files, <code>tests.toml</code>, and Cocotb Targets.</td></tr>
+<tr><th scope="rowgroup" rowspan="6">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> settings, plus a table of which page documents every other setting.</td></tr>
+<tr><td><a href="targets/">Targets and tests</a></td><td>Describe how your design builds and which tests verify it.</td></tr>
 <tr><td><a href="sandbox/">Sandbox</a></td><td>Container policy, egress, custom images, and commercial EDA tools.</td></tr>
 <tr><td><a href="stealth/">Stealth Mode</a></td><td>Keep Booley out of your Git history.</td></tr>
 <tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command, Flow, and Specialist.</td></tr>
