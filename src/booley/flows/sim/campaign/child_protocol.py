@@ -105,7 +105,8 @@ class ChildExecutionRegistry:
         manifest: SimulationCampaignManifest,
         project_root: Path,
     ) -> None:
-        self._configure(store, manifest, resolve_checkout_booley_dir(project_root))
+        project_data = resolve_checkout_booley_dir(project_root)
+        self._configure(store, manifest, project_data, project_data)
 
     @classmethod
     def from_project_data(
@@ -113,10 +114,16 @@ class ChildExecutionRegistry:
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
         project_data: Path,
+        *,
+        booley_dir: Path | None = None,
     ) -> ChildExecutionRegistry:
-        """Bind recovery to an already resolved Booley Directory root."""
+        """Bind recovery to an already resolved Booley Directory root.
+
+        *booley_dir* is the validated entry that may be a symlink (#2191); a caller-supplied
+        *project_data* is never followed unless the caller proves it is that entry.
+        """
         registry = cls.__new__(cls)
-        registry._configure(store, manifest, project_data)
+        registry._configure(store, manifest, project_data, booley_dir)
         return registry
 
     def _configure(
@@ -124,10 +131,12 @@ class ChildExecutionRegistry:
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
         project_data: Path,
+        booley_dir: Path | None,
     ) -> None:
         self._store = store
         self._manifest = manifest
         self._project_data_root = project_data
+        self._booley_dir = booley_dir
         self._campaign_root = store.root / "child-executions"
         # A lane's mark_terminal, the cancel path (recover_execution) and a
         # 0.3.0 retirement each read-check-write one execution record. Serialize
@@ -171,7 +180,7 @@ class ChildExecutionRegistry:
         )
         context_raw = canonical_json_bytes(self._context(identity))
         paths = execution_paths(execution_id, booley_dir=self._project_data)
-        _publish_or_verify(paths.context, context_raw, booley_dir=self._project_data)
+        _publish_or_verify(paths.context, context_raw, booley_dir=self._booley_dir)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
         return PreparedChild(execution_id, paths.context)
@@ -225,10 +234,10 @@ class ChildExecutionRegistry:
             raw = canonical_json_bytes(retirement)
             name = f"{child.execution_id}.json"
             _publish_or_verify(
-                self._project_root / "retired" / name, raw, booley_dir=self._project_data
+                self._project_root / "retired" / name, raw, booley_dir=self._booley_dir
             )
             _publish_or_verify(
-                self._campaign_root / "retired" / name, raw, booley_dir=self._project_data
+                self._campaign_root / "retired" / name, raw, booley_dir=self._booley_dir
             )
 
     def is_terminal(self, execution_id: ExecutionId) -> bool:
@@ -277,7 +286,7 @@ class ChildExecutionRegistry:
         recovered_ids: set[str] = set()
         paths = sorted(entries.glob("*.json")) if entries.is_dir() else []
         for path in paths:
-            raw, entry = _read_protocol_record(path, "child entry", booley_dir=self._project_data)
+            raw, entry = _read_protocol_record(path, "child entry", booley_dir=self._booley_dir)
             _validate_entry(path, entry)
             if (
                 entry.get("manifest_path") != expected_manifest
@@ -301,12 +310,12 @@ class ChildExecutionRegistry:
                 recovered_ids.add(campaign_path.name)
                 continue
             campaign_raw, campaign_entry = _read_protocol_record(
-                campaign_path, "campaign child entry", booley_dir=self._project_data
+                campaign_path, "campaign child entry", booley_dir=self._booley_dir
             )
             _validate_entry(campaign_path, campaign_entry)
             project_path = self._project_root / "entries" / campaign_path.name
             project_raw, entry = _read_protocol_record(
-                project_path, "child entry", booley_dir=self._project_data
+                project_path, "child entry", booley_dir=self._booley_dir
             )
             if project_raw != campaign_raw or entry != campaign_entry:
                 raise SimulationCampaignIntegrityError(
@@ -332,7 +341,7 @@ class ChildExecutionRegistry:
             return
         for path in sorted(entries.glob("*.json")):
             _raw, document = _read_protocol_record(
-                path, "campaign child entry", booley_dir=self._project_data
+                path, "campaign child entry", booley_dir=self._booley_dir
             )
             if (
                 document.get("manifest_path") == manifest_path
@@ -366,7 +375,7 @@ class ChildExecutionRegistry:
         attempt_path = expected / "attempt.json"
         if attempt_path.exists() or attempt_path.is_symlink():
             self._validate_bound_attempt(
-                attempt_path, entry, entry_sha256, booley_dir=self._project_data
+                attempt_path, entry, entry_sha256, booley_dir=self._booley_dir
             )
 
     @staticmethod
@@ -394,12 +403,12 @@ class ChildExecutionRegistry:
     def _recover_entry(self, path, raw, entry, slot_store) -> None:
         execution_id = ExecutionId(entry.get("child_execution_id"))
         campaign_entry = self._campaign_root / "entries" / path.name
-        _publish_or_verify(campaign_entry, raw, booley_dir=self._project_data)
+        _publish_or_verify(campaign_entry, raw, booley_dir=self._booley_dir)
         project_retired = self._project_root / "retired" / path.name
         campaign_retired = self._campaign_root / "retired" / path.name
         if project_retired.exists():
             retired_raw, _retirement = _read_protocol_record(
-                project_retired, "child retirement", booley_dir=self._project_data
+                project_retired, "child retirement", booley_dir=self._booley_dir
             )
             terminal = read_json(
                 execution_paths(execution_id, booley_dir=self._project_data).record
@@ -415,7 +424,7 @@ class ChildExecutionRegistry:
                 _sha(canonical_json_bytes(terminal)),
             )
             self._assert_token_absent(slot_store, execution_id)
-            _publish_or_verify(campaign_retired, retired_raw, booley_dir=self._project_data)
+            _publish_or_verify(campaign_retired, retired_raw, booley_dir=self._booley_dir)
             return
         child = _V030Child(
             execution_id,
@@ -443,7 +452,7 @@ class ChildExecutionRegistry:
         raw = canonical_json_bytes(context)
         if _sha(raw) != entry.get("runtime_context_sha256"):
             raise SimulationCampaignIntegrityError("child context digest disagrees with entry")
-        _publish_or_verify(child.context_path, raw, booley_dir=self._project_data)
+        _publish_or_verify(child.context_path, raw, booley_dir=self._booley_dir)
         paths = execution_paths(child.execution_id, booley_dir=self._project_data)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())

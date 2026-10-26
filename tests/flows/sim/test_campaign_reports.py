@@ -1086,9 +1086,9 @@ def test_campaign_card_renders_each_target_once(monkeypatch):
     assert calls == ["one", "two"]
 
 
-@pytest.mark.parametrize("linked", ["entry", "below"])
+@pytest.mark.parametrize("linked", ["entry", "below", "above"])
 def test_invocation_lock_follows_only_the_booley_dir_entry(tmp_path, linked):
-    """#2191: the lock crosses the Booley Directory link, never a link below it."""
+    """#2191: the lock crosses the Booley Directory link, never a link below or above it."""
     project = tmp_path / "project"
     project.mkdir()
     entry = project / ".booley"
@@ -1100,8 +1100,14 @@ def test_invocation_lock_follows_only_the_booley_dir_entry(tmp_path, linked):
         symlink_or_skip(entry / "flow-reports", outside, target_is_directory=True)
     invocation = entry / "flow-reports" / "sim" / "1"
     invocation.parent.mkdir(parents=True, exist_ok=True)
+    if linked == "above":
+        # The entry itself is exempt, but a link above it (the Project reached by alias) is not.
+        alias = tmp_path / "alias"
+        symlink_or_skip(alias, project, target_is_directory=True)
+        entry = alias / ".booley"
+        invocation = entry / "flow-reports" / "sim" / "1"
 
-    if linked == "below":
+    if linked != "entry":
         with (
             pytest.raises(ValueError, match="must not contain symlinks"),
             campaign_reports.campaign_invocation_lock(invocation, booley_dir=entry),
@@ -1110,3 +1116,42 @@ def test_invocation_lock_follows_only_the_booley_dir_entry(tmp_path, linked):
         return
     with campaign_reports.campaign_invocation_lock(invocation, booley_dir=entry):
         assert (invocation.parent / ".invocation-1.lock").exists()
+
+
+def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
+    tmp_path: Path,
+) -> None:
+    """#2191: probing a custom report root's parent never raises a layout error."""
+    from booley.flows.sim.campaign_retention import invocation_booley_dir
+
+    project = tmp_path / "project"
+    (project / "out" / "flow-reports" / "sim" / "1").mkdir(parents=True)
+    # A regular file where the Booley Directory belongs is a layout the resolver refuses.
+    (project / ".booley").write_text("", encoding="utf-8")
+
+    assert invocation_booley_dir(project / "out" / "flow-reports" / "sim" / "1") is None
+
+
+@pytest.mark.parametrize("reports_name", ["flow-reports", "custom"])
+def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports_name: str
+) -> None:
+    """#2191: a custom report root under a linked entry is refused at the lock, not later."""
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime.booley_dir import reset_cache
+
+    project = tmp_path / "project"
+    project.mkdir()
+    symlinked_booley_dir(project, tmp_path / "external")
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.chdir(project)
+    reset_cache()
+    report_dir = project / ".booley" / reports_name
+
+    flow = SimulateFlow()
+    if reports_name == "custom":
+        with pytest.raises(ValueError, match="must not contain symlinks"):
+            flow._next_invocation_dir(report_dir)
+        return
+    with flow.publication_resources:
+        assert flow._next_invocation_dir(report_dir) == report_dir / "sim" / "1"

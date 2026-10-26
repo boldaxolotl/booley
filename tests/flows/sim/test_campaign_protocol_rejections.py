@@ -94,11 +94,15 @@ def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> 
         registry.recover_unretired(None)
 
 
-@pytest.mark.parametrize("layout", ["entry", "below"])
+@pytest.mark.parametrize("layout", ["entry", "below", "unvalidated"])
 def test_child_records_publish_and_verify_through_the_booley_dir_entry(
     tmp_path: Path, layout: str
 ) -> None:
-    """#2191: the symlinked ``.booley`` entry is followed; a link below it is refused."""
+    """#2191: the symlinked ``.booley`` entry is followed; a link below it is refused.
+
+    ``unvalidated`` is recovery handed a linked project-data path no caller proved to be the
+    configured entry: it must stay refused.
+    """
     manifest = _two_item_manifest()
     # The Campaign store is plain: only the Project-local child records cross the entry.
     store = CampaignStore(tmp_path / "campaign")
@@ -110,7 +114,12 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
         (external / ".runtime").symlink_to(elsewhere, target_is_directory=True)
-    registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
+    if layout == "unvalidated":
+        registry = child_protocol.ChildExecutionRegistry.from_project_data(
+            store, manifest, project / ".booley"
+        )
+    else:
+        registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440001"
     ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
@@ -128,7 +137,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
         registry.prepare(ExecutionId("e" * 32), **fields)
         registry.recover_unretired(None)
 
-    if layout == "below":
+    if layout != "entry":
         with pytest.raises(SimulationCampaignIntegrityError, match="link"):
             cycle()
         return
@@ -201,6 +210,7 @@ def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> 
 def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
     registry = object.__new__(child_protocol.ChildExecutionRegistry)
     registry._project_data_root = tmp_path
+    registry._booley_dir = None
     registry._record_locks = {}
     registry._record_locks_gate = threading.Lock()
     return registry

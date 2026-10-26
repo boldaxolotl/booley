@@ -273,7 +273,9 @@ def recover_retained_campaign_resources(
         )
     if project_data is None:
         return
-    registry = ChildExecutionRegistry.from_project_data(store, status.manifest, project_data)
+    registry = ChildExecutionRegistry.from_project_data(
+        store, status.manifest, project_data, booley_dir=booley_dir
+    )
     if unretired:
         registry.recover_selected_unretired(SlotStore(project_data / "runtime" / "jobs" / "slots"))
     for lane_id in interrupted_lanes:
@@ -287,6 +289,7 @@ def recover_retained_campaign_resources(
         run = restore_run_directory_from_project_data(
             cast(Mapping[str, object], document["run_directory"]),
             project_data=project_data,
+            booley_dir=booley_dir,
         )
         cleanup_interrupted_run_directory(
             run,

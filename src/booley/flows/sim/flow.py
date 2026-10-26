@@ -69,7 +69,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
-from booley.flows.sim.campaign_reports import simulation_booley_dir, target_report_directory
+from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
@@ -2616,16 +2616,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Simulation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
-    @property
-    def _simulation_booley_dir(self) -> Path | None:
-        """The checkout's Booley Directory entry, which Simulation may follow if linked (#2191)."""
-        if not hasattr(self, "_cached_booley_dir"):
-            self._cached_booley_dir = simulation_booley_dir(Path(self.args.work_dir))
-        return self._cached_booley_dir
-
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""
         from .campaign_reports import campaign_invocation_lock
+        from .campaign_retention import invocation_booley_dir
 
         endpoint_dir = report_dir / self.name
         endpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -2642,8 +2636,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             with ExitStack() as attempt:
                 try:
                     attempt.enter_context(
+                        # The same derivation the artifact references use, so a custom
+                        # report root under a linked entry is refused here, up front.
                         campaign_invocation_lock(
-                            invocation, booley_dir=self._simulation_booley_dir
+                            invocation, booley_dir=invocation_booley_dir(invocation)
                         )
                     )
                     invocation.mkdir()

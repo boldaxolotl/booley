@@ -11,6 +11,8 @@ from urllib.parse import quote
 
 from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.booley_dir_links import is_booley_dir_entry
+from booley.core.booley_layout import BooleyLayoutError
+from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.runtime.file_lock import nonblocking_file_lock
 
 
@@ -69,13 +71,14 @@ def _fsync_directory(path: Path) -> None:
 def simulation_booley_dir(project_root: Path) -> Path | None:
     """Return the checkout's lexical Booley Directory entry, or ``None`` without one.
 
-    This is the one derivation every Simulation place uses to learn which single
-    symlinked component (#2191) it may follow. A checkout with no Booley Directory
-    has no entry to follow.
+    This is the derivation a Simulation place that knows its Project Root uses to learn
+    which single symlinked component (#2191) it may follow; retention, which has no
+    Project Root, goes through ``invocation_booley_dir``. A checkout with no Booley
+    Directory, or a layout the resolver refuses, has no entry to follow.
     """
     try:
         return resolve_checkout_booley_dir(project_root)
-    except FileNotFoundError:
+    except (FileNotFoundError, BooleyLayoutError, SourceCheckoutProjectError):
         return None
 
 

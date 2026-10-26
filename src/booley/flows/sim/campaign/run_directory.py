@@ -186,17 +186,23 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
 
 def restore_run_directory(document: Mapping[str, object], *, project_root: Path) -> RunDirectory:
     """Reconstruct and authenticate one persisted attempt run directory."""
-    return _restore_run_directory(document, checkout_runtime_dir(project_root))
+    runtime = checkout_runtime_dir(project_root)
+    return _restore_run_directory(document, runtime, runtime.parent)
 
 
 def restore_run_directory_from_project_data(
-    document: Mapping[str, object], *, project_data: Path
+    document: Mapping[str, object], *, project_data: Path, booley_dir: Path | None = None
 ) -> RunDirectory:
-    """Reconstruct a persisted run directory from resolved Booley Directory."""
-    return _restore_run_directory(document, project_data / ".runtime")
+    """Reconstruct a persisted run directory from resolved Booley Directory.
+
+    Only *booley_dir*, the caller-validated entry, may be a symlink (#2191).
+    """
+    return _restore_run_directory(document, project_data / ".runtime", booley_dir)
 
 
-def _restore_run_directory(document: Mapping[str, object], runtime: Path) -> RunDirectory:
+def _restore_run_directory(
+    document: Mapping[str, object], runtime: Path, booley_dir: Path | None
+) -> RunDirectory:
     path = Path(str(document["resolved"]))
     collision_key = os.path.normcase(str(path.resolve(strict=False)))
     if collision_key != document["collision_key"]:
@@ -212,7 +218,7 @@ def _restore_run_directory(document: Mapping[str, object], runtime: Path) -> Run
         template_root=(
             _template_root(str(document["configured"]), path) if bool(document["owned"]) else None
         ),
-        booley_dir=runtime.parent,
+        booley_dir=booley_dir,
     )
 
 
