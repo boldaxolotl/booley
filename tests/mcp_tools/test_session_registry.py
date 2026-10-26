@@ -785,3 +785,15 @@ async def test_claude_peer_recovery_keeps_shared_worktree_presence_separate(
         assert (labels[fallback.key], labels[peer.key]) == ("S1", "S2")
     finally:
         observer.close()
+
+
+def test_observed_checkout_reads_root_and_branch_from_git_metadata(tmp_path):
+    """Dashboard default checkout: nested dirs resolve to the checkout root and its branch."""
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/booley\n")
+    nested = tmp_path / "rtl"
+    nested.mkdir()
+    assert session_registry.observed_checkout(nested) == (str(tmp_path.resolve()), "booley")
+    (git / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n")
+    assert session_registry.observed_checkout(tmp_path) == (str(tmp_path.resolve()), "")

@@ -491,6 +491,12 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
     return root, key, branch
 
 
+def observed_checkout(work_dir: Path) -> tuple[str, str]:
+    """Checkout root and branch (empty when detached or unreadable) for presentation."""
+    root, _, branch = _worktree_facts(work_dir)
+    return str(root), branch
+
+
 def canonical_attribution(facts: Attribution) -> Attribution:
     """Match pre-Goal path rows to the same repository/admin identity used by Goal Records."""
     if not facts.work_dir:
