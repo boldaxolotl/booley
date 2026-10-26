@@ -2,15 +2,16 @@
 
 Booley ships four built-in Flows. Each has its own page:
 
-- [Simulation (`sim`)](FLOW-SIM.md): run a Target's tests, choose Test Runs and
-  seeds, read verdicts, resume a run, and set `[flows.sim]`.
-- [Coverage](COVERAGE.md): collect Verilator coverage with `sim`, gate it with
-  Coverage Criteria, and analyze a Coverage Campaign.
-- [Lint (`lint`)](FLOW-LINT.md): Verilator and Verible lint Targets.
-- [ASIC synthesis (`synth`)](FLOW-SYNTH.md): fast Yosys and OpenROAD area and
-  timing estimates.
-- [FPGA implementation (`fpga`)](FLOW-FPGA.md): Vivado implementation, PPA
-  profiles, and utilization.
+- [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
+  whether each one passed.
+  - [Simulation coverage](COVERAGE.md): measure how much of the RTL your tests
+    exercise, and find what they miss.
+- [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
+  problems.
+- [ASIC synthesis (`synth`)](FLOW-SYNTH.md): estimate ASIC area and timing
+  quickly while you iterate on RTL.
+- [FPGA implementation (`fpga`)](FLOW-FPGA.md): implement the design for an
+  FPGA and report resources and timing.
 
 This page covers what they share: running a Flow or a Specialist, following
 its progress, choosing Targets, and reading the result.
