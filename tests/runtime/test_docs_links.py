@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from itertools import pairwise
 from pathlib import Path
 
 from tests.docs.test_links import _markdown_anchors
@@ -67,7 +68,7 @@ def test_user_docs_table_matches_docs_user() -> None:
 
 def test_child_docs_follow_their_parent_in_the_same_section() -> None:
     """The sidebar indents a child doc under the doc right before it."""
-    for previous, doc in zip(USER_DOCS, USER_DOCS[1:], strict=False):
+    for previous, doc in pairwise(USER_DOCS):
         if doc.parent is not None:
             assert (previous.file, previous.section) == (doc.parent, doc.section), doc.file
     assert USER_DOCS[0].parent is None
