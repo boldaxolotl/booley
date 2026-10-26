@@ -72,7 +72,10 @@ private license network. After you switch modes, the next session start
 refuses the Sandbox spec issued for the other mode and asks you to run
 `booley init --seed` (then reopen the folder in the container, or use Dev
 Containers: Rebuild Container if VS Code is running it). A running Sandbox
-keeps its mode until it is recreated.
+keeps its mode until it is recreated; until then, headless `booley session
+enter` and `booley auth` refuse it with the same remedy. Like Docker's default
+`bridge`, `booley-unproxied-v1` also lets Sandboxes reach services listening on
+the host's Docker gateway address.
 
 Host `config.toml [sandbox]` and Project `booley.toml [sandbox]` have different
 keys: host limits and egress belong only in the host file; Project image and
@@ -117,10 +120,10 @@ inferred from platform signals such as `CODESPACES`.
 
 It is a declaration, not a security boundary. Any process in a Sandbox can set
 it for itself; in a Sandbox Booley issued under host `egress = "proxy"` the
-internal network still denies direct egress, and Booley never removes a proxy variable the Sandbox
-delivered, so doing so only stops Booley adding its own proxy variables in that
-process and turns Doctor's unresolved-proxy FAIL into the waivable WARN for
-that run.
+internal network still denies direct egress, and Booley never removes a proxy
+variable the Sandbox delivered, so doing so only stops Booley adding its own
+proxy variables in that process and turns Doctor's unresolved-proxy FAIL into
+the waivable WARN for that run.
 
 Doctor reports the mode in the Sandbox checks:
 

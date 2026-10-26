@@ -1155,6 +1155,26 @@ def _validate_generated_spec(
     if spec.get("updateRemoteUserUID") is not False:
         raise RuntimeSpecError("devcontainer.json immutable user policy has drifted")
     _validate_lifecycle(spec)
+    _validate_issued_mounts(project, spec, requirements, issuance, app)
+    assert issuance.project_data_source is not None
+    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
+    _validate_environment(spec, requirements.license_environment, egress)
+    _validate_run_args(
+        spec.get("runArgs"),
+        expected_labels=labels(issuance),
+        private_network=requirements.private_network,
+        egress=egress,
+    )
+
+
+def _validate_issued_mounts(
+    project: Path,
+    spec: dict[str, Any],
+    requirements: eda_requirements.SessionEdaRequirements,
+    issuance: Issuance,
+    app: str,
+) -> None:
+    """Check every mount against the host issuance and its EDA authorization."""
     mounts = spec.get("mounts")
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
@@ -1177,15 +1197,6 @@ def _validate_generated_spec(
         raise RuntimeSpecError("devcontainer.json exposes Vivado without host authorization")
     _validate_overlaps(mounts)
     _validate_mount_surfaces(mounts, project_data_workspace_target)
-    assert issuance.project_data_source is not None
-    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
-    _validate_environment(spec, requirements.license_environment, egress)
-    _validate_run_args(
-        spec.get("runArgs"),
-        expected_labels=labels(issuance),
-        private_network=requirements.private_network,
-        egress=egress,
-    )
 
 
 def _validate_egress_mode(spec: dict[str, Any], egress: str) -> None:

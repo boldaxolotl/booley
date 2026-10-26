@@ -894,7 +894,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(
-            f"refusing Sandbox startup: {exc}; {_spec_refusal(workspace, exc, vscode=False)}"
+            f"refusing Sandbox startup: {exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}"
         ) from exc
     _warn_on_image_drift(spec, workspace)
     if image_override is not None and image_override != spec.get("image"):
@@ -1187,7 +1187,7 @@ def validate(workspace: Path) -> str:
     try:
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
-        raise SessionError(f"{exc}; {_spec_refusal(workspace, exc, vscode=False)}") from exc
+        raise SessionError(f"{exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}") from exc
     selected = resolve_running_sandbox(workspace)
     if selected is not None and not _container_matches_issuance(
         selected.container_id,
@@ -1297,12 +1297,12 @@ def _authenticate_quiesce_validate(
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         recovery = _quiesced_validation_recovery(quiesced)
-        remedy = _spec_refusal(workspace, exc, vscode=True)
+        remedy = _spec_refusal_remedy(workspace, exc, vscode=True)
         raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}{recovery}") from exc
     return issuance, quiesced
 
 
-def _spec_refusal(workspace: Path, exc: Exception, *, vscode: bool) -> str:
+def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> str:
     """Name the host workflow that cures one Sandbox spec refusal."""
     from booley.runtime import session_issuance as runtime_spec
 
