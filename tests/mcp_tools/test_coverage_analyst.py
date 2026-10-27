@@ -940,3 +940,66 @@ def test_analysis_follows_only_the_booley_dir_entry(tmp_path, monkeypatch, linke
             analyst.coverage_analyst(path)
         return
     assert analyst.coverage_analyst(path).to_dict()["source_access"] == "verified"
+
+
+@pytest.mark.parametrize("linked", ["entry", "below", "above"])
+def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeypatch, linked):
+    """Stealth-disabled source inspection reads inputs behind a linked ``.booley`` (#2250).
+
+    Only the exact entry is followed: a link below it, or a link above the
+    Project Root, still degrades to report-only analysis.
+    """
+    from booley.flows.sim.coverage_analysis_input import coverage_sources, read_coverage_campaign
+    from booley.runtime.booley_dir import reset_cache
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    data = symlinked_booley_dir(project, tmp_path / "external-booley")
+    path = source_project(project)
+    # Move the testbench behind the entry and point the core and closure at it.
+    tb_home = data
+    if linked == "below":
+        tb_home = tmp_path / "elsewhere"
+        tb_home.mkdir()
+        symlink_or_skip(data / "tb", tb_home / "tb", target_is_directory=True)
+    (tb_home / "tb").mkdir(exist_ok=True)
+    (project / "tb/counter_tb.sv").rename(tb_home / "tb/counter_tb.sv")
+    core = project / "counter.core"
+    core.write_text(core.read_text().replace("[tb/counter_tb.sv]", "[.booley/tb/counter_tb.sv]"))
+    _rebind_source_digests(path, project)
+    reset_cache()
+    work_dir = project
+    if linked == "above":
+        work_dir = tmp_path / "alias"
+        symlink_or_skip(work_dir, project, target_is_directory=True)
+
+    sources = coverage_sources(read_coverage_campaign(path).campaign, work_dir)
+
+    if linked != "entry":
+        assert sources is None
+        return
+    assert sources is not None
+    assert sorted(sources.files) == [".booley/tb/counter_tb.sv", "rtl/counter.sv"]
+
+
+def _rebind_source_digests(path: Path, root: Path) -> None:
+    """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
+    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+
+    document = json.loads(path.read_text())
+    document["source_closure"]["testbench"] = [
+        {
+            "path": ".booley/tb/counter_tb.sv",
+            "sha256": content_digest((root / ".booley/tb/counter_tb.sv").read_bytes()),
+        }
+    ]
+    document["fingerprints"]["testbench_sources"] = coverage_digest(
+        document["source_closure"]["testbench"]
+    )
+    document["fingerprints"]["target_definition"] = coverage_digest(
+        {"core": (root / "counter.core").read_text(), "identity": document["target"]["identity"]}
+    )
+    path.write_text(json.dumps(document))
