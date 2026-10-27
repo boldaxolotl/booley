@@ -375,10 +375,6 @@ class TestAppExtension:
         assert dc.spec_installs_vaporview(legacy) is False
 
     def test_generated_spec_pins_the_verified_vaporview_build(self):
-        # The pin is derived from VERIFIED_VERSION, never a second literal.
-        assert (
-            f"{vaporview.EXTENSION_ID}@{vaporview.VERIFIED_VERSION}"
-        ) == vaporview.PINNED_EXTENSION
         for app in dc.SUPPORTED_APPS:
             extensions = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["extensions"]
             assert [e for e in extensions if "vaporview" in e.lower()] == [

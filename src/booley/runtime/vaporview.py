@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
 
+from booley.core.boundary import as_dict
 from booley.runtime import vscode_server
 
 EXTENSION_ID = "lramseyer.vaporview"
@@ -96,11 +97,12 @@ def _registry_versions(root: Path) -> set[str] | None:
         return None
     versions: set[str] = set()
     for entry in entries:
-        identifier = entry.get("identifier") if isinstance(entry, dict) else None
-        ext_id = identifier.get("id") if isinstance(identifier, dict) else None
+        fields = as_dict(entry, default={})
+        identifier = as_dict(fields.get("identifier"), default={})
+        ext_id = identifier.get("id")
         if not isinstance(ext_id, str) or ext_id.lower() != EXTENSION_ID:
             continue
-        version = entry.get("version")
+        version = fields.get("version")
         if not isinstance(version, str):
             return None
         versions.add(version)

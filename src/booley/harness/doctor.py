@@ -3134,7 +3134,7 @@ def _vaporview_installed_versions(argv_prefix: list[str]) -> list[str] | None:
         versions = json.loads(result.stdout)
     except ValueError:
         return None
-    if not (isinstance(versions, list) and all(isinstance(v, str) for v in versions)):
+    if not is_str_list(versions):
         return None
     return versions
 

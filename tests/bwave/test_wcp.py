@@ -21,6 +21,7 @@ from booley.bwave.wcp import (
     WcpTimeoutError,
     try_connect,
 )
+from booley.runtime import vaporview
 
 _GREETING_RESULT = {
     "name": "Vaporview",
@@ -157,6 +158,7 @@ def test_setup_hint_avoids_vaporview_duplicate_start_race():
     hint = bwave_wcp.setup_hint()
 
     assert 'Do not run "WCP: Start Server"' in hint
+    assert vaporview.PINNED_EXTENSION in hint
     assert "falsely report EADDRINUSE" in hint
 
 
