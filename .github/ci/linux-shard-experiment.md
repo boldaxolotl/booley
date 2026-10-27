@@ -161,9 +161,9 @@ lower (-12%). Its median runner minutes were 12.8 lower, so no extra
 cost was measurable (a saving that size is within the A-to-B spread). `worksteal` is not recommended: it was 141 s
 slower on one shard and showed no measurable gain on two. Gains beyond C are
 capped by the Windows shards, which finished last in every sharded run and
-account for the only timeouts seen. The production default stays unchanged here
-(one complete-suite job per Python version with `loadscope`); whether to
-adopt C is the maintainer's decision.
+account for the only timeouts seen. The record left the production default
+unchanged (one complete-suite job per Python version with `loadscope`) for the
+maintainer to decide; the Decision section below records that outcome.
 
 ## Decision
 

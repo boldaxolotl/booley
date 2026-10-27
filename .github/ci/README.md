@@ -33,7 +33,7 @@ The checked-in Windows timing model contains the slow observations from a
 recent set of `main` runs. Each stored weight is the median of available
 observations for a currently eligible test whose median exceeds the
 conservative one-second default. Every shard, and each Ubuntu complete-suite
-leg, emits fresh exact-node timing evidence for future model refreshes. Stale
+leg of a manual one-shard run, emits fresh exact-node timing evidence for future model refreshes. Stale
 entries are harmless and missing or unobserved tests use the default weight.
 
 The timing evidence also separates the slowest worker's collection time from
