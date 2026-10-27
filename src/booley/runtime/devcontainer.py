@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from booley.config.agent import SANDBOX_IMAGE
 from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
+from booley.runtime import vaporview as _vaporview
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
@@ -30,7 +31,6 @@ from booley.runtime.incontainer_git_identity import (
 )
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
-from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
@@ -464,7 +464,8 @@ def spec_installs_vaporview(spec: dict) -> bool:
     rebuild, which never touches the spec. ``booley doctor`` reads this to
     surface the drift.
 
-    Returns ``True`` only when the extension is listed, the WCP server is
+    Returns ``True`` only when the extension is listed exactly once and pinned
+    to ``vaporview.PINNED_EXTENSION``, the WCP server is
     enabled on the port bwave's client expects, its presentation palette is
     intact, AND the auto-start patch is wired; any miss means a stale or
     hand-edited spec that a re-seed would fix.
@@ -474,7 +475,12 @@ def spec_installs_vaporview(spec: dict) -> bool:
     if not isinstance(vscode, dict):
         return False
     extensions = vscode.get("extensions")
-    if not (isinstance(extensions, list) and _VAPORVIEW_EXTENSION in extensions):
+    if not isinstance(extensions, list):
+        return False
+    # Exactly one VaporView entry, pinned to the verified build: an unpinned or
+    # differently pinned entry lets VS Code install a release Booley rejects.
+    requested = [entry for entry in extensions if _vaporview.is_vaporview_entry(entry)]
+    if not (len(requested) == 1 and _vaporview.is_pinned_entry(requested[0])):
         return False
     settings = vscode.get("settings")
     if not isinstance(settings, dict):
@@ -1117,7 +1123,9 @@ def build_devcontainer_spec(
     vscode: dict = {
         "extensions": ([extension] if extension else [])
         + [
-            _VAPORVIEW_EXTENSION,
+            # Pinned so a fresh Sandbox gets the build Booley verified, and VS
+            # Code's auto-update leaves it there.
+            _vaporview.PINNED_EXTENSION,
             _HDL_EXTENSION,
             _TCL_EXTENSION,
             _LIVE_PREVIEW_EXTENSION,

@@ -7,6 +7,7 @@ import json
 import pytest
 
 from booley.runtime import devcontainer as dc
+from booley.runtime import vaporview
 from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
 
 # ===========================================================================
@@ -307,7 +308,7 @@ class TestAppExtension:
         ext = "Anthropic.claude-code"
         assert vscode["extensions"] == [
             ext,
-            "lramseyer.vaporview",
+            vaporview.PINNED_EXTENSION,
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
@@ -324,7 +325,7 @@ class TestAppExtension:
         vscode = spec["customizations"]["vscode"]
         assert vscode["extensions"] == [
             "openai.chatgpt",
-            "lramseyer.vaporview",
+            vaporview.PINNED_EXTENSION,
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
@@ -340,7 +341,7 @@ class TestAppExtension:
         # client can always reach the server.
         vscode = dc.build_devcontainer_spec(dc.APP_NONE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
-            "lramseyer.vaporview",
+            vaporview.PINNED_EXTENSION,
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
@@ -354,7 +355,7 @@ class TestAppExtension:
         for app in dc.SUPPORTED_APPS:
             spec = dc.build_devcontainer_spec(app)
             vscode = spec["customizations"]["vscode"]
-            assert "lramseyer.vaporview" in vscode["extensions"]
+            assert vaporview.PINNED_EXTENSION in vscode["extensions"]
             assert vscode["settings"]["vaporview.wcp.enabled"] is True
             assert vscode["settings"]["vaporview.wcp.port"] == 54322
             assert {
@@ -372,6 +373,35 @@ class TestAppExtension:
         legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         legacy["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
         assert dc.spec_installs_vaporview(legacy) is False
+
+    def test_generated_spec_pins_the_verified_vaporview_build(self):
+        for app in dc.SUPPORTED_APPS:
+            extensions = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["extensions"]
+            assert [e for e in extensions if "vaporview" in e.lower()] == [
+                vaporview.PINNED_EXTENSION
+            ]
+
+    @pytest.mark.parametrize(
+        ("entries", "current"),
+        [
+            pytest.param([vaporview.PINNED_EXTENSION], True, id="pinned"),
+            pytest.param([vaporview.PINNED_EXTENSION.upper()], True, id="pinned-any-case"),
+            pytest.param([vaporview.EXTENSION_ID], False, id="unpinned"),
+            pytest.param([f"{vaporview.EXTENSION_ID}@9.9.9"], False, id="other-version"),
+            pytest.param(
+                [vaporview.PINNED_EXTENSION, vaporview.EXTENSION_ID],
+                False,
+                id="pinned-plus-unpinned",
+            ),
+        ],
+    )
+    def test_spec_installs_vaporview_requires_the_pinned_entry(self, entries, current):
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        extensions = spec["customizations"]["vscode"]["extensions"]
+        spec["customizations"]["vscode"]["extensions"] = [
+            e for e in extensions if not vaporview.is_vaporview_entry(e)
+        ] + entries
+        assert dc.spec_installs_vaporview(spec) is current
 
     def test_spec_installs_hdl_highlight_detector(self):
         # Doctor's detector for a spec seeded before the highlighting

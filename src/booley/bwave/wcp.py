@@ -45,6 +45,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.runtime.vaporview import PINNED_EXTENSION
 
 WCP_HOST = "127.0.0.1"
 # Must match the `vaporview.wcp.port` pinned in the generated devcontainer
@@ -165,9 +166,9 @@ def setup_hint(port: int | None = None) -> str:
         '  - Do not run "WCP: Start Server" while Booley auto-start is enabled.\n'
         "    VaporView 1.5.4 can bind the port during activation, try it again, and\n"
         "    falsely report EADDRINUSE even though the first start succeeded.\n"
-        "  - Rebuild the devcontainer (installs lramseyer.vaporview and enables its\n"
+        f"  - Rebuild the devcontainer (installs {PINNED_EXTENSION} and enables its\n"
         "    WCP server), or\n"
-        '  - In VS Code: install lramseyer.vaporview, set "vaporview.wcp.enabled": true\n'
+        f'  - In VS Code: install {PINNED_EXTENSION}, set "vaporview.wcp.enabled": true\n'
         f'    and "vaporview.wcp.port": {WCP_DEFAULT_PORT}.\n'
         f"  Port override: {WCP_PORT_ENV}."
     )

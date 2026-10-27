@@ -2849,9 +2849,20 @@ class TestWcpServerCheck:
         probe=None,
         extension_state=None,
         extension_probe=None,
+        version_calls: list | None = None,
     ) -> _Rec:
         from booley.runtime import runtime_context
         from booley.runtime.vaporview import ExtensionState
+
+        # The version line is covered by TestVaporviewVersionCheck; here it only
+        # records how it was invoked so the port assertions stay focused.
+        monkeypatch.setattr(
+            doctor,
+            "_check_vaporview_version",
+            lambda argv, where, *_: (version_calls if version_calls is not None else []).append(
+                (argv, where)
+            ),
+        )
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
@@ -2956,6 +2967,89 @@ class TestWcpServerCheck:
         rec = self._run(tmp_path, monkeypatch, docker=None, in_container=True, probe=probe)
         assert seen == [[]]  # no `docker exec` prefix
         assert rec.kinds() == {"fail"}
+
+    def test_version_check_runs_in_the_attached_container(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._run(tmp_path, monkeypatch, version_calls=calls)
+        assert calls == [(["docker", "exec", "vsc-proj-abc-uid"], " in 'vsc-proj-abc-uid'")]
+
+    def test_version_check_runs_on_loopback_in_container(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._run(tmp_path, monkeypatch, docker=None, in_container=True, version_calls=calls)
+        assert calls == [([], "")]
+
+    def test_version_check_skipped_without_extension_host(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._run(tmp_path, monkeypatch, attached=False, version_calls=calls)
+        assert calls == []
+
+
+class TestVaporviewVersionCheck:
+    """_check_vaporview_version names both versions when the build is not the verified one."""
+
+    def _run(self, monkeypatch, versions):
+        monkeypatch.setattr(doctor, "_vaporview_installed_versions", lambda argv: versions)
+        rec = _Rec()
+
+        def fail(message, fix=""):
+            rec.events.append(("fail", f"{message}\n{fix}"))
+
+        doctor._check_vaporview_version(["docker", "exec", "c"], " in 'c'", rec.p, rec.s, fail)
+        return rec
+
+    def test_verified_version_passes(self, monkeypatch):
+        from booley.runtime import vaporview
+
+        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION])
+        assert rec.kinds() == {"pass"}
+
+    def test_other_version_fails_with_both_versions_and_remedy(self, monkeypatch):
+        from booley.runtime import vaporview
+
+        rec = self._run(monkeypatch, ["1.6.0"])
+        assert rec.kinds() == {"fail"}
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "VaporView 1.6.0 is installed in 'c'" in failure
+        assert f"verifies only {vaporview.VERIFIED_VERSION}" in failure
+        assert f"code --install-extension {vaporview.PINNED_EXTENSION}" in failure
+        assert "Reload Window" in failure
+
+    def test_verified_alongside_other_still_fails(self, monkeypatch):
+        from booley.runtime import vaporview
+
+        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION, "1.6.0"])
+        assert rec.kinds() == {"fail"}
+
+    @pytest.mark.parametrize("versions", [None, []], ids=["unknown", "not-installed"])
+    def test_unknown_or_absent_skips(self, monkeypatch, versions):
+        rec = self._run(monkeypatch, versions)
+        assert rec.kinds() == {"skip"}
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (0, '["1.5.4"]\n', ["1.5.4"]),
+        (0, "[]\n", []),
+        (4, "", None),
+        (1, "Traceback (ImportError)", None),
+        (0, "not json", None),
+        (0, "[1]", None),
+    ],
+)
+def test_vaporview_versions_probe_parses_output(monkeypatch, returncode, stdout, expected):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    assert doctor._vaporview_installed_versions(["docker", "exec", "s"]) == expected
+    assert seen == [
+        ["docker", "exec", "s", "python3", "-c", doctor._VAPORVIEW_VERSIONS_PROBE_SOURCE]
+    ]
 
 
 @pytest.mark.parametrize(

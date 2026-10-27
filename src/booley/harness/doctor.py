@@ -3036,6 +3036,16 @@ _VAPORVIEW_STATE_PROBE_SOURCE = (
     "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
 )
 
+# Prints the live VaporView versions as JSON; exit 4 means the registry could
+# not be read. An older in-container Booley without installed_versions fails the
+# import, which the runner also treats as unknown.
+_VAPORVIEW_VERSIONS_PROBE_SOURCE = (
+    "import json,sys;from pathlib import Path;"
+    "from booley.runtime.vaporview import installed_versions;"
+    "v=installed_versions(Path.home());"
+    "print(json.dumps(v)) if v is not None else sys.exit(4)"
+)
+
 # Probe body: a bare TCP connect, run by whichever interpreter is at hand. Kept
 # to connect_ex so a refused port is an exit code, never a traceback.
 _WCP_PROBE_SOURCE = (
@@ -3106,6 +3116,68 @@ def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionSta
     return vaporview.ExtensionState.UNKNOWN
 
 
+def _vaporview_installed_versions(argv_prefix: list[str]) -> list[str] | None:
+    """Live VaporView versions in the remote registry, or None when unknown."""
+    try:
+        result = subprocess.run(
+            [*argv_prefix, "python3", "-c", _VAPORVIEW_VERSIONS_PROBE_SOURCE],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        versions = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not is_str_list(versions):
+        return None
+    return versions
+
+
+def _vaporview_version_fix() -> str:
+    """Recovery for an installed VaporView build other than the verified one."""
+    return (
+        "in the attached remote window's terminal run "
+        f"`code --install-extension {vaporview.PINNED_EXTENSION}`, then "
+        "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
+        "its generated spec pins the verified version"
+    )
+
+
+def _check_vaporview_version(
+    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
+) -> None:
+    """Report whether the attached window runs the VaporView build Booley verified.
+
+    The WCP port probe alone cannot tell: VaporView 1.6.0 also listens on the
+    port, but speaks a protocol `bwave gui` does not, and Booley's patcher
+    refuses it. Only the installed version separates the two.
+    """
+    description = f"VaporView version is the verified {vaporview.VERIFIED_VERSION}"
+    versions = _vaporview_installed_versions(argv_prefix)
+    if versions is None:
+        _skip(f"{description} - version probe could not run{where}")
+        return
+    if not versions:
+        # Absence is reported by the WCP check with install guidance.
+        _skip(f"{description} - VaporView not installed{where}")
+        return
+    other = [version for version in versions if version != vaporview.VERIFIED_VERSION]
+    if not other:
+        _pass(description)
+        return
+    _fail(
+        f"VaporView {', '.join(other)} is installed{where}; Booley verifies only "
+        f"{vaporview.VERIFIED_VERSION}",
+        _vaporview_version_fix(),
+    )
+
+
 def _wcp_dark_fix(argv_prefix: list[str]) -> str:
     """Choose recovery from an authoritative remote extension observation."""
     state = _vaporview_extension_state(argv_prefix)
@@ -3152,6 +3224,7 @@ def _check_wcp_server(
         if attached is False:
             _skip(f"{description} - no VS Code extension host attached")
             return
+        _check_vaporview_version([], "", _pass, _skip, _fail)
         listening = _wcp_port_listening([], port)
         if listening is None:
             _skip(f"{description} - probe could not run")
@@ -3177,6 +3250,7 @@ def _check_wcp_server(
     if attached is False:
         _skip(f"{description} - no VS Code extension host attached in '{container}'")
         return
+    _check_vaporview_version(argv_prefix, f" in '{container}'", _pass, _skip, _fail)
     listening = _wcp_port_listening(argv_prefix, port)
     if listening is None:
         _skip(f"{description} - probe could not run in '{container}'")

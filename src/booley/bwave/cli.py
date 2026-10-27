@@ -629,7 +629,8 @@ def _apply_limit_default(cmd_args: list[str]) -> None:
 # ---------------------------------------------------------------------------
 # Subcommand: open (Waveform Viewer, ADR 0040 / ADR 0035)
 # ---------------------------------------------------------------------------
-_VAPORVIEW_EXTENSION = vaporview.EXTENSION_ID
+# Pinned build: an unpinned install fetches the newest (unsupported) release.
+_VAPORVIEW_EXTENSION = vaporview.PINNED_EXTENSION
 # Probe order: `code` first, then `cursor`. shutil.which resolves Windows
 # `code.cmd` via PATHEXT, so no platform branching is needed.
 _VIEWER_CLIS = ("code", "cursor")
