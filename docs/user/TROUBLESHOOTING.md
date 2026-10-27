@@ -376,7 +376,7 @@ Read the Review Package and Session Summary when Finish succeeds.
 #### The Dashboard does not open on Sandbox attach
 
 Use `booley dashboard` in the Sandbox to open it manually. Automatic opening uses
-the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
+the **Booley Sandbox Integration** workspace extension bundled in the Sandbox Image, not
 VS Code's global permission for automatic tasks. After upgrading Booley, run
 `booley init` on the host and rebuild/reopen the Sandbox so its image contains
 the extension. A running container does not gain files from a newer image.
@@ -402,8 +402,10 @@ missing/stale image artifacts require a Sandbox Image rebuild.
 
 For a user-managed `[sandbox].image`, install the current Booley wheel and run
 `RUN python3 -I -m booley.runtime.dashboard_extension` as root in the image recipe,
-then restore its usual `USER`. Set `dashboard = false` if the image cannot supply
-the VSIX; `booley dashboard` remains available manually.
+then restore its usual `USER`. Every Sandbox spec installs that VSIX, because the
+same extension runs the viewer bridge behind `bwave gui` scoped views; an image
+without it leaves both Dashboard auto-open and scoped views unavailable.
+`booley dashboard` remains available manually.
 
 #### A session shows `activity unknown`
 
@@ -601,69 +603,69 @@ contents and how to layer EDA tools on top, see
 ### `bwave gui` fails on a scoped view
 
 A scoped view (`--signals` / `--group` / `--time` / `--cursor` / `--append`)
-drives a *running* VaporView over its WCP (Waveform Control Protocol) control
-server — the channel `bwave` uses to drive an already-open viewer — which the
-generated devcontainer spec enables and pins to port 54322 (override:
-`BOOLEY_WCP_PORT`).
-If nothing is listening there, the scoped view fails with a setup hint,
-deliberately, rather than silently opening the whole trace and letting you read
-the wrong picture. A bare `bwave gui` needs no WCP server: it falls back to
-launching the editor CLI on the file.
+drives VaporView in an attached VS Code window through the viewer bridge that
+Booley's own VS Code extension starts in every window of the Sandbox. The
+generated devcontainer spec installs both extensions. If no attached window
+answers, the scoped view fails with a setup hint, deliberately, rather than
+silently opening the whole trace and letting you read the wrong picture. A
+bare `bwave gui` needs no bridge: it falls back to launching the editor CLI on
+the file.
 
-Booley first checks whether VaporView is installed in the attached remote
-window. If it is missing, install it there with
-`code --install-extension lramseyer.vaporview@1.5.4`. If the Sandbox cannot
+When a window is attached, the usual fix is **"Developer: Reload Window"** in
+it, not a rebuild: the bridge starts when the window loads. If Doctor also
+reports devcontainer drift, refresh the Sandbox so its spec installs Booley's
+extension. `booley doctor` asks every attached window's bridge whether it
+answers and has VaporView ready ("VaporView bridge answers in the attached VS
+Code window ..."), so you find out before `bwave gui` does.
+
+With several VS Code windows attached to one Sandbox, `bwave gui` uses the
+window whose terminal you typed it in. Elsewhere it picks the window already
+showing the trace, then the window you used most recently. When it cannot
+tell, it says so: run it from a terminal of the window you want, or close the
+windows you do not need.
+
+Booley checks whether VaporView is installed in the attached remote window. If
+it is missing, install it there with
+`code --install-extension lramseyer.vaporview@1.6.0`. If the Sandbox cannot
 reach the Marketplace, obtain the official VaporView VSIX on a networked host,
 from the matching version on the
 [official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
-(`vaporview-1.5.4.vsix` for Booley's currently verified VaporView 1.5.4), then
+(`vaporview-1.6.0.vsix` for Booley's currently verified VaporView 1.6.0), then
 use **Extensions: Install from VSIX...** in the attached remote window.
-After installation, the Sandbox's background watcher patches the
-extension automatically; then use **Developer: Reload Window**. Verify with
+After installation, the Sandbox's background watcher patches the extension
+automatically; then use **Developer: Reload Window**. Verify with
 `code --list-extensions --show-versions` in the remote terminal; it must list
-`lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
+`lramseyer.vaporview@1.6.0`. Be careful with a host terminal: a plain host
 `code` command may install locally instead of into the attached container.
 
-The generated devcontainer spec pins VaporView to `lramseyer.vaporview@1.5.4`,
+The generated devcontainer spec pins VaporView to `lramseyer.vaporview@1.6.0`,
 and VS Code does not auto-update a pinned extension. A different installed
-version, such as a newer Marketplace release, cannot drive scoped views. Doctor
-reports it with both versions. Run the pinned install command above in the
-attached remote window, then **Developer: Reload Window**. If Doctor also
-reports devcontainer drift, refresh the Sandbox so its spec carries the pin.
+version, such as a newer Marketplace release, cannot drive scoped views.
+`bwave gui` and Doctor report it with both versions. Run the pinned install
+command above in the attached remote window, then **Developer: Reload Window**.
+If Doctor also reports devcontainer drift, refresh the Sandbox so its spec
+carries the pin.
 
-The same repair applies when `--group` or a radix/color suffix reports missing
-`set_signal_layout`, `get_signal_layout`, or `get_viewer_state` capabilities.
-Stock VaporView 1.5.4 does not expose its recursive presentation state over WCP;
-Booley's compatibility patch adds the layout write/readback pair to create and
-verify groups, radixes, and colors. That adapter is restricted to the exact
-official 1.5.4 bundle fingerprint; a different or partially modified bundle is
-left untouched and reported as unsupported rather than rewritten heuristically.
+Booley's attach hook applies one small compatibility patch to the installed
+VaporView. It stops the remote extension host from looking up your desktop
+color theme, which lives on your machine, not in the Sandbox: that lookup
+fails with an "Error getting user theme" notification and greys out every
+waveform. It also makes the three palette slots behind `@red`, `@blue`, and
+`@green` honor the colors in the Sandbox spec. The patch applies only to the
+exact official 1.6.0 build; a different or modified build is left untouched and
+reported as unsupported. On the first window of a fresh container it lands
+after VaporView has started, so it takes effect at the next **Developer: Reload
+Window**. When Marketplace installation is delayed, the attach hook leaves one
+background watcher until VaporView arrives. It patches VS Code's hidden staging
+copy before the completed install is published. Watcher diagnostics are written
+to `~/.booley/vaporview-install-watch.log` if automatic repair cannot complete.
 
-When VaporView is installed, the usual fix is **"Developer: Reload Window"**,
-not a rebuild. VaporView only
-wakes up for a waveform tab, so Booley patches its manifest to start on every
-window instead — but that patch runs from `postAttachCommand`, which VS Code
-runs *after* it has already started the extension host. On the first window of a
-fresh container the patch therefore lands one beat too late and takes effect on
-the next extension-host start. When Marketplace installation is delayed, the
-attach hook leaves one background watcher until VaporView arrives. It patches
-VS Code's hidden staging copy before the completed install is published, so the
-next extension-host activation cannot race an unpatched manifest. A rebuild
-puts you back in exactly that first window; one reload does not. Watcher
-diagnostics are written to `~/.booley/vaporview-install-watch.log` if automatic
-repair cannot complete. `booley doctor` probes the port and says so
-("VaporView WCP server reachable ..."), so you find out before `bwave gui` does.
-
-Do **not** use `WCP: Start Server` while Booley's auto-start setting is enabled.
-VaporView 1.5.4 starts WCP during command-triggered activation but loses that
-server reference, so the command tries the same port again and falsely reports
-`EADDRINUSE` even though the first start succeeded. Booley disables that command
-in auto-start mode after the manifest patch takes effect; Reload Window is the
-reliable first-window recovery.
-
-A view that opens but is missing signals is a different thing: signals the viewer
-has no netlist entry for are dropped and named in a WARNING on stderr; the trace
-itself is fine and still queryable.
+A view that opens but is missing signals is a different thing: signals the
+viewer has no netlist entry for are left out and named in a WARNING on stderr;
+the trace itself is fine and still queryable. If `bwave gui` reports that the
+viewer "did not apply" the requested view, it has already restored the
+previous view; retry once the window is idle (the viewer may still have been
+loading the trace).
 
 ## Lint, synthesis, and FPGA
 

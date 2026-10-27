@@ -100,9 +100,9 @@ Use red for clocks/resets, blue for known registers, and green for other
 signals. Keep labels and group structure meaningful because color is supporting
 information, not the only information.
 
-It requires VaporView's WCP control server in the user's VS Code window and
-hard-errors when that is off — surface the setup hint rather than assuming it
-worked. Flag semantics (native groups, clock row, markers, `--append`,
+It requires an attached VS Code window with VaporView, driven through the
+Booley extension's viewer bridge, and hard-errors when no window answers —
+surface the setup hint rather than assuming it worked. Flag semantics (native groups, clock row, markers, `--append`,
 `--max-signals`):
 `bwave docs show commands/gui`.
 

@@ -286,6 +286,16 @@ Packaged release history starts at 0.2.7. For older changes, see
 - The project site and user docs moved to <https://booley.dev/>. Links Booley
   prints, the README, and the PyPI project links now point there. Old
   `boldaxolotl.github.io/booley/` links redirect to the same page.
+- `bwave gui` now drives VaporView 1.6.0 through a viewer bridge that Booley's
+  own VS Code extension runs in every attached Sandbox window, instead of
+  VaporView's WCP port. Scoped views keep groups, radix and color suffixes,
+  `--time` markers, `--cursor`, `--append`, and readback; markers are now read
+  back too, and a lone `--cursor` scrolls into view. With several windows
+  attached, a command typed in a window's terminal targets that window.
+  Existing Sandboxes must be refreshed: their spec pins VaporView 1.5.4 and
+  installs Booley's extension only with the Dashboard, and Doctor reports that
+  drift. Doctor's WCP port check is replaced by a check that an attached
+  window's bridge answers with VaporView ready.
 
 ## 0.3.1 - 05 OCT 2026
 
