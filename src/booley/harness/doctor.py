@@ -67,6 +67,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_list,
+    require_opt_str,
     require_str,
 )
 from booley.flows import execution
@@ -3010,12 +3011,12 @@ def _check_subscription_creds_health(
 
 
 # Recovery when no attached window's bridge answers. The Booley workspace
-# extension starts the viewer bridge when a window loads; an extension host
+# extension starts the Viewer Bridge when a window loads; an extension host
 # that predates a spec refresh (or a spec that predates the bridge) has none.
 _BRIDGE_RELOAD_FIX = (
     "run 'Developer: Reload Window' in the attached VS Code window so the Booley "
-    "extension starts its viewer bridge; if Doctor also reports devcontainer drift, "
-    "refresh the Sandbox so its spec installs the Booley extension"
+    "extension starts its Viewer Bridge; if Doctor also reports devcontainer drift, "
+    "refresh the Sandbox so its spec installs the Booley Sandbox Integration extension"
 )
 
 _BRIDGE_MISSING_EXTENSION_FIX = vaporview.install_guidance()
@@ -3173,17 +3174,17 @@ def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
     if result.returncode != 0:
         return None
     try:
-        bridges = json.loads(result.stdout).get("bridges")
-    except (ValueError, AttributeError):
+        report = require_dict(json.loads(result.stdout), field="bridge probe")
+        entries = require_list(report.get("bridges"), field="bridge probe bridges")
+        return [
+            {
+                "vaporview": require_opt_str(entry, "vaporview"),
+                "error": require_opt_str(entry, "error"),
+            }
+            for entry in (require_dict(item, field="bridge entry") for item in entries)
+        ]
+    except (ValueError, BoundaryError):
         return None
-    if not isinstance(bridges, list) or not all(
-        isinstance(entry, dict)
-        and isinstance(entry.get("vaporview"), str | None)
-        and isinstance(entry.get("error"), str | None)
-        for entry in bridges
-    ):
-        return None
-    return bridges
 
 
 def _bridge_dark_fix(argv_prefix: list[str]) -> str:
@@ -3228,10 +3229,10 @@ def _check_viewer_bridge(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Live probe: does an attached window's viewer bridge answer, with VaporView ready?
+    """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
 
     The spec check (:func:`_check_devcontainer_spec`) is static — it proves the
-    devcontainer *asks* for the viewer and the Booley extension, never that a
+    devcontainer *asks* for the viewer and the Booley Sandbox Integration extension, never that a
     window is running them. Without this probe the failure surfaces only when
     a human runs `bwave gui` in a Doctor-clean project.
 

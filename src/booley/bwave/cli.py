@@ -53,6 +53,7 @@ from booley.bwave.waveform_store import (
     discover_waveform,
     waveform_cache_dir,
 )
+from booley.core.boundary import BoundaryError, require_int
 from booley.runtime import runtime_context, vaporview
 
 # ---------------------------------------------------------------------------
@@ -645,10 +646,9 @@ _GUI_SIGNAL_CAP = 64
 # VaporView's two markers. `gui --time` brackets the range with them, so the
 # viewer's status bar reports the span as a delta instead of leaving the human
 # to subtract two numbers off the ruler.
-_MARKER_MAIN = 0
-_MARKER_ALT = 1
-# Viewer-session field holding each marker.
-_MARKER_STATE_KEYS = {_MARKER_MAIN: "markerTime", _MARKER_ALT: "altMarkerTime"}
+# Plan markers are keyed by the viewer-session field that holds them.
+_MAIN_MARKER = "markerTime"
+_ALT_MARKER = "altMarkerTime"
 
 
 def _launch_viewer(cli: str, trace: str) -> int:
@@ -702,14 +702,16 @@ def _bridge_setup_hint(exc: Exception) -> str:
             "has no viewer to drive.\n"
             f"{vaporview.install_guidance(editor=editor)}"
         )
+    problems = getattr(exc, "problems", [])
+    outcome = "no attached window's bridge answered properly" if problems else "no window answered"
     hint = (
-        "ERROR: scoped `bwave gui` drives VaporView through the Booley extension in an "
-        "attached VS Code window, and no window answered.\n"
+        "ERROR: scoped `bwave gui` drives VaporView through the Viewer Bridge of the "
+        f"Booley Sandbox Integration extension in an attached VS Code window, and {outcome}.\n"
         "  - Attach VS Code to this Sandbox, then retry.\n"
-        '  - If a window is attached, run "Developer: Reload Window" there; the Booley\n'
-        "    extension starts the viewer bridge when the window loads.\n"
+        '  - If a window is attached, run "Developer: Reload Window" there; the\n'
+        "    extension starts the Viewer Bridge when the window loads.\n"
         "  - If `booley doctor` reports devcontainer drift, refresh the Sandbox so its\n"
-        "    spec installs the Booley extension.\n"
+        "    spec installs the Booley Sandbox Integration extension.\n"
         f"  (bridge probe: {exc})"
     )
     if state is vaporview.ExtensionState.UNKNOWN:
@@ -1148,6 +1150,21 @@ class _TickResolver:
         end = self.to_tick(raw_end) if raw_end else self.total_ticks()
         if start >= end:
             sys.exit(f"ERROR: empty --time range: start tick {start} >= end tick {end}")
+        # VaporView rejects a window that ends past the trace (its end is the
+        # last timestamp plus a margin, never less than `list`'s total_ticks).
+        last = self.total_ticks()
+        if start >= last:
+            sys.exit(
+                f"ERROR: --time starts at tick {start}, at or after the end of the trace "
+                f"(tick {last})"
+            )
+        if end > last:
+            print(
+                f"NOTE: --time end tick {end} is past the end of the trace; "
+                f"showing up to tick {last}",
+                file=sys.stderr,
+            )
+            end = last
         return start, end
 
 
@@ -1185,17 +1202,26 @@ _VIEWER_ERRORS = (vaporview_bridge.BridgeError, ViewerControlError)
 
 def _is_netlist_id(value: object) -> bool:
     """VaporView marks a row it could not resolve by omitting its netlist id."""
-    return isinstance(value, int) and not isinstance(value, bool)
+    try:
+        require_int(value, field="netlistId")
+    except BoundaryError:
+        return False
+    return True
+
+
+def _saved_names(signal: _OpenSignal) -> frozenset[str]:
+    """Every name VaporView may save *signal*'s row under.
+
+    A saved row carries the bare instance path only (no msb/lsb); a 1-bit
+    array element is saved under its bracketed name.
+    """
+    names = (signal.instance_path, signal.fallback, signal.bwave_name)
+    return frozenset(name for name in names if name is not None)
 
 
 def _saved_item_matches(item: dict, signal: _OpenSignal) -> bool:
     """Whether one native saved row represents *signal*."""
-    if item.get("dataType") != "netlist-variable":
-        return False
-    name = item.get("name")
-    # A saved row carries the bare instance path only (no msb/lsb); a 1-bit
-    # array element is saved under its bracketed name.
-    return name in {signal.instance_path, signal.fallback, signal.bwave_name} - {None}
+    return item.get("dataType") == "netlist-variable" and item.get("name") in _saved_names(signal)
 
 
 def _find_saved_signal(items: list[dict], signal: _OpenSignal) -> dict | None:
@@ -1343,38 +1369,35 @@ class _ViewTarget(NamedTuple):
         return {"displayedSignals": self.rows, **self.markers}
 
 
-def _signal_aliases(signals: list[_OpenSignal]) -> dict[str, frozenset[str]]:
-    aliases: dict[str, set[str]] = {}
-    for signal in signals:
-        names = {signal.instance_path, signal.fallback, signal.bwave_name} - {None}
-        aliases.setdefault(signal.instance_path, set()).update(names)  # type: ignore[arg-type]
-    return {name: frozenset(names) for name, names in aliases.items()}
+class _RowRequest(NamedTuple):
+    """What to build a row tree from: the read-back rows, the plan, and the mode."""
 
+    base: list[dict]
+    plan: _GuiPlan
+    append: bool
 
-def _plan_markers(plan: _GuiPlan) -> dict[str, int]:
-    return {_MARKER_STATE_KEYS[kind]: tick for tick, kind, _label in plan.markers}
-
-
-def _compose_target(
-    base: list[dict], plan: _GuiPlan, signals: list[_OpenSignal], *, append: bool
-) -> _ViewTarget:
-    """Build the complete row tree: append keeps *base*, replace starts empty."""
-    rows = copy.deepcopy(base) if append else []
-    added: list[_OpenSignal] = []
-    for signal in signals:
-        if _find_saved_signal(rows, signal) is None:
-            rows.append(_new_row(signal))
-            added.append(signal)
-    _apply_requested_styles(rows, signals)
-    rows, groups = _build_grouped_layout(rows, plan.groups, signals)
-    return _ViewTarget(
-        rows=rows,
-        markers=_plan_markers(plan),
-        aliases=_signal_aliases(signals),
-        ours=frozenset(signal.instance_path for signal in added),
-        added=added,
-        groups=groups,
-    )
+    def compose(self, signals: list[_OpenSignal]) -> _ViewTarget:
+        """Build the complete tree: append keeps *base*, replace starts empty."""
+        rows = copy.deepcopy(self.base) if self.append else []
+        added: list[_OpenSignal] = []
+        for signal in signals:
+            if _find_saved_signal(rows, signal) is None:
+                rows.append(_new_row(signal))
+                added.append(signal)
+        _apply_requested_styles(rows, signals)
+        rows, groups = _build_grouped_layout(rows, self.plan.groups, signals)
+        aliases: dict[str, frozenset[str]] = {}
+        for signal in signals:
+            name = signal.instance_path
+            aliases[name] = aliases.get(name, frozenset()) | _saved_names(signal)
+        return _ViewTarget(
+            rows=rows,
+            markers={key: tick for tick, key, _label in self.plan.markers},
+            aliases=aliases,
+            ours=frozenset(signal.instance_path for signal in added),
+            added=added,
+            groups=groups,
+        )
 
 
 def _rows_match(expected: list[dict], actual: object, target: _ViewTarget, strict: bool) -> bool:
@@ -1411,6 +1434,40 @@ def _row_matches(expected: dict, actual: object, target: _ViewTarget, strict: bo
     )
 
 
+def _droppable(row: dict, target: _ViewTarget) -> bool:
+    """Whether the viewer may have left *row* out: it is one this run added."""
+    return row.get("dataType") == "netlist-variable" and row.get("name") in target.ours
+
+
+def _rows_align(expected: list[dict], actual: object, target: _ViewTarget) -> bool:
+    """Match *actual* against *expected* when rows this run added may be absent.
+
+    Covers a viewer that omits an unresolved row instead of keeping a
+    placeholder; the omitted rows then read as unresolved.
+    """
+    if not isinstance(actual, list):
+        return False
+    remaining = list(actual)
+    for row in expected:
+        if remaining and _row_aligns(row, remaining[0], target):
+            remaining.pop(0)
+        elif not _droppable(row, target):
+            return False
+    return not remaining
+
+
+def _row_aligns(expected: dict, actual: object, target: _ViewTarget) -> bool:
+    if (
+        expected.get("dataType") == "signal-group"
+        and isinstance(actual, dict)
+        and actual.get("dataType") == "signal-group"
+    ):
+        return actual.get("groupName") == expected.get("groupName") and _rows_align(
+            expected.get("children", []), actual.get("children"), target
+        )
+    return _row_matches(expected, actual, target, strict=False)
+
+
 def _state_rows(state: dict) -> list[dict]:
     """Validate the viewer's reported row list at the boundary."""
     rows = state.get("displayedSignals")
@@ -1437,25 +1494,50 @@ class _ViewSession:
         self.mutated = True
         self.client.apply(self.path, session)
 
+    def set_viewport(self, start: int, end: int) -> None:
+        self.client.set_viewport(self.path, start, end)
+
+    def reveal_time(self, tick: int) -> None:
+        self.client.reveal_time(self.path, tick)
+
     def settle(self, target: _ViewTarget, *, strict: bool, failure: str) -> dict:
-        """Poll until the viewer shows *target*; *strict* checks everything."""
+        """Poll until the viewer shows *target* exactly; *strict* checks everything."""
         deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
         while True:
             state = self.state()
             markers_ok = not strict or all(
                 state.get(key) == tick for key, tick in target.markers.items()
             )
-            if markers_ok and _rows_match(
-                target.rows, state.get("displayedSignals"), target, strict
-            ):
+            rows = state.get("displayedSignals")
+            if markers_ok and _rows_match(target.rows, rows, target, strict):
                 return state
             if time.monotonic() >= deadline:
                 raise ViewerControlError(failure)
             time.sleep(_VIEW_POLL_INTERVAL)
 
+    def settle_probe(self, target: _ViewTarget, previous: list[dict]) -> dict:
+        """Poll until the viewer shows *target*, tolerating omitted rows we added.
+
+        A tolerant match that still equals the pre-apply rows may just be the
+        old state, so it is accepted only once the rows change or the
+        deadline passes.
+        """
+        deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+        while True:
+            state = self.state()
+            rows = state.get("displayedSignals")
+            if _rows_match(target.rows, rows, target, strict=False):
+                return state
+            expired = time.monotonic() >= deadline
+            if _rows_align(target.rows, rows, target) and (rows != previous or expired):
+                return state
+            if expired:
+                raise ViewerControlError(_SETTLE_FAILURE)
+            time.sleep(_VIEW_POLL_INTERVAL)
+
 
 def _unresolved(rows: list[dict], signals: list[_OpenSignal]) -> list[_OpenSignal]:
-    """Signals whose row the viewer kept as a placeholder (no netlist item)."""
+    """Signals the viewer could not resolve: placeholder row, or no row at all."""
     missing: list[_OpenSignal] = []
     for signal in signals:
         row = _find_saved_signal(rows, signal)
@@ -1475,58 +1557,72 @@ _EXACT_FAILURE = "viewer did not apply the exact requested signal presentation"
 
 
 def _resolve_rows(
-    view: _ViewSession, base: list[dict], plan: _GuiPlan, *, append: bool
+    view: _ViewSession, request: _RowRequest
 ) -> tuple[_ViewTarget, list[_OpenSignal]]:
     """Apply once, retry bracket fallbacks, and return (target, unresolved)."""
-    signals = list(plan.signals)
-    target = _compose_target(base, plan, signals, append=append)
+    signals = list(request.plan.signals)
+    target = request.compose(signals)
     view.apply(target.session())
-    state = view.settle(target, strict=False, failure=_SETTLE_FAILURE)
+    state = view.settle_probe(target, request.base)
     missing = _unresolved(_state_rows(state), target.added)
     retry = {signal.bwave_name for signal in missing if signal.fallback is not None}
     if not retry:
         return target, missing
+    previous = _state_rows(state)
     signals = [_as_identifier(s) if s.bwave_name in retry else s for s in signals]
-    target = _compose_target(base, plan, signals, append=append)
+    target = request.compose(signals)
     view.apply(target.session())
-    state = view.settle(target, strict=False, failure=_SETTLE_FAILURE)
+    state = view.settle_probe(target, previous)
     return target, _unresolved(_state_rows(state), target.added)
 
 
 def _commit_rows(
-    view: _ViewSession, base: list[dict], plan: _GuiPlan, *, append: bool
+    view: _ViewSession, request: _RowRequest
 ) -> tuple[list[_OpenSignal], list[_OpenSignal], list[_OpenGroup]]:
     """Commit the requested rows; return the viewer-confirmed accepted/dropped/groups."""
-    target, missing = _resolve_rows(view, base, plan, append=append)
+    target, missing = _resolve_rows(view, request)
+    dropped_names = {signal.bwave_name for signal in missing}
     if missing:
         # Never leave placeholder rows on screen for signals the viewer lacks.
-        dropped_names = {signal.bwave_name for signal in missing}
-        kept = [signal for signal in plan.signals if signal.bwave_name not in dropped_names]
         resolved = {signal.bwave_name: signal for signal in target.added}
-        kept = [resolved.get(signal.bwave_name, signal) for signal in kept]
-        target = _compose_target(base, plan, kept, append=append)
+        kept = [
+            resolved.get(signal.bwave_name, signal)
+            for signal in request.plan.signals
+            if signal.bwave_name not in dropped_names
+        ]
+        target = request.compose(kept)
         view.apply(target.session())
     state = view.settle(target, strict=True, failure=_EXACT_FAILURE)
-    dropped = [s for s in plan.signals if s.bwave_name in {m.bwave_name for m in missing}]
-    accepted = [s for s in plan.signals if s not in dropped]
+    dropped = [s for s in request.plan.signals if s.bwave_name in dropped_names]
+    accepted = [s for s in request.plan.signals if s.bwave_name not in dropped_names]
     return accepted, dropped, _groups_from_layout(_state_rows(state), target.groups)
 
 
 def _apply_viewport(view: _ViewSession, plan: _GuiPlan) -> None:
     """Move the time window last; a lone cursor is scrolled into view."""
     if plan.viewport is not None:
-        view.client.set_viewport(view.path, *plan.viewport)
+        view.set_viewport(*plan.viewport)
         return
-    cursor = next((tick for tick, kind, _label in plan.markers if kind == _MARKER_MAIN), None)
+    cursor = next((tick for tick, key, _label in plan.markers if key == _MAIN_MARKER), None)
     if cursor is not None:
-        view.client.reveal_time(view.path, cursor)
+        view.reveal_time(cursor)
 
 
 def _restore_view(view: _ViewSession, snapshot: dict, error: Exception) -> None:
-    """Re-apply the pre-transaction session and verify its rows came back."""
+    """Re-apply the pre-transaction session and verify its rows came back.
+
+    VaporView cannot clear a marker, so one this run placed where none was
+    before stays; markers that existed are moved back.
+    """
     session = {key: snapshot[key] for key in _RESTORE_KEYS if snapshot.get(key) is not None}
-    rows = _state_rows(snapshot)
-    target = _ViewTarget(rows, {}, {}, frozenset(), [], [])
+    target = _ViewTarget(
+        rows=_state_rows(snapshot),
+        markers={},
+        aliases={},
+        ours=frozenset(),
+        added=[],
+        groups=[],
+    )
     try:
         view.apply(session)
         view.settle(target, strict=False, failure="viewer did not restore the previous rows")
@@ -1543,9 +1639,9 @@ def _apply_gui_plan(
     freshly_opened = client.open(path)
     view = _ViewSession(client, path)
     snapshot = view.state()
-    base = _state_rows(snapshot)
+    request = _RowRequest(base=_state_rows(snapshot), plan=plan, append=append)
     try:
-        accepted, dropped, groups = _commit_rows(view, base, plan, append=append)
+        accepted, dropped, groups = _commit_rows(view, request)
         _apply_viewport(view, plan)
     except _VIEWER_ERRORS as error:
         if view.mutated:
@@ -1556,7 +1652,7 @@ def _apply_gui_plan(
 
 def _select_viewer(trace_abs: str) -> vaporview_bridge.BridgeInfo:
     """Find the attached window that should show *trace_abs*."""
-    return vaporview_bridge.select_bridge(vaporview_bridge.discover(), trace_abs)
+    return vaporview_bridge.find_bridge(trace_abs)
 
 
 def _gui_bare(trace_abs: str) -> None:
@@ -1564,9 +1660,22 @@ def _gui_bare(trace_abs: str) -> None:
     try:
         info = _select_viewer(trace_abs)
         if info.vaporview is None:
-            raise vaporview_bridge.BridgeUnavailableError(info.error or "VaporView is absent")
+            raise vaporview_bridge.BridgeUnavailableError(
+                "the attached window has no usable VaporView", problems=[info.error or "no detail"]
+            )
         opened = vaporview_bridge.BridgeClient(info.socket_path).open(trace_abs)
-    except vaporview_bridge.BridgeError:
+    except vaporview_bridge.BridgeError as exc:
+        # "No window" and "several windows" are expected; a window that
+        # answered wrongly is a fault worth naming before the fallback.
+        quiet = isinstance(exc, vaporview_bridge.BridgeAmbiguousError) or (
+            isinstance(exc, vaporview_bridge.BridgeUnavailableError) and not exc.problems
+        )
+        if not quiet:
+            print(
+                f"WARNING: Waveform Viewer Bridge problem ({exc}); "
+                "opening with the editor CLI instead",
+                file=sys.stderr,
+            )
         _gui_via_editor_cli(trace_abs)
         return
     if opened:
@@ -1605,7 +1714,7 @@ class _GuiPlan(NamedTuple):
     signals: list[_OpenSignal]
     groups: list[_OpenGroup]
     viewport: tuple[int, int] | None
-    markers: list[tuple[int, int, str]]
+    markers: list[tuple[int, str, str]]
 
 
 def _resolve_gui_selection(
@@ -1647,14 +1756,14 @@ def _build_gui_plan(trace_abs: str, alias: str, args: argparse.Namespace) -> _Gu
     resolver = _TickResolver(trace_abs, alias)
     viewport = resolver.range_to_ticks(args.time) if args.time else None
     cursor_tick = resolver.to_tick(args.cursor) if args.cursor else None
-    markers: list[tuple[int, int, str]] = []
+    markers: list[tuple[int, str, str]] = []
     if viewport is not None:
         markers.append(
-            (cursor_tick if cursor_tick is not None else viewport[0], _MARKER_MAIN, "START")
+            (cursor_tick if cursor_tick is not None else viewport[0], _MAIN_MARKER, "START")
         )
-        markers.append((viewport[1], _MARKER_ALT, "END"))
+        markers.append((viewport[1], _ALT_MARKER, "END"))
     elif cursor_tick is not None:
-        markers.append((cursor_tick, _MARKER_MAIN, "cursor"))
+        markers.append((cursor_tick, _MAIN_MARKER, "cursor"))
     return _GuiPlan(signals, groups, viewport, markers)
 
 
@@ -1677,7 +1786,7 @@ def _gui_result_lines(
         lines.extend(f"    {signal.bwave_name}" for signal in group.signals)
     if plan.viewport is not None:
         lines.append(f"  viewport: {plan.viewport[0]}..{plan.viewport[1]} ticks")
-    lines.extend(f"  {label} marker: {tick} ticks" for tick, _kind, label in plan.markers)
+    lines.extend(f"  {label} marker: {tick} ticks" for tick, _key, label in plan.markers)
     return lines
 
 
@@ -2198,9 +2307,9 @@ registered trace. A sim directory is accepted like `register` (finds
 window via the VaporView extension (lramseyer.vaporview).
 
 Scoped views: --signals / --group / --time / --cursor / --append drive
-the viewer in the attached VS Code window through the Booley extension's
-viewer bridge. A command typed in that window's terminal targets that
-window; with several windows attached, the one already showing the trace
+the viewer in the attached VS Code window through the Viewer Bridge of the
+Booley Sandbox Integration extension. A command typed in that window's
+terminal targets that window; with several windows attached, the one already showing the trace
 or the most recently focused one is used.
 A scoped view with --signals/--group replaces what is on screen with the
 requested signals; --append adds to them instead, and --time/--cursor alone
@@ -2220,7 +2329,9 @@ What `gui` does for you, so the view is readable on arrival:
   viewer's status bar reports the span as a delta and the human can read
   the duration off the screen instead of subtracting ruler numbers.
   --cursor moves the START (main) marker somewhere else inside the range;
-  END stays put.
+  END stays put. An end past the trace is clamped to the trace end. The
+  viewer cannot remove a marker, so one this command does not set stays
+  where it was.
 
   Honest reporting. The signal list it prints is read back from the
   viewer, so it is what is actually on screen. Anything the viewer would

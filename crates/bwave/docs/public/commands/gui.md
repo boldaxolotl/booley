@@ -39,6 +39,12 @@ instead of subtracting ruler numbers.
 stays put. Without `--time`, `--cursor T` places only the main marker and
 scrolls it into view. Without `--signals` or `--group`, `--time` and `--cursor`
 keep the rows already on screen and only move the time window and markers.
+A `--time` end past the trace is clamped to the trace end (with a note on
+stderr); a start at or past the end is an error.
+
+VaporView can move a marker but cannot remove one, so `gui` sets and verifies
+only the markers it was asked for. Any other marker stays where it is: for
+example, `--cursor` after a `--time` view leaves that view's END marker.
 
 Both take the same time tokens as `-t`, including marker names — so a marker set
 during the query can bound the view:
@@ -111,9 +117,9 @@ screen instead of claiming the full view. The trace itself is fine;
 
 ## Transport
 
-A scoped `gui` drives VaporView in the user's VS Code window through the viewer
-bridge that Booley's VS Code extension runs in every attached window, and
-**hard-errors when no window answers** — surface the setup hint to the human; it
+A scoped `gui` drives VaporView in the user's VS Code window through the Viewer
+Bridge that the Booley Sandbox Integration extension runs in every attached
+window, and **hard-errors when no window answers** — surface the setup hint to the human; it
 never silently degrades. A command typed in a window's terminal targets that
 window; otherwise `gui` picks the window already showing the trace, then the
 most recently focused one, and errors when it cannot tell.

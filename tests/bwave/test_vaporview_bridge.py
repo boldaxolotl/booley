@@ -13,6 +13,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -204,21 +205,75 @@ def test_discover_finds_live_bridges_and_prunes_dead_sockets(home, servers):
     unrelated = bridge.bridge_dir(home) / "notes.txt"
     unrelated.write_text("keep me")
 
-    found = bridge.discover(home)
+    found, problems = bridge.discover(home)
 
     assert [info.socket_path for info in found] == [live.path]
+    assert problems == []
     assert not dead_path.exists()
     assert unrelated.exists()
 
 
 def test_discover_without_directory_is_empty(tmp_path):
-    assert bridge.discover(tmp_path / "nowhere") == []
+    assert bridge.discover(tmp_path / "nowhere") == ([], [])
 
 
-def test_discover_raises_for_a_half_working_bridge(home, servers):
+def _frozen(req):
+    time.sleep(1.0)  # accepts the request, never answers in time
+
+
+def test_discover_skips_half_working_and_frozen_windows(home, servers, monkeypatch):
+    monkeypatch.setattr(bridge, "PING_TIMEOUT", 0.2)
+    live = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping()))
+    _serve(servers, home, "window-2.sock", lambda req: b"garbage\n")
+    _serve(servers, home, "window-3.sock", _frozen)
+
+    found, problems = bridge.discover(home)
+
+    assert [info.socket_path for info in found] == [live.path]
+    assert [problem.split(":")[0] for problem in problems] == ["window-2.sock", "window-3.sock"]
+    assert "timed out" in problems[1]
+
+
+def test_find_bridge_asks_the_terminal_window_first_and_alone(home, servers, monkeypatch):
+    monkeypatch.setattr(bridge, "PING_TIMEOUT", 0.2)
+    frozen = _serve(servers, home, "window-1.sock", _frozen)
+    own = _serve(servers, home, "window-2.sock", lambda req: _ok(_ping()))
+
+    found = bridge.find_bridge("/t.fst", home=home, env={bridge.SOCKET_ENV: str(own.path)})
+
+    assert found.socket_path == own.path
+    assert frozen.requests == []  # the frozen window was never asked
+
+
+def test_find_bridge_falls_back_when_the_terminal_window_is_gone(home, servers):
+    live = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping()))
+    env = {bridge.SOCKET_ENV: str(bridge.bridge_dir(home) / "window-gone.sock")}
+
+    assert bridge.find_bridge("/t.fst", home=home, env=env).socket_path == live.path
+
+
+def test_find_bridge_survives_a_frozen_peer(home, servers, monkeypatch):
+    monkeypatch.setattr(bridge, "PING_TIMEOUT", 0.2)
+    _serve(servers, home, "window-1.sock", _frozen)
+    live = _serve(servers, home, "window-2.sock", lambda req: _ok(_ping()))
+
+    assert bridge.find_bridge("/t.fst", home=home, env={}).socket_path == live.path
+
+
+def test_find_bridge_reports_broken_windows_only_when_none_is_usable(home, servers):
     _serve(servers, home, "window-1.sock", lambda req: b"garbage\n")
-    with pytest.raises(bridge.BridgeProtocolError):
-        bridge.discover(home)
+
+    with pytest.raises(bridge.BridgeUnavailableError) as exc:
+        bridge.find_bridge("/t.fst", home=home, env={})
+
+    assert exc.value.problems and exc.value.problems[0].startswith("window-1.sock: ")
+    assert "skipped: window-1.sock" in str(exc.value)
+
+
+def test_find_bridge_with_nothing_attached_has_no_problems(home):
+    with pytest.raises(bridge.BridgeUnavailableError) as exc:
+        bridge.find_bridge("/t.fst", home=home, env={})
+    assert exc.value.problems == []
 
 
 def test_doctor_summary_reports_each_window_without_raising(home, servers):
@@ -243,52 +298,40 @@ def _info(name: str, *, last: float = 0, docs=(), focused=False) -> bridge.Bridg
     return bridge.BridgeInfo(Path(f"/b/{name}"), "1.6.0", focused, last, tuple(docs))
 
 
-def test_select_prefers_the_window_named_by_the_terminal():
-    one, two = _info("window-1.sock", last=9), _info("window-2.sock")
-    env = {bridge.SOCKET_ENV: "/b/window-2.sock"}
-    assert bridge.select_bridge([one, two], "/t.fst", env=env) is two
-
-
-def test_select_ignores_a_stale_terminal_socket():
-    one = _info("window-1.sock")
-    env = {bridge.SOCKET_ENV: "/b/window-gone.sock"}
-    assert bridge.select_bridge([one], "/t.fst", env=env) is one
-
-
 def test_select_the_only_window():
     one = _info("window-1.sock")
-    assert bridge.select_bridge([one], "/t.fst", env={}) is one
+    assert bridge.select_bridge([one], "/t.fst") is one
 
 
 def test_select_the_only_window_already_showing_the_trace():
     one = _info("window-1.sock", last=99)
     two = _info("window-2.sock", docs=["/t.fst"])
-    assert bridge.select_bridge([one, two], "/t.fst", env={}) is two
+    assert bridge.select_bridge([one, two], "/t.fst") is two
 
 
 def test_select_most_recently_focused_window():
     one = _info("window-1.sock", last=5)
     two = _info("window-2.sock", last=7)
-    assert bridge.select_bridge([one, two], "/t.fst", env={}) is two
+    assert bridge.select_bridge([one, two], "/t.fst") is two
 
 
 def test_select_recency_among_windows_showing_the_trace():
     one = _info("window-1.sock", last=5, docs=["/t.fst"])
     two = _info("window-2.sock", last=9)
     three = _info("window-3.sock", last=7, docs=["/t.fst"])
-    assert bridge.select_bridge([one, two, three], "/t.fst", env={}) is three
+    assert bridge.select_bridge([one, two, three], "/t.fst") is three
 
 
 @pytest.mark.parametrize("last", [(0, 0), (4, 4)], ids=["never-focused", "tie"])
 def test_select_refuses_to_guess(last):
     bridges = [_info("window-1.sock", last=last[0]), _info("window-2.sock", last=last[1])]
     with pytest.raises(bridge.BridgeAmbiguousError, match="2 VS Code windows"):
-        bridge.select_bridge(bridges, "/t.fst", env={})
+        bridge.select_bridge(bridges, "/t.fst")
 
 
 def test_select_without_bridges_is_unavailable():
     with pytest.raises(bridge.BridgeUnavailableError):
-        bridge.select_bridge([], "/t.fst", env={})
+        bridge.select_bridge([], "/t.fst")
 
 
 def test_bridge_dir_follows_home(monkeypatch, tmp_path):

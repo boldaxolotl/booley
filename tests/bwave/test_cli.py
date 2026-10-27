@@ -51,7 +51,8 @@ def _no_bridge(monkeypatch):
     even when a real bridge happens to run on the dev host; viewer tests
     install their fake window explicitly.
     """
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: [])
+    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([], []))
+    monkeypatch.delenv(bwave_bridge.SOCKET_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -299,6 +300,29 @@ def test_gui_fst_and_vcd_pass_through(tmp_path, launched, suffix):
     _gui()
 
     assert launched == [["code", str(trace.resolve())]]
+
+
+def test_bare_open_names_a_broken_window_before_the_editor_cli(
+    tmp_path, monkeypatch, launched, capsys
+):
+    trace = _seed_default(tmp_path)
+    problem = "window-1.sock: ping: malformed bridge reply"
+    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([], [problem]))
+
+    _gui()
+
+    assert launched == [["code", str(trace.resolve())]]
+    err = capsys.readouterr().err
+    assert "WARNING: Waveform Viewer Bridge problem" in err and problem in err
+
+
+def test_bare_open_without_any_window_falls_back_quietly(tmp_path, launched, capsys):
+    trace = _seed_default(tmp_path)
+
+    _gui()
+
+    assert launched == [["code", str(trace.resolve())]]
+    assert capsys.readouterr().err == ""
 
 
 # ── bare open: editor-CLI fallback (no attached window) ─────────────────────
@@ -620,6 +644,9 @@ class _FakeViewer:
         self._pending = 0
         self._stale: dict | None = None
         self.after_apply = None  # hook(viewer, state) to model viewer faults
+        # Model a viewer that drops an unresolved row instead of keeping a
+        # placeholder (1.6.0 keeps placeholders; both shapes must work).
+        self.omit_unresolved = False
         self.fail_op: dict[str, str] = {}
 
     # -- modeled behavior ---------------------------------------------------
@@ -642,6 +669,20 @@ class _FakeViewer:
         if row["name"] in self.ids:
             saved["netlistId"] = self.ids[row["name"]]
         return saved
+
+    def _resolve_all(self, rows: list[dict]) -> list[dict]:
+        resolved = [self._resolve(row) for row in rows]
+        if self.omit_unresolved:
+            resolved = [self._prune(row) for row in resolved if self._kept(row)]
+        return resolved
+
+    def _kept(self, row: dict) -> bool:
+        return row.get("dataType") != "netlist-variable" or "netlistId" in row
+
+    def _prune(self, row: dict) -> dict:
+        if row.get("dataType") == "signal-group":
+            row["children"] = [self._prune(c) for c in row["children"] if self._kept(c)]
+        return row
 
     def _snapshot(self) -> dict:
         return copy.deepcopy({**self.session, "displayedSignals": self.rows})
@@ -671,7 +712,7 @@ class _FakeViewer:
         if path not in self.docs:  # the real bridge refuses a closed document
             raise bwave_bridge.BridgeRequestError("apply", f"{path} is not open")
         self._stale, self._pending = self._snapshot(), self.lag
-        self.rows = [self._resolve(row) for row in state["displayedSignals"]]
+        self.rows = self._resolve_all(state["displayedSignals"])
         for key in ("markerTime", "altMarkerTime", "displayTimeUnit"):
             if key in state:
                 self.session[key] = state[key]
@@ -717,7 +758,7 @@ def fake_rust(monkeypatch):
     # The viewer model answers synchronously, so only a genuine drop waits out
     # the settle poll; keep that wait short enough not to drag the suite.
     monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", 0.3)
-    state = {"signals": list(_CANNED_SIGNALS), "total_ticks": 100_000, "clock": "tb.clk"}
+    state = {"signals": list(_CANNED_SIGNALS), "total_ticks": 1_000_000, "clock": "tb.clk"}
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -807,7 +848,7 @@ def _install_viewer(
         tuple(viewer.docs),
         None if version else "VaporView (lramseyer.vaporview) is not installed",
     )
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: [info])
+    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([info], []))
     monkeypatch.setattr(bwave_bridge, "BridgeClient", lambda path: viewer)
     return viewer
 
@@ -1369,6 +1410,38 @@ def test_append_keeps_a_users_unresolved_row(tmp_path, monkeypatch, fake_rust):
     assert viewer.shown() == ["tb.old.gone", "tb.dut.fifo.full"]
 
 
+@pytest.mark.parametrize("lag", [0, 3], ids=["immediate", "stale-readback"])
+def test_viewer_that_omits_unresolved_rows_still_takes_the_warning_path(
+    tmp_path, monkeypatch, fake_rust, capsys, lag
+):
+    """Placeholder or no row at all: a missing signal is a WARNING, never a failure."""
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.ghost[7:0]", 8)]
+    viewer = _viewer_for(trace, monkeypatch, opened=False)
+    viewer.omit_unresolved = True
+    viewer.lag = lag
+
+    _gui(signals=["tb.dut.*"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err and "tb.dut.ghost[7:0]" in captured.err
+    assert "tb.dut.ghost" not in captured.out
+
+
+def test_omitted_group_member_with_stale_rows_is_dropped(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.ghost", 1)]
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.rst_n")])
+    viewer.omit_unresolved = True
+    viewer.lag = 2
+
+    _gui(groups=["Mixed=tb.dut.*"])
+
+    assert viewer.names(viewer.rows) == ["tb.clk", "tb.dut.fifo.full"]
+    assert viewer.rows[1]["groupName"] == "Mixed"
+
+
 def test_bracketed_identifier_falls_back_to_the_raw_name(tmp_path, monkeypatch, fake_rust, capsys):
     """A 1-bit `mem[0]` may be an array element, not a bit-select.
 
@@ -1627,17 +1700,17 @@ def test_scoped_protocol_failure_names_the_probe_failure(
 ):
     _seed_default(tmp_path)
 
-    def broken(home=None):
-        raise bwave_bridge.BridgeProtocolError("ping: unsupported bridge reply")
-
-    monkeypatch.setattr(bwave_bridge, "discover", broken)
+    problem = "window-1.sock: ping: unsupported bridge protocol 2; refresh the Sandbox"
+    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([], [problem]))
 
     with pytest.raises(SystemExit) as exc:
         _gui(signals=["tb.dut.fifo.*"])
 
     msg = str(exc.value)
+    assert "no attached window's bridge answered properly" in msg
+    assert "no window answered" not in msg
     assert 'run "Developer: Reload Window"' in msg
-    assert "bridge probe: ping: unsupported bridge reply" in msg
+    assert f"skipped: {problem}" in msg
     assert launched == []
 
 
@@ -1647,8 +1720,7 @@ def test_scoped_open_with_ambiguous_windows_says_how_to_pick(tmp_path, monkeypat
         bwave_bridge.BridgeInfo(Path(f"/fake/window-{i}.sock"), "1.6.0", False, 0.0, ())
         for i in (1, 2)
     ]
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: windows)
-    monkeypatch.delenv(bwave_bridge.SOCKET_ENV, raising=False)
+    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: (windows, []))
 
     with pytest.raises(SystemExit) as exc:
         _gui(signals=["tb.dut.fifo.*"])
@@ -1737,6 +1809,43 @@ def test_gui_ended_range_uses_list_total_ticks(tmp_path, monkeypatch, fake_rust)
     _gui(time="100c:", append=True)
 
     assert viewer.calls[-1][1]["end"] == fake_rust["total_ticks"]
+
+
+def test_time_end_past_the_trace_is_clamped(tmp_path, monkeypatch, fake_rust, capsys):
+    """VaporView rejects a window past the trace end, so clamp before any change."""
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
+    end = fake_rust["total_ticks"]
+
+    _gui(time="100c:999999c")
+
+    assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 1000, "end": end}
+    assert viewer.session["altMarkerTime"] == end
+    assert f"showing up to tick {end}" in capsys.readouterr().err
+
+
+def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(time="200000c:300000c")
+
+    assert "after the end of the trace" in str(exc.value)
+    assert viewer.calls == []
+
+
+def test_a_marker_the_plan_does_not_set_is_left_and_not_verified(tmp_path, monkeypatch, fake_rust):
+    """VaporView cannot clear a marker; an old END marker stays and must not fail."""
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
+    viewer.session["altMarkerTime"] = 987_654
+
+    _gui(cursor="120c")
+
+    assert viewer.session["markerTime"] == 1200
+    assert viewer.session["altMarkerTime"] == 987_654
+    assert "altMarkerTime" not in viewer.applied()[0]
 
 
 def test_empty_time_range_rejected(tmp_path, monkeypatch, fake_rust):

@@ -96,7 +96,7 @@ _APP_EXTENSION = {
 
 # Waveform Viewer (ADR 0078): VaporView is installed for every app so
 # `bwave gui` works in the attached window, driven through the Booley
-# extension's viewer bridge. VaporView has no named red color; `bwave gui`
+# extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
 # maps its stable red/blue/green interface to the extension's custom palette.
 _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
@@ -445,7 +445,7 @@ def spec_installs_vaporview(spec: dict) -> bool:
 
     The Waveform Viewer (ADR 0078) reaches an attached VS Code window only
     through the generated spec: the pinned ``lramseyer.vaporview`` install,
-    the image-local Booley extension that hosts the viewer bridge, the
+    the image-local Booley Sandbox Integration extension that hosts the Viewer Bridge, the
     semantic waveform-color settings, AND the ``postAttachCommand`` patch
     that makes those colors effective. A spec seeded before any of these
     landed leaves scoped ``bwave gui`` without a usable viewer — even after an
@@ -453,7 +453,7 @@ def spec_installs_vaporview(spec: dict) -> bool:
     to surface the drift.
 
     Returns ``True`` only when VaporView is listed exactly once and pinned to
-    ``vaporview.PINNED_EXTENSION``, the Booley extension is listed, the
+    ``vaporview.PINNED_EXTENSION``, the Booley Sandbox Integration extension is listed, the
     presentation palette is intact, AND the patch is wired; any miss means a
     stale or hand-edited spec that a refresh would fix.
     """
@@ -1124,7 +1124,7 @@ def build_devcontainer_spec(
     }
     from booley.runtime.dashboard_extension import VSIX_PATH
 
-    # The image-local Booley extension hosts the `bwave gui` viewer bridge, so
+    # The image-local Booley Sandbox Integration extension hosts the `bwave gui` Viewer Bridge, so
     # every Sandbox installs it; the attach protocol alone decides whether it
     # also opens the Dashboard terminal.
     vscode["extensions"].append(VSIX_PATH)

@@ -101,8 +101,9 @@ signals. Keep labels and group structure meaningful because color is supporting
 information, not the only information.
 
 It requires an attached VS Code window with VaporView, driven through the
-Booley extension's viewer bridge, and hard-errors when no window answers —
-surface the setup hint rather than assuming it worked. Flag semantics (native groups, clock row, markers, `--append`,
+Viewer Bridge of the Booley Sandbox Integration extension, and hard-errors
+when no window answers — surface the setup hint rather than assuming it
+worked. Flag semantics (native groups, clock row, markers, `--append`,
 `--max-signals`):
 `bwave docs show commands/gui`.
 

@@ -403,7 +403,7 @@ missing/stale image artifacts require a Sandbox Image rebuild.
 For a user-managed `[sandbox].image`, install the current Booley wheel and run
 `RUN python3 -I -m booley.runtime.dashboard_extension` as root in the image recipe,
 then restore its usual `USER`. Every Sandbox spec installs that VSIX, because the
-same extension runs the viewer bridge behind `bwave gui` scoped views; an image
+same extension runs the Viewer Bridge behind `bwave gui` scoped views; an image
 without it leaves both Dashboard auto-open and scoped views unavailable.
 `booley dashboard` remains available manually.
 
@@ -603,9 +603,9 @@ contents and how to layer EDA tools on top, see
 ### `bwave gui` fails on a scoped view
 
 A scoped view (`--signals` / `--group` / `--time` / `--cursor` / `--append`)
-drives VaporView in an attached VS Code window through the viewer bridge that
-Booley's own VS Code extension starts in every window of the Sandbox. The
-generated devcontainer spec installs both extensions. If no attached window
+drives VaporView in an attached VS Code window through the Viewer Bridge that
+the Booley Sandbox Integration extension starts in every window of the
+Sandbox. The generated devcontainer spec installs both extensions. If no attached window
 answers, the scoped view fails with a setup hint, deliberately, rather than
 silently opening the whole trace and letting you read the wrong picture. A
 bare `bwave gui` needs no bridge: it falls back to launching the editor CLI on
@@ -613,10 +613,10 @@ the file.
 
 When a window is attached, the usual fix is **"Developer: Reload Window"** in
 it, not a rebuild: the bridge starts when the window loads. If Doctor also
-reports devcontainer drift, refresh the Sandbox so its spec installs Booley's
-extension. `booley doctor` asks every attached window's bridge whether it
-answers and has VaporView ready ("VaporView bridge answers in the attached VS
-Code window ..."), so you find out before `bwave gui` does.
+reports devcontainer drift, refresh the Sandbox so its spec installs the
+Booley Sandbox Integration extension. `booley doctor` asks every attached
+window's Viewer Bridge whether it answers and has VaporView ready ("VaporView
+bridge answers in the attached VS Code window ..."), so you find out before `bwave gui` does.
 
 With several VS Code windows attached to one Sandbox, `bwave gui` uses the
 window whose terminal you typed it in. Elsewhere it picks the window already

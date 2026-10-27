@@ -52,9 +52,14 @@ function requirePath(request) {
     return vscode.Uri.file(request.path);
 }
 
-async function requireOpen(uri) {
+// Whether VaporView has a tab for *uri*; activates VaporView first.
+async function isOpen(uri) {
     await vaporview();
-    if (!(await openDocumentUris()).includes(uri.toString())) {
+    return (await openDocumentUris()).includes(uri.toString());
+}
+
+async function requireOpen(uri) {
+    if (!(await isOpen(uri))) {
         throw new Error(`waveform is not open in VaporView: ${uri.fsPath}`);
     }
 }
@@ -254,10 +259,9 @@ class Bridge {
 
     async open(request) {
         const uri = requirePath(request);
-        await vaporview();
-        const wasOpen = (await openDocumentUris()).includes(uri.toString());
+        const wasOpen = await isOpen(uri);
         await vscode.commands.executeCommand('vaporview.openFile', { uri });
-        if (!(await openDocumentUris()).includes(uri.toString())) {
+        if (!(await isOpen(uri))) {
             throw new Error(`VaporView did not open ${uri.fsPath}`);
         }
         return { opened: !wasOpen };
@@ -265,8 +269,7 @@ class Bridge {
 
     async state(request) {
         const uri = requirePath(request);
-        await vaporview();
-        if (!(await openDocumentUris()).includes(uri.toString())) { return null; }
+        if (!(await isOpen(uri))) { return null; }
         const state = await vscode.commands.executeCommand(
             'waveformViewer.getViewerState', { uri: uri.toString() });
         return state === undefined ? null : state;

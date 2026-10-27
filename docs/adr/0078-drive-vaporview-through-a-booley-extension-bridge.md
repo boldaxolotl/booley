@@ -40,15 +40,16 @@ Dashboard opener).
 
 ## Decision
 
-**Channel: a bridge in Booley's extension.** The image-local Booley extension
-(`data/vscode/dashboard/`) starts a viewer bridge in every attached window,
+**Channel: a Viewer Bridge in Booley's own extension.** The image-local
+Booley Sandbox Integration extension (`data/vscode/dashboard/`, extension ID
+`booley.dashboard`) starts a Viewer Bridge in every attached window,
 independent of Dashboard policy, trust, or remote type. `bwave` no longer
 speaks WCP; `bwave/wcp.py` is deleted. The generated spec installs the Booley
-extension in every Sandbox (it was Dashboard-only), drops the
-`vaporview.wcp.enabled`/`port` settings, and pins
+Sandbox Integration extension in every Sandbox (it was Dashboard-only), drops
+the `vaporview.wcp.enabled`/`port` settings, and pins
 `lramseyer.vaporview@1.6.0`. Drift detection requires the 1.6.0 pin, the
-Booley extension, the color settings, and the attach patch, so every spec from
-the previous generator reads as drift.
+Booley Sandbox Integration extension, the color settings, and the attach
+patch, so every spec from the previous generator reads as drift.
 
 **Thin bridge, verification in Python.** The bridge offers generic
 primitives only: `ping`, `open`, `state`, `apply`, `viewport`. `apply` writes
@@ -58,7 +59,11 @@ request without `--append` starts empty; `--append`, or `--time`/`--cursor`
 alone, starts from the read-back rows), applies it, polls `state` until
 the viewer reports it, and checks it: row order, group membership, placement,
 number format, color index, both markers, and that every row it added resolved
-to a netlist item. VaporView keeps unresolved rows as placeholders. bwave
+to a netlist item. VaporView 1.6.0 keeps an unresolved row as a placeholder
+without a netlist id (the webview's `addVariable` creates the row either way);
+bwave also accepts a viewer that leaves such a row out, treating an absent
+added row as unresolved once the read-back state has changed from the
+pre-apply state (or the settle deadline passes). bwave
 retries a 1-bit `foo[3]` once under its literal name, then removes rows that
 still have no netlist item, re-applies, and reports them in a WARNING. Any
 failure after the first apply re-applies the snapshot taken before the first
@@ -87,9 +92,18 @@ pixel width, which neither the session nor any command reports. An exact
 `--time START:END` window therefore uses `vaporview.wcp.openWaveform(uri)` and
 WCP `set_viewport_range` on that tab's own listener, which converts with the
 live width. A lone `--cursor` uses `set_viewport_to` to scroll the marker into
-view. This WCP use is confined to one function in the bridge. The viewport is
+view. WCP v0 survives only in this one bridge function. Its NUL-framed,
+greeting-first exchange is covered by a fake WCP v0 server in the bridge's Node
+test (`tests/vscode/vaporview_bridge.test.cjs`), which replaces #2263's "v0
+fake server" criterion; bwave has no WCP code to test. The viewport is
 acknowledged but not read back, because VaporView reports no state change for
 it. Markers, which used to be ack-only, are now read back.
+
+VaporView rejects a window that ends past its `timeEnd`. That value is the last
+time-table entry plus a small margin (`wellen_parser/lib.rs`), never less than
+the FST end time `bwave list` reports as `total_ticks`, so bwave clamps a
+`--time` end to `total_ticks` (with a note) and rejects a start at or past it
+before changing anything.
 
 **Session files are Booley-owned.** `loadViewerState` reads a file, not
 inline state, and makes that file the tab's save target (Ctrl+S, auto-save, and
@@ -123,8 +137,9 @@ patching) stay, because Marketplace installs can land after attach.
 
 The patch is deleted once upstream ships both follow-ups:
 [Lramseyer/vaporview#207](https://github.com/Lramseyer/vaporview/issues/207)
-(theme resolution in remote windows) and machine-scoped custom colors (not
-filed upstream as of this ADR).
+(theme resolution in remote windows) and machine-scoped custom colors. The
+second is not yet filed upstream; filing it is a follow-up owned by the
+maintainer.
 
 **Doctor** replaces the WCP port probe with a bridge probe run in the attached
 container (or locally inside a Sandbox). It fails when no window's bridge
@@ -142,6 +157,13 @@ registry. The installed-version check from #2261 is kept.
 - Every apply replaces all rows (that is how `loadViewerState` works), so the
   view redraws once per apply, up to three times when signals need a fallback
   or removal.
+- VaporView can move a marker but never clear one: a session applies a marker
+  only when its key is present, a `null` value only hides the label, and the
+  extension never drops a stored marker time. So a plan sets, and readback
+  verifies, only the markers it asks for; any other marker stays where it was
+  (for example, `--cursor` after an earlier `--time` leaves the old END
+  marker). Rollback moves existing markers back but cannot remove one a failed
+  run placed where none existed.
 
 ## Rejected alternatives
 

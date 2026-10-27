@@ -1,8 +1,9 @@
 """Client for the Booley VaporView bridge (ADR 0078).
 
-`bwave gui` never talks to VaporView directly. The Booley workspace extension
-(``data/vscode/dashboard/vaporview_bridge.js``) runs inside every attached VS
-Code window's extension host, next to VaporView, and listens on a Unix socket:
+`bwave gui` never talks to VaporView directly. The Booley Sandbox Integration
+extension (``data/vscode/dashboard/vaporview_bridge.js``) runs a Viewer Bridge
+inside every attached VS Code window's extension host, next to VaporView,
+listening on a Unix socket:
 
     ~/.booley/vaporview-bridge/window-<extension-host-pid>.sock
 
@@ -16,10 +17,9 @@ verifying the result is this package's job, where it is testable.
 Several windows may be attached to one Sandbox, each with its own bridge. A
 window's integrated terminals carry ``BOOLEY_VAPORVIEW_BRIDGE`` naming its own
 socket, so a command typed there targets that window. Elsewhere the bridges
-are discovered from the socket directory; see :func:`select_bridge`.
+are discovered from the socket directory; see :func:`find_bridge`.
 
-Split out of ``cli.py`` (principle 8): the CLI owns the view, this module owns
-the transport.
+The CLI owns the view; this module owns the transport and window selection.
 """
 
 from __future__ import annotations
@@ -34,7 +34,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_dict,
+    require_finite_number,
+    require_opt_str,
+)
 
 PROTOCOL = 1
 # Terminals of an attached window name that window's bridge socket.
@@ -55,7 +61,12 @@ class BridgeError(Exception):
 
 
 class BridgeUnavailableError(BridgeError):
-    """No live bridge, so no VS Code window is attached with the Booley extension."""
+    """No usable bridge: no window is attached, or none answered properly."""
+
+    def __init__(self, message: str, *, problems: list[str] | None = None):
+        detail = f"{message}; skipped: {'; '.join(problems)}" if problems else message
+        super().__init__(detail)
+        self.problems = list(problems or [])
 
 
 class BridgeAmbiguousError(BridgeError):
@@ -189,35 +200,33 @@ def _read_line(sock: socket.socket) -> bytes:
 
 def _parse_ping(socket_path: Path, result: Any) -> BridgeInfo:
     """Validate the ``ping`` result at the boundary."""
-    if not isinstance(result, dict) or result.get("protocol") != PROTOCOL:
-        raise BridgeProtocolError(
-            f"ping: unsupported bridge reply {result!r}; refresh the Sandbox"
+    try:
+        report = require_dict(result, field="ping reply")
+        if report.get("protocol") != PROTOCOL:
+            raise BridgeProtocolError(
+                f"ping: unsupported bridge protocol {report.get('protocol')!r}; "
+                "refresh the Sandbox"
+            )
+        documents = report.get("documents")
+        if not is_str_list(documents):
+            raise BoundaryError(f"ping documents must be a list of paths, got {documents!r}")
+        return BridgeInfo(
+            socket_path=socket_path,
+            vaporview=require_opt_str(report, "vaporview"),
+            focused=report.get("focused") is True,
+            last_focused=require_finite_number(report.get("lastFocused"), field="lastFocused"),
+            documents=tuple(documents),
+            error=require_opt_str(report, "error"),
         )
-    vaporview = result.get("vaporview")
-    documents = result.get("documents")
-    last_focused = result.get("lastFocused")
-    error = result.get("error")
-    if (
-        (vaporview is not None and not isinstance(vaporview, str))
-        or not isinstance(documents, list)
-        or not all(isinstance(doc, str) for doc in documents)
-        or isinstance(last_focused, bool)
-        or not isinstance(last_focused, int | float)
-        or (error is not None and not isinstance(error, str))
-    ):
-        raise BridgeProtocolError(f"ping: malformed bridge reply {result!r}")
-    return BridgeInfo(
-        socket_path=socket_path,
-        vaporview=vaporview,
-        focused=result.get("focused") is True,
-        last_focused=float(last_focused),
-        documents=tuple(documents),
-        error=error,
-    )
+    except BoundaryError as exc:
+        raise BridgeProtocolError(f"ping: malformed bridge reply: {exc}") from exc
 
 
 def _ping_or_prune(path: Path) -> BridgeInfo | None:
-    """Ping one socket; a refused connection means a dead window, so remove it."""
+    """Ping one socket; a refused connection means a dead window, so remove it.
+
+    A bridge that answers but breaks the protocol (or times out) raises.
+    """
     try:
         return BridgeClient(path).ping()
     except BridgeUnavailableError as exc:
@@ -235,33 +244,55 @@ def _candidate_sockets(home: Path | None) -> list[Path]:
         return []
 
 
-def discover(home: Path | None = None) -> list[BridgeInfo]:
-    """Every live bridge in the socket directory, pruning stale sockets.
+def discover(home: Path | None = None) -> tuple[list[BridgeInfo], list[str]]:
+    """Live bridges in the socket directory, plus a note per misbehaving one.
 
-    A bridge that answers but breaks the protocol raises: silently skipping a
-    half-working window would hide the reason `bwave gui` cannot use it.
+    Dead sockets are pruned. A frozen or protocol-breaking window is skipped
+    and described instead, so one bad window never hides the healthy ones.
     """
-    return [
-        info for path in _candidate_sockets(home) if (info := _ping_or_prune(path)) is not None
-    ]
+    bridges: list[BridgeInfo] = []
+    problems: list[str] = []
+    for path in _candidate_sockets(home):
+        try:
+            info = _ping_or_prune(path)
+        except BridgeError as exc:
+            problems.append(f"{path.name}: {exc}")
+            continue
+        if info is not None:
+            bridges.append(info)
+    return bridges, problems
 
 
-def select_bridge(
-    bridges: list[BridgeInfo], trace: str, *, env: Mapping[str, str] | None = None
+def find_bridge(
+    trace: str, *, home: Path | None = None, env: Mapping[str, str] | None = None
 ) -> BridgeInfo:
-    """Choose the window that should show *trace*.
+    """Find the attached window that should show *trace*.
 
-    Preference: the window whose terminal ran this command, the only window,
-    the only window already showing the trace, then the most recently focused
-    window when that is unambiguous.
+    The window whose terminal ran this command (``BOOLEY_VAPORVIEW_BRIDGE``)
+    is asked first and alone, so other windows cannot delay or break it.
+    Otherwise every bridge is discovered and :func:`select_bridge` decides.
+    Misbehaving windows are reported only when no usable window remains.
     """
-    if not bridges:
-        raise BridgeUnavailableError("no VS Code window with the Booley bridge is attached")
+    problems: list[str] = []
     named = (env if env is not None else os.environ).get(SOCKET_ENV)
     if named:
-        own = [info for info in bridges if str(info.socket_path) == named]
-        if own:
-            return own[0]
+        try:
+            return BridgeClient(Path(named)).ping()
+        except BridgeError as exc:
+            problems.append(f"{Path(named).name} (this terminal's window): {exc}")
+    bridges, skipped = discover(home)
+    if not bridges:
+        raise BridgeUnavailableError(
+            "no VS Code window with the Booley bridge answered", problems=[*problems, *skipped]
+        )
+    return select_bridge(bridges, trace)
+
+
+def select_bridge(bridges: list[BridgeInfo], trace: str) -> BridgeInfo:
+    """Choose among live windows: the only one, the only one already showing
+    the trace, then the most recently focused one when that is unambiguous."""
+    if not bridges:
+        raise BridgeUnavailableError("no VS Code window with the Booley bridge answered")
     if len(bridges) == 1:
         return bridges[0]
     showing = [info for info in bridges if trace in info.documents]
@@ -279,18 +310,11 @@ def select_bridge(
 
 
 def doctor_summary(home: Path | None = None) -> dict[str, Any]:
-    """JSON-ready bridge inventory for Doctor's in-Sandbox probe.
-
-    Unlike :func:`discover`, a misbehaving bridge is reported, not raised, so
-    Doctor can name it next to the healthy ones.
-    """
-    bridges: list[dict[str, Any]] = []
-    for path in _candidate_sockets(home):
-        try:
-            info = _ping_or_prune(path)
-        except BridgeError as exc:
-            bridges.append({"vaporview": None, "error": str(exc)})
-            continue
-        if info is not None:
-            bridges.append({"vaporview": info.vaporview, "error": info.error})
-    return {"bridges": bridges}
+    """JSON-ready bridge inventory for Doctor's in-Sandbox probe."""
+    bridges, problems = discover(home)
+    return {
+        "bridges": [
+            *({"vaporview": info.vaporview, "error": info.error} for info in bridges),
+            *({"vaporview": None, "error": problem} for problem in problems),
+        ]
+    }
