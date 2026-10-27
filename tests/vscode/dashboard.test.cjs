@@ -10,7 +10,10 @@ const source = fs.readFileSync(path.join(__dirname,
     '../../src/booley/data/vscode/dashboard/extension.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fakeEditor({ trusted = true, remote = 'dev-container' }, records, settings) {
+function fakeEditor(options, records, settings) {
+    const { trusted = true } = options;
+    // An explicit `remote: undefined` models a local window, as VS Code reports it.
+    const remote = 'remote' in options ? options.remote : 'dev-container';
     const { log, terminals, listeners } = records;
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
@@ -89,6 +92,42 @@ test('default-off application permission still opens one fixed remote process', 
     f.listeners.trust();
     await tick();
     assert.equal(f.terminals.length, 1);
+});
+
+test('a GitHub Codespace opens one fixed remote process like a Dev Container', async () => {
+    const f = fixture({ remote: 'codespaces' });
+    await tick();
+    assert.equal(f.calls.length, 1);
+    assert.deepEqual(Array.from(f.calls[0].args), ['dashboard', '--attach-policy']);
+    assert.equal(f.terminals.length, 1);
+    assert.deepEqual(Array.from(f.terminals[0].options.shellArgs), ['dashboard', '--on-attach']);
+    assert.equal(f.log.length, 0);
+});
+
+test('an ineligible remote, untrusted window and disabled protocol log one reason', async () => {
+    const cases = [
+        [{ remote: 'ssh-remote' }, /remote 'ssh-remote'/],
+        [{ trusted: false }, /untrusted/],
+        [{ protocol: 0 }, /attach protocol/],
+    ];
+    for (const [options, reason] of cases) {
+        const f = fixture(options);
+        await tick();
+        assert.equal(f.calls.length, 0);
+        assert.equal(f.terminals.length, 0);
+        assert.equal(f.log.length, 1);
+        assert.match(f.log[0], reason);
+    }
+});
+
+test('a local window starts nothing and stays quiet', async () => {
+    for (const remote of [null, undefined]) {
+        const f = fixture({ remote });
+        await tick();
+        assert.equal(f.calls.length, 0);
+        assert.equal(f.terminals.length, 0);
+        assert.equal(f.log.length, 0);
+    }
 });
 
 test('explicit off, host folder, unrelated remote and disabled protocol are inert', async () => {

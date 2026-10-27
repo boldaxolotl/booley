@@ -296,6 +296,20 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   disposes only terminals it owns, with no terminal-name-based cleanup. Output
   channel diagnostics distinguish policy opt-outs and startup failures.
 
+## Amendments (2026-10-27, GitHub Codespaces attach)
+
+- **Codespaces is a Sandbox remote.** VS Code reports `env.remoteName` as
+  `codespaces` in a GitHub Codespace, whose workspace extension host runs in the
+  Codespace container. The workspace extension treats it like the Dev Containers
+  remotes (`dev-container`, `attached-container`): trust, the attach protocol,
+  the automatic-task preference, one opened folder, a Git Project Root and
+  `booley dashboard --attach-policy` gate the same fixed terminal. Other remote
+  kinds stay ineligible (#2255).
+- **Skips before policy are visible.** An ineligible remote kind, an untrusted
+  window and a disabled attach protocol each write one reason line to the
+  **Booley Dashboard** Output channel. A local window, with no remote, stays
+  quiet.
+
 ## Amendments (2026-10-15, Codex chat tab identity)
 
 - **Marked Codex launches are an exception to thread identity.** The earlier
