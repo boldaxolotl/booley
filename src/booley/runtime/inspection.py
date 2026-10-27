@@ -38,6 +38,7 @@ from booley.runtime import (
     image_identity,
     runtime_context,
     session_runtime,
+    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
@@ -285,10 +286,11 @@ def _viewer_extensions_current(
         _spec_warning(
             request,
             report,
-            "devcontainer.json predates the Waveform Viewer (ADR 0035) or its "
-            "WCP auto-start patch: VaporView/WCP settings or the postAttach "
+            "devcontainer.json predates the current Waveform Viewer (ADR 0035) "
+            "setup: the VaporView extension entry is missing or not pinned to "
+            f"{vaporview.PINNED_EXTENSION}, or the WCP settings or postAttach "
             "manifest patch are missing, so in-container `bwave gui` finds no "
-            "running viewer",
+            "usable viewer",
         )
         return False
     if not dc.spec_installs_hdl_highlight(spec):

@@ -840,16 +840,34 @@ class TestDevcontainerSpecStaleness:
         assert rec.fails() == []
         assert any(lvl == "warn" and "VaporView" in m and "--seed" in m for lvl, m in rec.events)
 
+    def test_unpinned_vaporview_spec_warns_with_the_pin(self, tmp_path, monkeypatch):
+        # Specs seeded before the pin request the latest Marketplace release,
+        # which Booley may not support; Doctor must send them to regenerate.
+        from booley.runtime import devcontainer as dc
+        from booley.runtime import vaporview
+
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        extensions = spec["customizations"]["vscode"]["extensions"]
+        extensions[extensions.index(vaporview.PINNED_EXTENSION)] = vaporview.EXTENSION_ID
+        dc.write_devcontainer(tmp_path, spec)
+        rec = self._run(tmp_path, monkeypatch)
+        assert rec.fails() == []
+        assert any(
+            lvl == "warn" and vaporview.PINNED_EXTENSION in m and "--seed" in m
+            for lvl, m in rec.events
+        )
+
     def test_spec_without_hdl_highlight_is_a_note(self, tmp_path, monkeypatch):
         # A spec seeded before the SystemVerilog highlighting extension landed
         # renders RTL as plain text in attached windows; extensions are
         # spec-delivered (never image-baked), so only a re-seed fixes it.
         from booley.runtime import devcontainer as dc
+        from booley.runtime import vaporview
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = [
             "Anthropic.claude-code",
-            "lramseyer.vaporview",
+            vaporview.PINNED_EXTENSION,
         ]
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)

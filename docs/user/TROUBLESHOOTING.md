@@ -612,7 +612,7 @@ launching the editor CLI on the file.
 
 Booley first checks whether VaporView is installed in the attached remote
 window. If it is missing, install it there with
-`code --install-extension lramseyer.vaporview`. If the Sandbox cannot
+`code --install-extension lramseyer.vaporview@1.5.4`. If the Sandbox cannot
 reach the Marketplace, obtain the official VaporView VSIX on a networked host,
 from the matching version on the
 [official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
@@ -623,6 +623,13 @@ extension automatically; then use **Developer: Reload Window**. Verify with
 `code --list-extensions --show-versions` in the remote terminal; it must list
 `lramseyer.vaporview@1.5.4`. Be careful with a host terminal: a plain host
 `code` command may install locally instead of into the attached container.
+
+The generated devcontainer spec pins VaporView to `lramseyer.vaporview@1.5.4`,
+and VS Code does not auto-update a pinned extension. A different installed
+version, such as a newer Marketplace release, cannot drive scoped views. Doctor
+reports it with both versions. Run the pinned install command above in the
+attached remote window, then **Developer: Reload Window**. If Doctor also
+reports devcontainer drift, refresh the Sandbox so its spec carries the pin.
 
 The same repair applies when `--group` or a radix/color suffix reports missing
 `set_signal_layout`, `get_signal_layout`, or `get_viewer_state` capabilities.
