@@ -2,7 +2,7 @@
   "name": "dashboard",
   "publisher": "booley",
   "displayName": "Booley Sandbox Integration",
-  "description": "Open the terminal Dashboard when attaching to a Booley Sandbox, and host the VaporView bridge that `bwave gui` uses to show scoped waveform views.",
+  "description": "Open the terminal Dashboard when attaching to a Booley Sandbox, and host the Viewer Bridge that `bwave gui` uses to show scoped waveform views.",
   "version": "0.2.0",
   "license": "Apache-2.0",
   "engines": { "vscode": "^1.95.0" },

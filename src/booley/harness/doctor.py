@@ -182,6 +182,8 @@ _SIM_DEEP_FINALIZE_MARGIN_S = 30
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
 # metadata, while deep Doctor deliberately stops short of implementation.
+# Doctor line label for the `bwave gui` Viewer Bridge probe.
+_VIEWER_BRIDGE_DESCRIPTION = "Viewer Bridge answers in the attached VS Code window (`bwave gui`)"
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
 _DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
@@ -3201,7 +3203,7 @@ def _report_viewer_bridges(
     argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
 ) -> None:
     """Turn the bridge inventory into one pass/skip/fail line."""
-    description = "VaporView bridge answers in the attached VS Code window (`bwave gui`)"
+    description = _VIEWER_BRIDGE_DESCRIPTION
     bridges = _viewer_bridges(argv_prefix)
     if bridges is None:
         _skip(f"{description} - probe could not run{where}")
@@ -3243,7 +3245,7 @@ def _check_viewer_bridge(
     """
     from booley.runtime import runtime_context
 
-    description = "VaporView bridge answers in the attached VS Code window (`bwave gui`)"
+    description = _VIEWER_BRIDGE_DESCRIPTION
     if runtime_context.inside_session_runtime():
         if _vscode_extension_host_running([]) is False:
             _skip(f"{description} - no VS Code extension host attached")

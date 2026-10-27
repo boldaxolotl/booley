@@ -546,7 +546,7 @@ def test_bare_open_with_ambiguous_windows_uses_the_editor_cli(tmp_path, monkeypa
     def ambiguous(_trace):
         raise bwave.vaporview_bridge.BridgeAmbiguousError("2 VS Code windows are attached")
 
-    monkeypatch.setattr(bwave, "_select_viewer", ambiguous)
+    monkeypatch.setattr(bwave.vaporview_bridge, "find_bridge", ambiguous)
 
     _gui()
 

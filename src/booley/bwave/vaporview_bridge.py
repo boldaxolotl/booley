@@ -291,8 +291,6 @@ def find_bridge(
 def select_bridge(bridges: list[BridgeInfo], trace: str) -> BridgeInfo:
     """Choose among live windows: the only one, the only one already showing
     the trace, then the most recently focused one when that is unambiguous."""
-    if not bridges:
-        raise BridgeUnavailableError("no VS Code window with the Booley bridge answered")
     if len(bridges) == 1:
         return bridges[0]
     showing = [info for info in bridges if trace in info.documents]

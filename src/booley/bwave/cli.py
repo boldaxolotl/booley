@@ -1184,8 +1184,8 @@ _VIEW_POLL_INTERVAL = 0.05
 # left out: the viewer reports it as a name object but expects a netlist id.
 _RESTORE_KEYS = (
     "displayedSignals",
-    "markerTime",
-    "altMarkerTime",
+    _MAIN_MARKER,
+    _ALT_MARKER,
     "displayTimeUnit",
     "zoomRatio",
     "scrollLeft",
@@ -1650,15 +1650,10 @@ def _apply_gui_plan(
     return freshly_opened, accepted, dropped, groups
 
 
-def _select_viewer(trace_abs: str) -> vaporview_bridge.BridgeInfo:
-    """Find the attached window that should show *trace_abs*."""
-    return vaporview_bridge.find_bridge(trace_abs)
-
-
 def _gui_bare(trace_abs: str) -> None:
     """Plain `bwave gui`: open through the bridge, else hand off to the editor CLI."""
     try:
-        info = _select_viewer(trace_abs)
+        info = vaporview_bridge.find_bridge(trace_abs)
         if info.vaporview is None:
             raise vaporview_bridge.BridgeUnavailableError(
                 "the attached window has no usable VaporView", problems=[info.error or "no detail"]
@@ -1807,7 +1802,7 @@ def _warn_dropped(signals: list[_OpenSignal]) -> None:
 def _connect_scoped_viewer(trace_abs: str) -> vaporview_bridge.BridgeClient:
     """Select the window to drive, failing with recovery guidance before mutation."""
     try:
-        info = _select_viewer(trace_abs)
+        info = vaporview_bridge.find_bridge(trace_abs)
     except vaporview_bridge.BridgeAmbiguousError as exc:
         sys.exit(_ambiguous_viewer_hint(exc))
     except vaporview_bridge.BridgeError as exc:

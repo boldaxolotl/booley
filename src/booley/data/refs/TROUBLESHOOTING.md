@@ -615,8 +615,9 @@ When a window is attached, the usual fix is **"Developer: Reload Window"** in
 it, not a rebuild: the bridge starts when the window loads. If Doctor also
 reports devcontainer drift, refresh the Sandbox so its spec installs the
 Booley Sandbox Integration extension. `booley doctor` asks every attached
-window's Viewer Bridge whether it answers and has VaporView ready ("VaporView
-bridge answers in the attached VS Code window ..."), so you find out before `bwave gui` does.
+window's Viewer Bridge whether it answers and has VaporView ready ("Viewer
+Bridge answers in the attached VS Code window ..."), so you find out before
+`bwave gui` does.
 
 With several VS Code windows attached to one Sandbox, `bwave gui` uses the
 window whose terminal you typed it in. Elsewhere it picks the window already

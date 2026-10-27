@@ -329,11 +329,6 @@ def test_select_refuses_to_guess(last):
         bridge.select_bridge(bridges, "/t.fst")
 
 
-def test_select_without_bridges_is_unavailable():
-    with pytest.raises(bridge.BridgeUnavailableError):
-        bridge.select_bridge([], "/t.fst")
-
-
 def test_bridge_dir_follows_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert bridge.bridge_dir() == tmp_path / ".booley" / "vaporview-bridge"

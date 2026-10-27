@@ -149,7 +149,7 @@ class AttachController {
     }
 }
 
-// The `bwave gui` VaporView bridge runs in every window, independent of the
+// The `bwave gui` Viewer Bridge runs in every window, independent of the
 // Dashboard attach policy; a failure is logged and never blocks the Dashboard.
 function startBridge(context) {
     let bridge;
@@ -161,7 +161,7 @@ function startBridge(context) {
     bridge.catch(error => {
         const output = vscode.window.createOutputChannel('Booley VaporView Bridge');
         context.subscriptions.push(output);
-        output.appendLine(`VaporView bridge failed to start: ${error.message}`);
+        output.appendLine(`Viewer Bridge failed to start: ${error.message}`);
     });
 }
 
