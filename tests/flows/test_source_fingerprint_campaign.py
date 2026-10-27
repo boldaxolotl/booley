@@ -146,6 +146,36 @@ def test_workload_fingerprint_tracks_pre_sim_program_not_its_arguments(tmp_path)
     assert workload["files"] == ["hooks/build.py", "rtl/dut.sv"]
 
 
+@pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
+def test_workload_fingerprint_tracks_pre_sim_program_under_booley_dir(tmp_path, linked) -> None:
+    """A Pre-Sim program behind a linked ``.booley`` entry stays in ``workload`` (#2250)."""
+    root = tmp_path / "project"
+    (root / "rtl").mkdir(parents=True)
+    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    _write_core(root, "design", "sim", "rtl/dut.sv")
+    data = tmp_path / "booley-data" if linked else root / ".booley"
+    (data / "hooks").mkdir(parents=True)
+    (data / ".git").mkdir()
+    (data / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
+    (data / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["bash .booley/hooks/x.sh"]\n'
+    )
+    hook = data / "hooks" / "x.sh"
+    hook.write_text("echo first\n")
+    if linked:
+        symlink_or_skip(root / ".booley", data, target_is_directory=True)
+    reset_cache()
+
+    first = compute_source_fingerprint(root, target="sim")["workload"]
+    hook.write_text("echo second\n")
+    edited = compute_source_fingerprint(root, target="sim")["workload"]
+
+    # The Versioned Booley Directory entry is a redirecting entry in both layouts.
+    assert first["files"] == [".booley", ".booley/hooks/x.sh", "rtl/dut.sv"]
+    assert edited["files"] == first["files"]
+    assert edited["digest"] != first["digest"]
+
+
 # Independently captured from origin/main 9da903961 using its original source,
 # surface, Goal resolver and selected-input adapter on the fixture below.
 _GOLDEN_1337 = '{"selected":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"selected_goal":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"e593942fe084c38f2b8dbf1430681a2bd8b08679e8d575c25b6283e2e7267c58","files":["design.core","data.hex","tb.py","build.py",".booley/tests.toml"]},"tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"selected_protection":["build.py","dut.v"],"shared":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":null,"tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"surface":{"digest":"8dc44f8b6f15eaede9ebc946a04c3010f5ffc54ad52b12f7a94e3df6236c7ef3","files":["design.core","data.hex","tb.py","build.py",".booley/tests.toml"]}}'

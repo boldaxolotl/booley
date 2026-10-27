@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign import (
     ProjectionTrust,
@@ -206,12 +208,17 @@ def coverage_sources(
         inspection = catalog.inspect(handle)
         expected = {"rtl": [], "testbench": []}
         files = {}
+        root = project_root.resolve()
         for item in sorted(inspection.inputs, key=lambda item: item.path):
             path = project_root / item.path
             if path.suffix.lower() in {".fst", ".vcd"}:
                 return None
             _safe_path(path)
-            if not path.resolve().is_relative_to(project_root.resolve()):
+            # An input behind a symlinked Booley Directory entry counts as inside
+            # when spelled through the entry; _safe_path refused every other link.
+            if not lexical_booley_path(root / BOOLEY_DIR_NAME, path.resolve()).is_relative_to(
+                root
+            ):
                 return None
             category = "testbench" if "tb" in item.tags else "rtl"
             data = path.read_bytes()

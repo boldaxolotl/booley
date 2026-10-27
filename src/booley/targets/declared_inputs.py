@@ -8,6 +8,8 @@ from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import as_dict
 
 HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh", ".vhd", ".vhdl"})
@@ -274,10 +276,13 @@ def _resolve_program_paths(
 ) -> tuple[Path, ...]:
     root = project_root.resolve()
     base = search_root.resolve()
+    # A program behind a symlinked Booley Directory entry (a Codespace's
+    # /work/.booley) is spelled through the entry; any other link out stays refused.
+    entry = root / BOOLEY_DIR_NAME
     paths: set[Path] = set()
     for candidate in candidates:
         lexical = base / candidate
-        resolved = lexical.resolve()
+        resolved = lexical_booley_path(entry, lexical.resolve())
         if not resolved.is_relative_to(root):
             if strict:
                 raise ValueError(

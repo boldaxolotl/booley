@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from tests.conftest import symlink_or_skip
 
 from booley.targets.declared_inputs import core_program_paths, project_config_program_paths
 
@@ -409,3 +410,65 @@ def test_missing_program_keeps_redirecting_parent(tmp_path):
     assert core_program_paths(
         document, core_file=tmp_path / "top.core", project_root=tmp_path, include_missing=True
     ) == (nested, nested / "missing")
+
+
+def _pre_sim_project(tmp_path: Path, *, linked: bool) -> tuple[Path, Path]:
+    """A Project whose Pre-Sim Command runs ``.booley/hooks/x.sh``.
+
+    With *linked*, ``.booley`` is a symlink to a data directory beside the
+    Project Root, as in a GitHub Codespace. Returns ``(project, data)``.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    data = tmp_path / "booley-data" if linked else project / ".booley"
+    (data / "hooks").mkdir(parents=True)
+    (data / "hooks" / "x.sh").write_text("echo hook\n", encoding="utf-8")
+    # A Versioned Booley Directory is a nested repository in the plain layout too.
+    (data / ".git").mkdir()
+    if linked:
+        symlink_or_skip(project / ".booley", data, target_is_directory=True)
+    return project, data
+
+
+_HOOK_CONFIG = {"flows": {"sim": {"pre_run_commands": ["bash .booley/hooks/x.sh"]}}}
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
+def test_pre_sim_program_under_booley_dir_entry_is_kept(tmp_path: Path, linked: bool) -> None:
+    """A linked ``.booley`` entry yields the same labels as a plain directory (#2250)."""
+    project, _data = _pre_sim_project(tmp_path, linked=linked)
+
+    paths = project_config_program_paths(_HOOK_CONFIG, project_root=project, strict=True)
+
+    assert [path.relative_to(project).as_posix() for path in paths] == [
+        ".booley",
+        ".booley/hooks/x.sh",
+    ]
+
+
+def test_link_below_linked_entry_leading_outside_stays_excluded(tmp_path: Path) -> None:
+    """Only the exact entry is followed; a link below it out of the Project is not."""
+    project, data = _pre_sim_project(tmp_path, linked=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "y.sh").write_text("echo outside\n", encoding="utf-8")
+    symlink_or_skip(data / "escape", elsewhere, target_is_directory=True)
+    config = {"flows": {"sim": {"pre_run_commands": ["bash .booley/escape/y.sh"]}}}
+
+    assert project_config_program_paths(config, project_root=project) == ()
+    with pytest.raises(ValueError, match="cannot be mapped to the Project"):
+        project_config_program_paths(config, project_root=project, strict=True)
+
+
+def test_link_above_an_entry_spelling_stays_excluded(tmp_path: Path) -> None:
+    """A ``.booley`` reached through another link is not the Project's entry."""
+    project, _data = _pre_sim_project(tmp_path, linked=True)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / ".booley" / "hooks").mkdir(parents=True)
+    (elsewhere / ".booley" / "hooks" / "z.sh").write_text("echo outside\n", encoding="utf-8")
+    symlink_or_skip(project / "vendor", elsewhere, target_is_directory=True)
+    config = {"flows": {"sim": {"pre_run_commands": ["bash vendor/.booley/hooks/z.sh"]}}}
+
+    assert project_config_program_paths(config, project_root=project) == ()
+    with pytest.raises(ValueError, match="cannot be mapped to the Project"):
+        project_config_program_paths(config, project_root=project, strict=True)
