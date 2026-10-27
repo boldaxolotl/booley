@@ -8,6 +8,7 @@ import pytest
 
 from booley.runtime import devcontainer as dc
 from booley.runtime import vaporview
+from booley.runtime.dashboard_extension import VSIX_PATH
 from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
 
 # ===========================================================================
@@ -312,10 +313,11 @@ class TestAppExtension:
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
+            VSIX_PATH,
         ]
         assert vscode["settings"]["remote.extensionKind"] == {ext: ["workspace"]}
-        assert vscode["settings"]["vaporview.wcp.enabled"] is True
-        assert vscode["settings"]["vaporview.wcp.port"] == 54322
+        # The viewer bridge drives VaporView; its own WCP endpoint stays off.
+        assert not any(key.startswith("vaporview.wcp.") for key in vscode["settings"])
         assert vscode["settings"]["vaporview.customColor5"] == "#e5484d"
         assert vscode["settings"]["vaporview.customColor6"] == "#3b82f6"
         assert vscode["settings"]["vaporview.customColor7"] == "#2da44e"
@@ -329,46 +331,41 @@ class TestAppExtension:
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
+            VSIX_PATH,
         ]
-        assert vscode["settings"]["vaporview.wcp.enabled"] is True
-        assert vscode["settings"]["vaporview.wcp.port"] == 54322
 
     def test_none_installs_no_agent_extension(self):
-        # ADR 0035: waveform viewing isn't tied to an agent app, so "none"
-        # (which previously emitted no customizations at all) carries the
-        # app-agnostic extensions (VaporView + HDL highlighting) but no agent
-        # extension. The WCP settings ride along unconditionally so bwave's
-        # client can always reach the server.
+        # Waveform viewing isn't tied to an agent app, so "none" carries the
+        # app-agnostic extensions (VaporView, its Booley bridge host, HDL
+        # highlighting) but no agent extension.
         vscode = dc.build_devcontainer_spec(dc.APP_NONE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.PINNED_EXTENSION,
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
+            VSIX_PATH,
         ]
-        assert vscode["settings"]["vaporview.wcp.enabled"] is True
-        assert vscode["settings"]["vaporview.wcp.port"] == 54322
 
     def test_vaporview_extension_present_for_every_app(self):
-        # The Waveform Viewer (ADR 0035) rides along regardless of agent app,
-        # and its WCP server settings are always present.
+        # The Waveform Viewer (ADR 0078) and the Booley extension hosting its
+        # bridge ride along regardless of agent app or Dashboard policy.
         for app in dc.SUPPORTED_APPS:
             spec = dc.build_devcontainer_spec(app)
             vscode = spec["customizations"]["vscode"]
             assert vaporview.PINNED_EXTENSION in vscode["extensions"]
-            assert vscode["settings"]["vaporview.wcp.enabled"] is True
-            assert vscode["settings"]["vaporview.wcp.port"] == 54322
+            assert VSIX_PATH in vscode["extensions"]
             assert {
                 key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
             } == dc._VAPORVIEW_PRESENTATION_SETTINGS
 
     def test_spec_installs_vaporview_detector(self):
         # The single detector booley doctor reads to surface a spec seeded
-        # before the Waveform Viewer (ADR 0035) landed.
+        # before the current Waveform Viewer setup (ADR 0078) landed.
         for app in dc.SUPPORTED_APPS:
             assert dc.spec_installs_vaporview(dc.build_devcontainer_spec(app)) is True
-        # Pre-ADR-0035 shapes: no customizations at all (app=none back then),
-        # or an agent extension without VaporView / the WCP settings.
+        # Older shapes: no customizations at all, or an agent extension
+        # without VaporView.
         assert dc.spec_installs_vaporview({}) is False
         legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         legacy["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
@@ -490,16 +487,26 @@ class TestAppExtension:
             del spec["customizations"]["vscode"]["settings"][key]
             assert dc.spec_disables_python_terminal_activation(spec) is False
 
-    def test_spec_installs_vaporview_rejects_wcp_drift(self):
-        # Extension present but the WCP server disabled or on the wrong port
-        # is just as dead to bwave's client as a missing install.
-        for settings_patch in (
-            {"vaporview.wcp.enabled": False},
-            {"vaporview.wcp.port": 12345},
-        ):
-            spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-            spec["customizations"]["vscode"]["settings"].update(settings_patch)
-            assert dc.spec_installs_vaporview(spec) is False
+    def test_spec_installs_vaporview_requires_the_bridge_host(self):
+        # Without the image-local Booley extension no window runs the bridge,
+        # so scoped `bwave gui` has nothing to drive.
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec["customizations"]["vscode"]["extensions"].remove(VSIX_PATH)
+        assert dc.spec_installs_vaporview(spec) is False
+
+    def test_spec_from_the_previous_viewer_setup_reads_as_drift(self):
+        # The previous generator pinned another VaporView build, enabled its
+        # WCP endpoint, and installed the Booley extension only with the
+        # Dashboard; a refresh must replace that whole shape.
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, dashboard=False)
+        vscode = spec["customizations"]["vscode"]
+        vscode["extensions"] = [
+            f"{vaporview.EXTENSION_ID}@1.5.4" if vaporview.is_vaporview_entry(e) else e
+            for e in vscode["extensions"]
+            if e != VSIX_PATH
+        ]
+        vscode["settings"].update({"vaporview.wcp.enabled": True, "vaporview.wcp.port": 54322})
+        assert dc.spec_installs_vaporview(spec) is False
 
     def test_spec_installs_vaporview_rejects_presentation_palette_drift(self):
         for key in dc._VAPORVIEW_PRESENTATION_SETTINGS:
@@ -507,12 +514,9 @@ class TestAppExtension:
             del spec["customizations"]["vscode"]["settings"][key]
             assert dc.spec_installs_vaporview(spec) is False
 
-    def test_spec_installs_vaporview_requires_autostart_patch(self):
-        # A spec that has the extension + WCP settings but predates the
-        # postAttach auto-start patch is still dead to bwave: the setting is
-        # application-scoped (Machine settings ignored) and the extension
-        # activates lazily, so the server never binds. The guard must reject it
-        # so doctor prompts a re-seed.
+    def test_spec_installs_vaporview_requires_the_attach_patch(self):
+        # Without the postAttach patch the custom palette ignores the spec's
+        # Machine settings and VaporView errors on the remote theme lookup.
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         assert dc.spec_installs_vaporview(spec) is True
         del spec["postAttachCommand"]
@@ -521,8 +525,8 @@ class TestAppExtension:
         assert dc.spec_installs_vaporview(spec) is False
 
     def test_spec_wires_vaporview_autostart_postattach(self):
-        # Every app (incl. "none") gets the manifest-patch hook on attach —
-        # attach is the first lifecycle point where the extension exists on disk.
+        # Every app (incl. "none") gets the patch hook on attach — attach is
+        # the first lifecycle point where the extension exists on disk.
         for app in dc.SUPPORTED_APPS:
             spec = dc.build_devcontainer_spec(app)
             assert spec["postAttachCommand"] == dc.post_attach_command()

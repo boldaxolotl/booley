@@ -94,11 +94,10 @@ _APP_EXTENSION = {
     APP_CODEX: "openai.chatgpt",
 }
 
-# Waveform Viewer (ADR 0035): VaporView is installed for every app so
-# `bwave gui` and the agent's scoped-view WCP calls work in the attached
-# window.
-# VaporView WCP has no named red color. `bwave gui` maps its stable
-# red/blue/green interface to the extension's configured custom palette.
+# Waveform Viewer (ADR 0078): VaporView is installed for every app so
+# `bwave gui` works in the attached window, driven through the Booley
+# extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
+# maps its stable red/blue/green interface to the extension's custom palette.
 _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
@@ -148,11 +147,6 @@ _PYTHON_TERMINAL_SETTINGS = {
     "python-envs.terminal.autoActivationType": "off",
     "python.terminal.activateEnvironment": False,
 }
-
-# VaporView's WCP control port, pinned because bwave's WCP client discovers
-# the server at a fixed port (bwave/wcp.py WCP_DEFAULT_PORT must agree;
-# 0 = auto-assign would break discovery).
-_VAPORVIEW_WCP_PORT = 54322
 
 # Where each app reads its auth token inside the container (agent user's home).
 _APP_AUTH_TARGET = {
@@ -256,21 +250,17 @@ def mcp_post_start_command() -> str:
 
 
 def vaporview_patch_command() -> str:
-    """Shell command for ``postAttachCommand``: make VaporView's WCP server
-    auto-start on window load.
+    """Shell command for ``postAttachCommand``: apply Booley's residual VaporView patch.
 
-    Runs on *attach* (not create/start) because it must edit the VaporView
-    extension's manifest, which VS Code installs container-side only once an extension
-    attaches — by postCreate/postStart it isn't on disk yet. The patcher relaxes
-    the ``vaporview.wcp.enabled``/``.port`` setting scope so the spec's
-    Machine-settings values are honored, and makes the extension activate
-    eagerly so its own auto-start runs without an open waveform tab; without
-    both, ``wcp.enabled: true`` is inert and the server never binds until a human
-    runs the palette command. If installation outlasts the short attach wait,
-    the patcher leaves a singleton watcher until the configured extension
-    arrives, including patching VS Code's staging copy before publication.
-    Idempotent and never fails the hook. See
-    :mod:`booley.runtime.incontainer_vaporview` for the full rationale.
+    Runs on *attach* (not create/start) because it edits the installed
+    VaporView extension, which VS Code installs container-side only once a
+    window attaches — by postCreate/postStart it isn't on disk yet. The
+    patcher skips VaporView's remote desktop-theme lookup and makes the custom
+    palette slots behind `bwave gui` colors honor the spec's Machine settings.
+    If installation outlasts the short attach wait, it leaves a singleton
+    watcher until the configured extension arrives, including patching VS
+    Code's staging copy before publication. Idempotent and never fails the
+    hook. See :mod:`booley.runtime.incontainer_vaporview` for the rationale.
     """
     return "python -m booley.runtime.incontainer_vaporview"
 
@@ -451,31 +441,30 @@ def spec_mounts_token_seed(spec: dict) -> bool | None:
 
 
 def spec_installs_vaporview(spec: dict) -> bool:
-    """Whether *spec* installs VaporView and wires its WCP control server.
+    """Whether *spec* installs VaporView and the Booley bridge that drives it.
 
-    The Waveform Viewer (ADR 0035) reaches an attached VS Code window only
-    through the generated spec: the ``lramseyer.vaporview`` extension install,
-    the WCP and semantic waveform-color settings, AND the
-    ``postAttachCommand`` manifest patch that actually makes the WCP server
-    auto-start (the setting alone is inert — it is application-scoped, so the
-    container's Machine settings are ignored, and the extension activates
-    lazily). A spec seeded before any of these landed leaves every scoped
-    ``bwave gui`` failing with "WCP server not running" — even after an image
-    rebuild, which never touches the spec. ``booley doctor`` reads this to
-    surface the drift.
+    The Waveform Viewer (ADR 0078) reaches an attached VS Code window only
+    through the generated spec: the pinned ``lramseyer.vaporview`` install,
+    the image-local Booley Sandbox Integration extension that hosts the Viewer Bridge, the
+    semantic waveform-color settings, AND the ``postAttachCommand`` patch
+    that makes those colors effective. A spec seeded before any of these
+    landed leaves scoped ``bwave gui`` without a usable viewer — even after an
+    image rebuild, which never touches the spec. ``booley doctor`` reads this
+    to surface the drift.
 
-    Returns ``True`` only when the extension is listed exactly once and pinned
-    to ``vaporview.PINNED_EXTENSION``, the WCP server is
-    enabled on the port bwave's client expects, its presentation palette is
-    intact, AND the auto-start patch is wired; any miss means a stale or
-    hand-edited spec that a re-seed would fix.
+    Returns ``True`` only when VaporView is listed exactly once and pinned to
+    ``vaporview.PINNED_EXTENSION``, the Booley Sandbox Integration extension is listed, the
+    presentation palette is intact, AND the patch is wired; any miss means a
+    stale or hand-edited spec that a refresh would fix.
     """
+    from booley.runtime.dashboard_extension import VSIX_PATH
+
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     if not isinstance(vscode, dict):
         return False
     extensions = vscode.get("extensions")
-    if not isinstance(extensions, list):
+    if not isinstance(extensions, list) or VSIX_PATH not in extensions:
         return False
     # Exactly one VaporView entry, pinned to the verified build: an unpinned or
     # differently pinned entry lets VS Code install a release Booley rejects.
@@ -485,16 +474,10 @@ def spec_installs_vaporview(spec: dict) -> bool:
     settings = vscode.get("settings")
     if not isinstance(settings, dict):
         return False
-    if not (
-        settings.get("vaporview.wcp.enabled") is True
-        and settings.get("vaporview.wcp.port") == _VAPORVIEW_WCP_PORT
-        and all(
-            settings.get(key) == value for key, value in _VAPORVIEW_PRESENTATION_SETTINGS.items()
-        )
+    if not all(
+        settings.get(key) == value for key, value in _VAPORVIEW_PRESENTATION_SETTINGS.items()
     ):
         return False
-    # The auto-start patch runs from postAttachCommand; without it the settings
-    # above never take effect (see vaporview_patch_command).
     return _post_attach_has(spec, vaporview_patch_command())
 
 
@@ -1116,7 +1099,7 @@ def build_devcontainer_spec(
     if post_start:
         spec["postStartCommand"] = post_start
 
-    # The Waveform Viewer (ADR 0035, VaporView) rides along for every app —
+    # The Waveform Viewer (ADR 0078, VaporView) rides along for every app —
     # including "none": viewing a trace isn't tied to which app is attached —
     # so the customizations block is unconditional now.
     extension = _vscode_extension_for_app(app)
@@ -1133,8 +1116,6 @@ def build_devcontainer_spec(
         # VaporView's own manifest already declares extensionKind
         # ["workspace"], so it is not pinned here.
         "settings": {
-            "vaporview.wcp.enabled": True,
-            "vaporview.wcp.port": _VAPORVIEW_WCP_PORT,
             **_VAPORVIEW_PRESENTATION_SETTINGS,
             "files.associations": dict(_HIGHLIGHT_FILE_ASSOCIATIONS),
             **_LIVE_PREVIEW_SETTINGS,
@@ -1143,8 +1124,10 @@ def build_devcontainer_spec(
     }
     from booley.runtime.dashboard_extension import VSIX_PATH
 
-    if dashboard:
-        vscode["extensions"].append(VSIX_PATH)
+    # The image-local Booley Sandbox Integration extension hosts the `bwave gui` Viewer Bridge, so
+    # every Sandbox installs it; the attach protocol alone decides whether it
+    # also opens the Dashboard terminal.
+    vscode["extensions"].append(VSIX_PATH)
     vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
     if extension:
         # Pin the agent extension workspace-side (reinforces the
@@ -1152,13 +1135,11 @@ def build_devcontainer_spec(
         vscode["settings"]["remote.extensionKind"] = {extension: ["workspace"]}
     spec["customizations"] = {"vscode": vscode}
 
-    # VaporView's WCP server does not auto-start from the settings above alone
-    # (the setting is application-scoped, so the container's Machine settings
-    # are ignored, and the extension activates lazily). The post-attach patcher
-    # fixes both in the installed manifest — attach is the first lifecycle point
-    # where that manifest exists on disk. Unconditional: viewing traces is not
+    # The residual VaporView patch (theme lookup, palette scope) edits the
+    # installed extension, so it runs at attach, the first lifecycle point
+    # where that extension exists on disk. Unconditional: viewing traces is not
     # tied to which agent app is attached, and the hook only fires when a UI
-    # client attaches, so headless Sandboxs skip it for free.
+    # client attaches, so headless Sandboxes skip it for free.
     spec["postAttachCommand"] = post_attach_command()
 
     return spec

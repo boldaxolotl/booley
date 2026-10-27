@@ -30,6 +30,7 @@ EXPECTED_RESOURCES = {
     "booley/data/edalize/verible.py",
     "booley/data/vscode/dashboard/package.json",
     "booley/data/vscode/dashboard/extension.js",
+    "booley/data/vscode/dashboard/vaporview_bridge.js",
     "booley/data/vscode/dashboard/LICENSE.txt",
     "booley/dev_support/pre-commit-ruff.sh",
     "booley/runtime/worktree_create.sh",

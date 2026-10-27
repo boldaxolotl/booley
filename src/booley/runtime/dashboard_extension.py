@@ -58,7 +58,7 @@ def render_vsix() -> bytes:
     manifest = json.loads((source / "package.json").read_bytes())
     files = {
         f"extension/{name}": (source / name).read_bytes()
-        for name in ("package.json", "extension.js", "LICENSE.txt")
+        for name in ("package.json", "extension.js", "vaporview_bridge.js", "LICENSE.txt")
     }
     files["extension.vsixmanifest"] = _vsix_manifest(manifest)
     files["[Content_Types].xml"] = (

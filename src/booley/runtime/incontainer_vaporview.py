@@ -1,81 +1,55 @@
-"""Patch the container's VaporView extension so its WCP control server
-auto-starts on window load — run from the devcontainer ``postAttachCommand``
-as ``python -m booley.runtime.incontainer_vaporview``.
+"""Adapt the container's VaporView install to a remote Sandbox window — run
+from the devcontainer ``postAttachCommand`` as
+``python -m booley.runtime.incontainer_vaporview``.
 
-Two independent VS Code facts otherwise defeat Booley's generated
-``vaporview.wcp.enabled`` setting and leave bwave's scoped-view WCP calls with
-"WCP server not running":
+VaporView runs in the Sandbox's remote extension host, which creates two
+problems for Booley's fixed waveform palette:
 
-1. **Lazy activation.** VaporView ships ``activationEvents: []`` — the
-   extension wakes only when a waveform document is the *active* editor. Its
-   own auto-start (``if wcp.enabled && !server: server.start()``) therefore
-   never runs on a fresh window, and every extension-host restart (Reload
-   Window, container rebuild, crash-respawn) silently drops the server with no
-   waveform tab to revive it. We add ``onStartupFinished`` to
-   ``activationEvents`` so the extension activates on every window load and its
-   auto-start runs unattended.
+1. **Theme lookup.** VaporView resolves the desktop's active color theme at
+   startup and whenever ``workbench.colorTheme`` changes. Desktop themes live
+   on the UI host, not in the Sandbox, so the remote lookup fails: VaporView
+   shows an "Error getting user theme" notification on every window load and
+   falls back to a grey palette. We disable both call sites in the shipped
+   bundle and leave the method definition in place, so ``themeValid`` stays
+   false and the webview builds its palette from the VS Code CSS variables
+   plus the custom color slots. A desktop theme is never queried, copied, or
+   installed in the container.
 
-2. **Wrong setting scope.** ``vaporview.wcp.enabled`` / ``.port`` are declared
-   ``scope: application``, and VS Code reads application-scoped settings ONLY
-   from the *local host's* user settings — never from a remote container's
-   Machine settings, which is exactly where the devcontainer
-   ``customizations.vscode.settings`` land (ADR 0035). So Booley's
-   ``wcp.enabled: true`` was inert for every user. We rewrite the scope to
-   ``machine`` so the Machine-settings value the spec already writes is
-   honored, with zero dependency on any user's host settings.
+2. **Color setting scope.** ``vaporview.customColor5``..``7`` back
+   ``bwave gui``'s stable red/blue/green names, but VaporView declares them
+   ``scope: application``. VS Code reads application-scoped settings only
+   from the local host's user settings, never from the container's Machine
+   settings where the generated spec writes them. We rewrite those three
+   properties to ``machine`` scope and seed their manifest defaults with
+   Booley's palette, so the colors are right even before Machine settings
+   apply.
 
-The same scope defect affects VaporView's custom colors. Booley reserves three
-custom slots for the stable red/blue/green names accepted by ``bwave gui``;
-the patch makes their generated Machine settings effective and updates their
-manifest defaults so an existing runtime also receives the palette after
-Reload Window.
-
-VaporView 1.5.4 also loses the server object created by that auto-start path.
-If its manual Start command activates the extension, auto-start binds the port
-first and the command immediately tries to bind it again, producing a false
-``EADDRINUSE`` error even though WCP is healthy. We disable the manual command
-while ``wcp.enabled`` is true; it remains available when a user deliberately
-turns auto-start off.
-
-Finally, VaporView asks the remote extension registry to resolve the desktop's
-active color theme. Desktop themes intentionally live on the UI host, not in
-the sandbox, so the lookup fails and VaporView displays an error notification.
-We disable the remote bundle's startup and theme-change lookup calls, leaving
-``themeValid`` false so its webview derives fallback waveform colors from the
-VS Code CSS variables already provided by the UI. A desktop theme is never
-queried, copied, or installed in the container.
-
-VaporView 1.5.4 has native, collapsible signal groups, but its WCP server
-flattens them when reading viewer state and exposes no command that can create
-them. We add two narrowly scoped WCP methods to the shipped bundle:
-``set_signal_layout`` applies VaporView's own saved-row hierarchy, and
-``get_signal_layout`` reads that same hierarchy back. ``bwave gui`` uses the
-pair to create and verify presentation, and to restore the prior layout when a
-later update fails. The patch is pinned to the SHA-256 fingerprint of the
-official 1.5.4 release bundle (plus its exact pre-existing theme-repaired form);
-an unfamiliar or future bundle is left untouched rather than partially rewritten.
+The bundle edit is restricted to the exact SHA-256 of the official VaporView
+release Booley verifies, and its result must hash to the expected patched
+fingerprint; any other bundle is left untouched and reported, never partially
+rewritten. The manifest edit applies only to that same version with all three
+color properties present. Upstream follow-ups whose release lets Booley delete
+this module: Lramseyer/vaporview#207 (theme lookup in remote windows) and
+machine-scoped custom colors.
 
 Idempotent and defensive: a no-op if the extension is absent (install may still
-be in flight), or already patched, and it never raises out of :func:`main` — a
-patch failure must not fail the attach hook. Because the edits change the
-extension *manifest*, they take effect at the NEXT extension-host start (VS Code
-reads ``package.json`` once, at activation): the first window after a fresh
-rebuild needs one Reload Window, and every reload/resume after that is
-automatic. Re-running on every attach also re-applies the patch after a
-VaporView update restores the vendored manifest.
+be in flight) or already patched, and it never raises out of :func:`main` — a
+patch failure must not fail the attach hook. VS Code reads the manifest and
+bundle when the extension host starts, so a patch that lands after the first
+window's activation takes effect at the next Reload Window. Re-running on every
+attach re-applies the patch after VS Code reinstalls the vendored files.
 
 **Install race.** The hook fires on *attach*, and VS Code installs the
 configured extensions concurrently with that attach — so on the first window of
-a fresh container the manifest can simply not be on disk yet when we look. A
-single early miss used to leave the server dark until the user opened another
-window because Reload Window does not rerun ``postAttachCommand``. We first wait
-a short bounded spell for the manifest, paid **at most once per container**.
-When that expires, a singleton detached watcher continues until VaporView is
-installed, without holding the attach hook open. It also patches VS Code's
-hidden staging directory before the completed extension is published into the
-registry. That makes the patched manifest visible atomically to the extension
-scanner, rather than racing the user's next Reload Window. Tune or disable only
-the foreground budget with ``BOOLEY_VAPORVIEW_WAIT_SECONDS``.
+a fresh container the manifest can simply not be on disk yet when we look.
+Reload Window does not rerun ``postAttachCommand``, so we first wait a short
+bounded spell for the manifest, paid **at most once per container**. When that
+expires, a singleton detached watcher continues until VaporView is installed,
+without holding the attach hook open. It also patches VS Code's hidden staging
+directory before the completed extension is published into the registry, so
+the extension scanner sees the patched files atomically rather than racing the
+user's next Reload Window. Tune or disable only the foreground budget with
+``BOOLEY_VAPORVIEW_WAIT_SECONDS``.
 """
 
 from __future__ import annotations
@@ -98,28 +72,13 @@ from booley.core.boundary import as_float
 from booley.runtime import file_lock, process_group, vaporview, vscode_server
 from booley.runtime.vaporview import find_manifests
 
-# Activation event that fires once per window after startup finishes, without
-# needing an open waveform document — the trigger for the extension's own
-# WCP auto-start.
-_STARTUP_EVENT = "onStartupFinished"
-
 # Settings whose declared scope we relax from ``application`` (host user
 # settings only) to ``machine`` (honored in the container's Machine settings,
-# where the generated spec writes them). The custom palette slots back
+# where the generated spec writes them): the custom palette slots that back
 # `bwave gui`'s stable red/blue/green color names.
-_MACHINE_SCOPED_KEYS = (
-    "vaporview.wcp.enabled",
-    "vaporview.wcp.port",
-    *vaporview.PRESENTATION_COLOR_SETTINGS,
-)
+_MACHINE_SCOPED_KEYS = tuple(vaporview.PRESENTATION_COLOR_SETTINGS)
 
-# VaporView's manual Start command races its own configured auto-start in 1.5.4.
-# A declarative command enablement keeps it available in manual mode without
-# patching the extension's bundled JavaScript.
-_WCP_START_COMMAND = "vaporview.wcp.start"
-_MANUAL_START_ENABLEMENT = "!config.vaporview.wcp.enabled"
-
-# VaporView 1.5.4 resolves the active desktop theme at startup and whenever
+# VaporView resolves the active desktop theme at startup and whenever
 # ``workbench.colorTheme`` changes. Both calls execute in the remote extension
 # host, whose registry intentionally has no UI-side theme contributions. Leave
 # its method definition in place but disable the two call sites; the webview's
@@ -130,57 +89,10 @@ _THEME_LOOKUP_CALL_COUNT = 2
 _THEME_LOOKUP_METHOD = "getTokenColorsForTheme"
 _VAPORVIEW_BUNDLE = Path("dist") / "extension.js"
 
-# Exact fingerprints of the official 1.5.4 release asset. The second input is
-# the same bundle after Booley's pre-existing theme fallback repair, allowing a
-# running container to migrate safely. No other compiled bundle is rewritten.
-_SUPPORTED_BUNDLE_SHA256 = {
-    "86beb8680b1199941d53799f929a9ac61938e8a0ffe86f9fe56c878a0b882797",
-    "cc0ad7cdca5649711151e020d72d447618d326529589652b43dd779182f12d4b",
-}
-_PATCHED_BUNDLE_SHA256 = "3fdf252dd43655c2a55fb4841b4bcb19c8118d46c73709a39b3882cdbb3b5de7"
-
-# Exact anchors from the production-minified VaporView 1.5.4 bundle. Keeping
-# the adapter here makes the upstream compatibility debt explicit and lets a
-# changed upstream bundle fail closed. The injected methods deliberately call
-# VaporView's public document.applySettings surface with its native saved-row
-# representation instead of reproducing group behavior in Booley.
-_WCP_SWITCH_ANCHOR = (
-    'case"get_capabilities":t=await this.handleGetCapabilities();break;case"open_document":'
-)
-_WCP_SWITCH_PATCH = (
-    'case"get_capabilities":t=await this.handleGetCapabilities();break;'
-    'case"set_signal_layout":oe(i,["items"]),'
-    "t=await this.handleSetSignalLayout(i);break;"
-    'case"get_signal_layout":t=await this.handleGetSignalLayout(i);break;'
-    'case"open_document":'
-)
-_WCP_HANDLER_ANCHOR = (
-    "async handleGetCapabilities(){return{capabilities:await this.getCapabilitiesList()}}"
-    "async handleOpenDocument(e)"
-)
-_WCP_HANDLER_PATCH = (
-    "async handleGetCapabilities(){return{capabilities:await this.getCapabilitiesList()}}"
-    "async handleSetSignalLayout(e){let t=this.getDocumentFromParams(e);"
-    'if(!t)throw new Error("No active document");if(!Array.isArray(e.items))'
-    'throw new Error("items must be an array");return await t.applySettings('
-    "{displayedSignals:e.items,markerTime:e.marker_time,"
-    "altMarkerTime:e.alt_marker_time,displayTimeUnit:e.time_unit,"
-    "zoomRatio:e.zoom_ratio,scrollLeft:e.scroll_left},5,!1),{success:!0}}"
-    "async handleGetSignalLayout(e){let t=this.getDocumentFromParams(e);"
-    'if(!t)throw new Error("No active document");return{items:'
-    "t.webviewContext.displayedSignals||[]}}async handleOpenDocument(e)"
-)
-_WCP_CAPABILITIES_ANCHOR = '"add_variables","get_capabilities","open_document"'
-_WCP_CAPABILITIES_PATCH = (
-    '"add_variables","get_capabilities","set_signal_layout","get_signal_layout","open_document"'
-)
-_WCP_LAYOUT_MARKERS = (
-    'case"set_signal_layout"',
-    'case"get_signal_layout"',
-    "async handleSetSignalLayout",
-    "async handleGetSignalLayout",
-    '"set_signal_layout","get_signal_layout"',
-)
+# Exact fingerprints of the official release bundle (``dist/extension.js``)
+# before and after the theme edit. No other compiled bundle is rewritten.
+_SUPPORTED_BUNDLE_SHA256 = "e73debb62c2ba1803c34bed5416ce786f5464b6f7453b2c9a18543cf48e880bd"
+_PATCHED_BUNDLE_SHA256 = "62d1ca30dd29feeac7989fcb3255467e25ac611dbcee4878d9d11ffd678b9ab6"
 
 # Install-race wait: how long to wait for VaporView's manifest to land before
 # concluding it is absent, how often to look, and the env knob that overrides
@@ -194,7 +106,7 @@ _WAIT_ENV = "BOOLEY_VAPORVIEW_WAIT_SECONDS"
 # ``postAttachCommand`` returned. Keep one detached watcher for the container's
 # lifetime so configured installs are never abandoned. It patches VS Code's
 # hidden extraction directory before the final atomic rename, ensuring the
-# extension scanner never observes the vendor manifest during a late install.
+# extension scanner never observes the vendor files during a late install.
 _WATCH_FLAG = "--watch-for-install"
 _WATCH_LOCK = "vaporview-install-watch.lock"
 _WATCH_LOG = "vaporview-install-watch.log"
@@ -228,101 +140,53 @@ def _agent_home() -> Path:
     return vaporview.session_home()
 
 
-def _patch_machine_settings(contributes: dict) -> bool:
-    """Make generated machine settings effective and seed color defaults."""
-    changed = False
-    configuration = contributes.get("configuration")
-    blocks = (
-        configuration
-        if isinstance(configuration, list)
-        else [configuration]
-        if isinstance(configuration, dict)
-        else []
-    )
-    for block in blocks:
-        properties = block.get("properties") if isinstance(block, dict) else None
-        if not isinstance(properties, dict):
-            continue
-        for key in _MACHINE_SCOPED_KEYS:
-            prop = properties.get(key)
-            if isinstance(prop, dict) and prop.get("scope") != "machine":
-                prop["scope"] = "machine"
-                changed = True
-            default = vaporview.PRESENTATION_COLOR_SETTINGS.get(key)
-            if isinstance(prop, dict) and default is not None and prop.get("default") != default:
-                prop["default"] = default
-                changed = True
-    return changed
-
-
-def _gate_manual_start(contributes: dict) -> bool:
-    """Disable the broken manual Start path only while auto-start is enabled."""
-    commands = contributes.get("commands")
-    if not isinstance(commands, list):
-        return False
-    for command in commands:
-        if (
-            isinstance(command, dict)
-            and command.get("command") == _WCP_START_COMMAND
-            and "enablement" not in command
-        ):
-            command["enablement"] = _MANUAL_START_ENABLEMENT
-            return True
-    return False
+def _configuration_properties(manifest: dict) -> list[dict]:
+    """Return every ``contributes.configuration`` properties table."""
+    contributes = manifest.get("contributes")
+    configuration = contributes.get("configuration") if isinstance(contributes, dict) else None
+    blocks = configuration if isinstance(configuration, list) else [configuration]
+    return [
+        block["properties"]
+        for block in blocks
+        if isinstance(block, dict) and isinstance(block.get("properties"), dict)
+    ]
 
 
 def patch_manifest(manifest: dict) -> bool:
-    """Apply the WCP integration fixes to a parsed ``package.json`` in place.
+    """Machine-scope Booley's color slots and seed their defaults, in place.
 
     Returns ``True`` when *manifest* was changed (so the caller only rewrites
     the file when needed), ``False`` when it was already fully patched.
     """
     changed = False
-
-    # 1. Eager activation — append, never clobber, so a future version that
-    #    declares its own activation events keeps them.
-    events = manifest.get("activationEvents")
-    if not isinstance(events, list):
-        events = []
-    if _STARTUP_EVENT not in events:
-        manifest["activationEvents"] = [*events, _STARTUP_EVENT]
-        changed = True
-
-    # 2. Relax the WCP settings' scope and keep the redundant manual Start
-    #    command out of the auto-start path that makes it race.
-    contributes = manifest.get("contributes")
-    if isinstance(contributes, dict):
-        changed |= _patch_machine_settings(contributes)
-        changed |= _gate_manual_start(contributes)
-
+    for properties in _configuration_properties(manifest):
+        for key in _MACHINE_SCOPED_KEYS:
+            prop = properties.get(key)
+            if not isinstance(prop, dict):
+                continue
+            if prop.get("scope") != "machine":
+                prop["scope"] = "machine"
+                changed = True
+            default = vaporview.PRESENTATION_COLOR_SETTINGS[key]
+            if prop.get("default") != default:
+                prop["default"] = default
+                changed = True
     return changed
 
 
 def _manifest_is_complete(manifest: dict) -> bool:
-    """Validate the current VaporView manifest shape before mutating it."""
+    """Validate the verified VaporView manifest shape before mutating it."""
     if f"{manifest.get('publisher')}.{manifest.get('name')}".lower() != vaporview.EXTENSION_ID:
         return False
     if manifest.get("version") != vaporview.VERIFIED_VERSION:
         return False
-    contributes = manifest.get("contributes")
-    if not isinstance(contributes, dict):
-        return False
-    configuration = contributes.get("configuration")
-    blocks = configuration if isinstance(configuration, list) else [configuration]
-    properties = [block.get("properties") for block in blocks if isinstance(block, dict)]
     configured = {
         key
-        for block in properties
-        if isinstance(block, dict)
+        for properties in _configuration_properties(manifest)
         for key in _MACHINE_SCOPED_KEYS
-        if isinstance(block.get(key), dict)
+        if isinstance(properties.get(key), dict)
     }
-    commands = contributes.get("commands")
-    has_start = isinstance(commands, list) and any(
-        isinstance(command, dict) and command.get("command") == _WCP_START_COMMAND
-        for command in commands
-    )
-    return configured == set(_MACHINE_SCOPED_KEYS) and has_start
+    return configured == set(_MACHINE_SCOPED_KEYS)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -354,7 +218,7 @@ def _bundle_sha256(source: str) -> str:
 
 
 def _prepare_theme_source(source: str) -> tuple[str, bool, str | None]:
-    """Prepare the theme fallback in memory without risking a partial write."""
+    """Disable both theme lookup calls in memory, or explain why not."""
     updated, replacements = _THEME_LOOKUP_CALL_RE.subn("void 0", source)
     if replacements == _THEME_LOOKUP_CALL_COUNT:
         return updated, True, None
@@ -363,97 +227,16 @@ def _prepare_theme_source(source: str) -> tuple[str, bool, str | None]:
     return (
         source,
         False,
-        (f"bundle has {replacements} of 2 expected theme lookup calls and is not fully extracted"),
+        f"bundle has {replacements} of {_THEME_LOOKUP_CALL_COUNT} expected theme lookup calls",
     )
-
-
-def _group_layout_patch_is_complete(source: str) -> bool:
-    """Whether all injected group protocol surfaces are present."""
-    return all(
-        marker in source
-        for marker in (
-            'case"set_signal_layout"',
-            'case"get_signal_layout"',
-            "async handleSetSignalLayout",
-            "async handleGetSignalLayout",
-            '"set_signal_layout","get_signal_layout"',
-        )
-    )
-
-
-def _prepare_theme_bundle(extension_dir: Path) -> tuple[Path, str | None, str | None]:
-    """Return the bundle, an optional replacement, and an incomplete-state detail."""
-    bundle = extension_dir / _VAPORVIEW_BUNDLE
-    try:
-        source = bundle.read_text(encoding="utf-8")
-    except OSError as exc:
-        return bundle, None, f"bundle is not readable yet ({exc})"
-    updated, changed, problem = _prepare_theme_source(source)
-    return bundle, updated if changed else None, problem
-
-
-def _disable_remote_theme_lookup(extension_dir: Path) -> bool:
-    """Keep VaporView from resolving a desktop theme inside the container."""
-    bundle = extension_dir / _VAPORVIEW_BUNDLE
-    try:
-        source = bundle.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    updated, changed, problem = _prepare_theme_source(source)
-    if not changed or problem is not None:
-        return False
-    try:
-        _atomic_write_text(bundle, updated)
-    except OSError:
-        return False
-    return True
-
-
-def _prepare_grouped_layout_source(source: str) -> tuple[str, bool, str | None]:
-    """Prepare the saved-row WCP adapter, shape-checking every anchor."""
-    present = [marker in source for marker in _WCP_LAYOUT_MARKERS]
-    if all(present):
-        return source, False, None
-    if any(present):
-        return source, False, "bundle contains a partial WCP layout adapter"
-    replacements = (
-        (_WCP_SWITCH_ANCHOR, _WCP_SWITCH_PATCH),
-        (_WCP_HANDLER_ANCHOR, _WCP_HANDLER_PATCH),
-        (_WCP_CAPABILITIES_ANCHOR, _WCP_CAPABILITIES_PATCH),
-    )
-    if any(source.count(anchor) != 1 for anchor, _patch in replacements):
-        return source, False, "bundle grouped-layout anchors do not match VaporView 1.5.4"
-    updated = source
-    for anchor, patch in replacements:
-        updated = updated.replace(anchor, patch, 1)
-    return updated, True, None
-
-
-def _enable_grouped_layout_wcp(extension_dir: Path) -> bool:
-    """Expose VaporView's native saved-row hierarchy over WCP.
-
-    Each anchor must occur exactly once before any replacement happens. This
-    prevents a future or locally modified bundle from receiving a partial
-    protocol patch. All injected handlers and capabilities form the
-    idempotency signature; a partial signature is rejected.
-    """
-    bundle = extension_dir / _VAPORVIEW_BUNDLE
-    try:
-        source = bundle.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    updated, changed, problem = _prepare_grouped_layout_source(source)
-    if not changed or problem is not None:
-        return False
-    try:
-        _atomic_write_text(bundle, updated)
-    except OSError:
-        return False
-    return True
 
 
 def _prepare_compatible_bundle(extension_dir: Path) -> tuple[Path, str | None, str | None]:
-    """Prepare the exact supported bundle as one atomic replacement."""
+    """Prepare the exact supported bundle as one atomic replacement.
+
+    Returns the bundle path, the replacement text (``None`` when the bundle is
+    already patched), and an incomplete-state detail (``None`` on success).
+    """
     bundle = extension_dir / _VAPORVIEW_BUNDLE
     try:
         source = bundle.read_text(encoding="utf-8")
@@ -462,23 +245,19 @@ def _prepare_compatible_bundle(extension_dir: Path) -> tuple[Path, str | None, s
     fingerprint = _bundle_sha256(source)
     if fingerprint == _PATCHED_BUNDLE_SHA256:
         return bundle, None, None
-    if fingerprint not in _SUPPORTED_BUNDLE_SHA256:
+    if fingerprint != _SUPPORTED_BUNDLE_SHA256:
         return (
             bundle,
             None,
-            f"bundle fingerprint {fingerprint} is not a supported VaporView "
+            f"bundle fingerprint {fingerprint} is not the official VaporView "
             f"{vaporview.VERIFIED_VERSION} build",
         )
-    updated, theme_changed, problem = _prepare_theme_source(source)
-    layout_changed = False
-    if problem is None:
-        updated, layout_changed, problem = _prepare_grouped_layout_source(updated)
+    updated, changed, problem = _prepare_theme_source(source)
     if problem is not None:
         return bundle, None, problem
-    changed = theme_changed or layout_changed
     if not changed or _bundle_sha256(updated) != _PATCHED_BUNDLE_SHA256:
         return bundle, None, "prepared bundle does not match the verified patched build"
-    return bundle, updated if changed else None, None
+    return bundle, updated, None
 
 
 def _installation_is_patched(path: Path) -> bool:
@@ -492,8 +271,6 @@ def _installation_is_patched(path: Path) -> bool:
         isinstance(manifest, dict)
         and _manifest_is_complete(manifest)
         and not patch_manifest(manifest)
-        and _THEME_LOOKUP_CALL_RE.search(bundle) is None
-        and _THEME_LOOKUP_METHOD in bundle
         and _bundle_sha256(bundle) == _PATCHED_BUNDLE_SHA256
     )
 
@@ -530,8 +307,8 @@ def _patch_file(path: Path) -> _PatchResult:
 
     try:
         # The bundle is prepared first and the manifest is the commit point:
-        # eager activation cannot become visible before every compatibility
-        # edit is present. Atomic replacements make interruption recoverable.
+        # a patched manifest never becomes visible beside an unpatched bundle.
+        # Atomic replacements make interruption recoverable.
         if updated_bundle is not None:
             _atomic_write_text(bundle, updated_bundle)
         if manifest_changed:
@@ -739,9 +516,9 @@ def _start_install_watcher(home: Path) -> bool:
 
 
 _USAGE_DESCRIPTION = (
-    "Patch the container's VaporView extension so its WCP control server "
-    "auto-starts safely on window load, grouped layouts can be controlled, "
-    "and an unavailable desktop theme uses the fallback palette quietly. "
+    "Patch the container's VaporView extension so it skips the desktop theme "
+    "lookup that fails in a remote window, and honors Booley's waveform colors "
+    "from the container's Machine settings. "
     "Takes no arguments; runs from the devcontainer postAttachCommand. "
     "Idempotent, and leaves a singleton repair watcher when the extension is "
     "not installed yet."

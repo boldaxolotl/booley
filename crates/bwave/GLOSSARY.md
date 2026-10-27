@@ -26,3 +26,7 @@ _Avoid_: bookmark, event, signal
 **Waveform Viewer**:
 The human-facing GUI for visually exploring a Trace Artifact, distinct from B-Wave's agent-facing query surface.
 _Avoid_: waveform renderer, waveform GUI, wave window, B-Wave display
+
+**Viewer Bridge**:
+The per-window service, run by the Booley Sandbox Integration VS Code extension, through which `bwave gui` opens a trace in the Waveform Viewer, applies a requested view, and reads the result back.
+_Avoid_: WCP server, viewer server, dashboard extension

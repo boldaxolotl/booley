@@ -67,6 +67,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_list,
+    require_opt_str,
     require_str,
 )
 from booley.flows import execution
@@ -181,6 +182,8 @@ _SIM_DEEP_FINALIZE_MARGIN_S = 30
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
 # metadata, while deep Doctor deliberately stops short of implementation.
+# Doctor line label for the `bwave gui` Viewer Bridge probe.
+_VIEWER_BRIDGE_DESCRIPTION = "Viewer Bridge answers in the attached VS Code window (`bwave gui`)"
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
 _DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
@@ -2517,7 +2520,7 @@ def _run_mcp_checks(
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.booley_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
-    _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    _check_viewer_bridge(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
 
     if not docker_exe:
@@ -3009,22 +3012,17 @@ def _check_subscription_creds_health(
         )
 
 
-# Reload-Window guidance, shared by the two probe paths below. The manifest
-# patch (booley.runtime.incontainer_vaporview) rewrites package.json from
-# postAttachCommand, which VS Code runs *after* it has already launched the
-# extension host — so on the first window of a fresh container the patch lands a
-# beat too late and VaporView stays lazy, exactly as its module docstring warns.
-# One reload fixes the window; the reload is what nobody knows to do.
-_WCP_RELOAD_FIX = (
-    "run 'Developer: Reload Window' in the attached VS Code window (the "
-    "postAttach VaporView patch only takes effect at the next extension-host "
-    "start); do not run 'WCP: Start Server' while auto-start is enabled -- "
-    "VaporView 1.5.4 can bind the port during activation and then falsely "
-    "report EADDRINUSE from a second start"
+# Recovery when no attached window's bridge answers. The Booley workspace
+# extension starts the Viewer Bridge when a window loads; an extension host
+# that predates a spec refresh (or a spec that predates the bridge) has none.
+_BRIDGE_RELOAD_FIX = (
+    "run 'Developer: Reload Window' in the attached VS Code window so the Booley "
+    "extension starts its Viewer Bridge; if Doctor also reports devcontainer drift, "
+    "refresh the Sandbox so its spec installs the Booley Sandbox Integration extension"
 )
 
-_WCP_MISSING_EXTENSION_FIX = vaporview.install_guidance()
-_WCP_UNKNOWN_EXTENSION_FIX = (
+_BRIDGE_MISSING_EXTENSION_FIX = vaporview.install_guidance()
+_BRIDGE_UNKNOWN_EXTENSION_FIX = (
     "could not determine whether VaporView is installed; verify it in the attached "
     "remote window, then install it if absent or run 'Developer: Reload Window' if present"
 )
@@ -3046,12 +3044,12 @@ _VAPORVIEW_VERSIONS_PROBE_SOURCE = (
     "print(json.dumps(v)) if v is not None else sys.exit(4)"
 )
 
-# Probe body: a bare TCP connect, run by whichever interpreter is at hand. Kept
-# to connect_ex so a refused port is an exit code, never a traceback.
-_WCP_PROBE_SOURCE = (
-    "import socket,sys;"
-    "s=socket.socket();s.settimeout(3);"
-    "sys.exit(0 if s.connect_ex(('127.0.0.1',{port})) == 0 else 1)"
+# Prints every live bridge's VaporView report as JSON. An in-container Booley
+# without the bridge client fails the import, which the runner treats as
+# "probe could not run" rather than as a dark window.
+_VIEWER_BRIDGE_PROBE_SOURCE = (
+    "import json;from booley.bwave.vaporview_bridge import doctor_summary;"
+    "print(json.dumps(doctor_summary()))"
 )
 
 _VSCODE_EXTENSION_HOST_PROBE_SOURCE = (
@@ -3063,21 +3061,6 @@ _VSCODE_EXTENSION_HOST_PROBE_SOURCE = (
     " except OSError:\n  pass');"
     "sys.exit(0 if hit else 1)"
 )
-
-
-def _wcp_port_listening(argv_prefix: list[str], port: int) -> bool | None:
-    """True/False if the probe answered, None if it could not be run at all."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _WCP_PROBE_SOURCE.format(port=port)],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    return result.returncode == 0
 
 
 def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
@@ -3154,9 +3137,9 @@ def _check_vaporview_version(
 ) -> None:
     """Report whether the attached window runs the VaporView build Booley verified.
 
-    The WCP port probe alone cannot tell: VaporView 1.6.0 also listens on the
-    port, but speaks a protocol `bwave gui` does not, and Booley's patcher
-    refuses it. Only the installed version separates the two.
+    The bridge answers for any VaporView build, but Booley's compatibility
+    patch and its readback rules are verified against exactly one; only the
+    installed version separates them.
     """
     description = f"VaporView version is the verified {vaporview.VERIFIED_VERSION}"
     versions = _vaporview_installed_versions(argv_prefix)
@@ -3164,7 +3147,7 @@ def _check_vaporview_version(
         _skip(f"{description} - version probe could not run{where}")
         return
     if not versions:
-        # Absence is reported by the WCP check with install guidance.
+        # Absence is reported by the bridge check with install guidance.
         _skip(f"{description} - VaporView not installed{where}")
         return
     other = [version for version in versions if version != vaporview.VERIFIED_VERSION]
@@ -3178,60 +3161,97 @@ def _check_vaporview_version(
     )
 
 
-def _wcp_dark_fix(argv_prefix: list[str]) -> str:
+def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
+    """Live bridge reports (``vaporview``/``error``), or None when the probe failed."""
+    try:
+        result = subprocess.run(
+            [*argv_prefix, "python3", "-c", _VIEWER_BRIDGE_PROBE_SOURCE],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        report = require_dict(json.loads(result.stdout), field="bridge probe")
+        entries = require_list(report.get("bridges"), field="bridge probe bridges")
+        return [
+            {
+                "vaporview": require_opt_str(entry, "vaporview"),
+                "error": require_opt_str(entry, "error"),
+            }
+            for entry in (require_dict(item, field="bridge entry") for item in entries)
+        ]
+    except (ValueError, BoundaryError):
+        return None
+
+
+def _bridge_dark_fix(argv_prefix: list[str]) -> str:
     """Choose recovery from an authoritative remote extension observation."""
     state = _vaporview_extension_state(argv_prefix)
     if state is vaporview.ExtensionState.MISSING:
-        return "VaporView extension is not installed. " + _WCP_MISSING_EXTENSION_FIX
+        return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
     if state is vaporview.ExtensionState.UNKNOWN:
-        return _WCP_UNKNOWN_EXTENSION_FIX
-    return _WCP_RELOAD_FIX
+        return _BRIDGE_UNKNOWN_EXTENSION_FIX
+    return _BRIDGE_RELOAD_FIX
 
 
-def _check_wcp_server(
+def _report_viewer_bridges(
+    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
+) -> None:
+    """Turn the bridge inventory into one pass/skip/fail line."""
+    description = _VIEWER_BRIDGE_DESCRIPTION
+    bridges = _viewer_bridges(argv_prefix)
+    if bridges is None:
+        _skip(f"{description} - probe could not run{where}")
+        return
+    if not bridges:
+        _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
+        return
+    broken = [entry for entry in bridges if entry["vaporview"] is None]
+    if broken:
+        reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
+        _fail(
+            f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
+            f"usable VaporView ({reasons})",
+            _bridge_dark_fix(argv_prefix),
+        )
+        return
+    count = f" ({len(bridges)} windows)" if len(bridges) > 1 else ""
+    _pass(f"{description}{count}")
+
+
+def _check_viewer_bridge(
     project: ProjectAudit,
     docker_exe: str | None,
     _pass: Check,
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Live probe: is VaporView's WCP control server actually accepting connections?
+    """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
 
     The spec check (:func:`_check_devcontainer_spec`) is static — it proves the
-    devcontainer *asks* for the viewer, never that the viewer is up. A perfect
-    spec still leaves the server dark on the first window of any fresh container
-    (see :data:`_WCP_RELOAD_FIX`), and the failure surfaces only when a human
-    finally runs `bwave gui` and gets "WCP server not running" from a doctor-clean
-    project. This probe closes that gap by asking the port itself.
+    devcontainer *asks* for the viewer and the Booley Sandbox Integration extension, never that a
+    window is running them. Without this probe the failure surfaces only when
+    a human runs `bwave gui` in a Doctor-clean project.
 
     From the host, scope the probe to a VS Code-created devcontainer: a headless
     `booley session up` container has no extension host by design. From inside a
-    runtime, probe its own loopback because Docker metadata is unavailable there.
+    runtime, probe its own socket directory because Docker metadata is
+    unavailable there.
     """
-    # Deferred, as everywhere else in this module: Sandbox location for the in-container
-    # branch, and bwave_wcp for the port — importing the MCP-tool stack eagerly
-    # would tax every doctor run for one integer.
-    from booley.bwave import wcp as bwave_wcp
     from booley.runtime import runtime_context
 
-    port = bwave_wcp.wcp_port()
-    description = f"VaporView WCP server reachable on port {port} (`bwave gui`)"
-
+    description = _VIEWER_BRIDGE_DESCRIPTION
     if runtime_context.inside_session_runtime():
-        # Already inside the container: probe our own loopback, which is the
-        # very socket `bwave gui` will dial.
-        attached = _vscode_extension_host_running([])
-        if attached is False:
+        if _vscode_extension_host_running([]) is False:
             _skip(f"{description} - no VS Code extension host attached")
             return
         _check_vaporview_version([], "", _pass, _skip, _fail)
-        listening = _wcp_port_listening([], port)
-        if listening is None:
-            _skip(f"{description} - probe could not run")
-        elif listening:
-            _pass(description)
-        else:
-            _fail(f"{description}: nothing is listening", _wcp_dark_fix([]))
+        _report_viewer_bridges([], "", _pass, _skip, _fail)
         return
 
     if not docker_exe:
@@ -3246,18 +3266,12 @@ def _check_wcp_server(
         _skip(f"{description} - no VS Code devcontainer running for this project")
         return
     argv_prefix = [docker_exe, "exec", container]
-    attached = _vscode_extension_host_running(argv_prefix)
-    if attached is False:
+    if _vscode_extension_host_running(argv_prefix) is False:
         _skip(f"{description} - no VS Code extension host attached in '{container}'")
         return
-    _check_vaporview_version(argv_prefix, f" in '{container}'", _pass, _skip, _fail)
-    listening = _wcp_port_listening(argv_prefix, port)
-    if listening is None:
-        _skip(f"{description} - probe could not run in '{container}'")
-    elif listening:
-        _pass(description)
-    else:
-        _fail(f"{description}: nothing is listening in '{container}'", _wcp_dark_fix(argv_prefix))
+    where = f" in '{container}'"
+    _check_vaporview_version(argv_prefix, where, _pass, _skip, _fail)
+    _report_viewer_bridges(argv_prefix, where, _pass, _skip, _fail)
 
 
 def _run_mcp_probe(

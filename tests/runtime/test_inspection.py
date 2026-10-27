@@ -824,17 +824,15 @@ class TestDevcontainerSpecStaleness:
         )
         assert rec.kinds() == {"pass"}
 
-    def test_pre_adr_0035_spec_without_vaporview_warns(self, tmp_path, monkeypatch):
-        # A spec seeded before the Waveform Viewer landed installs no VaporView
-        # and pins no WCP settings; an image rebuild never fixes that, so the
-        # agent's scoped `bwave gui` fails in every session — surface it.
-        # Exact shape hit live on a real project 2026-07-14.
+    def test_spec_without_vaporview_warns(self, tmp_path, monkeypatch):
+        # A spec seeded before the Waveform Viewer landed installs no VaporView;
+        # an image rebuild never fixes that, so the agent's scoped `bwave gui`
+        # fails in every session — surface it. Exact shape hit live on a real
+        # project 2026-07-14.
         from booley.runtime import devcontainer as dc
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
-        for key in ("vaporview.wcp.enabled", "vaporview.wcp.port"):
-            del spec["customizations"]["vscode"]["settings"][key]
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
         assert rec.fails() == []
@@ -865,9 +863,12 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import vaporview
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        from booley.runtime.dashboard_extension import VSIX_PATH
+
         spec["customizations"]["vscode"]["extensions"] = [
             "Anthropic.claude-code",
             vaporview.PINNED_EXTENSION,
+            VSIX_PATH,
         ]
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)

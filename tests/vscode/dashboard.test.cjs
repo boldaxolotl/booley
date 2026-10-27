@@ -64,6 +64,7 @@ function fixture(options = {}) {
             if (name === 'vscode') { return vscode; }
             if (name === 'node:child_process') { return {execFile}; }
             if (name === 'node:fs') { return {existsSync: () => options.git !== false}; }
+            if (name === './vaporview_bridge') { return {start: async () => ({})}; }
             return require(name);
         } });
     const state = new Map();

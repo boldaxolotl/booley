@@ -2816,12 +2816,12 @@ targets:
 # =============================================================
 
 
-class TestWcpServerCheck:
-    """_check_wcp_server probes the live VaporView WCP port, not just the spec.
+class TestViewerBridgeCheck:
+    """_check_viewer_bridge asks the attached window's bridge, not just the spec.
 
     The gap it exists to close: a devcontainer.json that asks for the viewer
-    correctly (so every static check passes) still leaves the server dark on the
-    first window of a fresh container, and only `bwave gui` ever finds out.
+    correctly (so every static check passes) can still have no window running
+    the Booley bridge or VaporView, and only `bwave gui` would find out.
     """
 
     @staticmethod
@@ -2836,6 +2836,8 @@ class TestWcpServerCheck:
             first_target="x",
         )
 
+    _HEALTHY: tuple[dict, ...] = ({"vaporview": "1.6.0", "error": None},)
+
     def _run(
         self,
         tmp_path,
@@ -2843,7 +2845,7 @@ class TestWcpServerCheck:
         *,
         docker="docker",
         container="vsc-proj-abc-uid",
-        listening: bool | None = True,
+        bridges=_HEALTHY,
         attached: bool | None = True,
         in_container: bool = False,
         probe=None,
@@ -2855,7 +2857,7 @@ class TestWcpServerCheck:
         from booley.runtime.vaporview import ExtensionState
 
         # The version line is covered by TestVaporviewVersionCheck; here it only
-        # records how it was invoked so the port assertions stay focused.
+        # records how it was invoked so the bridge assertions stay focused.
         monkeypatch.setattr(
             doctor,
             "_check_vaporview_version",
@@ -2866,7 +2868,7 @@ class TestWcpServerCheck:
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
-        monkeypatch.setattr(doctor, "_wcp_port_listening", probe or (lambda argv, port: listening))
+        monkeypatch.setattr(doctor, "_viewer_bridges", probe or (lambda argv: bridges))
         monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda argv: attached)
         monkeypatch.setattr(
             doctor,
@@ -2878,58 +2880,66 @@ class TestWcpServerCheck:
         def fail(message, fix=""):
             rec.events.append(("fail", f"{message}\n{fix}"))
 
-        doctor._check_wcp_server(self._project(tmp_path), docker, rec.p, rec.s, fail)
+        doctor._check_viewer_bridge(self._project(tmp_path), docker, rec.p, rec.s, fail)
         return rec
 
-    def test_passes_when_port_answers(self, tmp_path, monkeypatch):
+    def test_passes_when_a_bridge_reports_vaporview(self, tmp_path, monkeypatch):
         rec = self._run(tmp_path, monkeypatch)
         assert rec.kinds() == {"pass"}
 
-    def test_fails_when_port_is_dark(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, listening=False)
+    def test_names_several_windows(self, tmp_path, monkeypatch):
+        rec = self._run(tmp_path, monkeypatch, bridges=list(self._HEALTHY) * 2)
+        assert any("(2 windows)" in m for lvl, m in rec.events if lvl == "pass")
+
+    def test_fails_when_no_window_answers(self, tmp_path, monkeypatch):
+        rec = self._run(tmp_path, monkeypatch, bridges=[])
         assert rec.kinds() == {"fail"}
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         # The fix nobody guesses: reload, not rebuild.
         assert "Reload Window" in failure
-        assert "do not run 'WCP: Start Server'" in failure
+        assert "refresh the Sandbox" in failure
         assert "vsc-proj-abc-uid" in failure
 
-    def test_dark_port_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
+    def test_window_without_vaporview_fails_with_its_reason(self, tmp_path, monkeypatch):
         from booley.runtime.vaporview import ExtensionState
 
         rec = self._run(
             tmp_path,
             monkeypatch,
-            listening=False,
+            bridges=[*self._HEALTHY, {"vaporview": None, "error": "VaporView is not installed"}],
             extension_state=ExtensionState.MISSING,
         )
 
         failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "1 of 2 window(s)" in failure
+        assert "VaporView is not installed" in failure
+        assert "Install from VSIX" in failure
+
+    def test_dark_bridge_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
+        from booley.runtime.vaporview import ExtensionState
+
+        rec = self._run(tmp_path, monkeypatch, bridges=[], extension_state=ExtensionState.MISSING)
+
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "VaporView extension is not installed" in failure
         assert "Install from VSIX" in failure
-        assert "postAttach VaporView patch only takes effect" not in failure
+        assert "starts its viewer bridge" not in failure
 
-    def test_dark_port_with_unknown_extension_state_reports_uncertainty(
+    def test_dark_bridge_with_unknown_extension_state_reports_uncertainty(
         self, tmp_path, monkeypatch
     ):
         from booley.runtime.vaporview import ExtensionState
 
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            listening=False,
-            extension_state=ExtensionState.UNKNOWN,
-        )
+        rec = self._run(tmp_path, monkeypatch, bridges=[], extension_state=ExtensionState.UNKNOWN)
 
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "could not determine whether VaporView is installed" in failure
         assert "VaporView extension is not installed" not in failure
 
-    def test_listening_port_does_not_probe_extension_state(self, tmp_path, monkeypatch):
+    def test_healthy_bridge_does_not_probe_extension_state(self, tmp_path, monkeypatch):
         rec = self._run(
             tmp_path,
             monkeypatch,
-            listening=True,
             extension_probe=lambda argv: pytest.fail("extension state must not be probed"),
         )
 
@@ -2941,28 +2951,28 @@ class TestWcpServerCheck:
 
     def test_skips_without_vscode_container(self, tmp_path, monkeypatch):
         # A headless `booley session up` container has no extension host and so
-        # no WCP server by design — never a finding.
+        # no bridge by design — never a finding.
         rec = self._run(tmp_path, monkeypatch, container=None)
         assert rec.kinds() == {"skip"}
         assert any("no VS Code devcontainer" in m for _, m in rec.events)
 
     def test_skips_when_devcontainer_has_no_attached_extension_host(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, attached=False, listening=False)
+        rec = self._run(tmp_path, monkeypatch, attached=False, bridges=[])
         assert rec.kinds() == {"skip"}
         assert any("no VS Code extension host attached" in m for _, m in rec.events)
 
     def test_skips_when_probe_cannot_run(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, listening=None)
+        rec = self._run(tmp_path, monkeypatch, bridges=None)
         assert rec.kinds() == {"skip"}
 
-    def test_in_container_probes_loopback_without_docker(self, tmp_path, monkeypatch):
+    def test_in_container_probes_its_own_sockets_without_docker(self, tmp_path, monkeypatch):
         """Inside the sandbox there is no docker and no container name to find —
-        the probe must still run, against the same socket `bwave gui` dials."""
+        the probe must still run, against the sockets `bwave gui` uses."""
         seen: list[list[str]] = []
 
-        def probe(argv, port):
+        def probe(argv):
             seen.append(argv)
-            return False
+            return []
 
         rec = self._run(tmp_path, monkeypatch, docker=None, in_container=True, probe=probe)
         assert seen == [[]]  # no `docker exec` prefix
@@ -2973,7 +2983,7 @@ class TestWcpServerCheck:
         self._run(tmp_path, monkeypatch, version_calls=calls)
         assert calls == [(["docker", "exec", "vsc-proj-abc-uid"], " in 'vsc-proj-abc-uid'")]
 
-    def test_version_check_runs_on_loopback_in_container(self, tmp_path, monkeypatch):
+    def test_version_check_runs_locally_in_container(self, tmp_path, monkeypatch):
         calls: list = []
         self._run(tmp_path, monkeypatch, docker=None, in_container=True, version_calls=calls)
         assert calls == [([], "")]
@@ -3006,10 +3016,10 @@ class TestVaporviewVersionCheck:
     def test_other_version_fails_with_both_versions_and_remedy(self, monkeypatch):
         from booley.runtime import vaporview
 
-        rec = self._run(monkeypatch, ["1.6.0"])
+        rec = self._run(monkeypatch, ["9.9.9"])
         assert rec.kinds() == {"fail"}
         failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "VaporView 1.6.0 is installed in 'c'" in failure
+        assert "VaporView 9.9.9 is installed in 'c'" in failure
         assert f"verifies only {vaporview.VERIFIED_VERSION}" in failure
         assert f"code --install-extension {vaporview.PINNED_EXTENSION}" in failure
         assert "Reload Window" in failure
@@ -3017,7 +3027,7 @@ class TestVaporviewVersionCheck:
     def test_verified_alongside_other_still_fails(self, monkeypatch):
         from booley.runtime import vaporview
 
-        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION, "1.6.0"])
+        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION, "9.9.9"])
         assert rec.kinds() == {"fail"}
 
     @pytest.mark.parametrize("versions", [None, []], ids=["unknown", "not-installed"])
@@ -3080,35 +3090,65 @@ def test_vaporview_extension_probe_preserves_state_and_prefix(monkeypatch, retur
     ]
 
 
-class TestWcpPortProbe:
-    """_wcp_port_listening turns a TCP connect into pass/fail/unknown."""
+@pytest.mark.parametrize(
+    ("outcome", "stdout", "expected"),
+    [
+        (
+            0,
+            '{"bridges": [{"vaporview": "1.6.0", "error": null}]}',
+            [{"vaporview": "1.6.0", "error": None}],
+        ),
+        (0, '{"bridges": []}', []),
+        (1, "Traceback (ImportError)", None),
+        (0, "not json", None),
+        (0, "[]", None),
+        (0, '{"bridges": [{"vaporview": 5, "error": null}]}', None),
+        (FileNotFoundError("docker"), "", None),
+        (subprocess.TimeoutExpired("docker", 20), "", None),
+    ],
+    ids=[
+        "healthy",
+        "none",
+        "old-booley",
+        "garbage",
+        "not-object",
+        "bad-version",
+        "no-docker",
+        "timeout",
+    ],
+)
+def test_viewer_bridge_probe_parses_output(monkeypatch, outcome, stdout, expected):
+    seen = []
 
-    @staticmethod
-    def _fake_run(monkeypatch, outcome):
-        """Replace subprocess.run; `outcome` is a return code or an exception."""
+    def run(argv, **kwargs):
+        seen.append(argv)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return subprocess.CompletedProcess(argv, outcome, stdout=stdout, stderr="")
 
-        def run(argv, **kwargs):
-            if isinstance(outcome, Exception):
-                raise outcome
-            return subprocess.CompletedProcess(argv, outcome, "", "")
+    monkeypatch.setattr(doctor.subprocess, "run", run)
 
-        monkeypatch.setattr(doctor.subprocess, "run", run)
+    assert doctor._viewer_bridges(["docker", "exec", "c"]) == expected
+    assert seen == [["docker", "exec", "c", "python3", "-c", doctor._VIEWER_BRIDGE_PROBE_SOURCE]]
 
-    def test_true_on_zero_exit(self, monkeypatch):
-        self._fake_run(monkeypatch, 0)
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is True
 
-    def test_false_on_refused(self, monkeypatch):
-        self._fake_run(monkeypatch, 1)
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is False
-
-    def test_none_when_unrunnable(self, monkeypatch):
-        self._fake_run(monkeypatch, FileNotFoundError("docker"))
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
-
-    def test_none_on_timeout(self, monkeypatch):
-        self._fake_run(monkeypatch, subprocess.TimeoutExpired("docker", 20))
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
+def test_viewer_bridge_probe_source_runs_against_the_real_client(tmp_path):
+    """The probe text must import and print what _viewer_bridges parses."""
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PYTHONPATH": str(Path(doctor.__file__).parents[2]),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", doctor._VIEWER_BRIDGE_PROBE_SOURCE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"bridges": []}
 
 
 # =============================================================
@@ -8992,7 +9032,7 @@ def test_seed_mount_policy_state_partitions_belong_to_same_project(tmp_path, mon
 
 
 @pytest.mark.parametrize("inventory", ["editor", "headless", "absent", "unknown"])
-def test_wcp_project_sandbox_resolution(
+def test_viewer_bridge_project_sandbox_resolution(
     workspace, project_sandbox_resolution, monkeypatch, inventory
 ):
     fixture = project_sandbox_resolution
@@ -9008,7 +9048,9 @@ def test_wcp_project_sandbox_resolution(
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda _: False)
     rec = _Rec()
-    doctor._check_wcp_server(TestWcpServerCheck._project(workspace), "docker", rec.p, rec.s, rec.f)
+    doctor._check_viewer_bridge(
+        TestViewerBridgeCheck._project(workspace), "docker", rec.p, rec.s, rec.f
+    )
     if inventory == "unknown":
         assert rec.kinds() == {"fail"}
         assert any("identity disagrees" in message for message in rec.fails())

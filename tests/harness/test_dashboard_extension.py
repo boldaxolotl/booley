@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
@@ -30,6 +31,7 @@ def test_vsix_is_deterministic_and_contains_installable_workspace_manifest(tmp_p
         assert manifest["license"] == "Apache-2.0"
         assert b"Apache License" in archive.read("extension/LICENSE.txt")
         assert b"exports.activate" in archive.read("extension/extension.js")
+        assert b"exports.start" in archive.read("extension/vaporview_bridge.js")
         xml = ElementTree.fromstring(archive.read("extension.vsixmanifest"))
         identity = xml.find("{*}Metadata/{*}Identity")
         assert identity is not None
@@ -77,8 +79,30 @@ def test_workspace_extension_lifecycle_in_node():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_disabled_dashboard_does_not_require_extension_in_image():
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the bridge serves Unix sockets inside Linux Sandboxes"
+)
+def test_vaporview_bridge_in_node():
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("CI must run the VaporView bridge suite: install Node.js")
+        pytest.skip("Node.js is required for the VaporView bridge suite")
+    script = Path(__file__).parents[1] / "vscode/vaporview_bridge.test.cjs"
+    result = subprocess.run(
+        [node, "--test", "--test-timeout=20000", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_disabled_dashboard_keeps_the_viewer_bridge_but_never_opens_the_dashboard():
+    # The extension also hosts the `bwave gui` viewer bridge, so it is always
+    # installed; the attach protocol alone keeps the Dashboard terminal closed.
     spec = devcontainer.build_devcontainer_spec(dashboard=False)
     settings = spec["customizations"]["vscode"]
-    assert dashboard_extension.VSIX_PATH not in settings["extensions"]
+    assert dashboard_extension.VSIX_PATH in settings["extensions"]
     assert settings["settings"]["booley.dashboard.attachProtocol"] == 0

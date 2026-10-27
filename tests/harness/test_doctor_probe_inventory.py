@@ -85,7 +85,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_retained_resources",
             "_check_devcontainer_excludes",
             "_check_interactive_logs_tracked",
-            "_check_wcp_server",
+            "_check_viewer_bridge",
             "_run_agent_credential_checks",
             "_run_mcp_probe",
         }

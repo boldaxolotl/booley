@@ -13,15 +13,15 @@ from booley.core.boundary import as_dict
 from booley.runtime import vscode_server
 
 EXTENSION_ID = "lramseyer.vaporview"
-VERIFIED_VERSION = "1.5.4"
+VERIFIED_VERSION = "1.6.0"
 # The Sandbox spec installs this exact build. VS Code marks a versioned install
 # as pinned, so auto-update cannot move it to a release Booley has not verified.
 PINNED_EXTENSION = f"{EXTENSION_ID}@{VERIFIED_VERSION}"
 RELEASES_URL = "https://github.com/Lramseyer/vaporview/releases"
 EDITOR_PROBE_TIMEOUT_SECONDS = 30
 
-# Stable human-facing colors backed by VaporView custom palette slots. The
-# extension's named WCP colors omit red and its theme-derived indices are not
+# Stable human-facing colors backed by VaporView custom palette slots. Its
+# built-in palette has no red and its theme-derived indices are not
 # deterministic, so every adapter consumes these settings and indices from one
 # source of truth.
 PRESENTATION_COLORS = {
