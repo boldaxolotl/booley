@@ -53,8 +53,9 @@ the previous generator reads as drift.
 **Thin bridge, verification in Python.** The bridge offers generic
 primitives only: `ping`, `open`, `state`, `apply`, `viewport`. `apply` writes
 the requested session to a file and calls `loadViewerState`; it never builds
-rows. `bwave gui` composes the complete session (replace mode starts empty,
-`--append` starts from the read-back rows), applies it, polls `state` until
+rows. `bwave gui` composes the complete session (a `--signals`/`--group`
+request without `--append` starts empty; `--append`, or `--time`/`--cursor`
+alone, starts from the read-back rows), applies it, polls `state` until
 the viewer reports it, and checks it: row order, group membership, placement,
 number format, color index, both markers, and that every row it added resolved
 to a netlist item. VaporView keeps unresolved rows as placeholders. bwave
@@ -141,8 +142,6 @@ registry. The installed-version check from #2261 is kept.
 - Every apply replaces all rows (that is how `loadViewerState` works), so the
   view redraws once per apply, up to three times when signals need a fallback
   or removal.
-- `bwave gui -t A:B` without signals and without `--append` still replaces the
-  view with an empty row list, as before.
 
 ## Rejected alternatives
 
@@ -160,6 +159,11 @@ last active tab, and per-row commands cannot create groups or verify order.
 
 ## Consequences
 
+- Doctor's bridge probe runs `python3` through `docker exec` and reads the
+  bridge directory under that process's home, so it assumes `docker exec` runs
+  as the Sandbox user (the image's final `USER agent`), as the installed-version
+  probe already does. An image that ends as another user would make Doctor
+  report that no window answered.
 - One more component to keep in step: the bridge protocol is versioned
   (`protocol: 1`), and an older bridge is reported as needing a Sandbox
   refresh.

@@ -1730,8 +1730,11 @@ def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
     # leave a half-updated view.
     plan = _build_gui_plan(trace_abs, alias, args)
     client = _connect_scoped_viewer(trace_abs)
+    # Only a signal request replaces the rows; --time/--cursor alone just move
+    # the window and markers over whatever is already on screen.
+    keep_rows = args.append or not (args.signals or args.groups)
     try:
-        result = _apply_gui_plan(client, trace_abs, plan, append=args.append)
+        result = _apply_gui_plan(client, trace_abs, plan, append=keep_rows)
     except _VIEWER_ERRORS as exc:
         sys.exit(f"ERROR: Waveform Viewer control failed: {exc}")
     # Full hierarchical paths on their own lines: VaporView linkifies them in
@@ -2199,8 +2202,9 @@ the viewer in the attached VS Code window through the Booley extension's
 viewer bridge. A command typed in that window's terminal targets that
 window; with several windows attached, the one already showing the trace
 or the most recently focused one is used.
-A scoped view replaces what is on screen with the requested signals;
---append adds to it instead. If no attached window answers, scoped views
+A scoped view with --signals/--group replaces what is on screen with the
+requested signals; --append adds to them instead, and --time/--cursor alone
+keep the rows and only move the time window and markers. If no attached window answers, scoped views
 FAIL with a setup hint — they never silently fall back to the whole trace.
 
 What `gui` does for you, so the view is readable on arrival:

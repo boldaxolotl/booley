@@ -37,7 +37,8 @@ instead of subtracting ruler numbers.
 
 `--cursor T` moves the START (main) marker somewhere else inside the range; END
 stays put. Without `--time`, `--cursor T` places only the main marker and
-scrolls it into view.
+scrolls it into view. Without `--signals` or `--group`, `--time` and `--cursor`
+keep the rows already on screen and only move the time window and markers.
 
 Both take the same time tokens as `-t`, including marker names — so a marker set
 during the query can bound the view:

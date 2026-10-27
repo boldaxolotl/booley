@@ -1444,6 +1444,63 @@ def test_time_only_moves_viewport_without_changing_rows(tmp_path, monkeypatch, f
     )
 
 
+def test_time_alone_keeps_rows_and_verifies_markers(tmp_path, monkeypatch, fake_rust, capsys):
+    """Without --signals/--group, -t moves the window and markers, never the rows."""
+    trace = _seed_default(tmp_path)
+    existing = [_row("tb.clk"), _row("tb.dut.fifo.full", colorIndex=3)]
+    viewer = _viewer_for(trace, monkeypatch, rows=existing)
+    before = copy.deepcopy(viewer.rows)
+
+    _gui(time="100c:200c")
+
+    assert viewer.rows == before
+    state = viewer.applied()[0]
+    assert viewer.names(state["displayedSignals"]) == ["tb.clk", "tb.dut.fifo.full"]
+    assert (viewer.session["markerTime"], viewer.session["altMarkerTime"]) == (1000, 2000)
+    assert viewer.calls[-1] == (
+        "viewport",
+        {"path": str(trace.resolve()), "start": 1000, "end": 2000},
+    )
+    assert "START marker: 1000 ticks" in capsys.readouterr().out
+
+
+def test_time_alone_rejects_markers_the_viewer_did_not_take(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
+
+    def ignore_markers(model, state):
+        model.session["markerTime"] = 11
+
+    viewer.after_apply = ignore_markers
+
+    with pytest.raises(SystemExit, match="exact requested signal presentation"):
+        _gui(time="100c:200c")
+
+    assert viewer.shown() == ["tb.clk"]
+
+
+def test_time_alone_opens_an_unopened_trace_without_rows(tmp_path, monkeypatch, fake_rust, capsys):
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch, opened=False)
+
+    _gui(time="100c:200c")
+
+    assert viewer.ops() == ["open", "apply", "viewport"]
+    assert viewer.rows == []
+    assert viewer.session["altMarkerTime"] == 2000
+    assert "opened, scoped to" in capsys.readouterr().out
+
+
+def test_cursor_alone_without_append_keeps_rows(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
+
+    _gui(cursor="120c")
+
+    assert viewer.shown() == ["tb.clk"]
+    assert viewer.session["markerTime"] == 1200
+
+
 def test_tick_range_is_exact_on_clockless_trace(tmp_path, monkeypatch, fake_rust):
     trace = _seed_default(tmp_path)
     fake_rust["clock"] = None
