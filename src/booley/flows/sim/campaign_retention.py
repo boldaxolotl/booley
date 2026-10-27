@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from booley.core.booley_layout import DOCTOR_TMP_DIR, INTERACTIVE_LOGS_DIR
+from booley.core.booley_layout import DOCTOR_TMP_DIR, GOALS_DIR_NAME, INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -27,6 +27,7 @@ from booley.core.boundary import (
 from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.sandbox_layout import canonical_project_alias_path
+from booley.runtime.session_paths import RUNTIME_DIR
 
 from .campaign import (
     ProjectionTrust,
@@ -121,15 +122,20 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(path)
 
 
+# Booley Directory children whose ``<id>/.runtime`` holds Flow reports for agent runs:
+# Interactive Mode MCP sessions and Goal Mode Goal Records.
+_RUNTIME_OWNER_DIRS = frozenset({INTERACTIVE_LOGS_DIR_NAME, GOALS_DIR_NAME})
+
+
 def invocation_booley_dir(root: Path) -> Path | None:
     """Return the Booley Directory entry an invocation root lives under, if it is one.
 
     *root* is ``<reports_root>/sim/<N>`` (or a sibling such as its quarantine). The
     reports root is ``<entry>/flow-reports``, ``<entry>/.runtime/flow-reports``, deep
-    Doctor's ``<entry>/tmp/doctor/flow-reports``, or the Interactive Mode MCP server's
-    ``<entry>/.interactive_logs/<session>/.runtime/flow-reports``; the candidate counts
-    only when it is exactly the configured Booley Directory of the checkout containing
-    it (#2191). Custom report roots get ``None`` and stay strict.
+    Doctor's ``<entry>/tmp/doctor/flow-reports``, or a per-run runtime root
+    ``<entry>/<owner>/<id>/.runtime/flow-reports`` (see :data:`_RUNTIME_OWNER_DIRS`);
+    the candidate counts only when it is exactly the configured Booley Directory of the
+    checkout containing it (#2191). Custom report roots get ``None`` and stay strict.
     """
     reports_root = root.parent.parent
     if reports_root.name != "flow-reports":
@@ -137,10 +143,10 @@ def invocation_booley_dir(root: Path) -> Path | None:
     candidate = reports_root.parent
     if _ends_with(candidate, DOCTOR_TMP_DIR):
         candidate = candidate.parents[len(DOCTOR_TMP_DIR.parts) - 1]
-    elif candidate.name == ".runtime":
+    elif candidate.name == RUNTIME_DIR:
         candidate = candidate.parent
-        # MCP session logs: strip exactly one ``.interactive_logs/<session>`` pair.
-        if candidate.parent.name == INTERACTIVE_LOGS_DIR:
+        # Per-run runtime roots: strip exactly one ``<owner>/<id>`` pair.
+        if candidate.parent.name in _RUNTIME_OWNER_DIRS:
             candidate = candidate.parent.parent
     if simulation_booley_dir(candidate.parent) != candidate:
         return None

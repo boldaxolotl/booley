@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from booley.core.booley_layout import BooleyLayoutError
+from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.process_identity import ProcessIdentity
 from booley.runtime.job_records import STATUS_RUNNING, JobRecordError, strict_records
 from booley.runtime.job_slots import JOB_CLASSES, SlotStore
@@ -43,7 +43,7 @@ def _jobs(directory: Path) -> None:
         "goals/*/.runtime/jobs",
         "logs/*/.runtime/jobs",
         "logs/.runtime/jobs",
-        ".interactive_logs/*/.runtime/jobs",
+        f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs",
         "runtime/sessions/*/.runtime/jobs",
     ):
         roots.update(directory.glob(pattern))

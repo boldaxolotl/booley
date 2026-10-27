@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
+from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import as_dict, as_float
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
@@ -98,7 +99,8 @@ def retained_job_roots(
             roots.append(baseline)
     history = []
     for path in islice(
-        booley_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_SCANNED_INTERACTIVE_ROOTS
+        booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"),
+        MAX_SCANNED_INTERACTIVE_ROOTS,
     ):
         try:
             history.append((path.stat().st_mtime_ns, path))
