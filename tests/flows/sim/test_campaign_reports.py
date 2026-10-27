@@ -1138,8 +1138,14 @@ def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
         "flow-reports",
         ".runtime/flow-reports",
         "tmp/doctor/flow-reports",
+        ".interactive_logs/session-1/.runtime/flow-reports",
+        "goals/demo-20261027T000000Z/.runtime/flow-reports",
         "custom",
         "tmp/flow-reports",
+        ".interactive_logs/flow-reports",
+        ".interactive_logs/a/b/.runtime/flow-reports",
+        "goals/flow-reports",
+        "other/run-1/.runtime/flow-reports",
     ],
 )
 def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
@@ -1147,8 +1153,11 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
 ) -> None:
     """#2191: a custom report root under a linked entry is refused at the lock, not later.
 
-    Booley-owned roots are derivable: the default ones and deep Doctor's own
-    ``tmp/doctor/flow-reports`` (a Codespace links ``/work/.booley``).
+    Booley-owned roots are derivable: the default ones, deep Doctor's own
+    ``tmp/doctor/flow-reports``, and the per-run runtime roots of Interactive Mode
+    MCP sessions (``.interactive_logs/<session>/.runtime/flow-reports``) and Goal
+    Records (``goals/<goal-id>/.runtime/flow-reports``). A Codespace links
+    ``/work/.booley``.
     """
     from booley.flows.sim.flow import SimulateFlow
     from booley.runtime.booley_dir import reset_cache
@@ -1162,7 +1171,14 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
     report_dir = project / ".booley" / reports_name
 
     flow = SimulateFlow()
-    if reports_name in {"custom", "tmp/flow-reports"}:
+    if reports_name in {
+        "custom",
+        "tmp/flow-reports",
+        ".interactive_logs/flow-reports",
+        ".interactive_logs/a/b/.runtime/flow-reports",
+        "goals/flow-reports",
+        "other/run-1/.runtime/flow-reports",
+    }:
         with pytest.raises(ValueError, match="must not contain symlinks"):
             flow._next_invocation_dir(report_dir)
         return

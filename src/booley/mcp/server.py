@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.core.booley_layout import BOOLEY_DIR_NAME, INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
@@ -1842,7 +1843,8 @@ def build_mcp_probe_payload() -> dict[str, Any]:
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
         "logs_dir": logs_dir,
-        "logs_dir_ok": "/.booley/.interactive_logs/" in logs_dir.replace("\\", "/"),
+        "logs_dir_ok": f"/{BOOLEY_DIR_NAME}/{INTERACTIVE_LOGS_DIR_NAME}/"
+        in logs_dir.replace("\\", "/"),
     }
 
 
@@ -2136,7 +2138,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
     if not booley_dir.is_dir():
         return
     session_id = _interactive_session_id()
-    logs_dir = booley_dir / ".interactive_logs" / session_id
+    logs_dir = booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
