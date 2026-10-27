@@ -1298,7 +1298,7 @@ def test_linux_shard_dispatch_inputs_reach_the_classifier() -> None:
 
     assert (inputs["linux_shard_count"]["options"], inputs["linux_shard_count"]["default"]) == (
         ["1", "2", "3"],
-        "1",
+        "2",
     )
     assert (inputs["linux_scheduler"]["options"], inputs["linux_scheduler"]["default"]) == (
         ["loadscope", "worksteal"],
@@ -1307,7 +1307,7 @@ def test_linux_shard_dispatch_inputs_reach_the_classifier() -> None:
     assert inputs["linux_shard_benchmark"]["type"] == "boolean"
     assert inputs["linux_shard_benchmark"]["default"] is False
     for expected in (
-        "--linux-shard-count \"${{ inputs.linux_shard_count || '1' }}\"",
+        "--linux-shard-count \"${{ inputs.linux_shard_count || '2' }}\"",
         "--linux-scheduler \"${{ inputs.linux_scheduler || 'loadscope' }}\"",
         '--linux-shard-benchmark "${{ inputs.linux_shard_benchmark || false }}"',
     ):

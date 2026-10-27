@@ -25,10 +25,10 @@ on:
         type: boolean
         default: false
       linux_shard_count:
-        description: Ubuntu shard count per Python version for CI benchmarking (1 = complete suites)
+        description: Ubuntu shard count per Python version (1 = complete suites)
         required: true
         type: choice
-        default: "1"
+        default: "2"
         options:
           - "1"
           - "2"
@@ -116,7 +116,7 @@ jobs:
           --event-name "${EVENT_NAME}"
           --windows-shard-count "${{ inputs.windows_shard_count || '10' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
-          --linux-shard-count "${{ inputs.linux_shard_count || '1' }}"
+          --linux-shard-count "${{ inputs.linux_shard_count || '2' }}"
           --linux-scheduler "${{ inputs.linux_scheduler || 'loadscope' }}"
           --linux-shard-benchmark "${{ inputs.linux_shard_benchmark || false }}"
           --riscv-measurement "${{ inputs.riscv_measurement || 'automatic' }}"
@@ -512,8 +512,9 @@ jobs:
           --group windows
           --shard-count "${WINDOWS_SHARD_COUNT}"
 
-      # Manual Ubuntu shard runs only. !cancelled() keeps the Linux result
-      # visible when the Windows proof above failed.
+      # Skipped only when a manual run picks one complete-suite job per Python
+      # version. !cancelled() keeps the Linux result visible when the Windows
+      # proof above failed.
       - name: Download Linux shard manifests
         if: ${{ !cancelled() && needs.changes.outputs.linux_shard_count != '1' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
