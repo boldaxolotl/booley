@@ -388,7 +388,10 @@ opening. A deliberately removed or edited Dashboard task also stays an opt-out.
 To restore a removed owned shortcut, set `dashboard = false`, run `booley init`
 on the host, then set it to true and run init again.
 
-Automatic opening requires a Git Project Root. Untrusted windows wait for trust.
+Automatic opening works in Dev Containers and GitHub Codespaces windows. Local
+windows and other remotes, such as SSH, WSL or tunnels, do not open it; the
+Output channel names the skipped remote. Automatic opening requires a Git Project
+Root. Untrusted windows wait for trust.
 Headless sessions open no editor terminal. Closing the Dashboard does not restart
 it in the same window session; reopen it manually or reload the window.
 
