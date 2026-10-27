@@ -164,3 +164,18 @@ capped by the Windows shards, which finished last in every sharded run and
 account for the only timeouts seen. The production default stays unchanged here
 (one complete-suite job per Python version with `loadscope`); whether to
 adopt C is the maintainer's decision.
+
+## Decision
+
+On 2026-10-27 the maintainer adopted arm C: pull requests, pushes, and
+reusable-workflow calls now run two Ubuntu shards per Python version with
+`loadscope` (`DEFAULT_LINUX_SHARD_COUNT = 2`), and `test-verify` checks both
+Linux groups on every such run. Manual runs can still choose one or three
+shards.
+
+## Sustained cohort
+
+Pending (#1793). At least 20 comparable automatic code-changing validations
+after the default change, reported against a pre-change cohort of the same
+shape. They are kept apart from the controlled samples above, which alone
+attribute the effect.

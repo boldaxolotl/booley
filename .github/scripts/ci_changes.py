@@ -60,9 +60,11 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 10
-# Manual Ubuntu experiment: 1 keeps one complete-suite job per Python version.
+# Ubuntu legs: two duration-balanced shards per Python version, adopted from the
+# controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
+# still pick 1 (one complete-suite job per version) or 3.
 LINUX_SHARD_COUNTS = (1, 2, 3)
-DEFAULT_LINUX_SHARD_COUNT = 1
+DEFAULT_LINUX_SHARD_COUNT = 2
 LINUX_SCHEDULERS = ("loadscope", "worksteal")
 DEFAULT_LINUX_SCHEDULER = "loadscope"
 _LINUX_PYTHONS = ("3.11", "3.14")

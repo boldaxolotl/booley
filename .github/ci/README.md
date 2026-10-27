@@ -6,7 +6,8 @@ horizontally:
 - Python 3.14 runs the complete suite on Windows in ten duration-balanced
   shards.
 - Python 3.13 runs complete branch coverage on Ubuntu in three shards.
-- Python 3.11 and 3.14 run the complete suite on Ubuntu.
+- Python 3.11 and 3.14 run the complete suite on Ubuntu, each in two
+  duration-balanced shards.
 - Python 3.11 and 3.13 run focused installation, import, path, subprocess, and
   API compatibility checks on Windows.
 
@@ -20,8 +21,8 @@ combination before merge.
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its ten Windows shards and,
-when a manual run shards Ubuntu, from each Linux group. The
+`test-verify` checking the exact node-ID sets from its ten Windows shards and
+from each sharded Linux group. The
 independent `coverage-shards` job owns coverage execution; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
@@ -86,7 +87,7 @@ optimization candidates with the integration coverage each must keep.
 
 Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 
-- `linux_shard_count` (1, 2, or 3; default 1). One keeps a complete-suite job
+- `linux_shard_count` (1, 2, or 3; default 2). One keeps a complete-suite job
   per Python version. Two or three shard each of Python 3.11 and 3.14 into group
   `linux-<python>`, balanced by `linux-test-timings.json`, a model of measured
   call-time medians for tests above one second; any other test weighs its
@@ -99,19 +100,20 @@ Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
   RISC-V measurement arm, and may be combined with `windows_shard_benchmark`.
 
 A non-default count or scheduler is rejected outside `workflow_dispatch`, so
-pull requests, pushes, and reusable-workflow calls keep one complete-suite job
-per Python version with `loadscope`; that default is unchanged pending the
-maintainer's decision on the experiment's recommendation. When Ubuntu is
-sharded, `test-verify` also verifies each Linux group with the dispatched
-count, using the same exact-union check as the Windows shards.
+pull requests, pushes, and reusable-workflow calls run two Ubuntu shards per
+Python version with `loadscope`. The maintainer adopted that default from the
+experiment's recommendation (arm C); its sustained behavior over ordinary
+validations is tracked separately from the controlled samples. When Ubuntu is
+sharded, `test-verify` also verifies each Linux group with the selected count,
+using the same exact-union check as the Windows shards.
 
 ## Exhaustive recovery policy
 
 No pytest marker or change-classifier category selects recovery tests.
 `pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`, and
 `slow` markers, and every complete-suite run uses `-m "not native_bwave"`.
-Whenever a pull request runs the `test` job, its complete Ubuntu 3.11 and 3.14
-suites run every Goal recovery and authority permutation, and its Windows 3.14
+Whenever a pull request runs the `test` job, its Ubuntu 3.11 and 3.14 shards
+together run every Goal recovery and authority permutation, and its Windows 3.14
 shards together run the same set except POSIX-only cases; the `coverage-shards`
 jobs use the same mark expression. The Windows 3.11 and 3.13 compatibility legs
 run a fixed focused subset. The change classifier (`required_jobs` in

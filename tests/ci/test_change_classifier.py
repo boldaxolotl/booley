@@ -154,7 +154,7 @@ def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
 
 @pytest.mark.parametrize("shard_count", [4, 6, 8, 10])
 def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> None:
-    entries = build_test_matrix(shard_count)["include"]
+    entries = build_test_matrix(shard_count, linux_shard_count=1)["include"]
     shards = [entry for entry in entries if entry["mode"] == "shard"]
     compatibility = [entry for entry in entries if entry["mode"] != "shard"]
 
@@ -188,7 +188,7 @@ def test_classifier_emits_requested_windows_shard_matrix(tmp_path: Path) -> None
     outputs = _classify(repo, base, head, windows_shard_count=6)
     entries = json.loads(outputs["test_matrix"])["include"]
 
-    assert sum(entry["mode"] == "shard" for entry in entries) == 6
+    assert sum(entry.get("group") == "windows" for entry in entries) == 6
 
 
 def test_windows_shard_benchmark_matches_ordinary_python_change(tmp_path: Path) -> None:
@@ -1001,7 +1001,9 @@ _TODAYS_LINUX_FULL_COMMAND = (
 )
 
 
-def test_default_linux_inputs_keep_todays_matrix_and_linux_command(tmp_path: Path) -> None:
+def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
+    tmp_path: Path,
+) -> None:
     repo, base, head = _merged_source_change(tmp_path)
     workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
     full_step = next(
@@ -1011,8 +1013,19 @@ def test_default_linux_inputs_keep_todays_matrix_and_linux_command(tmp_path: Pat
     )
     todays_matrix = {
         "include": [
-            {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
-            {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
+            *(
+                {
+                    "name": f"ubuntu-{python}-shard-{index + 1}-of-2",
+                    "os": "ubuntu-latest",
+                    "python": python,
+                    "mode": "shard",
+                    "group": f"linux-{python}",
+                    "shard_index": index,
+                    "shard_count": 2,
+                }
+                for python in ("3.11", "3.14")
+                for index in range(2)
+            ),
             {
                 "name": "windows-3.11-compatibility",
                 "os": "windows-latest",
@@ -1048,7 +1061,7 @@ def test_default_linux_inputs_keep_todays_matrix_and_linux_command(tmp_path: Pat
             event_name=event,
             windows_shard_count=10,
             linux_options={
-                "shard-count": "1",
+                "shard-count": "2",
                 "scheduler": "loadscope",
                 "shard-benchmark": "false",
             },
@@ -1058,7 +1071,7 @@ def test_default_linux_inputs_keep_todays_matrix_and_linux_command(tmp_path: Pat
         )
 
         assert json.loads(outputs["test_matrix"]) == todays_matrix
-        assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == ("1", "loadscope")
+        assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == ("2", "loadscope")
         assert " ".join(rendered.split()) == _TODAYS_LINUX_FULL_COMMAND
 
 
@@ -1066,7 +1079,7 @@ def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path
     repo, base = _repository(tmp_path)
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "source change")
-    non_linux = build_test_matrix(4)["include"][2:]
+    non_linux = build_test_matrix(4, linux_shard_count=1)["include"][2:]
 
     for count in (1, 2, 3):
         for scheduler in ("loadscope", "worksteal"):
@@ -1086,7 +1099,7 @@ def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path
             )
             assert entries[len(linux) :] == non_linux
             if count == 1:
-                assert linux == build_test_matrix(4)["include"][:2]
+                assert linux == build_test_matrix(4, linux_shard_count=1)["include"][:2]
                 continue
             assert [entry["name"] for entry in linux] == [
                 f"ubuntu-{python}-shard-{index + 1}-of-{count}"
@@ -1153,7 +1166,7 @@ def test_linux_shard_overrides_require_workflow_dispatch(tmp_path: Path) -> None
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "source change")
 
-    for override in ({"shard-count": "2"}, {"scheduler": "worksteal"}):
+    for override in ({"shard-count": "1"}, {"shard-count": "3"}, {"scheduler": "worksteal"}):
         result, _output = _run_classifier(
             repo, base, head, event_name="push", linux_options=override
         )

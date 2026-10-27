@@ -278,7 +278,9 @@ def test_phase_timing_artifacts_avoid_shard_verification_patterns() -> None:
     )
     template = upload["with"]["name"]
     labels = [
-        entry["name"] for entry in build_test_matrix(10)["include"] if entry["mode"] == "full"
+        entry["name"]
+        for entry in build_test_matrix(10, linux_shard_count=1)["include"]
+        if entry["mode"] == "full"
     ]
     patterns = [
         step["with"]["pattern"]
