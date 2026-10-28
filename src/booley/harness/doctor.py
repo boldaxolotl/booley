@@ -3137,9 +3137,9 @@ def _vaporview_version_fix() -> str:
     """Recovery for an installed VaporView build other than the verified one."""
     return (
         "in the attached remote window's terminal run "
-        f"`code --install-extension {vaporview.PINNED_EXTENSION}`, then "
+        f"`code --install-extension {vaporview.BUNDLED_VSIX}`, then "
         "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
-        "its generated spec pins the verified version"
+        "its generated spec installs the bundled verified build"
     )
 
 

@@ -2913,7 +2913,7 @@ class TestViewerBridgeCheck:
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "1 of 2 window(s)" in failure
         assert "VaporView is not installed" in failure
-        assert "Install from VSIX" in failure
+        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
 
     def test_dark_bridge_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
         from booley.runtime.vaporview import ExtensionState
@@ -2922,7 +2922,7 @@ class TestViewerBridgeCheck:
 
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "VaporView extension is not installed" in failure
-        assert "Install from VSIX" in failure
+        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
         assert "starts its viewer bridge" not in failure
 
     def test_dark_bridge_with_unknown_extension_state_reports_uncertainty(
@@ -3021,7 +3021,7 @@ class TestVaporviewVersionCheck:
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "VaporView 9.9.9 is installed in 'c'" in failure
         assert f"verifies only {vaporview.VERIFIED_VERSION}" in failure
-        assert f"code --install-extension {vaporview.PINNED_EXTENSION}" in failure
+        assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in failure
         assert "Reload Window" in failure
 
     def test_verified_alongside_other_still_fails(self, monkeypatch):

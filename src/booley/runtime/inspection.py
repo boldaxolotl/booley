@@ -287,8 +287,8 @@ def _viewer_extensions_current(
             request,
             report,
             "devcontainer.json predates the current Waveform Viewer (ADR 0078) "
-            "setup: the VaporView extension entry is missing or not pinned to "
-            f"{vaporview.PINNED_EXTENSION}, or the Booley Sandbox Integration extension that hosts the "
+            "setup: the VaporView extension entry is missing or is not exactly the "
+            f"image-bundled {vaporview.BUNDLED_VSIX}, or the Booley Sandbox Integration extension that hosts the "
             "Viewer Bridge, the waveform color settings, or the postAttach patch "
             "are missing, so in-container `bwave gui` finds no usable viewer",
         )

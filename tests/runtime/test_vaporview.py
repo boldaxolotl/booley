@@ -216,23 +216,39 @@ def test_installed_versions_partial_install_is_unknown(tmp_path):
     assert vaporview.installed_versions(tmp_path) is None
 
 
-def test_install_guidance_installs_the_pinned_build():
+def test_install_guidance_installs_the_bundled_build_offline():
     guidance = vaporview.install_guidance()
 
-    assert f"code --install-extension {vaporview.PINNED_EXTENSION}\n" in guidance
+    assert f"code --install-extension {vaporview.BUNDLED_VSIX}\n" in guidance
+    assert f"{vaporview.EXTENSION_ID}@{vaporview.VERIFIED_VERSION}" in guidance
+    # The Sandbox has no network: nothing may send the user to a gallery.
+    assert "Marketplace" not in guidance
+    assert "--install-extension lramseyer" not in guidance
+
+
+def test_install_guidance_names_the_probed_editor():
+    assert "cursor --install-extension " in vaporview.install_guidance(editor="cursor")
+
+
+def test_bundled_vsix_tracks_the_verified_version():
+    expected = f"/usr/local/libexec/booley/vaporview-{vaporview.VERIFIED_VERSION}.vsix"
+    assert expected == vaporview.BUNDLED_VSIX
 
 
 @pytest.mark.parametrize(
-    ("entry", "vaporview_entry", "pinned"),
+    ("entry", "vaporview_entry"),
     [
-        (vaporview.PINNED_EXTENSION, True, True),
-        ("LRamseyer.VaporView@" + vaporview.VERIFIED_VERSION, True, True),
-        (vaporview.EXTENSION_ID, True, False),
-        (f"{vaporview.EXTENSION_ID}@0.0.1", True, False),
-        ("lramseyer.vaporview-extra", False, False),
-        (42, False, False),
+        (vaporview.BUNDLED_VSIX, True),
+        ("/usr/local/libexec/booley/vaporview-1.5.4.vsix", True),
+        ("/opt/VaporView-9.9.9.VSIX", True),
+        (vaporview.EXTENSION_ID, True),
+        ("LRamseyer.VaporView@" + vaporview.VERIFIED_VERSION, True),
+        (f"{vaporview.EXTENSION_ID}@0.0.1", True),
+        ("lramseyer.vaporview-extra", False),
+        ("/usr/local/libexec/booley/dashboard.vsix", False),
+        ("/usr/local/libexec/booley/vaporview-1.6.0.zip", False),
+        (42, False),
     ],
 )
-def test_extension_entry_classifiers(entry, vaporview_entry, pinned):
+def test_extension_entry_classifier(entry, vaporview_entry):
     assert vaporview.is_vaporview_entry(entry) is vaporview_entry
-    assert vaporview.is_pinned_entry(entry) is pinned

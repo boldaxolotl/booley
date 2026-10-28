@@ -1688,20 +1688,21 @@ def _gui_via_editor_cli(trace_abs: str) -> None:
         sys.exit(
             f"Could not open a viewer. Trace: {trace_abs}\n"
             "Open it manually, or install the VaporView VS Code extension:\n"
-            f"  code --install-extension {vaporview.PINNED_EXTENSION}"
+            f"  code --install-extension {vaporview.BUNDLED_VSIX}"
         )
     cli_name = Path(cli).stem
     if _extension_missing(cli):
         sys.exit(
             f"VaporView extension is not installed in this editor. Trace: {trace_abs}\n"
-            "Install it (rebuilding the devcontainer also installs it):\n"
-            f"  {cli_name} --install-extension {vaporview.PINNED_EXTENSION}"
+            "Install the build bundled in the Sandbox Image (refreshing the Sandbox "
+            "also installs it):\n"
+            f"  {cli_name} --install-extension {vaporview.BUNDLED_VSIX}"
         )
     if _launch_viewer(cli, trace_abs) != 0:
         sys.exit(
             f"Could not open a viewer. Trace: {trace_abs}\n"
             "Open it manually, or install the VaporView VS Code extension:\n"
-            f"  {cli_name} --install-extension {vaporview.PINNED_EXTENSION}"
+            f"  {cli_name} --install-extension {vaporview.BUNDLED_VSIX}"
         )
 
 
