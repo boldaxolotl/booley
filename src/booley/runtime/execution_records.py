@@ -141,11 +141,20 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def read_json(path: Path) -> dict[str, Any] | None:
-    """Read one protocol object; corrupt or missing input is indeterminate."""
+def read_json(
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any] | None:
+    """Read one protocol object; corrupt, missing, or unreadable input is indeterminate.
+
+    Protocol files are rewritten through ``replace_file``, so a concurrent read
+    on Windows can briefly hit a sharing violation. ``read_file_bytes`` retries
+    that within a bounded budget before the read collapses to ``None``.
+    """
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+        payload = json.loads(read_file_bytes(path, sleep=sleep).decode("utf-8"))
+    except (OSError, ValueError):  # ValueError: bad UTF-8 or bad JSON
         return None
     return payload if isinstance(payload, dict) else None
 
