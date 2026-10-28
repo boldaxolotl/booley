@@ -1,4 +1,7 @@
 {
+  "env": {
+    "DISABLE_UPDATES": "1"
+  },
   "permissions": {
     "deny": [
       "WebFetch",
