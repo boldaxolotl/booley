@@ -962,6 +962,19 @@ def _trust_claude_projects(config: dict, trust: Sequence[str]) -> None:
         entry.setdefault("hasTrustDialogAccepted", True)
 
 
+def _preflight_claude(home: Path | None, trust: Sequence[str]) -> None:
+    """Refuse a misshaped Claude config or settings file before any writer touches it."""
+    config_path = claude_config_path(home)
+    config = _read_json_object(config_path, "Claude config")
+    _read_json_object(claude_settings_path(home), "Claude settings")
+    try:
+        if not isinstance(config.get("mcpServers", {}), dict):
+            raise ValueError("mcpServers must be an object")
+        _trust_claude_projects(json.loads(json.dumps(config)), trust)
+    except ValueError as exc:
+        raise ValueError(_invalid_json_message("Claude config", config_path, exc)) from exc
+
+
 def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard: bool) -> str:
     """Trust *trust* paths, and with a credential skip onboarding and the theme picker.
 
@@ -991,6 +1004,38 @@ def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard:
     return status
 
 
+def _with_codex_trust(text: str, key: str) -> str | None:
+    """*text* with ``trust_level = "trusted"`` for *key*, or None when no layout fits.
+
+    Tries the existing entry, a new ``[projects."key"]`` table, then a root
+    dotted key. Each candidate must parse and carry the trust, so an inline
+    ``projects = {...}`` or a dotted-defined entry never turns valid user TOML
+    into invalid TOML.
+    """
+    parser = _codex_toml_parser()
+    edited = _upsert_existing_codex_table_setting(
+        text, table=("projects", key), key="trust_level", value='"trusted"'
+    )
+    spelled = json.dumps(key, ensure_ascii=False)
+    separator = "" if not text or text.endswith("\n") else "\n"
+    candidates = (
+        [edited]
+        if edited is not None
+        else [
+            f'{text}{separator}[projects.{spelled}]\ntrust_level = "trusted"\n',
+            f'projects.{spelled}.trust_level = "trusted"\n{text}',
+        ]
+    )
+    for candidate in candidates:
+        try:
+            trusted = parser.loads(candidate).get("projects", {}).get(key, {})
+        except parser.TOMLDecodeError:
+            continue
+        if isinstance(trusted, dict) and trusted.get("trust_level") == "trusted":
+            return candidate
+    return None
+
+
 def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
     """Add ``trust_level = "trusted"`` for each *trust* path without a ``trust_level``.
 
@@ -1004,12 +1049,14 @@ def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
     for key in trust:
         if "trust_level" in projects.get(key, {}):
             continue
-        edited = _upsert_existing_codex_table_setting(
-            updated, table=("projects", key), key="trust_level", value='"trusted"'
-        )
+        edited = _with_codex_trust(updated, key)
         if edited is None:
-            separator = "" if not updated or updated.endswith("\n") else "\n"
-            edited = f'{updated}{separator}[projects.{json.dumps(key)}]\ntrust_level = "trusted"\n'
+            print(
+                f"warning: Codex trust for {key} skipped: the projects layout in {path} "
+                'cannot take a new entry; add trust_level = "trusted" there by hand',
+                file=sys.stderr,
+            )
+            continue
         updated = edited
     if updated == existing:
         return "current"
@@ -1029,6 +1076,7 @@ def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] =
     trust without asking.
     """
     if app == "claude":
+        _preflight_claude(home, trust_paths)
         changed = upsert_claude(claude_config_path(home))
         linked = deploy_skills(app, home)
         host_linked = deploy_host_skills(app, home)

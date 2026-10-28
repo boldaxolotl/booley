@@ -21,7 +21,10 @@ merges first-run state into the per-Sandbox agent home, set-if-absent:
   `[projects."<path>"] trust_level = "trusted"`. Each path is written resolved
   and as spelled, so a symlinked workspace or a linked Booley Directory entry
   matches whichever form the app checks. The Booley Directory is a separate
-  bind outside the Project Root, so it needs its own entry.
+  bind outside the Project Root, so it needs its own entry. A Booley Directory
+  spelling that resolves to the Project Root or one of its parents (a
+  `.booley` link to `/` or the home directory) is never trusted: Claude trusts
+  everything below a trusted directory.
 - **Onboarding, only with a credential.** Claude `hasCompletedOnboarding` and
   a default `theme` (`dark`, in the Claude settings file, only when neither
   Claude file sets one) are written only when the registrar's own credential
@@ -35,7 +38,14 @@ merges first-run state into the per-Sandbox agent home, set-if-absent:
   file or Codex `projects` table stops registration with an error naming the
   file and how to retry, and is left untouched. This reverses the old
   replace-with-`{}` fallback in the Claude writers, which would otherwise
-  rewrite an invalid file before the new writer could see it.
+  rewrite an invalid file before the new writer could see it. Every shape check
+  runs before the first write, and the hook exits non-zero after still running
+  the upgrade note and the automatic Doctor.
+- **Codex layouts that cannot take an entry are skipped.** Trust is added to
+  an existing entry, a new `[projects."<path>"]` table, or a root dotted key,
+  whichever parses. For a layout none fits (an inline `projects = {...}`), the
+  registrar warns and leaves the file as it was: valid user TOML is never
+  rejected or rewritten for this convenience.
 - **Repeat registration is a no-op**: nothing is rewritten when nothing changed.
 
 ## Rationale
@@ -45,6 +55,13 @@ The Sandbox is the isolation boundary: the registrar already launches Claude in
 comment in `incontainer_setup.py`). Trusting the Project's own directories adds
 no authority. Writes stay in the per-Sandbox home and never touch the host's
 agent configuration.
+
+Trust also lets project-level agent configuration (Claude project hooks, Codex
+project MCP servers) run without a prompt, inside the Sandbox's home that
+holds the agent credential. That is the accepted cost: the Project is the
+code the Sandbox exists to run, the trust roots are limited to the hook's
+working directory and the Booley Directory, and the folder-trust dialog was
+the only gate the user could not pre-answer in a Codespace.
 
 ## Consequences
 

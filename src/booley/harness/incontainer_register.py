@@ -51,7 +51,16 @@ def sandbox_trust_paths(start: Path) -> tuple[str, ...]:
         candidates.append(Path(env_dir))
     if (start / ".booley").is_symlink():
         candidates.append(start / ".booley")
+    # Claude trusts everything below a trusted directory: never trust the
+    # Project Root's own ancestors (a ``.booley`` link to ``/`` or the home).
+    root = start.resolve()
+    candidates = [path for path in candidates if path == start or not _is_ancestor(path, root)]
     return incontainer_setup.trust_keys(candidates)
+
+
+def _is_ancestor(path: Path, descendant: Path) -> bool:
+    """Whether *path* resolves to *descendant* itself or one of its parents."""
+    return descendant.is_relative_to(path.resolve())
 
 
 def _hook_start_directory() -> Path:
@@ -70,13 +79,21 @@ def main() -> None:
         "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
     )
     trust = () if app == "none" else sandbox_trust_paths(_hook_start_directory())
-    status = incontainer_setup.register(app, trust_paths=trust)
+    try:
+        status = incontainer_setup.register(app, trust_paths=trust)
+    except ValueError as exc:
+        # An unreadable user config is refused untouched; the rest of the hook
+        # (upgrade note, auto-doctor) must still run to help diagnose it.
+        print(f"error: registration refused: {exc}", file=sys.stderr)
+        status = "refused"
     upgrade = observe_upgrade()
     health = launch_auto_doctor()
     print(
         f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{health} {status}",
         file=sys.stderr,
     )
+    if status == "refused":
+        sys.exit(1)
 
 
 if __name__ == "__main__":

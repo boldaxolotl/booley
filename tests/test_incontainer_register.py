@@ -1617,3 +1617,104 @@ def test_repeat_registration_is_a_no_op(first_run, monkeypatch):
         assert "first-run:current" in again
 
     assert _snapshot(first_run.home) == before
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        {"projects": []},
+        {"projects": None},
+        {"projects": {"/x": "not an object"}},
+        {"mcpServers": None},
+    ],
+)
+def test_claude_misshaped_config_is_refused_before_any_write(first_run, existing):
+    path = reg.claude_config_path(first_run.home)
+    original = json.dumps(existing)
+    path.write_text(original, encoding="utf-8")
+    first_run_trust = ("/x", *first_run.keys)
+
+    with pytest.raises(ValueError, match="repair"):
+        reg.register("claude", home=first_run.home, trust_paths=first_run_trust)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not reg.claude_settings_path(first_run.home).exists()
+
+
+def test_claude_existing_entry_without_trust_key_gains_it_and_keeps_others(first_run):
+    _write_claude_config(
+        first_run.home, {"projects": {first_run.root: {"allowedTools": ["Read"]}}}
+    )
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    project = _claude_config(first_run.home)["projects"][first_run.root]
+    assert project == {"allowedTools": ["Read"], "hasTrustDialogAccepted": True}
+
+
+@pytest.mark.parametrize(
+    ("existing", "root_gets_trust"),
+    [
+        ('[projects."{root}"]\nother = 1\n', True),
+        ('projects = { "/elsewhere" = { trust_level = "trusted" } }\n', False),
+        ('[projects]\n"{root}".other = 1\n', False),
+        ('projects."{root}".other = 1\n', True),
+    ],
+    ids=["table-with-other-key", "inline-table", "dotted-key-in-table", "dotted-root-key"],
+)
+def test_codex_valid_projects_layouts_never_break_registration(
+    first_run, existing, root_gets_trust
+):
+    path = reg.codex_config_path(first_run.home)
+    path.parent.mkdir()
+    path.write_text(existing.replace("{root}", first_run.root), encoding="utf-8")
+
+    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    projects = _codex_config(first_run.home)["projects"]
+    assert ("trust_level" in projects.get(first_run.root, {})) is root_gets_trust
+
+
+def test_codex_trust_covers_non_ascii_paths(first_run, tmp_path):
+    odd = tmp_path / "café-\U0001f600"
+    odd.mkdir()
+
+    reg.register("codex", home=first_run.home, trust_paths=(str(odd.resolve()),))
+
+    assert (
+        _codex_config(first_run.home)["projects"][str(odd.resolve())]["trust_level"] == "trusted"
+    )
+
+
+def test_booley_directory_symlink_to_an_ancestor_is_not_trusted(first_run, tmp_path):
+    require_symlinks(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley").symlink_to(tmp_path, target_is_directory=True)
+
+    keys = entry.sandbox_trust_paths(project)
+
+    assert str(tmp_path.resolve()) not in keys
+    assert str(project.resolve()) in keys
+
+
+def test_main_reports_refused_registration_but_still_runs_the_hook(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    project = tmp_path / "hook-project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("HOME", str(first_run.home))
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    reg.claude_config_path(first_run.home).write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    doctor_runs = []
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: doctor_runs.append(1) or "current")
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+
+    with pytest.raises(SystemExit) as raised:
+        entry.main()
+
+    assert raised.value.code == 1
+    assert doctor_runs == [1]
+    assert "registration refused" in capsys.readouterr().err
