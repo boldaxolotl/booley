@@ -50,7 +50,7 @@ def test_run_uses_named_codex_command(tmp_path, monkeypatch):
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert executed == [("/bin/codex", ["S17", "--no-daemon"])]
 
 
@@ -71,7 +71,7 @@ def test_runtime_directory_failure_keeps_plain_codex_launch(tmp_path, monkeypatc
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert executed == [("codex", ["codex"])]
     assert "Codex tab handle is unavailable: bad runtime" in capsys.readouterr().err
 
@@ -98,7 +98,7 @@ def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provide
     monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
 
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
 
     assert loaded == [(tmp_path, booley_dir)]
     assert executed == [(provider, ["S17", "-n", "S17"] if provider == "claude" else [provider])]
@@ -115,7 +115,7 @@ def test_run_reports_missing_configured_cli(tmp_path, monkeypatch, capsys):
         lambda *_args: (_ for _ in ()).throw(FileNotFoundError),
     )
 
-    assert chat_cmd.run(argparse.Namespace(), tmp_path) == 2
+    assert chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path) == 2
     assert "configured agent CLI 'codex' was not found on PATH" in capsys.readouterr().err
 
 
@@ -127,7 +127,7 @@ def test_run_reports_invalid_project_config(tmp_path, monkeypatch, capsys):
         lambda _root, *, booley_dir: (_ for _ in ()).throw(BackendConfigError("invalid provider")),
     )
 
-    assert chat_cmd.run(argparse.Namespace(), tmp_path) == 2
+    assert chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path) == 2
     assert "could not resolve the Project's agent provider" in capsys.readouterr().err
 
 
@@ -140,7 +140,7 @@ def test_run_does_not_mask_unexpected_runtime_errors(tmp_path, monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="backend defect"):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
 
 
 def test_run_loads_provider_from_resolved_booley_directory(tmp_path, monkeypatch):
@@ -163,7 +163,7 @@ def test_run_loads_provider_from_resolved_booley_directory(tmp_path, monkeypatch
     monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
 
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), project_root)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), project_root)
 
     assert executed == [("codex", ["codex"])]
 
@@ -192,7 +192,7 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
     reset_cache()
     try:
         with pytest.raises(_ExecCalledError):
-            chat_cmd.run(argparse.Namespace(), worktree)
+            chat_cmd.run(argparse.Namespace(agent_args=[]), worktree)
         assert directories == [shared]
         assert chat_cmd.get_agent_settings().provider == "codex"
     finally:
@@ -222,7 +222,7 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execute)
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert executed == [("claude", ["S17", "-n", "S17"])], "Claude launch must use reserved handle"
     assert reservations == [
         (tmp_path, process_session_key(ProcessIdentity(98765, "fixture", 101)))
@@ -234,7 +234,7 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
         lambda _directory: ("/native/codex", ["S23", "--no-daemon", "--fixture"]),
     )
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert executed[-1] == ("/native/codex", ["S23", "--no-daemon", "--fixture"])
     assert len(reservations) == 1
 
@@ -266,7 +266,7 @@ def _check_claude_reservation_failure(tmp_path, monkeypatch, capsys, error):
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execute)
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert reservations == [
         (tmp_path, process_session_key(ProcessIdentity(98765, "fixture", 101)))
     ], "Claude launch must attempt reservation"
@@ -296,7 +296,7 @@ def test_claude_missing_launch_identity_or_directory_is_advisory(
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execute)
     with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(), tmp_path)
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert "NOTE: Claude" in capsys.readouterr().err
 
 
@@ -307,7 +307,7 @@ def test_claude_named_launch_missing_executable_keeps_existing_error(
     monkeypatch.setattr(
         chat_cmd.os, "execvp", lambda *_args: (_ for _ in ()).throw(FileNotFoundError)
     )
-    assert chat_cmd.run(argparse.Namespace(), tmp_path) == 2
+    assert chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path) == 2
     assert "configured agent CLI 'claude' was not found on PATH" in capsys.readouterr().err
 
 
@@ -335,8 +335,75 @@ def test_claude_worktree_settings_use_shared_runtime_reservation(tmp_path, monke
     reset_cache()
     try:
         with pytest.raises(_ExecCalledError):
-            chat_cmd.run(argparse.Namespace(), local.parent)
+            chat_cmd.run(argparse.Namespace(agent_args=[]), local.parent)
         assert directories == [shared]
         assert chat_cmd.get_agent_settings().provider == "claude"
     finally:
         reset_cache()
+
+
+def _capture_exec(monkeypatch) -> list[tuple[str, list[str]]]:
+    """Replace `os.execvp` with a recorder that stops the launch."""
+    executed: list[tuple[str, list[str]]] = []
+
+    def execute(executable, argv):
+        executed.append((executable, argv))
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execute)
+    return executed
+
+
+def _configure_provider(monkeypatch, provider):
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": provider}))
+
+
+def _launch(tmp_path, agent_args):
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=agent_args), tmp_path)
+
+
+def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
+    _configure_provider(monkeypatch, "codex")
+    executed = _capture_exec(monkeypatch)
+    forwarded = ["resume", "--last"]
+    native = ("/native/codex", ["S23", "--no-daemon"])
+    npm = (
+        "/usr/bin/node",
+        ["/usr/bin/node", "/shim.mjs", "S23", "/lib/codex.js", "--no-daemon"],
+    )
+    for launch in (native, npm):
+        monkeypatch.setattr(
+            chat_cmd.codex_chat, "command", lambda _directory, launch=launch: launch
+        )
+        _launch(tmp_path, forwarded)
+        assert executed[-1] == (launch[0], [*launch[1], *forwarded])
+    monkeypatch.setattr(
+        chat_cmd, "resolve_booley_dir", lambda _root: (_ for _ in ()).throw(ValueError("no dir"))
+    )
+    _launch(tmp_path, forwarded)
+    assert executed[-1] == ("codex", ["codex", *forwarded])
+
+
+def test_claude_launch_paths_append_agent_args(tmp_path, monkeypatch):
+    _configure_claude(monkeypatch)
+    executed = _capture_exec(monkeypatch)
+    _launch(tmp_path, ["--resume", "abc"])
+    assert executed[-1] == ("claude", ["S17", "-n", "S17", "--resume", "abc"])
+
+    def unavailable(*_args):
+        raise OSError("save failed")
+
+    monkeypatch.setattr(chat_cmd, "reserve_session_handle", unavailable, raising=False)
+    _launch(tmp_path, ["--resume", "abc"])
+    assert executed[-1] == ("claude", ["claude", "--resume", "abc"])
+
+
+def test_claude_user_name_replaces_booley_name(tmp_path, monkeypatch):
+    _configure_claude(monkeypatch)
+    executed = _capture_exec(monkeypatch)
+    for agent_args in (["-n", "foo"], ["--name=foo"]):
+        _launch(tmp_path, agent_args)
+        assert executed[-1] == ("claude", ["S17", *agent_args])

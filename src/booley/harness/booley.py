@@ -821,6 +821,14 @@ def _add_utility_subparsers(sub) -> None:
         "chat",
         help="Open this Project's configured agent CLI [invokes agent]",
         description="Open the configured interactive agent CLI for this Project.",
+        usage="%(prog)s [-h] [-C PATH | --project PATH] [--] [ARGS ...]",
+        epilog=(
+            "Arguments after `chat` are passed unchanged to the agent CLI, after "
+            "Booley's own launch arguments, for example `booley chat --resume <id>` "
+            "(Claude) or `booley chat resume --last` (Codex). Booley reads -h/--help "
+            "and -C/--project only when they come first after `chat`. Put `--` "
+            "first to forward them to the agent: `booley chat -- --help`."
+        ),
     )
     _add_cheat_subparser(sub)
 
@@ -1031,6 +1039,7 @@ def _normalize_args(
         else:
             args.command = "chat"
             args.default_chat = True
+            args.agent_args = []
 
     _normalize_project_options(parser, args)
     _validate_doctor_args(parser, args)
@@ -1059,8 +1068,8 @@ def _global_options_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _argv_command(argv: list[str], globals_parser: argparse.ArgumentParser) -> str | None:
-    """Find a command after a valid global prefix, leaving its entire tail opaque.
+def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser) -> int | None:
+    """Find the command word's index after a valid global prefix, leaving its tail opaque.
 
     Parse each candidate's prefix so variable-arity options cannot consume the
     command. A required option value must be supplied before that boundary.
@@ -1077,18 +1086,57 @@ def _argv_command(argv: list[str], globals_parser: argparse.ArgumentParser) -> s
         except argparse.ArgumentError:
             continue
         if not unknown:
-            return None if options.help else word
+            return None if options.help else index
     return None
+
+
+def _chat_option_width(tail: list[str], position: int) -> int:
+    """Return how many tokens Booley's own `chat` Project option takes at `position`."""
+    if position >= len(tail):
+        return 0
+    token = tail[position]
+    if token in ("-C", "--project"):
+        return 2 if position + 1 < len(tail) else 1
+    if token.startswith("--project=") or (token.startswith("-C") and len(token) > 2):
+        return 1
+    return 0
+
+
+def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
+    """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
+
+    Booley keeps `-C`/`--project` only while they lead the tail. Everything after
+    them goes to the agent CLI untouched, with one leading `--` dropped so
+    `booley chat -- --help` forwards `--help`. A leading `-h`/`--help` stays
+    Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    """
+    tail = argv[command_index + 1 :]
+    own_end = 0
+    while width := _chat_option_width(tail, own_end):
+        own_end += width
+    agent_args = tail[own_end:]
+    if agent_args[:1] in (["-h"], ["--help"]):
+        return argv, []
+    if agent_args[:1] == ["--"]:
+        agent_args = agent_args[1:]
+    return argv[: command_index + 1] + tail[:own_end], agent_args
 
 
 def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
     parser = _build_parser()
-    command = _argv_command(sys.argv[1:], _global_options_parser())
+    argv = sys.argv[1:]
+    command_index = _argv_command_index(argv, _global_options_parser())
+    command = None if command_index is None else argv[command_index]
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
-    args = parser.parse_args()
+    agent_args: list[str] = []
+    if command == "chat":
+        argv, agent_args = _split_chat_tail(argv, command_index)
+    args = parser.parse_args(argv)
+    if args.command == "chat":
+        args.agent_args = agent_args
     if args.command == "help":
         parser.print_help()
         parser.exit()

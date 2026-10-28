@@ -133,6 +133,38 @@ def test_chat_parser_and_dispatch_are_registered():
     assert "[Sandbox] Open this Project's configured agent" in help_text
 
 
+def _parse_argv(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    return tlr._parse_cli()
+
+
+def test_chat_forwards_arguments_after_chat(monkeypatch):
+    assert _parse_argv(monkeypatch, "chat", "resume", "--last").agent_args == ["resume", "--last"]
+    assert _parse_argv(monkeypatch, "chat", "--resume", "abc").agent_args == ["--resume", "abc"]
+    # The first `chat` is the value of --project; only the second is the command.
+    args = _parse_argv(monkeypatch, "--project", "chat", "chat", "--resume", "x", "--", "y")
+    assert args.agent_args == ["--resume", "x", "--", "y"]
+    assert args._cli_selection.value == "chat"
+    # Leading Booley options stay Booley's; the rest is forwarded.
+    args = _parse_argv(monkeypatch, "chat", "--project", "P", "--continue")
+    assert args.agent_args == ["--continue"]
+    assert args._cli_selection.value == "P"
+
+
+def test_chat_separator_forwards_reserved_options(monkeypatch, capsys):
+    assert _parse_argv(monkeypatch, "chat", "--", "--help").agent_args == ["--help"]
+    assert capsys.readouterr().out == ""
+
+
+def test_chat_help_documents_passthrough(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch, "chat", "--help")
+    assert raised.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "passed unchanged to the agent CLI" in help_text
+    assert "booley chat -- --help" in help_text
+
+
 def test_bare_booley_defaults_to_chat(monkeypatch):
     monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
     parser = tlr._build_parser()

@@ -168,9 +168,17 @@ work, with one linked worktree and Goal Branch per session; see
     | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
     | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
-    From then on you are using that CLI's own chat. To pass it extra options,
-    run `claude` or `codex` directly. To run several sessions, open more
-    container terminals.
+    From then on you are using that CLI's own chat. To run several sessions,
+    open more container terminals.
+
+    Arguments after `booley chat` go to that CLI unchanged, after Booley's own
+    launch arguments. To resume an earlier conversation, run
+    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
+    Booley reads `-h`/`--help` and `-C`/`--project` only when they come first
+    after `chat`; put `--` first to forward them, as in
+    `booley chat -- --help`. Plain `booley` takes no agent arguments. If you
+    pass `-n` or `--name` to Claude, your name replaces the tab name Booley
+    would set.
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run

@@ -24,6 +24,11 @@ Commands used by skills remain available but are omitted from top-level help.
 Use `booley cheat --skills` for guided agent workflows.
 
 ```bash
+# Developer Agent (Sandbox)
+booley chat --resume <id>         # Claude: arguments after chat go to the agent CLI
+booley chat resume --last         # Codex: same, for its own subcommands
+booley chat -- --help             # the agent's own help (Booley's is booley chat --help)
+
 # Dashboard (Sandbox)
 booley dashboard                  # sessions, Goals, and Jobs
 

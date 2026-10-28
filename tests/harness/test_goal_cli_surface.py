@@ -103,8 +103,8 @@ def test_retired_command_after_attached_or_zero_arity_options(
 def test_required_global_value_is_not_a_command(nargs):
     parser = cli._global_options_parser()
     parser.add_argument("--extra", nargs=nargs)
-    assert cli._argv_command(["--extra", "board"], parser) is None
-    assert cli._argv_command(["--extra", "board", "goal", "status"], parser) == "goal"
+    assert cli._argv_command_index(["--extra", "board"], parser) is None
+    assert cli._argv_command_index(["--extra", "board", "goal", "status"], parser) == 2
 
 
 @pytest.mark.parametrize("flag", ["--version", "-h", "--help"])
