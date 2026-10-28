@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -348,3 +348,18 @@ earlier “Health only when attention is needed” and “Hide the healthy Docto
 rules.
 Independent upgrade-review notices and non-consuming, read-only snapshot rules
 remain unchanged; full findings stay in the existing Doctor presentations.
+
+## Amendments (2026-10-26)
+
+### 2026-10-26: Readability and navigation redesign
+
+Field use showed the overview was hard to scan: each session was one long `·`-joined line, the activity a human acts on sat at its end, and eight footer shortcuts competed for attention. This amendment supersedes the navigation rules above (stable `1`–`9` shortcuts, `?` help, the `j`, `r`, `a`, `s` and `u` keys, the visible shortcut footer), the Recent filter name, adaptive Goal columns, the session-scoped Jobs shortcuts and the `· stale` Doctor suffix.
+
+- **Two windows.** Sessions, the first window, and Jobs. Each keeps its own position, so switching away and back returns to the same detail and row. Results are not a separate concept: a finished Job is a Job.
+- **Arrows, Enter and Esc only.** ↑↓ move, Enter opens the selected row, Esc goes back and does nothing at a window's top level. ←→ switch windows from any depth. ↑ on the first row focuses a top bar holding the window tabs, the Jobs filters and Help; there ←→ choose, Enter applies, and ↓ or Esc return to the list. `q` still quits but is not displayed. The footer shows only the keys that apply where the cursor is.
+- **Sessions are grouped by what needs the human.** Needs you holds sessions waiting for user input or holding a pending Goal-change proposal; Working holds working and waiting-for-tool-call sessions; Unknown, dim, holds the rest. Inside a group the longest time in the current state comes first, and the cursor follows the selected session as rows move. A Standalone Jobs group appears only while one runs. Rows are aligned columns: handle, mode (with the Goal summary), branch, work directory, start age, and the activity or running-Job summary. As the terminal narrows, start age, then work directory, then branch are dropped; long values are truncated with `…`. Absent values show a dim `—`. Waiting times are plain text.
+- **Window tabs carry counts.** The Sessions tab counts sessions that need the human; the Jobs tab counts unfinished Jobs.
+- **Preview on wide terminals.** At 120 columns or wider, the highlighted session's orientation, Goal summary and running Jobs appear beside the list. Narrower terminals hide the preview.
+- **Session detail.** Goals use one column, still grouped by status. Only the session's unfinished Jobs are listed there; its finished Jobs are reached through the Jobs window's owner filter.
+- **Jobs filters.** Running (queued or running), Finished (newest 50) and All. The owner filter cycles All, each session handle, and Standalone, and the Jobs window always opens on All. An empty list says why it is empty and which filter shows something.
+- **Doctor freshness.** A due result reads ` · recheck due`, in the attention color, instead of ` · stale`.
