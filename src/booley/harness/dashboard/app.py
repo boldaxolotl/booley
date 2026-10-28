@@ -985,6 +985,11 @@ class DashboardApp(App[None]):
             notices=tuple(notices),
         )
 
+    def _needs_you(self) -> int:
+        """Sessions that wait for the human or hold a pending Goal-change proposal."""
+        groups = (sessions.group_of(self._session_facts(row)) for row in self.snapshot.sessions)
+        return sum(group == sessions.NEEDS_YOU for group in groups)
+
     def _list_width(self) -> int:
         """Cells available to a row: the list less cell padding and its scrollbar."""
         if not self.is_running:  # Not on screen yet (headless callers): fit a roomy terminal.
@@ -1030,10 +1035,7 @@ class DashboardApp(App[None]):
         notices.display = bool(notices_text)
         top_bar = self.query_one(TopBar)
         top_bar.active = self.window
-        top_bar.needs_you = sum(
-            sessions.group_of(self._session_facts(row)) == sessions.NEEDS_YOU
-            for row in self.snapshot.sessions
-        )
+        top_bar.needs_you = self._needs_you()
         table = self.query_one(SessionList)
         selected = self._selected_key()
         scroll = (
@@ -1054,25 +1056,37 @@ class DashboardApp(App[None]):
                 table.add_row(
                     *(cell if isinstance(cell, Text) else Text(str(cell)) for cell in row)
                 )
-            table.header_rows = frozenset(
-                index for index, key in enumerate(keys) if key.startswith(sessions.HEADER_PREFIX)
-            )
-            # Scroll first so a selection that moved is scrolled back into view.
-            table.scroll_to(y=scroll, animate=False)
-            table.move_cursor(
-                row=keys.index(selected) if selected in keys else table.first_selectable_row(),
-                animate=False,
-            )
+            self._place_cursor(table, keys, selected, scroll)
             self._rows = rows
         self.row_keys = keys
         self._render_detail()
-        if self.navigation.view == "overview" and self._overview_width != self._list_width():
-            # The list was not laid out yet (or its scrollbar appeared): fit once more.
-            self.call_after_refresh(self.render_snapshot)
+        # The list's width settles only after layout (a window switch, a scrollbar).
+        self.call_after_refresh(self._refit_overview)
         # Refreshes keep the keyboard where the user put it; only a hidden or
         # missing focus owner (a view change hid the list) moves it.
         if self.focused is None or not self.focused.display:
             self._focus_content()
+
+    @staticmethod
+    def _place_cursor(table: SessionList, keys: list[str], selected: str, scroll: float) -> None:
+        """Mark the group headers, then keep the selected session in view where it moved."""
+        table.header_rows = frozenset(
+            index for index, key in enumerate(keys) if key.startswith(sessions.HEADER_PREFIX)
+        )
+        table.scroll_to(y=scroll, animate=False)  # First, so the cursor can scroll back in.
+        table.move_cursor(
+            row=keys.index(selected) if selected in keys else table.first_selectable_row(),
+            animate=False,
+        )
+
+    def _refit_overview(self) -> None:
+        """Fit the overview again when layout gave the list another width."""
+        if (
+            self.is_running
+            and self.navigation.view == "overview"
+            and self._overview_width != self._list_width()
+        ):
+            self.render_snapshot()
 
     def _list_label(self) -> str | Text:
         """Header of the list column; dedicated details hide the list and keep its label."""

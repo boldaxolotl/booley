@@ -1,8 +1,7 @@
 """Grouped, column-aligned rows of the Dashboard Sessions overview.
 
-Pure presentation with no Textual: the app hands in per-session facts and the
-list width, and gets back ordered group headers and fitted rows. Alignment,
-column dropping and truncation count terminal cells, never characters.
+Pure presentation, no Textual: per-session facts and the list width in, ordered
+group headers and fitted rows out. Widths count terminal cells, not characters.
 """
 
 from __future__ import annotations
@@ -38,17 +37,12 @@ SHORTCUT, SESSION, MODE, BRANCH, WORK_DIR, STARTED, ACTIVITY = range(7)
 #: The unlabeled first column is the digit shortcut; it vanishes with the digits.
 LABELS = ("", "Session", "Mode", "Branch", "Work dir", "Started", "Activity")
 GAP = 2
-BRANCH_MIN = 8
-WORK_DIR_MIN = 10
-#: A narrowing list drops columns before it cuts the Activity below this.
-ACTIVITY_FLOOR = 40
+#: Narrowest a column is squeezed before columns drop; Activity is cut last, below 40 cells.
+_FLOORS = {BRANCH: 8, WORK_DIR: 10, ACTIVITY: 40}
 #: Columns that disappear when the list is too narrow, first to go first.
 DROP_ORDER = (STARTED, WORK_DIR, BRANCH)
 #: Spare width is handed out in this order, each up to the column's natural width.
 GROW_ORDER = (ACTIVITY, BRANCH, WORK_DIR)
-_FLOORS = {BRANCH: BRANCH_MIN, WORK_DIR: WORK_DIR_MIN, ACTIVITY: ACTIVITY_FLOOR}
-#: Paths are told apart by their end, so a cut keeps the tail.
-_TAIL_KEPT = frozenset({WORK_DIR})
 
 
 @dataclass(frozen=True)
@@ -62,7 +56,6 @@ class SessionFacts:
     mode: str
     branch: str
     work_dir: str
-    #: Age text such as ``5m ago``.
     started: str
     activity: Activity
     proposals: int
@@ -78,16 +71,7 @@ class StandaloneJob:
 
     key: str
     label: str
-    #: ``<flow> <target> <elapsed>``.
     detail: str
-
-
-@dataclass(frozen=True)
-class Layout:
-    """Visible column indexes and the cell width of each."""
-
-    columns: tuple[int, ...]
-    widths: dict[int, int]
 
 
 @dataclass(frozen=True)
@@ -97,7 +81,6 @@ class Overview:
     header: Text
     keys: list[str]
     rows: list[Text]
-    needs_you: int
 
 
 def group_of(facts: SessionFacts) -> str:
@@ -132,24 +115,19 @@ def _short_activity(activity: Activity, now: float) -> str:
     return ("waiting" if activity.state == WAITING_USER else activity.state) + lasted
 
 
-def _proposals(count: int) -> str:
-    return f"{count} proposal{'' if count == 1 else 's'}"
-
-
 def last_column(facts: SessionFacts, now: float) -> str:
     """Activity, or the running Jobs of a working session, then proposals and notices."""
     activity = _short_activity(facts.activity, now)
-    if facts.activity.state == WAITING_USER:
-        parts = [activity, *([_proposals(facts.proposals)] if facts.proposals else [])]
-    elif facts.proposals:
-        parts = [_proposals(facts.proposals), activity]
-    else:
-        parts = [activity]
-    if group_of(facts) == WORKING_GROUP and facts.jobs:
-        parts = list(facts.jobs)
-    else:
-        parts.extend(facts.jobs)
-    return " · ".join([*parts, *facts.notices])
+    proposals = (
+        f"{facts.proposals} proposal{'s' * (facts.proposals != 1)}" if facts.proposals else ""
+    )
+    # Waiting leads with the wait; a session needing the human only by proposal leads with it.
+    parts = (
+        [activity, proposals] if facts.activity.state == WAITING_USER else [proposals, activity]
+    )
+    jobs_replace_activity = group_of(facts) == WORKING_GROUP and facts.jobs
+    parts = list(facts.jobs) if jobs_replace_activity else [*parts, *facts.jobs]
+    return " · ".join(part for part in [*parts, *facts.notices] if part)
 
 
 def cut(text: str, width: int, *, keep_tail: bool = False) -> str:
@@ -158,17 +136,16 @@ def cut(text: str, width: int, *, keep_tail: bool = False) -> str:
         return text
     if width <= 1:
         return ELLIPSIS[:width]
-    if keep_tail:
-        tail = text
-        while cell_len(tail) > width - 1:
-            tail = tail[1:]
-        return ELLIPSIS + tail
+    if keep_tail:  # Cut the reversed text, so the end survives.
+        return ELLIPSIS + set_cell_size(text[::-1], width - 1)[::-1].lstrip()
     return set_cell_size(text, width - 1).rstrip() + ELLIPSIS
 
 
-def fit(width: int, rows: Sequence[Sequence[str]]) -> Layout:
-    """Choose visible columns and widths for a list ``width`` cells wide."""
-    natural = [max([cell_len(LABELS[c]), *(cell_len(row[c]) for row in rows)]) for c in range(7)]
+def fit(width: int, rows: Sequence[Sequence[str]]) -> dict[int, int]:
+    """Cell width of each visible column, in order, for a list ``width`` cells wide."""
+    natural = [
+        max([cell_len(LABELS[c]), *(cell_len(row[c]) for row in rows)]) for c in range(len(LABELS))
+    ]
 
     def minimum(column: int) -> int:
         return min(natural[column], _FLOORS.get(column, natural[column]))
@@ -176,7 +153,7 @@ def fit(width: int, rows: Sequence[Sequence[str]]) -> Layout:
     def need(columns: Sequence[int]) -> int:
         return sum(minimum(c) for c in columns) + GAP * (len(columns) - 1)
 
-    shown = [c for c in range(7) if natural[c]]
+    shown = [c for c in range(len(LABELS)) if natural[c]]
     for dropped in DROP_ORDER:
         if need(shown) <= width:
             break
@@ -190,19 +167,19 @@ def fit(width: int, rows: Sequence[Sequence[str]]) -> Layout:
             spare -= grown
     if spare < 0:  # Even the kept columns overflow: the Activity takes the cut.
         widths[ACTIVITY] = max(1, widths[ACTIVITY] + spare)
-    return Layout(tuple(shown), widths)
+    return widths
 
 
-def _line(layout: Layout, cells: Sequence[str], style: str) -> Text:
+def _line(widths: dict[int, int], cells: Sequence[str], style: str) -> Text:
     """One row as a single padded ``Text`` so every column starts at the same offset."""
     line = Text()
-    for position, column in enumerate(layout.columns):
-        cell = cut(cells[column], layout.widths[column], keep_tail=column in _TAIL_KEPT)
+    for position, (column, width) in enumerate(widths.items()):
+        cell = cut(cells[column], width, keep_tail=column == WORK_DIR)  # Paths differ at the end.
         if position:
             line.append(" " * GAP)
         line.append(cell, style="dim" if cell == ABSENT else style)
-        if position < len(layout.columns) - 1:
-            line.append(" " * (layout.widths[column] - cell_len(cell)))
+        if position < len(widths) - 1:
+            line.append(" " * (width - cell_len(cell)))
     return line
 
 
@@ -232,7 +209,7 @@ def build(
     grouped[STANDALONE_GROUP] = [
         (job.key, ("", job.label, "standalone", "", "", "", job.detail)) for job in standalone
     ]
-    layout = fit(width, [cells for rows in grouped.values() for _, cells in rows])
+    widths = fit(width, [cells for rows in grouped.values() for _, cells in rows])
     keys, lines = [], []
     for name in GROUP_ORDER:
         if not grouped[name]:
@@ -242,5 +219,5 @@ def build(
         lines.append(Text(f"{name} {len(grouped[name])}", style=f"bold {dim}".strip()))
         for key, cells in grouped[name]:
             keys.append(key)
-            lines.append(_line(layout, cells, dim))
-    return Overview(_line(layout, LABELS, "bold"), keys, lines, len(grouped[NEEDS_YOU]))
+            lines.append(_line(widths, cells, dim))
+    return Overview(_line(widths, LABELS, "bold"), keys, lines)
