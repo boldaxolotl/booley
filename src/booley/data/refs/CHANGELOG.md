@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Doctor's attached-window checks (the Viewer Bridge and the installed
+  VaporView version) now run when a VS Code window is attached to the Sandbox.
+  Before, they always skipped with "no VS Code extension host attached", so
+  Doctor stayed green even when VaporView was missing.
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the

@@ -3052,19 +3052,28 @@ _VIEWER_BRIDGE_PROBE_SOURCE = (
     "print(json.dumps(doctor_summary()))"
 )
 
-_VSCODE_EXTENSION_HOST_PROBE_SOURCE = (
-    "from pathlib import Path;import sys;"
-    "m=b'bootstrap-fork\\x00--type=extensionHost';hit=False;"
-    "files=Path('/proc').glob('[0-9]*/cmdline');"
-    "exec('for f in files:\n"
-    " try:\n  hit = hit or m in f.read_bytes()\n"
-    " except OSError:\n  pass');"
-    "sys.exit(0 if hit else 1)"
-)
+# Exit 0 when a VS Code extension host process runs, 3 when none does. Any
+# other exit (an interpreter error, a missing python3) stays "unknown", so a
+# broken probe can never pass for "no window attached".
+_VSCODE_EXTENSION_HOST_PROBE_SOURCE = """\
+import sys
+from pathlib import Path
+
+marker = b"bootstrap-fork\\x00--type=extensionHost"
+attached = False
+for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+    try:
+        attached = marker in cmdline.read_bytes()
+    except OSError:
+        continue
+    if attached:
+        break
+sys.exit(0 if attached else 3)
+"""
 
 
 def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
-    """True/False when a live VS Code extension host can be detected."""
+    """True/False when a live VS Code extension host can be detected, else None."""
     try:
         result = subprocess.run(
             [*argv_prefix, "python3", "-c", _VSCODE_EXTENSION_HOST_PROBE_SOURCE],
@@ -3075,9 +3084,11 @@ def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return None
-    if result.returncode not in {0, 1}:
-        return None
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True
+    if result.returncode == 3:
+        return False
+    return None
 
 
 def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionState:
