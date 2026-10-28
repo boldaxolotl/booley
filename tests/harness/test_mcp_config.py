@@ -62,7 +62,7 @@ def test_codex_parser_success_is_cached_but_failures_are_retryable(monkeypatch):
         mcp_config._codex_toml_parser.cache_clear()
 
 
-def test_blocked_tomli_does_not_break_booley_import_graph_or_claude_route():
+def test_blocked_tomli_does_not_break_booley_import_graph_or_claude_route(tmp_path):
     script = """
 import importlib.abc
 import inspect
@@ -85,6 +85,7 @@ for name in ("upsert_claude", "deploy_skills", "deploy_host_skills"):
     setattr(incontainer_setup, name, lambda *args: 0)
 incontainer_setup.apply_stored_credential = lambda *args: "none"
 incontainer_setup._apply_claude_permission_mode = lambda *args: "current"
+incontainer_setup._apply_claude_first_run = lambda *args, **kwargs: "current"
 assert incontainer_setup.register("claude").startswith("claude:current")
 assert "tomli" not in sys.modules
 """
@@ -94,7 +95,7 @@ assert "tomli" not in sys.modules
         text=True,
         timeout=30,
         check=False,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "HOME": str(tmp_path)},
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
