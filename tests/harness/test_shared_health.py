@@ -296,7 +296,7 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     # MCP retains full findings; the Dashboard shows compact counts and freshness.
     assert "Health: " + message in server._format_status_card([])
     assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
-        "Doctor: 1 FAIL · stale",
+        "Doctor: 1 FAIL · recheck due",
     )
     assert not (health.state_dir(directory) / "announcements.json").exists()
 
@@ -327,6 +327,12 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
             "Doctor: 1 FAIL · 1 WARN",
         ),
         (clean, f"Automatic Doctor is clean. Full report: {transcript}", "Doctor: OK"),
+        # A due result keeps the verbose brief unchanged; only the compact line gains the marker.
+        (
+            replace(mixed, due="expired"),
+            f"Automatic Doctor found 1 FAIL, 1 WARN: broken machinery; review needed. Full report: {transcript}",
+            "Doctor: 1 FAIL · 1 WARN · recheck due",
+        ),
     ):
         monkeypatch.setattr(health, "read_health", lambda _, observed=snapshot: observed)
         assert health_presentation.brief_message(snapshot) == brief
