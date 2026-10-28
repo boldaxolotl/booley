@@ -1251,11 +1251,11 @@ async def _dispatch_async_job(
         submission = await jobs.submit_and_wait(
             name, cmd, mcp_tool_timeout, context=context, wait_seconds=_job_inline_wait_seconds()
         )
+        state = submission.poll
+        if state.status != "running" or (submission.attached and not state.tracked):
+            return _render_job_poll(state, jobs)
     except jobrec.JobRecordError as exc:
         return _error_result(str(exc))
-    state = submission.poll
-    if state.status != "running" or (submission.attached and not state.tracked):
-        return _render_job_poll(state, jobs)
     text = (
         _format_job_attached(name, state.run_id)
         if submission.attached

@@ -416,7 +416,7 @@ def _preflight_invocation(root: Path, *, project_data: Path | None) -> None:
         try:
             with _campaign_mutation_locks(_campaign_directories(root)):
                 _preflight_campaign_resources(root, project_data)
-        except _UnreadableDependencyError:
+        except CampaignRetentionError:
             raise
         except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
             raise CampaignRetentionError(
@@ -566,8 +566,6 @@ def _projection_references_origin(projection: Path, manifests: tuple[Path, ...])
         decode_simulation_projection(
             document, coverage_expected=(projection.parent / "coverage.json").is_file()
         )
-    except _UnreadableDependencyError:
-        raise
     except OSError as error:
         _fail_closed_on_sharing_error(error, projection)
         return False
@@ -628,8 +626,6 @@ def _report_references_campaign(
         report = _read_object(report_path)
         detail = require_dict(report.get("detail"), field="report detail")
         campaigns = require_dict(detail.get("campaigns"), field="report campaigns")
-    except _UnreadableDependencyError:
-        raise
     except OSError as error:
         _fail_closed_on_sharing_error(error, report_path)
         return False
@@ -933,7 +929,7 @@ def _recover_campaign_resources(
                     continue
                 resolved = _owner_project_data(owner, project_data)
             recover_retained_campaign_resources(status, resolved, booley_dir=booley_dir)
-    except _UnreadableDependencyError:
+    except CampaignRetentionError:
         raise
     except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
         raise CampaignRetentionError(f"Campaign recovery is invalid: {exc}") from exc

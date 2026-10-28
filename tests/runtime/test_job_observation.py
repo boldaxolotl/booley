@@ -91,7 +91,9 @@ def test_unexpected_metadata_validator_errors_abort_the_refresh(tmp_path, monkey
 
     failing = False
     monkeypatch.setattr(
-        Path, "read_bytes", lambda _: pytest.fail("failed validator committed an empty generation")
+        _artifacts,
+        "read_file_bytes",
+        lambda _: pytest.fail("failed validator committed an empty generation"),
     )
     restored = observer.read(roots)
     assert len(restored.jobs) == 2

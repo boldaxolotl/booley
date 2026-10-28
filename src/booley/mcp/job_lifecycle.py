@@ -522,7 +522,11 @@ class JobLifecycle:
 
     def _complete_poll(self, state: JobPoll) -> JobPoll:
         if state.status == "finished":
-            return replace(state, result=self.terminal_result(state.run_id))
+            try:
+                return replace(state, result=self.terminal_result(state.run_id))
+            except jobrec.JobRecordError as exc:
+                # Name the Job so the caller can poll for its verdict once readable.
+                raise jobrec.JobRecordError(f"Job {state.run_id} finished: {exc}") from exc
         return state
 
     def reconcile_orphaned(self) -> None:
@@ -605,11 +609,18 @@ async def _poll_disk_status(
 def _poll_view(
     run_id: str, status: Literal["running", "finished"], tracked: bool, repository: JobRepository
 ) -> JobPoll:
+    progress = None
+    if status == "running":
+        try:
+            progress = repository.progress(run_id)
+        except jobrec.JobRecordError as exc:
+            # Advisory: the handoff reads progress again and reports it unavailable.
+            logger.warning("Progress for job %s unreadable: %s", run_id, exc)
     return JobPoll(
         run_id,
         status,
         tracked,
         record=repository.record(run_id),
         phase=repository.phase(run_id),
-        progress=repository.progress(run_id) if status == "running" else None,
+        progress=progress,
     )

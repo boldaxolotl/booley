@@ -43,7 +43,7 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
 
     def invoke(command, *, timeout):
         del timeout
-        document = json.loads(path.read_text())
+        document = json.loads(path.read_text(encoding="utf-8"))
         observations.append(document)
         assert document["complete"] is False
         assert document["pending_targets"] == ["sim"]

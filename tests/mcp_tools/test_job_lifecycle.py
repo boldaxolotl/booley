@@ -591,6 +591,31 @@ async def test_poll_exposes_only_current_nonterminal_checkpoint(context):
     assert state.record.run_id == rec.run_id
 
 
+def test_poll_view_keeps_running_state_when_progress_is_held():
+    from booley.mcp.job_lifecycle import _poll_view
+
+    def held(_run_id):
+        raise job_records.JobRecordError("Job progress for run-1 unreadable: held")
+
+    repository = SimpleNamespace(
+        record=lambda _id: None, phase=lambda _id: "RUNNING", progress=held
+    )
+    state = _poll_view("run-1", "running", True, repository)  # type: ignore[arg-type]
+    assert state.status == "running" and state.progress is None
+
+
+def test_finished_poll_names_the_job_when_its_report_is_held(monkeypatch):
+    from booley.mcp.job_lifecycle import JobPoll
+
+    def held(_self, _run_id):
+        raise job_records.JobRecordError("Job report is unreadable: held")
+
+    monkeypatch.setattr(JobLifecycle, "terminal_result", held)
+    with pytest.raises(job_records.JobRecordError, match="Job run-9 finished") as raised:
+        JobLifecycle()._complete_poll(JobPoll("run-9", "finished", True))
+    assert isinstance(raised.value.__cause__, job_records.JobRecordError)
+
+
 @pytest.mark.asyncio
 async def test_synchronous_execution_uses_same_supervisor_and_forgets_finished_record(context):
     jobs = JobLifecycle()

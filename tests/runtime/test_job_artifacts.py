@@ -319,7 +319,7 @@ def test_lasting_artifact_sharing_error_is_a_diagnostic(tmp_path, monkeypatch):
 def test_artifact_missing_and_corrupt_documents_read_as_absent(tmp_path):
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
-    path.write_text("not json")
+    path.write_text("not json", encoding="utf-8")
     cache = JobArtifactCache(tmp_path)
     cache.begin()
     assert cache.find(root, "sim", "1", "report") is None

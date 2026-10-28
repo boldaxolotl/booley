@@ -2976,3 +2976,23 @@ def test_running_handoff_notes_unreadable_progress(monkeypatch):
     assert not isinstance(result, tuple)
     assert "run-1" in blocks[0].text
     assert "Progress unavailable: Job progress for run-1 unreadable: held" in blocks[0].text
+
+
+def test_attached_untracked_poll_with_held_progress_is_an_error_result(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from booley.mcp.job_lifecycle import JobPoll
+
+    submission = SimpleNamespace(poll=JobPoll("run-1", "running", False), attached=True)
+    jobs = SimpleNamespace(submit_and_wait=AsyncMock(return_value=submission))
+
+    def unreadable(_run_id):
+        raise jobrec.JobRecordError("Job progress for run-1 unreadable: held")
+
+    monkeypatch.setattr(mcp_server, "_running_progress", unreadable)
+    result = asyncio.run(
+        _dispatch_async_job("sim", [], 60, jobs, context=_call_ctx())  # type: ignore[arg-type]
+    )
+    assert isinstance(result, mcp_server.McpDispatchResult) and result.is_error
+    assert "run-1" in result.value[0].text

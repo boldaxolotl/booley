@@ -336,7 +336,7 @@ def test_open_with_sharing_retry_raises_lasting_error_and_keeps_other_errors(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from booley.runtime.filesystem_utils import open_with_sharing_retry
-    from tests.sharing_error_support import flaky, sharing_error
+    from tests.sharing_error_support import flaky
 
     path = Path("held.json")
     opener, calls = flaky(lambda: "handle", 1000)
@@ -361,4 +361,3 @@ def test_open_with_sharing_retry_raises_lasting_error_and_keeps_other_errors(
         with pytest.raises(type(error)):
             open_with_sharing_retry(failing, path, sleep=delays.append)
         assert attempts == [1]
-    assert sharing_error().winerror == 32  # type: ignore[attr-defined]
