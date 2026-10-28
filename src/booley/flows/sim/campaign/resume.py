@@ -108,9 +108,8 @@ def validate_resume_manifest(
             "--resume-from must name one exact campaign/manifest.json"
         )
     booley_dir = simulation_booley_dir(project_root)
-    if booley_dir is not None:
-        # A copied physical path names the same lexical origin, so receipts stay consistent.
-        canonical = lexical_booley_path(booley_dir, canonical)
+    # A copied physical path names the same lexical origin, so receipts stay consistent.
+    canonical = lexical_booley_path(booley_dir, canonical)
     candidate = _load_node(canonical, booley_dir)
     invocation = _origin_invocation(canonical)
     prerequisites: list[ValidatedManifestNode] = []

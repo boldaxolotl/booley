@@ -19,6 +19,8 @@ def test_lexical_booley_path_is_identity_unless_the_entry_is_a_link(tmp_path: Pa
     path = real / ".booley" / "x"
     assert lexical_booley_path(alias / ".booley", path) == path
     assert lexical_booley_path(real / ".booley", path) == path
+    # No Booley Directory at all (e.g. a checkout without `.booley/`): identity too.
+    assert lexical_booley_path(None, path) == path
 
     # Linked entry: a path below its physical target is re-spelled through the entry.
     project = tmp_path / "proj"
