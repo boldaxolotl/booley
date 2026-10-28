@@ -24,6 +24,7 @@ import sys
 import warnings
 from collections.abc import Callable
 from contextlib import nullcontext
+from datetime import UTC
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -243,44 +244,77 @@ def _force_utf8() -> None:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-def _baked_commit() -> str | None:
-    """Commit stamped into the package at wheel-build time, if any.
+def _baked_identity() -> tuple[str, str]:
+    """``(commit, commit time)`` stamped into the package at wheel-build time.
 
-    A wheel install has no adjacent ``.git``, so ``_source_commit`` returns
-    ``None`` and every image reports a bare ``booley 0.1.0`` — leaving no way
-    to confirm which commit was actually baked, which is exactly what the
-    freshness check asks you to verify (F-5). ``build.sh`` writes this module
-    just before building the wheel; it is generated, not tracked.
+    A wheel install has no adjacent ``.git``, so without the stamp every image
+    would report a bare ``booley 0.1.0`` — leaving no way to confirm which
+    commit was actually baked, which is exactly what the freshness check asks
+    you to verify (F-5). ``booley.runtime.build_stamp.write_build_stamp``
+    writes this module just before building the wheel; it is generated, not
+    tracked. Unknown parts are ``""``: an older stamp has no ``COMMIT_TIME``.
     """
     try:
         from booley import _build_commit  # type: ignore[attr-defined]
     except ImportError:
-        return None
-    commit = getattr(_build_commit, "COMMIT", "")
-    return commit or None
+        return "", ""
+    return (
+        getattr(_build_commit, "COMMIT", ""),
+        getattr(_build_commit, "COMMIT_TIME", ""),
+    )
 
 
-def _source_commit() -> str | None:
-    """Short commit (``+dirty``) attributed to the imported Booley code.
+def _code_identity() -> tuple[str, str]:
+    """``(short commit, commit time)`` attributed to the imported Booley code.
 
-    Live source and installed distributions are disjoint: a source failure
-    never borrows a wheel stamp, and a wheel never borrows an enclosing repo.
+    The commit may carry ``+dirty``. Live source and installed distributions
+    are disjoint: a source failure never borrows a wheel stamp, and a wheel
+    never borrows an enclosing repo. Unknown parts are ``""``.
     """
     import booley
 
     attribution = booley.version_attribution
     if attribution.distribution_name is not None:
-        return _baked_commit()
-    revision, _updated_at = attribution.source_git_metadata()
-    return revision or None
+        return _baked_identity()
+    return attribution.source_git_metadata()
+
+
+def _utc_date(timestamp: str) -> str:
+    """UTC ``YYYY-MM-DD`` of an ISO-8601 *timestamp*, or ``""`` when unparseable."""
+    from booley.runtime.timefmt import parse_timestamp
+
+    try:
+        return parse_timestamp(timestamp).astimezone(UTC).date().isoformat()
+    except ValueError:
+        return ""
 
 
 def _version_string() -> str:
-    """`booley <version>` plus the source commit when running from a checkout."""
+    """`booley <version>` plus commit and UTC commit date when they are known."""
     from booley import __version__
 
-    commit = _source_commit()
-    return f"booley {__version__}" + (f" ({commit})" if commit else "")
+    commit, commit_time = _code_identity()
+    if not commit:
+        return f"booley {__version__}"
+    date = _utc_date(commit_time)
+    return (
+        f"booley {__version__} ({commit}, {date})" if date else f"booley {__version__} ({commit})"
+    )
+
+
+class _PrintVersion(argparse.Action):
+    """Print the version on one unwrapped line and exit.
+
+    argparse's built-in ``version`` action re-wraps its text to the terminal
+    width; this one also defers the (possibly git-backed) lookup until asked.
+    """
+
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        sys.stdout.write(_version_string() + "\n")
+        parser.exit()
 
 
 def _install_project_options(parser: argparse.ArgumentParser) -> None:
@@ -407,9 +441,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=_version_string(),
-        help="Show the Booley version (and source commit in a checkout) and exit",
+        action=_PrintVersion,
+        help=("Show the Booley version, plus its commit and UTC commit date when known, and exit"),
     )
     # metavar hides unadvertised subcommands (e.g. the debugging-only `shell`,
     # ADR 0028 Decision 2: kept working, stripped from help/docs) from the

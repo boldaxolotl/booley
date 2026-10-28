@@ -41,6 +41,7 @@ booley doctor                     # check setup
 booley doctor --concise           # show only problems
 booley doctor --deep              # also run short real sims, lints, and syntheses
 booley doctor --deep --skip-agent-checks   # CI: skip the login checks
+booley --version                  # version, plus commit and its UTC commit date when known
 
 # Projects on this machine (host)
 booley projects                   # list known projects
