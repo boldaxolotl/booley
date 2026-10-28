@@ -53,11 +53,24 @@ def symlink_or_skip(link: Path, target: Path | str, **kwargs: object) -> None:
     Developer Mode / an elevated shell (``[WinError 1314] A required privilege
     is not held``). These code paths genuinely require symlinks, so skipping is
     honest — and lossless where they run in-container (Linux) in production.
+
+    A link named ``.booley`` is also pinned, modelling a host that ran ``booley init``;
+    tests of the pin itself (unpinned, retargeted, replaced) build the link with
+    ``Path.symlink_to`` so this helper cannot mask the refusal they exercise.
     """
     try:
         link.symlink_to(target, **kwargs)  # type: ignore[arg-type]
     except OSError as exc:  # WinError 1314: needs Developer Mode / admin
         pytest.skip(f"symlink creation unavailable on this host: {exc}")
+    if link.name == ".booley":
+        pin_linked_booley_dir(link.parent)
+
+
+def pin_linked_booley_dir(project: Path) -> None:
+    """Record the host pin ``booley init`` writes for a linked ``<project>/.booley``."""
+    from booley.core import booley_dir_pin
+
+    booley_dir_pin.write_pin(project, booley_dir_pin.current_target(project / ".booley"))
 
 
 def require_symlinks(tmp_path: Path) -> None:
@@ -327,6 +340,14 @@ def _isolate_directory_layout_metadata(tmp_path: Path, monkeypatch: pytest.Monke
     from booley.core import booley_layout
 
     monkeypatch.setattr(booley_layout, "config_dir", lambda: tmp_path / "layout-config" / "booley")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linked-entry pins must not be written to the real host config."""
+    from booley.core import booley_dir_pin
+
+    monkeypatch.setattr(booley_dir_pin, "config_dir", lambda: tmp_path / "pin-config" / "booley")
 
 
 @pytest.fixture(autouse=True)

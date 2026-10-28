@@ -665,6 +665,25 @@ def _create_reporter(
     return reporter
 
 
+def _booley_dir_pin_failure(
+    project_root: Path, profile: _DoctorProfile, *, verbose: bool, concise: bool
+) -> DoctorRunResult | None:
+    """Report an untrusted linked Booley Directory entry as the only finding.
+
+    Every later check would follow the link, so Doctor stops after this FAIL.
+    """
+    from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
+
+    try:
+        require_pinned_entry(project_root)
+    except BooleyDirPinError as exc:
+        waivers = DoctorWaivers.empty(project_root / BOOLEY_DIR_NAME / WAIVER_FILENAME)
+        reporter = _Reporter.create(waivers, profile=profile, verbose=verbose, concise=concise)
+        reporter.fail_(exc.detail, exc.remedy, check_id="project.booley-dir-pin")
+        return reporter.result(reporter.finish())
+    return None
+
+
 def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[str, Any] | None:
     """Make a manual in-Sandbox Doctor result current for interactive reporting."""
     if not result.health_evidence:
@@ -730,6 +749,9 @@ def run_doctor_result(
     concise = getattr(args, "concise", False)
     deep = getattr(args, "deep", False)
     profile = _DoctorProfile.from_args(args)
+    pin_failure = _booley_dir_pin_failure(project_root, profile, verbose=verbose, concise=concise)
+    if pin_failure is not None:
+        return pin_failure
     reporter = _create_reporter(
         project_root,
         profile=profile,

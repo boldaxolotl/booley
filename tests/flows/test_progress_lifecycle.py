@@ -199,6 +199,7 @@ def test_progress_reader_follows_only_the_booley_dir_entry(tmp_path: Path) -> No
     real = tmp_path / "real-booley-dir"
     entry = tmp_path / "project" / ".booley"
     entry.parent.mkdir()
+    real.mkdir()  # the pin needs an existing target
     symlink_or_skip(entry, real)
     reports = entry / "runtime" / "flow-reports"
     path = real / "runtime" / "flow-reports" / "sim" / "1" / "progress.json"
