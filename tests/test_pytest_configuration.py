@@ -155,6 +155,7 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
     "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
     "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
+    "tests/bwave/test_contract.py::test_value_past_the_trace_end_is_exit_usage_plus_marker",
     "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
     "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
     "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
