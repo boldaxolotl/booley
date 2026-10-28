@@ -112,6 +112,7 @@ from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import goal_test_runs, judged_change, outcomes_decide
 from booley.goals.test_run_goals import names_test_runs
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.filesystem_utils import read_file_bytes, replace_file
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ class CampaignRegistration:
         except (BoundaryError, ValueError) as exc:
             if isinstance(exc, RegistrationFormatError):
                 raise
-            raise RegistrationFormatError(f"{where}: {exc}") from None
+            raise RegistrationFormatError(f"{where}: {exc}") from exc
         return registration
 
 
@@ -230,9 +231,9 @@ def _path(paths: GoalRecordPaths, manifest_sha256: str) -> Path:
 
 def _read(path: Path) -> CampaignRegistration:
     try:
-        raw = json.loads(path.read_bytes())
+        raw = json.loads(read_file_bytes(path))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RegistrationFormatError(f"campaign registration {path.name}: {exc}") from None
+        raise RegistrationFormatError(f"campaign registration {path.name}: {exc}") from exc
     return CampaignRegistration.from_json(raw, where=f"campaign registration {path.name}")
 
 
@@ -274,7 +275,7 @@ def quarantine_unreadable(store: GoalStore, record_id: str) -> tuple[str, ...]:
     for path, _reason in unreadable:
         target = _directory(paths) / _QUARANTINE / path.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        path.replace(target)
+        replace_file(path, target)
         moved.append(path.name)
     return tuple(moved)
 

@@ -22,7 +22,12 @@ _WINDOWS_TRANSIENT_SHARING_ERRORS = frozenset({5, 32})  # ACCESS_DENIED, SHARING
 _SHARING_RETRY_DELAYS_SECONDS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.25, 0.25)
 
 
-def _is_transient_windows_sharing_error(exc: PermissionError) -> bool:
+def is_transient_sharing_error(exc: OSError) -> bool:
+    """Report whether ``exc`` is a transient Windows sharing violation.
+
+    Callers that map "unreadable" to "absent" use this to tell a sharing error
+    that outlasted the retry budget apart from every other ``OSError``.
+    """
     return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_SHARING_ERRORS
 
 
@@ -42,7 +47,7 @@ def replace_file(
         try:
             source.replace(destination)
         except PermissionError as exc:
-            if not _is_transient_windows_sharing_error(exc):
+            if not is_transient_sharing_error(exc):
                 raise
             logger.debug("Retrying replace of %s after %s", destination, exc)
             sleep(delay)
@@ -68,7 +73,7 @@ def unlink_file(
         try:
             path.unlink()
         except PermissionError as exc:
-            if not _is_transient_windows_sharing_error(exc):
+            if not is_transient_sharing_error(exc):
                 raise
             logger.debug("Retrying unlink of %s after %s", path, exc)
             sleep(delay)
@@ -94,7 +99,7 @@ def read_file_bytes(
         try:
             return _read_all(path)
         except PermissionError as exc:
-            if not _is_transient_windows_sharing_error(exc):
+            if not is_transient_sharing_error(exc):
                 raise
             logger.debug("Retrying read of %s after %s", path, exc)
             sleep(delay)
