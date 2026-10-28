@@ -42,9 +42,8 @@ class TopBar(Widget, can_focus=True):
     class Selected(Message):
         """Enter was pressed on an item."""
 
-        def __init__(self, label: str, window: str | None) -> None:
+        def __init__(self, window: str | None) -> None:
             super().__init__()
-            self.label = label
             self.window = window
 
     class Left(Message):
@@ -60,8 +59,8 @@ class TopBar(Widget, can_focus=True):
         self.cursor = max(0, min(len(ITEMS) - 1, self.cursor + step))
 
     def action_choose(self) -> None:
-        label, window = ITEMS[self.cursor]
-        self.post_message(self.Selected(label, window))
+        _, window = ITEMS[self.cursor]
+        self.post_message(self.Selected(window))
 
     def action_leave(self) -> None:
         self.post_message(self.Left())
