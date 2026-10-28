@@ -1232,7 +1232,7 @@ def test_dashboard_palette_imports_have_no_copied_codes():
         colors.PALETTE_LAVENDER,
     }
     for path in Path(app_module.__file__).parent.glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Constant):
                 assert node.value not in codes if isinstance(node.value, int) else True
                 if isinstance(node.value, str):
