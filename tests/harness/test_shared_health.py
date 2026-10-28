@@ -296,7 +296,7 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     # MCP retains full findings; the Dashboard shows compact counts and freshness.
     assert "Health: " + message in server._format_status_card([])
     assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
-        "Doctor: 1 FAIL · stale",
+        "Doctor: 1 FAIL · recheck due",
     )
     assert not (health.state_dir(directory) / "announcements.json").exists()
 

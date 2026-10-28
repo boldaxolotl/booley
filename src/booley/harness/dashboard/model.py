@@ -75,6 +75,12 @@ class HealthLine:
 
     text: str
     severity: health_presentation.HealthSeverity | None
+    # Trailing part of ``text`` rendered in the attention style instead of the severity style.
+    due_suffix: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.text.endswith(self.due_suffix):
+            raise ValueError(f"text {self.text!r} must end with due_suffix {self.due_suffix!r}")
 
 
 @dataclass(frozen=True)
@@ -302,8 +308,8 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
 
 def health_lines(root: Path, booley_dir: Path) -> tuple[HealthLine, ...]:
     """Non-consuming Doctor freshness and typed read-only upgrade-review projection."""
-    text, severity = health_presentation.count_line(health.read_health(root))
-    lines = [HealthLine(text, severity)]
+    compact = health_presentation.count_line(health.read_health(root))
+    lines = [HealthLine(compact.text, compact.severity, compact.due_suffix)]
     review = upgrade_review.read_status(booley_dir)
     if review.condition not in {
         upgrade_review.ReviewCondition.CURRENT,
