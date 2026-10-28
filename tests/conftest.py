@@ -53,6 +53,10 @@ def symlink_or_skip(link: Path, target: Path | str, **kwargs: object) -> None:
     Developer Mode / an elevated shell (``[WinError 1314] A required privilege
     is not held``). These code paths genuinely require symlinks, so skipping is
     honest — and lossless where they run in-container (Linux) in production.
+
+    A link named ``.booley`` is also pinned, modelling a host that ran ``booley init``;
+    tests of the pin itself (unpinned, retargeted, replaced) build the link with
+    ``Path.symlink_to`` so this helper cannot mask the refusal they exercise.
     """
     try:
         link.symlink_to(target, **kwargs)  # type: ignore[arg-type]

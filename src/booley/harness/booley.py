@@ -1842,7 +1842,7 @@ class ProjectRequiredError(RuntimeError):
 
 def _require_command_project(command: str, project_root: Path) -> None:
     """Validate required Project context before dispatch, allowing initialization."""
-    from booley.core.booley_dir_pin import BooleyDirPinError
+    from booley.core.booley_dir_pin import BooleyDirPinError, entry_needs_pin
     from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     # Initialization creates the context this guard requires, including in non-Git folders.
@@ -1866,9 +1866,10 @@ def _require_command_project(command: str, project_root: Path) -> None:
     except PermissionError as exc:
         raise ProjectRequiredError(f"cannot access Booley Directory: {exc}") from exc
     except BooleyDirPinError:
-        if command != "doctor":
+        # Doctor reports the checkout's own untrusted entry as a FAIL; an ancestor's
+        # untrusted link is not Doctor's to report, so it refuses like any command.
+        if command != "doctor" or not entry_needs_pin(project_root):
             raise
-        # Doctor reports an untrusted linked entry as its own FAIL.
         present = True
     if not present:
         raise ProjectRequiredError(

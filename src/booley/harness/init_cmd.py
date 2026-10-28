@@ -50,6 +50,7 @@ from pathlib import Path
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config.host_config import retired_project_policy_message
+from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, require_dict
 from booley.core.config_paths import resolve_toml
 from booley.fusesoc.core_projection import (
@@ -2422,14 +2423,7 @@ def _reconcile_booley_dir_pin(ctx: InitContext, args: argparse.Namespace) -> boo
     unpinned or mismatched entry, since every later step would follow the link.
     Returns False when init must stop.
     """
-    from booley.core.booley_dir_pin import (
-        BooleyDirPinError,
-        current_target,
-        entry_needs_pin,
-        read_pin,
-        require_pinned_entry,
-        write_pin,
-    )
+    from booley.core.booley_dir_pin import current_target, entry_needs_pin, require_pinned_entry
     from booley.core.booley_layout import BOOLEY_DIR_NAME
 
     root = ctx.project_root
@@ -2442,8 +2436,7 @@ def _reconcile_booley_dir_pin(ctx: InitContext, args: argparse.Namespace) -> boo
         refusal = exc
     try:
         current = current_target(root / BOOLEY_DIR_NAME)
-        pinned = read_pin(root)
-    except (OSError, RuntimeError, BooleyDirPinError) as exc:
+    except (OSError, RuntimeError) as exc:
         err(str(exc))
         ctx.record("booley_dir_pin", "err", str(exc))
         return False
@@ -2451,19 +2444,47 @@ def _reconcile_booley_dir_pin(ctx: InitContext, args: argparse.Namespace) -> boo
         err(str(refusal))
         ctx.record("booley_dir_pin", "err", refusal.remedy)
         return False
-    if pinned is not None and not (
+    return _write_pin_with_consent(ctx, args, current, refusal)
+
+
+def _write_pin_with_consent(
+    ctx: InitContext, args: argparse.Namespace, current: EntryPin, refusal: BooleyDirPinError
+) -> bool:
+    """Write the pin for *current*; replacing an existing or unreadable pin needs consent."""
+    from booley.core.booley_dir_pin import read_pin, write_pin
+    from booley.core.booley_layout import BOOLEY_DIR_NAME
+
+    root = ctx.project_root
+    # An unreadable pin counts as an existing pin: replacing it needs the same consent.
+    try:
+        pinned = read_pin(root)
+        old_target = pinned.target if pinned is not None else ""
+    except BooleyDirPinError:
+        old_target = "an unreadable pin"
+    has_pin = bool(old_target)
+    if has_pin and not (
         getattr(args, "repin_booley_dir", False)
-        or (ctx.interactive and _confirm_repin(pinned.target, current.target))
+        or (ctx.interactive and _confirm_repin(old_target, current.target))
     ):
-        err(f"{refusal}; a non-interactive run needs --repin-booley-dir")
+        outcome = (
+            "re-pin declined"
+            if ctx.interactive
+            else "a non-interactive run needs --repin-booley-dir"
+        )
+        err(f"{refusal.detail}; {outcome}")
         ctx.record("booley_dir_pin", "err", "pin unchanged; pass --repin-booley-dir to re-pin")
         return False
-    write_pin(root, current)
-    if pinned is None:
+    try:
+        write_pin(root, current)
+    except (OSError, BooleyDirPinError) as exc:
+        err(str(exc))
+        ctx.record("booley_dir_pin", "err", str(exc))
+        return False
+    if not has_pin:
         ok(f"pinned {BOOLEY_DIR_NAME} -> {current.target}")
     else:
         ok(
-            f"re-pinned {BOOLEY_DIR_NAME}: {pinned.target} -> {current.target}; "
+            f"re-pinned {BOOLEY_DIR_NAME}: {old_target} -> {current.target}; "
             "restart a running Sandbox with `booley session refresh`"
         )
     ctx.record("booley_dir_pin", "ok", current.target)

@@ -2216,8 +2216,11 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="directory symlink requires host privilege")
-def test_linked_entry_issuance_requires_the_host_pin(issued, tmp_path: Path) -> None:
+def test_linked_entry_issuance_requires_the_host_pin(
+    issued, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A linked entry is issued only while it still resolves to the target ``init`` pinned."""
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     project, _spec, _path, _stamp = issued
     entry = project / ".booley"
     ext_a, ext_b = tmp_path / "ext-a", tmp_path / "ext-b"

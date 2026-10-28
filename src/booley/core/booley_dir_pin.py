@@ -23,17 +23,17 @@ from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 
 _SCHEMA_VERSION = 1
-_REPIN_REMEDY = (
-    "run `booley init --repin-booley-dir` from the Project Root to accept the new target"
-)
+_REPIN_REMEDY = "run `booley init --repin-booley-dir` from the Project Root to replace the pin"
 _INIT_REMEDY = "run `booley init` from the Project Root to pin the linked entry"
 
 
 class BooleyDirPinError(BooleyLayoutError):
     """A linked Booley Directory entry is unpinned or no longer matches its pin."""
 
-    def __init__(self, message: str, remedy: str) -> None:
+    def __init__(self, message: str, remedy: str = _REPIN_REMEDY) -> None:
+        # ``PrivateStore`` raises this type with a message alone, so the remedy defaults.
         super().__init__(f"{message}; {remedy}")
+        self.detail = message
         self.remedy = remedy
 
 
@@ -56,7 +56,8 @@ def _store() -> PrivateStore:
 
 
 def _pin_filename(project_root: Path) -> str:
-    return hashlib.sha256(str(project_root.resolve()).encode()).hexdigest() + ".json"
+    spelled = os.path.normcase(str(project_root.resolve()))
+    return hashlib.sha256(spelled.encode()).hexdigest() + ".json"
 
 
 def current_target(entry: Path) -> EntryPin:
@@ -74,16 +75,17 @@ def read_pin(project_root: Path) -> EntryPin | None:
     filename = _pin_filename(project_root)
     if not (store.root / filename).is_symlink() and not (store.root / filename).exists():
         return None
-    document = store.read_json(filename)
     try:
+        document = store.read_json(filename)
         if not isinstance(document, dict) or document["schema_version"] != _SCHEMA_VERSION:
             raise TypeError("unsupported schema")
         target, device, inode = document["target"], document["device"], document["inode"]
         if not isinstance(target, str) or type(device) is not int or type(inode) is not int:
             raise TypeError("invalid field types")
-    except (KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # ValueError covers truncated JSON; OSError an unreadable file.
         raise BooleyDirPinError(
-            f"Booley Directory pin for {project_root} is malformed ({exc})", _REPIN_REMEDY
+            f"Booley Directory pin for {project_root} is unreadable ({exc})", _REPIN_REMEDY
         ) from exc
     return EntryPin(target, device, inode)
 
@@ -94,6 +96,7 @@ def write_pin(project_root: Path, pin: EntryPin) -> None:
     store.ensure_directory()
     document = {
         "schema_version": _SCHEMA_VERSION,
+        # Informational only: names the Project when someone inspects the file.
         "project_root": str(project_root.resolve()),
         "target": pin.target,
         "device": pin.device,
@@ -137,4 +140,8 @@ def require_pinned_entry(project_root: Path) -> None:
         )
     difference = pin_difference(pinned, current)
     if difference is not None:
-        raise BooleyDirPinError(f"{entry} is {difference}", _REPIN_REMEDY)
+        raise BooleyDirPinError(
+            f"{entry} is {difference}",
+            "if you moved the link on purpose, run `booley init --repin-booley-dir` from the "
+            f"Project Root; otherwise point {BOOLEY_DIR_NAME} back at {pinned.target}",
+        )

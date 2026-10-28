@@ -54,6 +54,7 @@ def test_host_resolvers_refuse_unpinned_and_retargeted_entry(linked, tmp_path: P
         assert str(target.resolve()) in str(raised.value)
         assert str(other.resolve()) in str(raised.value)
         assert "--repin-booley-dir" in raised.value.remedy
+        assert f"point .booley back at {target.resolve()}" in raised.value.remedy
 
 
 def test_target_replaced_in_place_is_refused(linked) -> None:
@@ -79,10 +80,34 @@ def test_real_entry_sandbox_and_booley_dir_skip_the_pin(
     entry.mkdir()
     booley_dir_pin.require_pinned_entry(project)
     assert booley_dir.resolve_checkout_booley_dir(project) == entry
-    # An explicit host BOOLEY_DIR selection is not the linked entry.
-    monkeypatch.setenv("BOOLEY_DIR", str(entry))
-    assert booley_dir.resolve_booley_dir(project, cache_result=False) == entry
     assert not booley_dir_pin._store().root.exists()
+
+
+def test_booley_dir_selection_skips_the_pin_of_an_unpinned_link(
+    linked, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _entry, target = linked
+    # The link stays unpinned; an explicit host BOOLEY_DIR selection bypasses it.
+    monkeypatch.setenv("BOOLEY_DIR", str(target))
+    assert booley_dir.resolve_booley_dir(project, cache_result=False) == target
+    assert not booley_dir_pin._store().root.exists()
+
+
+def test_damaged_pin_store_refuses_with_the_pin_error(linked) -> None:
+    project, entry, _target = linked
+    booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
+    pin_file = booley_dir_pin._store().root / booley_dir_pin._pin_filename(project)
+
+    pin_file.write_text("{not json", encoding="utf-8")
+    with pytest.raises(booley_dir_pin.BooleyDirPinError, match="unreadable"):
+        booley_dir_pin.require_pinned_entry(project)
+
+    pin_file.chmod(0o644)  # a store hardening refusal must not crash with TypeError
+    with pytest.raises(booley_dir_pin.BooleyDirPinError):
+        booley_dir_pin.require_pinned_entry(project)
+    booley_dir_pin._store().root.chmod(0o755)
+    with pytest.raises(booley_dir_pin.BooleyDirPinError):
+        booley_dir_pin.require_pinned_entry(project)
 
 
 def test_dangling_link_is_left_to_callers(linked) -> None:

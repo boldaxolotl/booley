@@ -9569,7 +9569,16 @@ def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
         assert finding.severity is Severity.FAIL
         assert finding.check_id == "project.booley-dir-pin"
         assert remedy in finding.fix
+        assert finding.fix not in finding.message  # the remedy is reported once, as the fix
         assert result.exit_code == 1
     cli._require_command_project("doctor", project)
+    for command in ("session", "targets"):
+        with pytest.raises(booley_dir_pin.BooleyDirPinError):
+            cli._require_command_project(command, project)
+
+    # An ancestor's untrusted link is not this checkout's FAIL to report.
+    inner = project / "inner"
+    inner.mkdir()
+    subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
-        cli._require_command_project("status", project)
+        cli._require_command_project("doctor", inner)

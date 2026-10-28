@@ -88,6 +88,22 @@ def test_interactive_prompt_decides_the_repin(
     booley_dir_pin.require_pinned_entry(project)
 
 
+def test_flag_replaces_an_unreadable_pin_and_prompt_decline_is_reported(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _reconcile(project)
+    _pin_file(project).write_text("{not json", encoding="utf-8")
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    proceed, ctx = _reconcile(project, interactive=True)
+    assert not proceed
+    assert ctx.results[-1].status == "err"
+
+    proceed, _ctx = _reconcile(project, repin_booley_dir=True)
+    assert proceed
+    booley_dir_pin.require_pinned_entry(project)
+
+
 def test_noninteractive_init_without_flag_keeps_pin_and_fails(
     project: Path, tmp_path: Path
 ) -> None:
@@ -118,3 +134,27 @@ def test_check_only_and_seed_never_pin(project: Path, tmp_path: Path) -> None:
         assert not proceed
         assert ctx.results[-1].status == "err"
         assert _pin_file(project).read_bytes() == before
+
+
+def test_full_init_pins_before_bootstrap_and_stops_on_a_retargeted_link(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``run_init`` writes the pin first; a mismatch ends init before any step follows the link."""
+    reached_bootstrap: list[bool] = []
+
+    def stop_at_bootstrap(_ctx, _args):
+        reached_bootstrap.append(True)
+
+    monkeypatch.setattr(init_cmd, "_project_checkout_ready", lambda _ctx: True)
+    monkeypatch.setattr(init_cmd, "_reconcile_init_bootstrap", stop_at_bootstrap)
+    monkeypatch.setattr("sys.stdin", type("NoTty", (), {"isatty": lambda self: False})())
+    args = type("Args", (), {})()
+
+    assert init_cmd._run_init_unlocked(args, project) == 0
+    assert reached_bootstrap == [True]
+    booley_dir_pin.require_pinned_entry(project)
+
+    reached_bootstrap.clear()
+    _retarget(project, _new_target(tmp_path, "ext-b"))
+    assert init_cmd._run_init_unlocked(args, project) == 2
+    assert reached_bootstrap == []

@@ -679,7 +679,7 @@ def _booley_dir_pin_failure(
     except BooleyDirPinError as exc:
         waivers = DoctorWaivers.empty(project_root / BOOLEY_DIR_NAME / WAIVER_FILENAME)
         reporter = _Reporter.create(waivers, profile=profile, verbose=verbose, concise=concise)
-        reporter.fail_(str(exc), exc.remedy, check_id="project.booley-dir-pin")
+        reporter.fail_(exc.detail, exc.remedy, check_id="project.booley-dir-pin")
         return reporter.result(reporter.finish())
     return None
 
