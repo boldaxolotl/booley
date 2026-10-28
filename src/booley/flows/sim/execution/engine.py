@@ -400,8 +400,7 @@ class PreparedOrdinaryGroup:
         booley_dir = None if entry is None else entry.parent.resolve() / entry.name
         for item in self._attempt.prepared.resolved.files:
             source = item.absolute(root)
-            if booley_dir is not None:
-                source = lexical_booley_path(booley_dir, source)
+            source = lexical_booley_path(booley_dir, source)
             try:
                 is_packaged_dump = _is_packaged_dump_source(self._attempt, source, project_root)
                 if not source.is_file() or not (

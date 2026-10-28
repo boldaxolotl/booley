@@ -520,27 +520,46 @@ def test_responsive_goal_selection_uses_the_displayed_column_count(monkeypatch):
     assert app._selected_key() == "3"
 
 
-@pytest.mark.parametrize(
-    "report,due,expected",
-    [
-        ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
-        ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · stale",)),
-        (
-            {"counts": {"fail": 1, "warn": 0}},
-            "inputs changed",
-            ("Doctor: 1 FAIL · stale",),
-        ),
-        (None, None, ("Doctor: unavailable: no readable automatic result",)),
-    ],
-)
-def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch, report, due, expected):
-    diagnostics = DiagnosticReport(
-        (DiagnosticFinding(Severity.FAIL, "failure"),)
-        if report is not None and report["counts"]["fail"]
-        else ()
-    )
+# (automatic Doctor report, due reason, expected Dashboard lines)
+_HEALTH_ROWS = [
+    ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
+    ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · recheck due",)),
+    (
+        {"counts": {"fail": 0, "warn": 1}},
+        "inputs changed",
+        ("Doctor: 1 WARN · recheck due",),
+    ),
+    (
+        {"counts": {"fail": 1, "warn": 0}},
+        "inputs changed",
+        ("Doctor: 1 FAIL · recheck due",),
+    ),
+    (None, None, ("Doctor: unavailable: no readable automatic result",)),
+]
+
+
+def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch):
+    for index, row in enumerate(_HEALTH_ROWS):
+        root = tmp_path / f"row{index}"
+        root.mkdir()
+        # Rows share one test (the evidence helper needs function-level node IDs),
+        # so name the failing row instead of leaving an anonymous loop assertion.
+        try:
+            _check_health_row(root, monkeypatch, *row)
+        except AssertionError as error:
+            error.add_note(f"failing row {index}: {row!r}")
+            raise
+
+
+def _check_health_row(root, monkeypatch, report, due, expected):
+    findings = ()
+    if report is not None and report["counts"]["fail"]:
+        findings += (DiagnosticFinding(Severity.FAIL, "failure"),)
+    if report is not None and report["counts"]["warn"]:
+        findings += (DiagnosticFinding(Severity.WARN, "warning", check_id="test.warning"),)
+    diagnostics = DiagnosticReport(findings)
     snapshot = (
-        health.HealthSnapshot(diagnostics, "fixture-hash", tmp_path / "last.log", due)
+        health.HealthSnapshot(diagnostics, "fixture-hash", root / "last.log", due)
         if report is not None
         else None
     )
@@ -562,9 +581,12 @@ def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch, report
     monkeypatch.setattr(
         model.upgrade_review, "observe", lambda *_a, **_k: pytest.fail("upgrade state changed")
     )
-    assert tuple(line.text for line in model.health_lines(tmp_path, tmp_path)) == expected
+    lines = model.health_lines(root, root)
+    assert tuple(line.text for line in lines) == expected
+    # The due marker travels as data so the renderer never sniffs the text.
+    assert lines[0].due_suffix == (" · recheck due" if due else "")
     assert reads == [True]
-    assert list(tmp_path.iterdir()) == []
+    assert list(root.iterdir()) == []
 
 
 def test_readonly_upgrade_pending_and_corrupt_states(tmp_path):
@@ -1001,13 +1023,22 @@ def _style_at(text, offset=0):
 
 @pytest.mark.asyncio
 async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
+    for due in (None, "expired reason"):
+        try:
+            await _check_header_semantic_styles(monkeypatch, tmp_path, due)
+        except AssertionError as error:
+            error.add_note(f"failing row: due={due!r}")
+            raise
+
+
+async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
     from rich.style import Style
 
     from booley.harness import colors
     from booley.harness.dashboard.resources import Resources
 
     current = model.DashboardSnapshot(
-        health=_header_health(monkeypatch, tmp_path, upgrade=True),
+        health=_header_health(monkeypatch, tmp_path, due=due, upgrade=True),
         diagnostics=("diagnostic [literal/path]",),
         resources=Resources(12.5, 1024**3, 2 * 1024**3, 3 * 1024**3, 4),
     )
@@ -1020,7 +1051,9 @@ async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
         assert _style_at(orientation) == Style.parse(f"bold color({colors.PALETTE_DODGER_BLUE})")
         assert _style_at(orientation, orientation.plain.index("detail")) == Style()
         doctor = _rich_payload(app.query_one("#health", Static))
-        assert doctor.plain.splitlines()[0] == "Doctor: 2 FAIL · 1 WARN"
+        assert doctor.plain.splitlines()[0] == "Doctor: 2 FAIL · 1 WARN" + (
+            " · recheck due" if due else ""
+        )
         assert _style_at(doctor) == Style.parse("bold red")
         assert "Upgrade review" in doctor.plain
         assert _style_at(doctor, doctor.plain.index("Upgrade")) == Style()
@@ -1067,24 +1100,35 @@ async def test_pilot_stale_notice_uses_attention_style(monkeypatch, tmp_path):
         assert _style_at(restored) == Style.parse("bold red")
 
 
-@pytest.mark.parametrize(
-    "fail,warn,due,missing,expected,style",
-    [
-        (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
-        (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
-        (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
-        (0, 0, None, False, "Doctor: OK", "dim"),
-        (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · stale", "bold red"),
-        (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
-        (0, 0, "expired reason", False, "Doctor: OK · stale", "dim"),
-    ],
-    ids=["fail-warn", "fail-only", "warn-only", "clean", "stale", "no-snapshot", "clean-stale"],
-)
+# (fail, warn, due reason, missing snapshot, expected text, count style)
+_DOCTOR_LINE_ROWS = [
+    (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
+    (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
+    (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
+    (0, 0, None, False, "Doctor: OK", "dim"),
+    (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · recheck due", "bold red"),
+    (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
+    (0, 0, "expired reason", False, "Doctor: OK · recheck due", "dim"),
+    (0, 1, "expired reason", False, "Doctor: 1 WARN · recheck due", "yellow"),
+]
+
+
 @pytest.mark.asyncio
-async def test_pilot_compact_doctor_line(
+async def test_pilot_compact_doctor_line(monkeypatch, tmp_path):
+    for row in _DOCTOR_LINE_ROWS:
+        try:
+            await _check_pilot_doctor_line(monkeypatch, tmp_path, *row)
+        except AssertionError as error:
+            error.add_note(f"failing row: {row!r}")
+            raise
+
+
+async def _check_pilot_doctor_line(
     monkeypatch, tmp_path, fail, warn, due, missing, expected, style
 ):
     from rich.style import Style
+
+    from booley.harness import colors
 
     current = model.DashboardSnapshot(
         health=_header_health(monkeypatch, tmp_path, fail, warn, due, missing)
@@ -1098,6 +1142,25 @@ async def test_pilot_compact_doctor_line(
         assert "sentinel" not in content.plain
         assert "expired reason" not in content.plain
         assert _style_at(content) == Style.parse(style)
+        last = len(content.plain) - 1
+        if not due or missing:
+            # Not due or unavailable: one style end to end, no attention span.
+            assert _style_at(content, last) == Style.parse(style)
+            return
+        suffix = " · recheck due"
+        attention = Style.parse(f"color({colors.PALETTE_ORANGE})")
+        start = content.plain.index(suffix)
+        assert content.plain.endswith(suffix)
+        # Counts keep their severity style; only the suffix takes the attention color.
+        assert _style_at(content, start - 1) == Style.parse(style)
+        assert _style_at(content, start) == attention
+        assert _style_at(content, last) == attention
+        # The widget actually paints the suffix in orange, not just the Text object.
+        painted = [
+            (char, segment.style) for segment in widget.render_line(0) for char in segment.text
+        ]
+        assert painted[start][1].color.get_truecolor() == attention.color.get_truecolor()
+        assert painted[start - 1][1].color.get_truecolor() != attention.color.get_truecolor()
 
 
 def test_goal_statuses_use_shared_semantic_styles():

@@ -18,7 +18,7 @@ from typing import Any
 
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import (
-    is_transient_sharing_error,
+    is_transient_read_error,
     read_file_bytes,
     replace_file,
 )
@@ -155,7 +155,7 @@ def _read_protocol_bytes(path: Path) -> bytes | None:
     try:
         return read_file_bytes(path)
     except OSError as exc:
-        if is_transient_sharing_error(exc):
+        if is_transient_read_error(exc):
             raise
         return None
 

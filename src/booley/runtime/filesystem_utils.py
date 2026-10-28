@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
@@ -29,6 +30,24 @@ def is_transient_sharing_error(exc: OSError) -> bool:
     that outlasted the retry budget apart from every other ``OSError``.
     """
     return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_SHARING_ERRORS
+
+
+def is_transient_read_error(exc: OSError) -> bool:
+    """Match a sharing error raised by ``open()``, which goes through the C runtime.
+
+    The Windows C runtime reports a sharing violation, or a file pending delete
+    during a concurrent ``os.replace``, as plain ``EACCES`` without ``winerror``.
+    On POSIX a bare ``EACCES`` is a real permission error and is never retried.
+    Callers that map "unreadable" to "absent" use this to tell a sharing error
+    that outlasted the read retry budget apart from every other ``OSError``.
+    """
+    if is_transient_sharing_error(exc):
+        return True
+    return (
+        sys.platform == "win32"
+        and getattr(exc, "winerror", None) is None
+        and exc.errno == errno.EACCES
+    )
 
 
 def replace_file(
@@ -90,7 +109,9 @@ def read_file_bytes(
     """Read ``path``, tolerating a concurrent atomic replace on Windows.
 
     Counterpart of :func:`replace_file`: retries only the transient Windows
-    sharing errors with the same bounded backoff (about 1.1 s in total). The
+    sharing errors, including the bare ``EACCES`` the C runtime raises from
+    ``open()``, with the same bounded backoff (about 1.1 s in total). A real
+    permission denial on Windows therefore raises after that backoff. The
     last transient error, ``FileNotFoundError`` and every other ``OSError``
     propagate unchanged, so an unreadable file is never reported as absent.
     POSIX reads never hit the retry path.
@@ -99,7 +120,7 @@ def read_file_bytes(
         try:
             return _read_all(path)
         except PermissionError as exc:
-            if not is_transient_sharing_error(exc):
+            if not is_transient_read_error(exc):
                 raise
             logger.debug("Retrying read of %s after %s", path, exc)
             sleep(delay)
