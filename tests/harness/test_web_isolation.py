@@ -1,4 +1,4 @@
-"""Provider-hosted web MCP tools must not bypass the Sandbox boundary."""
+"""Shipped managed agent policies: web-tool isolation and no CLI self-update."""
 
 from __future__ import annotations
 
@@ -23,6 +23,16 @@ def test_shipped_managed_policies_disable_provider_web_tools() -> None:
 
     assert codex["allowed_web_search_modes"] == []
     assert set(claude["permissions"]["deny"]) >= web_isolation.CLAUDE_WEB_CAPABILITIES
+
+
+def test_shipped_managed_policies_disable_agent_cli_self_update() -> None:
+    # The CLIs live in a root-owned npm prefix, so any self-update must fail.
+    data = _docker_data()
+    codex = tomllib.loads((data / "codex-requirements.toml").read_text(encoding="utf-8"))
+    claude = json.loads((data / "claude-managed-settings.json").read_text(encoding="utf-8"))
+
+    assert claude.get("env", {}).get("DISABLE_UPDATES") == "1"
+    assert codex.get("check_for_update_on_startup") is False
 
 
 def test_sandbox_image_installs_both_managed_policies() -> None:
