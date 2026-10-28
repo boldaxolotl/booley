@@ -143,16 +143,15 @@ DEPTHS = {
 }
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("depth", DEPTHS)
-async def test_arrows_switch_windows_from_every_depth(depth):
+async def _switch_from_depth(depth):
+    """Reach one depth in a fresh Dashboard, switch windows and come back."""
     in_jobs, steps = DEPTHS[depth]
     current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 24)) as pilot:
         if in_jobs:
             await pilot.press("right")
-            assert app.navigation.view == "jobs"
+            assert app.navigation.view == "jobs", depth
         for step in steps:
             if isinstance(step, tuple):
                 await open_row(app, pilot, step[1])
@@ -163,11 +162,17 @@ async def test_arrows_switch_windows_from_every_depth(depth):
 
         await pilot.press("left" if in_jobs else "right")
         await pilot.pause()
-        assert app.navigation.view == ("overview" if in_jobs else "jobs")
+        assert app.navigation.view == ("overview" if in_jobs else "jobs"), depth
 
         await pilot.press("right" if in_jobs else "left")
         await pilot.pause()
-        assert app.navigation == before
+        assert app.navigation == before, depth
+
+
+@pytest.mark.asyncio
+async def test_arrows_switch_windows_from_every_depth():
+    for depth in DEPTHS:
+        await _switch_from_depth(depth)
 
 
 # --- AC2 ---------------------------------------------------------------------
