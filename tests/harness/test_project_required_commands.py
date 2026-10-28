@@ -252,6 +252,30 @@ def test_bare_sandbox_dispatches_chat_with_selected_project(
     assert calls == [("chat", cli_project)]
 
 
+def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
+    from booley.harness import chat_cmd
+
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": "claude"}))
+    monkeypatch.setattr(chat_cmd, "capture_process_identity", lambda _pid: object())
+    monkeypatch.setattr(chat_cmd, "process_session_key", lambda _identity: "key")
+    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args: "S17")
+    executed = []
+
+    def execute(executable, argv):
+        executed.append((executable, argv))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execute)
+    for argv in (["booley"], ["booley", "chat"]):
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit):
+            cli.main()
+    assert executed == [("claude", ["S17", "-n", "S17"])] * 2
+
+
 @pytest.mark.parametrize("source", [False, True])
 def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, capsys):
     if source:
