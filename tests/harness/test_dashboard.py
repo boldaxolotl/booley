@@ -1214,7 +1214,7 @@ def test_dashboard_palette_imports_have_no_copied_codes():
     from booley.harness import colors
     from booley.harness.dashboard import app as app_module
 
-    tree = ast.parse(Path(app_module.__file__).read_text())
+    tree = ast.parse(Path(app_module.__file__).read_text(encoding="utf-8"))
     imported = {
         alias.name
         for node in ast.walk(tree)
