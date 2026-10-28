@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -518,6 +519,8 @@ def test_posix_unreadable_protocol_file_reads_as_absent(tmp_path: Path, monkeypa
         return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", denied)
+    # Pin POSIX: on Windows a bare EACCES is a transient C-runtime sharing error.
+    monkeypatch.setattr(sys, "platform", "linux")
     assert read_json(paths.record) is None
 
 
