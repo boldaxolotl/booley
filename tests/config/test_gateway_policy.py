@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from booley import config
 from booley.config import agent as agent_config
-from booley.config import gateway
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -28,28 +28,28 @@ def gateway_container(monkeypatch):
 
 
 def test_gateway_policy_accepts_complete_https_config():
-    settings = gateway.gateway_settings_from_env(
+    settings = config.gateway.gateway_settings_from_env(
         {"BOOLEY_GATEWAY_URL": f" {_URL} ", "BOOLEY_GATEWAY_TOKEN": f" {_TOKEN}\n"}
     )
-    assert settings == gateway.GatewaySettings(url=_URL, token=_TOKEN)
+    assert settings == config.gateway.GatewaySettings(url=_URL, token=_TOKEN)
     assert _TOKEN not in repr(settings)
 
 
 def test_gateway_policy_rejects_missing_url():
-    with pytest.raises(gateway.GatewayConfigError, match="needs BOOLEY_GATEWAY_URL"):
-        gateway.gateway_settings_from_env({"BOOLEY_GATEWAY_TOKEN": _TOKEN})
+    with pytest.raises(ValueError, match="needs BOOLEY_GATEWAY_URL"):
+        config.gateway.gateway_settings_from_env({"BOOLEY_GATEWAY_TOKEN": _TOKEN})
 
 
 def test_gateway_policy_rejects_http_url():
-    with pytest.raises(gateway.GatewayConfigError, match="BOOLEY_GATEWAY_URL must be an https://"):
-        gateway.gateway_settings_from_env(
+    with pytest.raises(ValueError, match="BOOLEY_GATEWAY_URL must be an https://"):
+        config.gateway.gateway_settings_from_env(
             {"BOOLEY_GATEWAY_URL": "http://gateway.example/v1", "BOOLEY_GATEWAY_TOKEN": _TOKEN}
         )
 
 
 def test_gateway_policy_rejects_missing_token():
-    with pytest.raises(gateway.GatewayConfigError, match="needs BOOLEY_GATEWAY_TOKEN"):
-        gateway.gateway_settings_from_env(
+    with pytest.raises(ValueError, match="needs BOOLEY_GATEWAY_TOKEN"):
+        config.gateway.gateway_settings_from_env(
             {"BOOLEY_GATEWAY_URL": _URL, "BOOLEY_GATEWAY_TOKEN": "  "}
         )
 
@@ -64,8 +64,8 @@ def test_gateway_policy_rejects_missing_token():
     ],
 )
 def test_gateway_policy_rejects_unsafe_url_without_echoing_it(url):
-    with pytest.raises(gateway.GatewayConfigError) as caught:
-        gateway.gateway_settings_from_env(
+    with pytest.raises(ValueError) as caught:
+        config.gateway.gateway_settings_from_env(
             {"BOOLEY_GATEWAY_URL": url, "BOOLEY_GATEWAY_TOKEN": _TOKEN}
         )
     assert "SYNTHETIC" not in str(caught.value)

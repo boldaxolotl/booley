@@ -19,7 +19,6 @@ import pytest
 from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.runtime import _codex_backend as cb
-from booley.runtime import gateway_token
 from booley.runtime.agent_errors import AgentProviderError
 
 _URL = "https://gateway.example/v1"
@@ -213,6 +212,8 @@ def test_codex_health_check_reports_gateway_misconfiguration(gateway_sandbox, mo
 
 
 def test_gateway_token_entry_point_fails_loud_when_token_is_missing(monkeypatch, capsys):
+    from booley.runtime import gateway_token
+
     monkeypatch.setenv("BOOLEY_GATEWAY_URL", _URL)
     monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN", raising=False)
 
