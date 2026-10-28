@@ -327,6 +327,12 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
             "Doctor: 1 FAIL · 1 WARN",
         ),
         (clean, f"Automatic Doctor is clean. Full report: {transcript}", "Doctor: OK"),
+        # A due result keeps the verbose brief unchanged; only the compact line gains the marker.
+        (
+            replace(mixed, due="expired"),
+            f"Automatic Doctor found 1 FAIL, 1 WARN: broken machinery; review needed. Full report: {transcript}",
+            "Doctor: 1 FAIL · 1 WARN · recheck due",
+        ),
     ):
         monkeypatch.setattr(health, "read_health", lambda _, observed=snapshot: observed)
         assert health_presentation.brief_message(snapshot) == brief

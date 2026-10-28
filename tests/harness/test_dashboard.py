@@ -520,25 +520,32 @@ def test_responsive_goal_selection_uses_the_displayed_column_count(monkeypatch):
     assert app._selected_key() == "3"
 
 
-@pytest.mark.parametrize(
-    "report,due,expected",
-    [
-        ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
-        ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · recheck due",)),
-        (
-            {"counts": {"fail": 0, "warn": 1}},
-            "inputs changed",
-            ("Doctor: 1 WARN · recheck due",),
-        ),
-        (
-            {"counts": {"fail": 1, "warn": 0}},
-            "inputs changed",
-            ("Doctor: 1 FAIL · recheck due",),
-        ),
-        (None, None, ("Doctor: unavailable: no readable automatic result",)),
-    ],
-)
-def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch, report, due, expected):
+# (automatic Doctor report, due reason, expected Dashboard lines)
+_HEALTH_ROWS = [
+    ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
+    ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · recheck due",)),
+    (
+        {"counts": {"fail": 0, "warn": 1}},
+        "inputs changed",
+        ("Doctor: 1 WARN · recheck due",),
+    ),
+    (
+        {"counts": {"fail": 1, "warn": 0}},
+        "inputs changed",
+        ("Doctor: 1 FAIL · recheck due",),
+    ),
+    (None, None, ("Doctor: unavailable: no readable automatic result",)),
+]
+
+
+def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch):
+    for index, (report, due, expected) in enumerate(_HEALTH_ROWS):
+        root = tmp_path / f"row{index}"
+        root.mkdir()
+        _check_health_row(root, monkeypatch, report, due, expected)
+
+
+def _check_health_row(tmp_path, monkeypatch, report, due, expected):
     findings = ()
     if report is not None and report["counts"]["fail"]:
         findings += (DiagnosticFinding(Severity.FAIL, "failure"),)
@@ -1007,9 +1014,13 @@ def _style_at(text, offset=0):
     return text.get_style_at_offset(Console(), offset)
 
 
-@pytest.mark.parametrize("due", [None, "expired reason"], ids=["fresh", "recheck-due"])
 @pytest.mark.asyncio
-async def test_pilot_header_semantic_styles(monkeypatch, tmp_path, due):
+async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
+    for due in (None, "expired reason"):
+        await _check_header_semantic_styles(monkeypatch, tmp_path, due)
+
+
+async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
     from rich.style import Style
 
     from booley.harness import colors
@@ -1078,31 +1089,26 @@ async def test_pilot_stale_notice_uses_attention_style(monkeypatch, tmp_path):
         assert _style_at(restored) == Style.parse("bold red")
 
 
-@pytest.mark.parametrize(
-    "fail,warn,due,missing,expected,style",
-    [
-        (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
-        (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
-        (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
-        (0, 0, None, False, "Doctor: OK", "dim"),
-        (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · recheck due", "bold red"),
-        (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
-        (0, 0, "expired reason", False, "Doctor: OK · recheck due", "dim"),
-        (0, 1, "expired reason", False, "Doctor: 1 WARN · recheck due", "yellow"),
-    ],
-    ids=[
-        "fail-warn",
-        "fail-only",
-        "warn-only",
-        "clean",
-        "recheck-due",
-        "no-snapshot",
-        "clean-recheck-due",
-        "warn-recheck-due",
-    ],
-)
+# (fail, warn, due reason, missing snapshot, expected text, count style)
+_DOCTOR_LINE_ROWS = [
+    (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
+    (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
+    (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
+    (0, 0, None, False, "Doctor: OK", "dim"),
+    (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · recheck due", "bold red"),
+    (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
+    (0, 0, "expired reason", False, "Doctor: OK · recheck due", "dim"),
+    (0, 1, "expired reason", False, "Doctor: 1 WARN · recheck due", "yellow"),
+]
+
+
 @pytest.mark.asyncio
-async def test_pilot_compact_doctor_line(
+async def test_pilot_compact_doctor_line(monkeypatch, tmp_path):
+    for row in _DOCTOR_LINE_ROWS:
+        await _check_pilot_doctor_line(monkeypatch, tmp_path, *row)
+
+
+async def _check_pilot_doctor_line(
     monkeypatch, tmp_path, fail, warn, due, missing, expected, style
 ):
     from rich.style import Style
@@ -1143,20 +1149,16 @@ async def test_pilot_compact_doctor_line(
         assert painted[start - 1][1].color.get_truecolor() != attention.color.get_truecolor()
 
 
-@pytest.mark.parametrize(
-    "due,expected",
-    [(None, ""), ("expired", " · recheck due")],
-    ids=["fresh", "recheck-due"],
-)
-def test_compact_line_carries_due_suffix_as_data(tmp_path, due, expected):
+def test_compact_line_carries_due_suffix_as_data(tmp_path):
     """The renderer styles the suffix from data; it never sniffs the text."""
-    snapshot = health.HealthSnapshot(DiagnosticReport(()), "hash", tmp_path / "last.log", due)
-    compact = health_presentation.count_line(snapshot)
-    assert compact.due_suffix == expected
-    assert compact.text == "Doctor: OK" + expected
     assert health_presentation.count_line(None).due_suffix == ""
-    line = model.HealthLine(compact.text, compact.severity, compact.due_suffix)
-    assert line.due_suffix == expected
+    for due, expected in ((None, ""), ("expired", " · recheck due")):
+        snapshot = health.HealthSnapshot(DiagnosticReport(()), "hash", tmp_path / "last.log", due)
+        compact = health_presentation.count_line(snapshot)
+        assert compact.due_suffix == expected
+        assert compact.text == "Doctor: OK" + expected
+        line = model.HealthLine(compact.text, compact.severity, compact.due_suffix)
+        assert line.due_suffix == expected
 
 
 def test_health_line_rejects_mismatched_due_suffix():
