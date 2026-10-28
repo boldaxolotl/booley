@@ -38,6 +38,8 @@ class TopBar(Widget, can_focus=True):
     active = reactive("sessions")
     #: Index into ITEMS under the cursor; only drawn while the bar has focus.
     cursor = reactive(0)
+    #: Sessions that need the human; the Sessions tab is marked while it is above zero.
+    needs_you = reactive(0)
 
     class Selected(Message):
         """Enter was pressed on an item."""
@@ -73,5 +75,8 @@ class TopBar(Widget, can_focus=True):
             style = f"bold color({PALETTE_DODGER_BLUE})" if window == self.active else ""
             if self.has_focus and index == self.cursor:
                 style = f"{style} reverse".strip()
-            text.append(f" {label} ", style=style)
+            shown = (
+                f"{label} {self.needs_you}◆" if window == "sessions" and self.needs_you else label
+            )
+            text.append(f" {shown} ", style=style)
         return text

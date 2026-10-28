@@ -410,8 +410,8 @@ without it leaves both Dashboard auto-open and scoped views unavailable.
 #### A session shows `activity unknown`
 
 The Dashboard shows the activity that Claude Code or Codex reports through
-lifecycle hooks in the Sandbox Image. It never guesses, so a session reads
-`activity unknown` when:
+lifecycle hooks in the Sandbox Image. It never guesses, so a session is
+listed under UNKNOWN, and its detail reads `Activity unknown`, when:
 
 - the session has reported nothing since it first called Booley; the next
   prompt or tool call fills it in;

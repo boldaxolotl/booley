@@ -8,13 +8,14 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Static
 
@@ -22,6 +23,7 @@ from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
+from booley.harness.dashboard import sessions
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
@@ -84,9 +86,10 @@ SEMANTIC_STYLE = {
 }
 
 
+UNMOUNTED_LIST_WIDTH = 160
+NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client calls Booley."
 # Views that replace the list with one full-width detail.
 DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal"})
-OVERVIEW_LABEL = "Sessions · arrows / Enter · stable 1-9"
 
 
 @dataclass(frozen=True)
@@ -384,10 +387,15 @@ def job_paths(job: JobView) -> tuple[str, ...]:
     return (*artifacts, report) if report else artifacts
 
 
-def _job_summary(job: JobView, now: float) -> str:
-    """Compact overview form: Flow, Target and elapsed time."""
+def _job_words(job: JobView, now: float) -> str:
+    """Flow, Target and elapsed time of a Job, as the overview shows them."""
     elapsed = job_elapsed_seconds(job, now)
-    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
+    return f"{job.record.endpoint} {DashboardApp._target(job)} {format_duration(elapsed) if elapsed is not None else 'unavailable'}"
+
+
+def _job_summary(job: JobView, now: float) -> str:
+    """Compact overview form: marker, Job label, Flow, Target and elapsed time."""
+    return f"▶ {_job_label(job)} {_job_words(job, now)}"
 
 
 def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
@@ -410,6 +418,36 @@ def _evidence_detail(goal: GoalDetail, *, now: float | None = None) -> str:
     if goal.artifacts:
         lines.extend(("Available evidence paths:", *goal.artifacts))
     return frozen + "\n".join(lines)
+
+
+class SessionList(DataTable):
+    """The list, whose group header rows can never hold the cursor.
+
+    Textual clamps every cursor move (arrows, paging, Home/End, clicks and
+    ``move_cursor``) through ``validate_cursor_coordinate``, so skipping the
+    headers here also keeps Enter and a second click from selecting one.
+    """
+
+    header_rows: frozenset[int] = frozenset()
+
+    def validate_cursor_coordinate(self, value: Coordinate) -> Coordinate:
+        """Move on from a header row in the direction of travel, else the other way."""
+        clamped = super().validate_cursor_coordinate(value)
+        row = clamped.row
+        if row not in self.header_rows:
+            return clamped
+        forward = row >= self.cursor_coordinate.row
+        for step in (1, -1) if forward else (-1, 1):
+            candidate = row
+            while candidate in self.header_rows:
+                candidate += step
+            if 0 <= candidate < self.row_count:
+                return Coordinate(candidate, clamped.column)
+        return clamped
+
+    def first_selectable_row(self) -> int:
+        """Index of the first row that is not a group header."""
+        return next((row for row in range(self.row_count) if row not in self.header_rows), 0)
 
 
 class DashboardApp(App[None]):
@@ -462,7 +500,10 @@ class DashboardApp(App[None]):
         self.row_keys: list[str] = []
         self._read_task: asyncio.Task[DashboardSnapshot] | None = None
         self._rows: list[tuple[object, ...]] = []
-        self._list_label_shown = ""
+        self._list_label_shown: str | Text = ""
+        # The overview's aligned column header and the list width it was fitted to.
+        self._overview_header = Text()
+        self._overview_width = 0
         # Scroll offsets by (window, view, session, filter, detail selection).
         self._scrolls: dict[tuple[str, str, str | None, str, str], float] = {}
         self._detail_shown: tuple[str, str, str | None, str, str] | None = None
@@ -476,7 +517,7 @@ class DashboardApp(App[None]):
         yield Static(id="orientation", markup=False)
         yield Static(id="empty", markup=False)
         with Horizontal(id="body"):
-            yield DataTable(id="list", cursor_type="row")
+            yield SessionList(id="list", cursor_type="row")
             with VerticalScroll(id="aside"):
                 yield Static(id="detail", markup=False)
         yield Footer()
@@ -612,7 +653,9 @@ class DashboardApp(App[None]):
         """True when up has nowhere to go inside the focused content."""
         table = self.query_one(DataTable)
         if table.display:
-            return self.focused is table and (table.row_count == 0 or table.cursor_row == 0)
+            return self.focused is table and (
+                table.row_count == 0 or table.cursor_row <= table.first_selectable_row()
+            )
         aside = self.query_one("#aside")
         return self.focused is aside and aside.scroll_y == 0
 
@@ -898,8 +941,10 @@ class DashboardApp(App[None]):
         label = self.snapshot.session_handles.get(key)
         return owner == label if owner and label else job.record.session_key == key
 
-    def _overview_row(self, row: Any) -> str:
+    def _session_facts(self, row: SessionRow) -> sessions.SessionFacts:
+        """Everything the overview shows about one session."""
         facts = row.attribution
+        # Overview rows describe the Goal occupying the worktree, never a finished one.
         goal = next(
             (
                 goal
@@ -910,55 +955,69 @@ class DashboardApp(App[None]):
             ),
             None,
         )
-        summary = ""
-        if goal and goal.status:
-            summary = f" · Goals {goal.status.met}/{len(goal.status.goals)} · proposals {goal.status.pending_proposals}"
+        mode = "Interactive"
+        if goal:
+            mode = f"Goal {goal.status.met}/{len(goal.status.goals)}" if goal.status else "Goal"
+        notices = []
         if goal and goal.diagnostic:
-            summary += " · " + goal.diagnostic
-        shared = any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions)
-        warning = (
-            " · shared attribution unavailable"
-            if facts.kind == "worktree"
-            else (" · WARNING shared worktree" if shared else "")
-        )
-        jobs = [
-            job
-            for job in self.snapshot.jobs.jobs
-            if self._owned_by(job, facts.key) and job.state == "running"
-        ]
-        running = "; ".join(_job_summary(job, self.snapshot.observed_at) for job in jobs)
+            # A diagnostic can span lines; a row must stay one line.
+            notices.append(" · ".join(part.strip() for part in goal.diagnostic.splitlines()))
+        if facts.kind == "worktree":
+            notices.append("shared attribution unavailable")
+        elif any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions):
+            notices.append("WARNING shared worktree")
         checkout, branch = self._checkout_label(facts, goal)
-        return (
-            f"{self.shortcuts.get(facts.key, '·')} · {self._session_handle(facts.key)} · {checkout} · {branch or 'branch —'} · "
-            f"{'Goal Mode' if goal else 'Interactive'} · Started {format_age(row.started_at, now=self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
-            + summary
-            + warning
-            + (" · " + running if running else "")
+        return sessions.SessionFacts(
+            key=facts.key,
+            handle=self._session_handle(facts.key),
+            shortcut=str(self.shortcuts.get(facts.key, "")),
+            mode=mode,
+            branch=branch,
+            work_dir=checkout,
+            started=format_age(row.started_at, now=self.snapshot.observed_at),
+            activity=self.snapshot.activity.get(facts.key, Activity()),
+            proposals=goal.status.pending_proposals if goal and goal.status else 0,
+            jobs=tuple(
+                _job_summary(job, self.snapshot.observed_at)
+                for job in self.snapshot.jobs.jobs
+                if self._owned_by(job, facts.key) and job.state == "running"
+            ),
+            notices=tuple(notices),
         )
 
+    def _list_width(self) -> int:
+        """Cells available to a row: the list less cell padding and its scrollbar."""
+        if not self.is_running:  # Not on screen yet (headless callers): fit a roomy terminal.
+            return UNMOUNTED_LIST_WIDTH
+        table = self.query_one(DataTable)
+        return max(20, (table.size.width or self.size.width) - 2 - table.scrollbar_size_vertical)
+
     def _overview(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
-        keys = [row.attribution.key for row in self.snapshot.sessions]
-        rows = [(self._overview_row(row),) for row in self.snapshot.sessions]
+        now = self.snapshot.observed_at
         standalone = [
-            job
+            sessions.StandaloneJob(
+                "job:" + json.dumps(job.key), _job_label(job), _job_words(job, now)
+            )
             for job in self.snapshot.jobs.jobs
             if job.record.session_key is None and job.state == "running"
         ]
-        orientation = "Sessions" + (
-            "\nStandalone running Jobs: "
-            + "; ".join(_job_summary(job, self.snapshot.observed_at) for job in standalone)
-            if standalone
-            else ""
+        self._overview_width = self._list_width()
+        built = sessions.build(
+            [self._session_facts(row) for row in self.snapshot.sessions],
+            standalone,
+            now,
+            self._overview_width,
         )
-        return orientation, keys, rows
+        self._overview_header = built.header
+        return "Sessions", built.keys, [(line,) for line in built.rows]
 
     def render_snapshot(self) -> None:
         """Refresh content while retaining row identity and scroll position."""
         orientation, keys, rows = self._content()
         self.query_one("#orientation", Static).update(_orientation_text(orientation))
         self.query_one("#empty", Static).update(
-            "No connected sessions"
-            if not rows and self.navigation.view == "overview"
+            NO_SESSIONS
+            if not self.snapshot.sessions and self.navigation.view == "overview"
             else (
                 "No Jobs match this filter" if not rows and self.navigation.view == "jobs" else ""
             )
@@ -969,8 +1028,13 @@ class DashboardApp(App[None]):
         notices_text = _notices_text(self.snapshot)
         notices.update(notices_text)
         notices.display = bool(notices_text)
-        self.query_one(TopBar).active = self.window
-        table = self.query_one(DataTable)
+        top_bar = self.query_one(TopBar)
+        top_bar.active = self.window
+        top_bar.needs_you = sum(
+            sessions.group_of(self._session_facts(row)) == sessions.NEEDS_YOU
+            for row in self.snapshot.sessions
+        )
+        table = self.query_one(SessionList)
         selected = self._selected_key()
         scroll = (
             table.scroll_y
@@ -984,27 +1048,36 @@ class DashboardApp(App[None]):
             self._list_label_shown = label
             self._rows = []
         if rows != self._rows:
+            table.header_rows = frozenset()
             table.clear()
             for row in rows:
                 table.add_row(
                     *(cell if isinstance(cell, Text) else Text(str(cell)) for cell in row)
                 )
-            if selected in keys:
-                index = keys.index(selected)
-                table.move_cursor(row=index, animate=False)
+            table.header_rows = frozenset(
+                index for index, key in enumerate(keys) if key.startswith(sessions.HEADER_PREFIX)
+            )
+            # Scroll first so a selection that moved is scrolled back into view.
             table.scroll_to(y=scroll, animate=False)
+            table.move_cursor(
+                row=keys.index(selected) if selected in keys else table.first_selectable_row(),
+                animate=False,
+            )
             self._rows = rows
         self.row_keys = keys
         self._render_detail()
+        if self.navigation.view == "overview" and self._overview_width != self._list_width():
+            # The list was not laid out yet (or its scrollbar appeared): fit once more.
+            self.call_after_refresh(self.render_snapshot)
         # Refreshes keep the keyboard where the user put it; only a hidden or
         # missing focus owner (a view change hid the list) moves it.
         if self.focused is None or not self.focused.display:
             self._focus_content()
 
-    def _list_label(self) -> str:
+    def _list_label(self) -> str | Text:
         """Header of the list column; dedicated details hide the list and keep its label."""
         return {
-            "overview": OVERVIEW_LABEL,
+            "overview": self._overview_header,
             "session": "Goals and activity",
             "jobs": "Jobs",
         }.get(self.navigation.view, self._list_label_shown)
@@ -1124,7 +1197,10 @@ class DashboardApp(App[None]):
             return
         nav = self.navigation
         if nav.view == "overview":
-            self._push(Navigation("session", key))
+            if key.startswith("job:"):
+                self._push(Navigation("job", None, nav.job_filter, key.removeprefix("job:")))
+            else:
+                self._push(Navigation("session", key))
         elif nav.view == "session":
             if key.startswith("job:"):
                 self._push(
