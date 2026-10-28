@@ -629,6 +629,9 @@ class _FakeViewer:
 
     def __init__(self, netlist: list[str], *, rows=(), open_docs=(), version="1.6.0"):
         self.ids = {path: i for i, path in enumerate(netlist, start=1)}
+        # 1-bit signals: VaporView renders them as a binary waveform, ignores a
+        # requested radix, and reports numberFormat/renderType "binary".
+        self.one_bit: set[str] = set()
         self.version = version
         self.docs = set(open_docs)
         self.rows = [self._resolve(row) for row in rows]
@@ -668,6 +671,9 @@ class _FakeViewer:
         }
         if row["name"] in self.ids:
             saved["netlistId"] = self.ids[row["name"]]
+        if row["name"] in self.one_bit:
+            saved["numberFormat"] = "binary"
+            saved["renderType"] = "binary"
         return saved
 
     def _resolve_all(self, rows: list[dict]) -> list[dict]:
@@ -974,6 +980,44 @@ def test_append_restyles_an_existing_row_without_adding_it(tmp_path, monkeypatch
     assert viewer.rows == [
         _row("tb.dut.fifo.full", numberFormat="binary", colorIndex=5, netlistId=1)
     ]
+
+
+def test_group_radix_tolerates_one_bit_rows_the_viewer_keeps_binary(
+    tmp_path, monkeypatch, fake_rust
+):
+    # VaporView draws 1-bit rows as binary waveforms and ignores a requested
+    # radix; a `%h` group spanning 1-bit and multi-bit signals must still succeed.
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.count[3:0]", 4)]
+    viewer = _viewer_for(trace, monkeypatch)
+    viewer.one_bit = {"tb.clk", "tb.dut.fifo.full"}
+
+    _gui(groups=["G=tb.dut.fifo.*%h@red"])
+
+    group = viewer.rows[-1]
+    assert group["groupName"] == "G"
+    by_name = {child["name"]: child for child in group["children"]}
+    assert by_name["tb.dut.fifo.full"]["numberFormat"] == "binary"
+    assert by_name["tb.dut.fifo.full"]["colorIndex"] == 4
+    assert by_name["tb.dut.fifo.count"]["numberFormat"] == "hexadecimal"
+    assert by_name["tb.dut.fifo.count"]["colorIndex"] == 4
+
+
+def test_one_bit_row_still_requires_the_requested_color(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    viewer = _viewer_for(trace, monkeypatch)
+    viewer.one_bit = {"tb.dut.fifo.full"}
+
+    def drop_color(model, state):
+        for row in model.rows:
+            row["colorIndex"] = 1
+
+    viewer.after_apply = drop_color
+
+    with pytest.raises(SystemExit, match="exact requested signal presentation"):
+        _gui(signals=["tb.dut.fifo.full%h@green"], append=True)
+    assert viewer.rows == []
 
 
 def test_style_readback_mismatch_is_an_error_and_restores(tmp_path, monkeypatch, fake_rust):

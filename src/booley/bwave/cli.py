@@ -1430,8 +1430,18 @@ def _row_matches(expected: dict, actual: object, target: _ViewTarget, strict: bo
     return all(
         actual.get(key) == expected[key]
         for key in ("numberFormat", "colorIndex")
-        if key in expected
+        if key in expected and not (key == "numberFormat" and _radix_not_applicable(actual))
     )
+
+
+def _radix_not_applicable(actual: dict) -> bool:
+    """Whether the viewer draws *actual* as a 1-bit waveform, where radix has no meaning.
+
+    VaporView renders 1-bit rows as binary waveforms and reports
+    ``numberFormat: "binary"`` for them whatever radix was requested, so a
+    ``%h``/``%d`` request spanning 1-bit signals must not demand it there.
+    """
+    return actual.get("renderType") == "binary"
 
 
 def _droppable(row: dict, target: _ViewTarget) -> bool:
