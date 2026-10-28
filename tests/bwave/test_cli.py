@@ -629,6 +629,9 @@ class _FakeViewer:
 
     def __init__(self, netlist: list[str], *, rows=(), open_docs=(), version="1.6.0"):
         self.ids = {path: i for i, path in enumerate(netlist, start=1)}
+        # 1-bit signals: VaporView renders them as a binary waveform, ignores a
+        # requested radix, and reports numberFormat/renderType "binary".
+        self.one_bit: set[str] = set()
         self.version = version
         self.docs = set(open_docs)
         self.rows = [self._resolve(row) for row in rows]
@@ -647,6 +650,9 @@ class _FakeViewer:
         # Model a viewer that drops an unresolved row instead of keeping a
         # placeholder (1.6.0 keeps placeholders; both shapes must work).
         self.omit_unresolved = False
+        # VaporView 1.6.0 ends with an EMPTY view when a load replaces a view
+        # holding a signal group with rows that leave that group out.
+        self.blank_on_group_replace = True
         self.fail_op: dict[str, str] = {}
 
     # -- modeled behavior ---------------------------------------------------
@@ -668,6 +674,9 @@ class _FakeViewer:
         }
         if row["name"] in self.ids:
             saved["netlistId"] = self.ids[row["name"]]
+        if row["name"] in self.one_bit:
+            saved["numberFormat"] = "binary"
+            saved["renderType"] = "binary"
         return saved
 
     def _resolve_all(self, rows: list[dict]) -> list[dict]:
@@ -683,6 +692,12 @@ class _FakeViewer:
         if row.get("dataType") == "signal-group":
             row["children"] = [self._prune(c) for c in row["children"] if self._kept(c)]
         return row
+
+    def _drops_a_group(self, new_rows: list[dict]) -> bool:
+        def group_names(rows: list[dict]) -> set:
+            return {row["groupName"] for row in rows if row.get("dataType") == "signal-group"}
+
+        return bool(new_rows) and not group_names(self.rows) <= group_names(new_rows)
 
     def _snapshot(self) -> dict:
         return copy.deepcopy({**self.session, "displayedSignals": self.rows})
@@ -712,7 +727,10 @@ class _FakeViewer:
         if path not in self.docs:  # the real bridge refuses a closed document
             raise bwave_bridge.BridgeRequestError("apply", f"{path} is not open")
         self._stale, self._pending = self._snapshot(), self.lag
-        self.rows = self._resolve_all(state["displayedSignals"])
+        rows = self._resolve_all(state["displayedSignals"])
+        if self.blank_on_group_replace and self._drops_a_group(rows):
+            rows = []
+        self.rows = rows
         for key in ("markerTime", "altMarkerTime", "displayTimeUnit"):
             if key in state:
                 self.session[key] = state[key]
@@ -797,6 +815,14 @@ def fake_rust(monkeypatch):
             else:
                 cycles = int(token[:-1]) if token.endswith("c") else int(token)
                 target_tick = cycles * _TICKS_PER_CYCLE
+            if target_tick > state["total_ticks"]:
+                # Like the binary: a time past the trace end is a usage error.
+                return subprocess.CompletedProcess(
+                    cmd,
+                    2,
+                    stdout="",
+                    stderr=f"ERROR: value time {token} is beyond simulation range\n",
+                )
             data = {
                 "scope_prefix": "",
                 "mode": "async" if async_mode else "sync",
@@ -976,6 +1002,90 @@ def test_append_restyles_an_existing_row_without_adding_it(tmp_path, monkeypatch
     ]
 
 
+def test_group_radix_tolerates_one_bit_rows_the_viewer_keeps_binary(
+    tmp_path, monkeypatch, fake_rust
+):
+    # VaporView draws 1-bit rows as binary waveforms and ignores a requested
+    # radix; a `%h` group spanning 1-bit and multi-bit signals must still succeed.
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.count[3:0]", 4)]
+    viewer = _viewer_for(trace, monkeypatch)
+    viewer.one_bit = {"tb.clk", "tb.dut.fifo.full"}
+
+    _gui(groups=["G=tb.dut.fifo.*%h@red"])
+
+    group = viewer.rows[-1]
+    assert group["groupName"] == "G"
+    by_name = {child["name"]: child for child in group["children"]}
+    assert by_name["tb.dut.fifo.full"]["numberFormat"] == "binary"
+    assert by_name["tb.dut.fifo.full"]["colorIndex"] == 4
+    assert by_name["tb.dut.fifo.count"]["numberFormat"] == "hexadecimal"
+    assert by_name["tb.dut.fifo.count"]["colorIndex"] == 4
+
+
+def test_replacing_a_grouped_view_clears_it_first(tmp_path, monkeypatch, fake_rust, capsys):
+    # VaporView 1.6.0 blanks the view when a load drops a group the view held;
+    # loading an empty view first avoids it, so no row is reported as dropped.
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
+    group = {
+        "dataType": "signal-group",
+        "groupName": "G",
+        "children": [_row("tb.dut.fifo.full")],
+    }
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), group])
+    # Like the live viewer: right after the load, state still reads the
+    # cleared view, which must not pass for "every row was dropped".
+    viewer.lag = 1
+
+    _gui(signals=["tb.dut.fifo.empty"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.empty"]
+    assert viewer.applied()[0]["displayedSignals"] == []
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_replacing_a_flat_view_does_not_clear_it_first(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.dut.fifo.full")])
+
+    _gui(signals=["tb.dut.fifo.empty"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.empty"]
+    assert all(state["displayedSignals"] for state in viewer.applied())
+
+
+def test_unmatched_signal_glob_warns_and_shows_the_rest(tmp_path, monkeypatch, fake_rust, capsys):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    viewer = _viewer_for(trace, monkeypatch)
+
+    _gui(signals=["tb.dut.fifo.full", "tb.nope"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
+    err = capsys.readouterr().err
+    assert "no signals match --signals 'tb.nope'" in err
+    assert "tb.dut.fifo.full'" not in err
+
+
+def test_one_bit_row_still_requires_the_requested_color(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    viewer = _viewer_for(trace, monkeypatch)
+    viewer.one_bit = {"tb.dut.fifo.full"}
+
+    def drop_color(model, state):
+        for row in model.rows:
+            row["colorIndex"] = 1
+
+    viewer.after_apply = drop_color
+
+    with pytest.raises(SystemExit, match="exact requested signal presentation"):
+        _gui(signals=["tb.dut.fifo.full%h@green"], append=True)
+    assert viewer.rows == []
+
+
 def test_style_readback_mismatch_is_an_error_and_restores(tmp_path, monkeypatch, fake_rust):
     trace = _seed_default(tmp_path)
     fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
@@ -1105,7 +1215,7 @@ def test_append_merges_into_existing_group_and_preserves_its_state(
 
     _gui(groups=["Status=tb.dut.fifo.*"], append=True)
 
-    status = viewer.applied()[0]["displayedSignals"][1]
+    status = viewer.applied()[-1]["displayedSignals"][1]
     assert status["collapseState"] == 1
     assert status["children"][0]["colorIndex"] == 3
     assert [item["name"] for item in status["children"]] == [
@@ -1821,7 +1931,9 @@ def test_time_end_past_the_trace_is_clamped(tmp_path, monkeypatch, fake_rust, ca
 
     assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 1000, "end": end}
     assert viewer.session["altMarkerTime"] == end
-    assert f"showing up to tick {end}" in capsys.readouterr().err
+    assert f"--time end 999999c is past the end of the trace; showing up to tick {end}" in (
+        capsys.readouterr().err
+    )
 
 
 def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
@@ -1831,7 +1943,19 @@ def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, monkeypa
     with pytest.raises(SystemExit) as exc:
         _gui(time="200000c:300000c")
 
-    assert "after the end of the trace" in str(exc.value)
+    assert "--time start 200000c is past the end of the trace" in str(exc.value)
+    assert "--at-time" not in str(exc.value)  # no hint aimed at `bwave value`
+    assert viewer.calls == []
+
+
+def test_cursor_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(time="100c:200c", cursor="999999c")
+
+    assert "--cursor 999999c is past the end of the trace" in str(exc.value)
     assert viewer.calls == []
 
 
@@ -1920,11 +2044,12 @@ def test_gui_surfaces_the_inner_preflight_error(tmp_path, failing_rust):
 def test_nonzero_exit_message_is_not_double_prefixed(tmp_path, failing_rust):
     _seed_default(tmp_path)
     failing_rust["rc"] = 2
+    failing_rust["stderr"] = "ERROR: could not open store: bad magic\n"
 
     with pytest.raises(SystemExit) as exc:
-        _gui(time="160000c:160100c", append=True)
+        _gui(time="100c:200c", append=True)
 
-    assert str(exc.value).startswith("ERROR: --at-time 160000")
+    assert str(exc.value) == "ERROR: could not open store: bad magic"
 
 
 def test_plain_text_failure_on_stdout_is_surfaced(tmp_path, failing_rust):

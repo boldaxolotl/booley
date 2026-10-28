@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn
 
 from booley.bwave import vaporview_bridge
-from booley.bwave.contract import NO_MATCH_MARKER
+from booley.bwave.contract import BEYOND_RANGE_MARKER, EXIT_USAGE, NO_MATCH_MARKER
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import (
     conversion_failure_messages,
@@ -788,9 +788,9 @@ def _exit_with_inner_error(
 ) -> NoReturn:
     """Exit surfacing the inner binary's message verbatim, never the plumbing.
 
-    The Rust binary writes genuinely useful diagnostics — e.g. `--at-time N is
-    beyond simulation range (sim length: 15 cycles)` plus a did-you-mean HINT —
-    and then, for that class of failure, exits 0 with no JSON on stdout. The
+    The Rust binary writes genuinely useful diagnostics — e.g. an ERROR line
+    plus a did-you-mean HINT — and some failures exit with no JSON on stdout,
+    some even with status 0. The
     wrapper used to answer that with "bwave returned non-JSON output for: value
     <argv>", which hides the hint the user needed and leaks internal plumbing.
     So: the inner text is the error; *plumbing* (which internal query broke, and
@@ -812,11 +812,20 @@ def _run_capture(cmd_args: list[str]) -> dict:
     the user's terminal like _run(); a failure here is an input problem
     (bad glob, bad time token), so the binary's stderr is surfaced verbatim.
     """
+    return _capture_data(_run_query(cmd_args), cmd_args)
+
+
+def _run_query(cmd_args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run one internal Rust query, exiting only on a timeout."""
     cmd = [*_bwave_cmd(), *cmd_args]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     except subprocess.TimeoutExpired:
         sys.exit(f"ERROR: bwave query timed out (120s): {' '.join(cmd_args)}")
+
+
+def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
+    """Return the JSON envelope `data`, surfacing the binary's own error on failure."""
     if result.returncode != 0:
         _exit_with_inner_error(result, cmd_args, "bwave query failed")
     try:
@@ -972,10 +981,13 @@ def _resolve_signal_globs(
     selectors = [_parse_display_selector(glob, option=option) for glob in globs]
     listing: dict | None = None
     signals: dict[str, _OpenSignal] = {}
+    unmatched: list[str] = []
     for selector in selectors:
         data = _list_query(trace, [selector.glob])
         if listing is None:
             listing = data
+        if not data.get("signals"):
+            unmatched.append(selector.glob)
         prefix = data.get("scope_prefix") or ""
         for sig in data.get("signals", []):
             name = sig.get("name")
@@ -992,6 +1004,9 @@ def _resolve_signal_globs(
         # NO_MATCH_MARKER keeps the two surfaces greppable the same way.
         pat = ", ".join(f"'{g}'" for g in globs)
         _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}")
+    for glob in unmatched:
+        # Like the Rust partial miss: the other selectors still show.
+        print(f"WARNING: {NO_MATCH_MARKER} {option} '{glob}'; not shown", file=sys.stderr)
     resolved = list(signals.values())
     if len(resolved) > cap:
         head = "\n".join(f"  {signal.bwave_name}" for signal in resolved[:5])
@@ -1103,7 +1118,15 @@ class _TickResolver:
         self.markers = _get_markers(_load_sessions(), alias)
         self._total_ticks: int | None = None
 
-    def to_tick(self, token: str) -> int:
+    def to_tick(self, token: str, *, option: str) -> int:
+        """Resolve *token*; one past the end of the trace is a usage error."""
+        tick = self._tick_within_trace(token)
+        if tick is None:
+            sys.exit(f"ERROR: {option} {token} is past the end of the trace")
+        return tick
+
+    def _tick_within_trace(self, token: str) -> int | None:
+        """Resolve *token* to a tick, or None when it lies past the end of the trace."""
         # Markers are stored as cycle numbers; make the unit explicit so the
         # token survives async traces' bare-integer rejection with a clear
         # error pointing at the cycle grammar rather than a mystery number.
@@ -1118,7 +1141,10 @@ class _TickResolver:
         if token.endswith(("t", "ps", "ns", "us", "ms")):
             command.append("--async")
         command.extend(["--at", token, "--format", "json", "--limit", "1"])
-        data = _run_capture(command)
+        result = _run_query(command)
+        if result.returncode == EXIT_USAGE and BEYOND_RANGE_MARKER in result.stderr.lower():
+            return None
+        data = _capture_data(result, command)
         tick = data.get("target_tick")
         if not isinstance(tick, int):
             sys.exit(f"ERROR: could not resolve time token '{token}' to a tick")
@@ -1146,10 +1172,8 @@ class _TickResolver:
                 "Either end may be omitted: '500c:' or ':100ns'."
             )
         raw_start, raw_end = spec.split(":", 1)
-        start = self.to_tick(raw_start) if raw_start else 0
-        end = self.to_tick(raw_end) if raw_end else self.total_ticks()
-        if start >= end:
-            sys.exit(f"ERROR: empty --time range: start tick {start} >= end tick {end}")
+        start = self.to_tick(raw_start, option="--time start") if raw_start else 0
+        end = self._tick_within_trace(raw_end) if raw_end else self.total_ticks()
         # VaporView rejects a window that ends past the trace (its end is the
         # last timestamp plus a margin, never less than `list`'s total_ticks).
         last = self.total_ticks()
@@ -1158,13 +1182,15 @@ class _TickResolver:
                 f"ERROR: --time starts at tick {start}, at or after the end of the trace "
                 f"(tick {last})"
             )
-        if end > last:
+        if end is None or end > last:
             print(
-                f"NOTE: --time end tick {end} is past the end of the trace; "
+                f"NOTE: --time end {raw_end} is past the end of the trace; "
                 f"showing up to tick {last}",
                 file=sys.stderr,
             )
             end = last
+        if start >= end:
+            sys.exit(f"ERROR: empty --time range: start tick {start} >= end tick {end}")
         return start, end
 
 
@@ -1430,8 +1456,18 @@ def _row_matches(expected: dict, actual: object, target: _ViewTarget, strict: bo
     return all(
         actual.get(key) == expected[key]
         for key in ("numberFormat", "colorIndex")
-        if key in expected
+        if key in expected and not (key == "numberFormat" and _radix_not_applicable(actual))
     )
+
+
+def _radix_not_applicable(actual: dict) -> bool:
+    """Whether the viewer draws *actual* as a 1-bit waveform, where radix has no meaning.
+
+    VaporView renders 1-bit rows as binary waveforms and reports
+    ``numberFormat: "binary"`` for them whatever radix was requested, so a
+    ``%h``/``%d`` request spanning 1-bit signals must not demand it there.
+    """
+    return actual.get("renderType") == "binary"
 
 
 def _droppable(row: dict, target: _ViewTarget) -> bool:
@@ -1483,6 +1519,8 @@ class _ViewSession:
         self.client = client
         self.path = path
         self.mutated = False
+        # Rows the viewer showed right before the latest load (after any clear).
+        self.rows_before_load: list[dict] = []
 
     def state(self) -> dict:
         state = self.client.state(self.path)
@@ -1492,7 +1530,34 @@ class _ViewSession:
 
     def apply(self, session: dict) -> None:
         self.mutated = True
+        rows = self._current_rows()
+        if session["displayedSignals"] and any(
+            row.get("dataType") == "signal-group" for row in rows
+        ):
+            self._clear(session)
+            rows = []
+        self.rows_before_load = rows
         self.client.apply(self.path, session)
+
+    def _current_rows(self) -> list[dict]:
+        state = self.client.state(self.path)
+        return _state_rows(state) if state else []
+
+    def _clear(self, session: dict) -> None:
+        """Load an empty view and wait for it before loading *session*.
+
+        VaporView 1.6.0 ends with an empty view, not the requested rows, when
+        a load replaces a view that holds a signal group with rows that leave
+        the group out. Every row would then read as dropped. The caller clears
+        whenever the view holds any group: not every group change was tested
+        live, and a clear costs one extra round trip.
+        """
+        self.client.apply(self.path, {**session, "displayedSignals": []})
+        deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+        while _state_rows(self.state()):
+            if time.monotonic() >= deadline:
+                raise ViewerControlError("viewer did not clear the previous rows")
+            time.sleep(_VIEW_POLL_INTERVAL)
 
     def set_viewport(self, start: int, end: int) -> None:
         self.client.set_viewport(self.path, start, end)
@@ -1515,13 +1580,14 @@ class _ViewSession:
                 raise ViewerControlError(failure)
             time.sleep(_VIEW_POLL_INTERVAL)
 
-    def settle_probe(self, target: _ViewTarget, previous: list[dict]) -> dict:
+    def settle_probe(self, target: _ViewTarget) -> dict:
         """Poll until the viewer shows *target*, tolerating omitted rows we added.
 
-        A tolerant match that still equals the pre-apply rows may just be the
-        old state, so it is accepted only once the rows change or the
-        deadline passes.
+        A tolerant match that still equals the rows shown right before the
+        load may just be the old state, so it is accepted only once the rows
+        change or the deadline passes.
         """
+        previous = self.rows_before_load
         deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
         while True:
             state = self.state()
@@ -1563,16 +1629,15 @@ def _resolve_rows(
     signals = list(request.plan.signals)
     target = request.compose(signals)
     view.apply(target.session())
-    state = view.settle_probe(target, request.base)
+    state = view.settle_probe(target)
     missing = _unresolved(_state_rows(state), target.added)
     retry = {signal.bwave_name for signal in missing if signal.fallback is not None}
     if not retry:
         return target, missing
-    previous = _state_rows(state)
     signals = [_as_identifier(s) if s.bwave_name in retry else s for s in signals]
     target = request.compose(signals)
     view.apply(target.session())
-    state = view.settle_probe(target, previous)
+    state = view.settle_probe(target)
     return target, _unresolved(_state_rows(state), target.added)
 
 
@@ -1751,7 +1816,7 @@ def _build_gui_plan(trace_abs: str, alias: str, args: argparse.Namespace) -> _Gu
     signals, groups = _resolve_gui_selection(trace_abs, args)
     resolver = _TickResolver(trace_abs, alias)
     viewport = resolver.range_to_ticks(args.time) if args.time else None
-    cursor_tick = resolver.to_tick(args.cursor) if args.cursor else None
+    cursor_tick = resolver.to_tick(args.cursor, option="--cursor") if args.cursor else None
     markers: list[tuple[int, str, str]] = []
     if viewport is not None:
         markers.append(
@@ -2325,7 +2390,8 @@ What `gui` does for you, so the view is readable on arrival:
   viewer's status bar reports the span as a delta and the human can read
   the duration off the screen instead of subtracting ruler numbers.
   --cursor moves the START (main) marker somewhere else inside the range;
-  END stays put. An end past the trace is clamped to the trace end. The
+  END stays put. An end past the trace is clamped to the trace end; a
+  start or --cursor past it is an error. The
   viewer cannot remove a marker, so one this command does not set stays
   where it was.
 
@@ -2333,7 +2399,8 @@ What `gui` does for you, so the view is readable on arrival:
   viewer, so it is what is actually on screen. Anything the viewer would
   not display is named in a WARNING on stderr — relay that to the human
   rather than claiming the full view; the trace itself is still fine and
-  still queryable.
+  still queryable. A --signals glob that matches nothing in the trace
+  gets a WARNING too.
 
   Native groups. Prefer repeatable --group 'NAME=GLOB' for a view with
   more than one logical section. Groups are named viewer rows that the
@@ -2344,6 +2411,7 @@ What `gui` does for you, so the view is readable on arrival:
   Radix and color. Append %b, %h, or %d and then @red, @blue, or @green
   to either selector: --group 'State=tb.dut.state%h@blue'. Explicit
   presentation is read back from the viewer before success is reported.
+  A radix applies only to vectors: 1-bit signals always draw as waveforms.
 
 Pick signals like you would draw them on a whiteboard: the strobe that
 starts the thing, the state it walks, the counter that proves it, the

@@ -40,7 +40,7 @@ stays put. Without `--time`, `--cursor T` places only the main marker and
 scrolls it into view. Without `--signals` or `--group`, `--time` and `--cursor`
 keep the rows already on screen and only move the time window and markers.
 A `--time` end past the trace is clamped to the trace end (with a note on
-stderr); a start at or past the end is an error.
+stderr); a start or `--cursor` at or past the end is an error.
 
 VaporView can move a marker but cannot remove one, so `gui` sets and verifies
 only the markers it was asked for. Any other marker stays where it is: for
@@ -80,7 +80,9 @@ collapse state and signal formatting are preserved. `gui` reads the hierarchy
 back from VaporView before reporting success. It commits one exact ordered
 tree, and restores the previous view if the commit or readback fails. Any
 mismatch in membership, placement, order, radix, color, or marker position is
-an error, never a silently altered view.
+an error, never a silently altered view. The one exception is radix on a 1-bit
+signal: VaporView always draws it as a waveform, so a radix applies only to
+vectors.
 
 ## Top-level rows: `--signals`
 
@@ -114,6 +116,10 @@ human actually sees. A signal missing from the viewer's netlist is dropped and
 named in a `WARNING` on stderr — tell the human what did not make it onto the
 screen instead of claiming the full view. The trace itself is fine;
 `signal` / `find` / `value` still answer for that signal.
+
+A `--signals` glob that matches nothing in the trace is named in a `WARNING`
+too, while the other globs still show. When every `--signals` glob misses, or a
+`--group` glob matches nothing, the command fails before the view changes.
 
 ## Transport
 
