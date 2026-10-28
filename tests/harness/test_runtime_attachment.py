@@ -22,6 +22,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
+from tests.sharing_error_support import hold_opens
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
 
@@ -493,3 +494,48 @@ def test_cwd_disappearing_at_startup_is_not_reported_as_image_defect(
     )
     assert "selected directory '/work/linked'" in caplog.text
     assert "published image" not in caplog.text
+
+
+# --- Windows sharing errors on the record poll (#2187) ------------------------------
+
+
+class _ExitedTransport:
+    """A transport process that has already exited."""
+
+    def poll(self) -> int:
+        return 0
+
+
+def _drive_with_held_record(tmp_path: Path, monkeypatch, held_opens: int):
+    """Drive a terminal record whose first ``held_opens`` opens hit a sharing violation."""
+    paths = execution_records.execution_paths("e" * 32, booley_dir=tmp_path)
+    paths.root.mkdir(parents=True)
+    execution_records.atomic_write_json(
+        paths.record,
+        {
+            "schema_version": execution_records.PROTOCOL_VERSION,
+            "state": "terminal",
+            "exit_code": 7,
+            "tree_terminal": True,
+            "terminal_cause": "exited",
+        },
+    )
+    # With no startup grace, reading a held record as absent would fail the run.
+    monkeypatch.setattr(runtime_attachment, "_STARTUP_LIMIT_SECONDS", 0.0)
+    hold_opens(monkeypatch, {paths.record: held_opens})
+    return runtime_attachment._drive_execution(
+        _ExitedTransport(), paths, runtime_attachment._PendingSignals()
+    )
+
+
+def test_record_poll_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    result = _drive_with_held_record(tmp_path, monkeypatch, 1)
+    assert (result.exit_code, result.terminal_cause) == (7, "exited")
+
+
+def test_record_poll_keeps_polling_through_lasting_sharing_error(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    result = _drive_with_held_record(tmp_path, monkeypatch, 3)  # outlasts one poll's retries
+    assert (result.exit_code, result.terminal_cause) == (7, "exited")
+    assert "Cannot read execution record" in caplog.text

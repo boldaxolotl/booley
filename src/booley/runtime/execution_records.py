@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from booley.runtime.booley_dir import resolve_booley_dir
-from booley.runtime.filesystem_utils import read_file_bytes, replace_file
+from booley.runtime.filesystem_utils import (
+    is_transient_read_error,
+    read_file_bytes,
+    replace_file,
+)
 from booley.runtime.pid import RUNNING, ProcessIdentity, ProcessObservation, observe_process
 from booley.runtime.process_tree import has_ancestor
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -141,11 +145,32 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def read_json(path: Path) -> dict[str, Any] | None:
-    """Read one protocol object; corrupt or missing input is indeterminate."""
+def _read_protocol_bytes(path: Path) -> bytes | None:
+    """Read a protocol file through the sharing-retrying reader.
+
+    Missing or otherwise unreadable input is ``None`` (indeterminate). A Windows
+    sharing error that outlasts the retry budget raises ``PermissionError``
+    instead, so it is never mistaken for an absent file.
+    """
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+        return read_file_bytes(path)
+    except OSError as exc:
+        if is_transient_read_error(exc):
+            raise
+        return None
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    """Read one protocol object; corrupt or missing input is indeterminate.
+
+    A sharing error that outlasts the retry budget raises ``PermissionError``.
+    """
+    raw = _read_protocol_bytes(path)
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except ValueError:
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -259,9 +284,8 @@ def _child_entry_matches(
     entry = read_json(_child_entry_path(paths, execution_id))
     if entry is None:
         return False
-    try:
-        raw = paths.context.read_bytes()
-    except OSError:
+    raw = _read_protocol_bytes(paths.context)
+    if raw is None:
         return False
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     linked = (
@@ -286,17 +310,23 @@ def write_attachment_heartbeat(paths: ExecutionPaths, *, generation: int) -> Non
     tmp = paths.heartbeat.with_name(f".{paths.heartbeat.name}.{os.getpid()}.tmp")
     tmp.write_text(f"{generation}\n", encoding="ascii")
     try:
-        tmp.replace(paths.heartbeat)
+        replace_file(tmp, paths.heartbeat)
     except PermissionError:
         with suppress(OSError):
             tmp.unlink()
 
 
 def read_attachment_heartbeat(paths: ExecutionPaths) -> int | None:
-    """Read the current attachment generation without comparing host clocks."""
+    """Read the current attachment generation without comparing host clocks.
+
+    A sharing error that outlasts the retry budget raises ``PermissionError``.
+    """
+    raw = _read_protocol_bytes(paths.heartbeat)
+    if raw is None:
+        return None
     try:
-        generation = int(paths.heartbeat.read_text(encoding="ascii").strip())
-    except (OSError, ValueError):
+        generation = int(raw.decode("ascii").strip())
+    except ValueError:
         return None
     return generation if generation >= 0 else None
 
@@ -312,7 +342,12 @@ def request_cancellation(
     if force:
         paths.root.mkdir(parents=True, exist_ok=True)
         paths.force.touch(exist_ok=True)
-    current = read_json(paths.cancel)
+    try:
+        current = read_json(paths.cancel)
+    except OSError:
+        # A sharing error that outlasted the read retries: the request is
+        # idempotent, so write it again rather than abort a cancellation loop.
+        current = None
     force = force or paths.force.exists()
     if current is not None and (not force or current.get("force") is True):
         return
@@ -672,14 +707,22 @@ def _uuid4(value: object) -> bool:
     return parsed is not None and parsed.version == 4 and str(parsed) == value
 
 
+def _is_complete_terminal_record(record: Path) -> bool:
+    """True for a readable, tree-terminal record; one we cannot read is never collectable."""
+    try:
+        payload = read_json(record)
+    except OSError:
+        return False
+    return (
+        payload is not None
+        and payload.get("state") == "terminal"
+        and payload.get("tree_terminal") is True
+    )
+
+
 def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
     record = root / "record.json"
-    payload = read_json(record)
-    if (
-        payload is None
-        or payload.get("state") != "terminal"
-        or payload.get("tree_terminal") is not True
-    ):
+    if not _is_complete_terminal_record(record):
         return False
     try:
         entries = list(root.iterdir())

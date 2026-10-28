@@ -38,6 +38,7 @@ from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
 from tests.goals.conftest import LINT_KEY, enter_goals, git, run_row
+from tests.sharing_error_support import hold_opens
 
 CYCLE_ARG = {
     "family": "CYCLE_COUNT",
@@ -655,3 +656,29 @@ def test_finalized_rejection_is_idempotent(layout):
     with env.store.record_lock(layout.record.id) as lock:
         assert finalize(lock, rejected, rejected=True) == rejected
     assert state_path.read_bytes() == before
+
+
+# --- Windows sharing errors (#2187) -------------------------------------------------
+
+
+def _held_proposal(layout, name):
+    """A pending proposal, plus its stored ``name`` file path."""
+    env = setup_cycle(layout)
+    view = proposal(layout, env)
+    root = record_paths(layout.control, layout.record.id).root
+    return root, view.proposal.id, proposal_path(root, view.proposal.id) / name
+
+
+def test_load_proposal_survives_transient_sharing_error(layout, monkeypatch):
+    root, proposal_id, state_file = _held_proposal(layout, "state.json")
+    hold_opens(monkeypatch, {state_file: 1})
+    assert load_proposal(root, proposal_id).state == "pending"
+
+
+def test_load_proposal_retries_before_raising_lasting_sharing_error(layout, monkeypatch):
+    root, proposal_id, payload_file = _held_proposal(layout, "payload.json")
+    attempts = hold_opens(monkeypatch, {payload_file: 5})
+    with pytest.raises(ProposalError) as caught:
+        load_proposal(root, proposal_id)
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[payload_file] > 1

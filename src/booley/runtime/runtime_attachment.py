@@ -216,7 +216,15 @@ def _drive_execution(
                 signum=pending.signum,
             )
             recovery_started = recovery_started or now
-        payload = read_json(paths.record)
+        record_readable = True
+        try:
+            payload = read_json(paths.record)
+        except OSError as exc:
+            # A sharing error outlasting the read retries is "indeterminate this
+            # pass", not "no record": skip the terminal/startup checks, poll again.
+            logger.warning("Cannot read execution record %s this pass: %s", paths.record, exc)
+            payload = None
+            record_readable = False
         result = _terminal_result(payload)
         if result is not None:
             if result.terminal_cause != "protocol_mismatch":
@@ -229,6 +237,7 @@ def _drive_execution(
         if (
             process.poll() is not None
             and payload is None
+            and record_readable
             and now - started_at >= _STARTUP_LIMIT_SECONDS
         ):
             return ExecutionResult(125, "unrecoverable", False, "protocol_unavailable")
