@@ -670,6 +670,12 @@ fn record_limit(cfg: &ExtractConfig, count: usize) -> Vec<String> {
     }
 }
 
+/// The `value --at` past-the-end diagnostic. Python's `bwave gui` clamps a
+/// `--time` end on this marker (BEYOND_RANGE_MARKER in contract.py).
+fn beyond_range_message(at_time: &str) -> String {
+    format!("value time {at_time} is beyond simulation range")
+}
+
 fn unmatched_pattern_message(pattern: &str) -> String {
     format!("no signals match '{}' — filter dropped", pattern)
 }
@@ -2424,12 +2430,12 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     (unsigned_time - 1)
                         .checked_mul(cache.clock_period_ticks)
                         .unwrap_or_else(|| {
-                            eprintln!("ERROR: value time {at_time} is beyond simulation range");
+                            eprintln!("ERROR: {}", beyond_range_message(&at_time.to_string()));
                             std::process::exit(2);
                         }),
                 )
                 .unwrap_or_else(|| {
-                    eprintln!("ERROR: value time {at_time} is beyond simulation range");
+                    eprintln!("ERROR: {}", beyond_range_message(&at_time.to_string()));
                     std::process::exit(2);
                 })
         }
@@ -2444,7 +2450,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         )
     };
     if target_tick > cache.sim_end_tick {
-        eprintln!("ERROR: value time {at_time} is beyond simulation range");
+        eprintln!("ERROR: {}", beyond_range_message(&at_time.to_string()));
         if sync_mode {
             let total_cycles = cache
                 .sim_end_tick
@@ -5216,6 +5222,15 @@ $enddefinitions $end
         assert!(
             msg.to_lowercase().contains("no signals match"),
             "marker NO_MATCH_MARKER lost from: {msg}"
+        );
+    }
+
+    #[test]
+    fn beyond_range_message_carries_the_python_marker() {
+        let msg = beyond_range_message("900");
+        assert!(
+            msg.to_lowercase().contains("beyond simulation range"),
+            "marker BEYOND_RANGE_MARKER lost from: {msg}"
         );
     }
 
