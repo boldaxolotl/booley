@@ -129,23 +129,23 @@ async def open_row(app, pilot, row):
 
 # --- AC1 ---------------------------------------------------------------------
 
-# name -> (starts in the Jobs window, how to reach the depth)
+# name -> (starts in the Jobs window, how to reach the depth, view expected there)
 DEPTHS = {
-    "sessions-overview": (False, ()),
-    "session": (False, ("1",)),
-    "goal": (False, ("1", "enter")),
-    "proposal": (False, ("1", ("open", PROPOSAL_ROW))),
-    "job-from-session": (False, ("1", ("open", JOB_ROW))),
-    "sessions-help": (False, ("?",)),
-    "jobs-list": (True, ()),
-    "jobs-job": (True, ("enter",)),
-    "jobs-help": (True, ("?",)),
+    "sessions-overview": (False, (), "overview"),
+    "session": (False, ("1",), "session"),
+    "goal": (False, ("1", "enter"), "goal"),
+    "proposal": (False, ("1", ("open", PROPOSAL_ROW)), "proposal"),
+    "job-from-session": (False, ("1", ("open", JOB_ROW)), "job"),
+    "sessions-help": (False, ("?",), "help"),
+    "jobs-list": (True, (), "jobs"),
+    "jobs-job": (True, ("enter",), "job"),
+    "jobs-help": (True, ("?",), "help"),
 }
 
 
 async def _switch_from_depth(depth):
     """Reach one depth in a fresh Dashboard, switch windows and come back."""
-    in_jobs, steps = DEPTHS[depth]
+    in_jobs, steps, view = DEPTHS[depth]
     current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 24)) as pilot:
@@ -158,6 +158,7 @@ async def _switch_from_depth(depth):
             else:
                 await pilot.press(step)
         await pilot.pause()
+        assert app.navigation.view == view, depth  # the depth was really reached
         before = app.navigation
 
         await pilot.press("left" if in_jobs else "right")
@@ -302,7 +303,7 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
 
         await pilot.press("down")
         await pilot.pause()
-        assert app.focused is not bar
+        assert app.focused is app.query_one("#aside")  # Help has no list: the detail owns the keys
         assert not _reverse_painted(bar)
 
 
@@ -488,3 +489,43 @@ async def test_shortcuts_reach_same_content_in_matching_window():
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
         await pilot.press("right")
         assert app.navigation.view == "jobs"
+
+
+# --- review fixes ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_tick_keeps_focus_where_the_user_put_it():
+    """A refresh must not pull the keyboard back from the detail pane (wide Jobs view)."""
+    current = world()
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.press("right")
+        aside = app.query_one("#aside")
+        aside.focus()
+        await pilot.pause()
+        assert app.focused is aside
+
+        await app.refresh_snapshot()
+        app.render_snapshot()
+        await pilot.pause()
+        assert app.focused is aside
+
+
+@pytest.mark.asyncio
+async def test_job_shortcut_after_scrolling_resets_cursor_into_view():
+    """j after scrolling the Jobs list starts at the top, not at the old offset."""
+    current = world()
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 12)) as pilot:
+        await pilot.press("right")
+        table = table_of(app)
+        table.move_cursor(row=35, animate=False)
+        await pilot.pause()
+        assert table.scroll_y > 0
+        await pilot.press("left")
+        await pilot.press("j")
+        await pilot.pause()
+        assert app.navigation.view == "jobs"
+        assert table.cursor_row == 0
+        assert table.scroll_y == 0

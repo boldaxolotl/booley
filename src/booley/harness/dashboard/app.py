@@ -570,6 +570,8 @@ class DashboardApp(App[None]):
         self.row_keys = []
         self._rows = []
         self.render_snapshot()
+        if not isinstance(self.focused, TopBar):
+            self._focus_content()
 
     def _push(self, navigation: Navigation) -> None:
         self._remember()
@@ -991,7 +993,9 @@ class DashboardApp(App[None]):
             self._rows = rows
         self.row_keys = keys
         self._render_detail()
-        if not isinstance(self.focused, TopBar):
+        # Refreshes keep the keyboard where the user put it; only a hidden or
+        # missing focus owner (a view change hid the list) moves it.
+        if self.focused is None or not self.focused.display:
             self._focus_content()
 
     def _list_label(self) -> str:
