@@ -536,6 +536,35 @@ class TestWriteTraceOverlay:
             overlay.cleanup()
         assert not projected.exists()
 
+    @pytest.mark.parametrize("tool", ["verilator", "icarus"])
+    def test_stealth_overlay_of_native_core_is_not_projected(self, tmp_path: Path, tool: str):
+        # Stealth Mode with a repository-native core (e.g. a scaffolded
+        # `rbg.core` at the Project Root): only `.booley/cores/` cores are
+        # projected, so the overlay must stay beside the native core instead of
+        # failing with "core is outside the stealth core root".
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        if tool == "icarus":
+            core_text = self._ICARUS_CORE.replace(
+                "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n", ""
+            )
+            base = _write_core(tmp_path / "ip", core_text, create_sources=False)
+        else:
+            base = _write_core(tmp_path / "ip")
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
+        try:
+            assert overlay.core_file.parent == base.parent
+            assert not any(path.name.endswith(".core") for path in overlay.extra_files)
+            if tool == "icarus":
+                entry = read_core(overlay.core_file)["filesets"]["booley_trace_dump"]["files"][0]
+                declared = next(iter(entry))
+                # Declared relative to the overlay `.core`, which FuseSoC resolves against.
+                assert (overlay.core_file.parent / declared).is_file()
+        finally:
+            overlay.cleanup()
+        assert not overlay.core_file.exists()
+
     @pytest.mark.parametrize("isolated", [False, True], ids=["projected", "isolated"])
     def test_icarus_overlay_under_symlinked_booley_dir(self, tmp_path: Path, isolated: bool):
         project = tmp_path / "project"

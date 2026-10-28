@@ -29,6 +29,7 @@ from booley.fusesoc.core_projection import (
     native_cores_ignored,
     projected_core_path,
     projection_enabled,
+    stealth_core_relative,
 )
 from booley.fusesoc.fusesoc_registry import (
     read_core,
@@ -373,8 +374,15 @@ def write_trace_overlay(
             project_root,
         )
 
+    # Only stealth cores (under `.booley/cores/`) get a root-level projection.
+    # A repository-native core keeps its overlay beside it, where FuseSoC
+    # already discovers it and resolves its relative fileset paths.
+    projects_overlay = (
+        projection_enabled(project_root)
+        and stealth_core_relative(project_root, handle.core_file) is not None
+    )
     projected_overlay: Path | None = None
-    if projection_enabled(project_root) and injected is not None:
+    if projects_overlay and injected is not None:
         entry = overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"][0]
         attrs = next(iter(entry.values()))
         relative = (
@@ -386,7 +394,7 @@ def write_trace_overlay(
         f"{handle.core_file.stem}{TRACE_OVERLAY_MARKER}{handle.core_file.suffix}"
     )
     _write_overlay_core_file(overlay_path, overlay_doc)
-    if projection_enabled(project_root):
+    if projects_overlay:
         projected_overlay = projected_core_path(project_root, overlay_path)
     return TraceOverlay(
         core_file=overlay_path,
