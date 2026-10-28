@@ -871,10 +871,11 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
     ``"written"``/``"current"``/``"cleared"``/``"none"`` — see the per-app
     helpers. Unknown apps are a no-op.
     """
-    from booley.config.agent import gateway_handoff_active
+    from booley.config.agent import env_auth_handoff
+    from booley.config.gateway import GATEWAY_AUTH
 
-    policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "auto")
-    if gateway_handoff_active():
+    policy = env_auth_handoff() or "auto"
+    if policy == GATEWAY_AUTH:  # already inside the container by definition
         # Gateway registration is a separate concern (#2270); leave any
         # Booley-managed credential copies untouched and validate nothing.
         return "none"

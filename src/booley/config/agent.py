@@ -40,10 +40,8 @@ _VALID_PROVIDERS = ("codex", "claude")
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
 #
-# ``gateway`` is a fourth policy that exists only as the environment hand-off
-# ``BOOLEY_PRIMARY_AUTH=gateway`` (with BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN)
-# inside a Sandbox: Codex Specialists then bill the operator's gateway and no
-# native credential reaches them. It is not a valid ``booley.toml`` value.
+# ``gateway`` is an environment-only hand-off (``BOOLEY_PRIMARY_AUTH=gateway`` plus
+# BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN) inside a Sandbox, not a toml value.
 _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
 _ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
 _DEFAULT_AUTH = "auto"
@@ -567,7 +565,7 @@ def parse_auth(agent_section: Mapping[str, Any]) -> str | None:
 _parse_auth = parse_auth
 
 
-def env_auth_handoff(environ: Mapping[str, str] | None = None) -> str | None:
+def env_auth_handoff() -> str | None:
     """The normalized ``BOOLEY_PRIMARY_AUTH`` hand-off, or ``None`` when unset/blank.
 
     The single reader of the variable, so a Specialist subprocess, the MCP
@@ -576,7 +574,7 @@ def env_auth_handoff(environ: Mapping[str, str] | None = None) -> str | None:
     """
     import os
 
-    raw = (environ if environ is not None else os.environ).get("BOOLEY_PRIMARY_AUTH") or ""
+    raw = os.environ.get("BOOLEY_PRIMARY_AUTH") or ""
     return raw.strip().lower() or None
 
 

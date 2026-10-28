@@ -376,7 +376,7 @@ warns about it).
 | --- | --- |
 | `BOOLEY_PRIMARY_AUTH=gateway` | Select the gateway policy. |
 | `BOOLEY_GATEWAY_URL` | The gateway's `https://` base URL, passed to Codex as is (for example `https://gw.example/v1`). No credentials in the URL. |
-| `BOOLEY_GATEWAY_TOKEN` | The bearer token. It is never written to disk or logged. |
+| `BOOLEY_GATEWAY_TOKEN` | The bearer token. It is never written to a config file, and Codex shell tools do not receive it. |
 
 `[agent] provider` must be `codex`. Codex Specialists use the gateway; no
 OpenAI or Anthropic credential and no Codex login reaches them. The gateway

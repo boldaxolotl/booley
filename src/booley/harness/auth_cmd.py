@@ -85,6 +85,10 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
+    policy = "auto"
+    if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
+        provider, policy = project_credential_policy(project_root)
+        app = app or provider
     if gateway_handoff_active():
         return _report_gateway_status(app)
     if env_auth_handoff() == GATEWAY_AUTH:
@@ -92,10 +96,6 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
             "BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it; "
             "showing the booley.toml policy"
         )
-    policy = "auto"
-    if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
-        provider, policy = project_credential_policy(project_root)
-        app = app or provider
     apps = [app] if app else list(auth_token.CREDENTIALS)
     usable = 0
     info(f"configured auth = '{policy}'; inherited environment is that of this launching process")

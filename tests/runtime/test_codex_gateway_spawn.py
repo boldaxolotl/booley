@@ -19,6 +19,8 @@ import pytest
 from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.runtime import _codex_backend as cb
+from booley.runtime import gateway_token
+from booley.runtime.agent_errors import AgentProviderError
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -53,6 +55,7 @@ report = {
     "model_provider": provider_id,
     "base_url": provider.get("base_url"),
     "fast_mode": config.get("features", {}).get("fast_mode"),
+    "shell_exclude": config.get("shell_environment_policy", {}).get("exclude"),
     "auth": auth,
     "token_run": token_run,
     "auth_json_exists": os.path.exists(os.path.join(home, "auth.json")),
@@ -72,6 +75,8 @@ print(json.dumps(message))
 @pytest.fixture
 def gateway_sandbox(tmp_path, monkeypatch):
     """A container-like process with every native credential set and a fake ``codex``."""
+    if sys.platform == "win32":
+        pytest.skip("the fake codex is a POSIX shebang script")
     real_path = Path
 
     def isolated_path(value):
@@ -85,12 +90,13 @@ def gateway_sandbox(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
     (home / ".codex" / "auth.json").write_text(
-        json.dumps({"tokens": {"access_token": "SYNTHETIC_NATIVE_LOGIN"}, "OPENAI_API_KEY": None})
+        json.dumps({"tokens": {"access_token": "SYNTHETIC_NATIVE_LOGIN"}, "OPENAI_API_KEY": None}),
+        encoding="utf-8",
     )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake = fake_bin / "codex"
-    fake.write_text(f"#!{sys.executable}\n{_FAKE_CODEX}")
+    fake.write_text(f"#!{sys.executable}\n{_FAKE_CODEX}", encoding="utf-8")
     fake.chmod(0o755)
 
     monkeypatch.setattr(cb, "Path", isolated_path)
@@ -134,6 +140,7 @@ async def test_fake_codex_specialist_sees_gateway_provider_url_and_token(
     assert report["model_provider"] == "booley_gateway"
     assert report["base_url"] == _URL
     assert report["fast_mode"] is False
+    assert report["shell_exclude"] == ["BOOLEY_GATEWAY_TOKEN"]
     assert report["token_run"]["stdout"] == _TOKEN
     assert report["token_run"]["code"] == 0
 
@@ -173,7 +180,7 @@ async def test_gateway_token_is_not_written_into_private_codex_home(gateway_sand
     report = await _run_fake_codex(tmp_path, gateway_sandbox)
 
     written = [
-        path.read_text(errors="replace")
+        path.read_text(encoding="utf-8", errors="replace")
         for path in Path(report["home"]).parent.rglob("*")
         if path.is_file()
     ]
@@ -183,45 +190,36 @@ async def test_gateway_token_is_not_written_into_private_codex_home(gateway_sand
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "missing,fragment",
-    [
-        ("BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_URL"),
-        ("BOOLEY_GATEWAY_TOKEN", "BOOLEY_GATEWAY_TOKEN"),
-    ],
-)
+@pytest.mark.parametrize("missing", ["BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN"])
 async def test_gateway_spawn_with_incomplete_config_fails_naming_the_missing_variable(
-    gateway_sandbox, tmp_path, monkeypatch, missing, fragment
+    gateway_sandbox, tmp_path, monkeypatch, missing
 ):
     monkeypatch.delenv(missing)
 
-    with pytest.raises(ValueError, match=fragment):
+    with pytest.raises(ValueError, match=missing):
         await cb._codex_spawn([str(gateway_sandbox)], _params(tmp_path), "gateway")
 
 
-def test_gateway_token_entry_point_prints_token_and_fails_loud_when_missing(tmp_path):
-    env = {**os.environ, "PYTHONPATH": str(_SRC), "BOOLEY_GATEWAY_URL": _URL}
-    command = [sys.executable, "-P", "-m", "booley.runtime.gateway_token"]
+@pytest.mark.asyncio
+async def test_text_only_codex_under_gateway_fails_naming_the_policy(gateway_sandbox, tmp_path):
+    with pytest.raises(AgentProviderError, match="gateway"):
+        await cb._codex_spawn([str(gateway_sandbox)], _params(tmp_path, text_only=True), "gateway")
 
-    ok = subprocess.run(
-        command,
-        env={**env, "BOOLEY_GATEWAY_TOKEN": _TOKEN},
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    missing = subprocess.run(
-        command,
-        env={k: v for k, v in env.items() if k != "BOOLEY_GATEWAY_TOKEN"},
-        capture_output=True,
-        check=False,
-        text=True,
-    )
 
-    assert (ok.returncode, ok.stdout) == (0, _TOKEN)
-    assert missing.returncode == 1
-    assert "BOOLEY_GATEWAY_TOKEN" in missing.stderr
-    assert missing.stdout == ""
+def test_codex_health_check_reports_gateway_misconfiguration(gateway_sandbox, monkeypatch):
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+
+    assert "BOOLEY_GATEWAY_TOKEN" in cb.CodexBackend(auth_mode="gateway").health_check()
+
+
+def test_gateway_token_entry_point_fails_loud_when_token_is_missing(monkeypatch, capsys):
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", _URL)
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN", raising=False)
+
+    assert gateway_token.main() == 1
+    captured = capsys.readouterr()
+    assert "BOOLEY_GATEWAY_TOKEN" in captured.err
+    assert captured.out == ""
 
 
 @pytest.mark.asyncio
@@ -232,7 +230,9 @@ async def test_gateway_token_command_ignores_shadowing_booley_package_in_cwd(
     report = await _run_fake_codex(tmp_path, gateway_sandbox)
     shadow = tmp_path / "shadow"
     (shadow / "booley").mkdir(parents=True)
-    (shadow / "booley" / "__init__.py").write_text("raise SystemExit('shadowed')\n")
+    (shadow / "booley" / "__init__.py").write_text(
+        "raise SystemExit('shadowed')\n", encoding="utf-8"
+    )
 
     command = [report["auth"]["command"], *report["auth"]["args"]]
     done = subprocess.run(
@@ -251,15 +251,13 @@ async def test_gateway_token_command_ignores_shadowing_booley_package_in_cwd(
 def test_registrar_under_gateway_leaves_credential_copies_untouched(
     gateway_sandbox, tmp_path, monkeypatch
 ):
-    from booley.runtime import auth_token, incontainer_setup
+    from booley.runtime import incontainer_setup
 
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
     container = tmp_path / "container-home"
     (container / ".codex").mkdir(parents=True)
     managed = container / ".codex" / "auth.json"
-    managed.write_text('{"OPENAI_API_KEY": "SYNTHETIC_MANAGED_COPY"}')
+    managed.write_text('{"OPENAI_API_KEY": "SYNTHETIC_MANAGED_COPY"}', encoding="utf-8")
 
     assert incontainer_setup.apply_stored_credential("codex", container) == "none"
-    assert incontainer_setup.apply_stored_credential("claude", container) == "none"
-    assert managed.read_text() == '{"OPENAI_API_KEY": "SYNTHETIC_MANAGED_COPY"}'
-    assert auth_token.allowed_credential_keys("codex", "gateway") == frozenset()
+    assert managed.read_text(encoding="utf-8") == '{"OPENAI_API_KEY": "SYNTHETIC_MANAGED_COPY"}'

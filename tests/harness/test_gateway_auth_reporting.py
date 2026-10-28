@@ -112,6 +112,19 @@ def test_auth_status_gateway_complete_config_exits_zero(gateway_env, capsys):
     assert _TOKEN not in captured.out + captured.err
 
 
+def test_gateway_with_claude_provider_fails_doctor_and_status(gateway_env, capsys):
+    findings = _doctor_findings(gateway_env, provider="claude")
+    (gateway_env / ".booley" / "booley.toml").write_text(
+        '[agent]\nprovider = "claude"\n', encoding="utf-8"
+    )
+    code, _ = _auth_status(gateway_env, capsys, app=None)
+
+    assert [(f.severity.value, f.check_id) for f in findings] == [
+        ("fail", "agent.credential-missing")
+    ]
+    assert code == 1
+
+
 def test_auth_status_gateway_missing_token_exits_one_naming_it(gateway_env, monkeypatch, capsys):
     monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
 
@@ -134,7 +147,7 @@ def test_subscription_removes_anthropic_auth_token_from_codex_child_env(gateway_
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
     login = auth_token.subscription_creds_path("codex")
     login.parent.mkdir(parents=True)
-    login.write_text(json.dumps({"tokens": {"access_token": "SYNTHETIC_LOGIN"}}))
+    login.write_text(json.dumps({"tokens": {"access_token": "SYNTHETIC_LOGIN"}}), encoding="utf-8")
     captured: dict = {}
 
     async def fake_exec(*cmd, **kwargs):
@@ -150,20 +163,14 @@ def test_subscription_removes_anthropic_auth_token_from_codex_child_env(gateway_
     assert "ANTHROPIC_AUTH_TOKEN" not in captured["env"]
 
 
-def test_auto_keeps_anthropic_auth_token_for_claude(gateway_env, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
-
-    assert "ANTHROPIC_AUTH_TOKEN" not in _claude_backend._claude_env_overrides("auto")
-    assert "ANTHROPIC_AUTH_TOKEN" in auth_token.allowed_credential_keys("claude", "auto")
-
-
-def test_anthropic_auth_token_is_never_forwarded_into_credential_plan_values(
+def test_auto_keeps_anthropic_auth_token_for_claude_but_never_forwards_it(
     gateway_env, monkeypatch
 ):
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
 
     plan = auth_token.credential_plan("claude", "auto")
 
+    assert "ANTHROPIC_AUTH_TOKEN" not in _claude_backend._claude_env_overrides("auto")
     assert "ANTHROPIC_AUTH_TOKEN" in plan.allowed_env
     assert "ANTHROPIC_AUTH_TOKEN" not in dict(plan.values)
     assert _BEARER not in repr(plan)

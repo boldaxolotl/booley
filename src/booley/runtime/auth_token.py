@@ -200,9 +200,6 @@ def subscription_creds_path(app: str = APP_CLAUDE, *, home: Path | None = None) 
 MODE_API_KEY = "api_key"
 MODE_OAUTH_TOKEN = "oauth_token"
 MODE_SUBSCRIPTION = "subscription"
-# Env-selected (BOOLEY_PRIMARY_AUTH=gateway): the operator's gateway bills; there
-# is no native credential and nothing to rotate.
-MODE_GATEWAY = "gateway"
 
 
 @dataclass(frozen=True)
@@ -266,7 +263,7 @@ def _gateway_credential(app: str) -> EffectiveCredential | None:
         return None
     return EffectiveCredential(
         app=app,
-        mode=MODE_GATEWAY,
+        mode=GATEWAY_AUTH,
         source=f"the gateway at {settings.url} ({GATEWAY_TOKEN_ENV})",
         rotation_free=True,
         overridden=(),

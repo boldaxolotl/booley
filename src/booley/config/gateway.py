@@ -30,16 +30,22 @@ class GatewaySettings:
 
 
 def _validated_url(raw: str) -> str:
-    """Return *raw* when it is a plain https URL; never echo it in an error."""
+    """Return *raw* when it is a plain https URL (no userinfo, query or fragment); never echo it."""
     message = f"{GATEWAY_URL_ENV} must be an https:// URL with a host and no credentials"
-    if any(character.isspace() or ord(character) < 32 for character in raw):
+    if any(character.isspace() or not character.isprintable() for character in raw):
         raise GatewayConfigError(message)
     try:
         parts = urlsplit(raw)
         hostname = parts.hostname
     except ValueError as exc:
         raise GatewayConfigError(message) from exc
-    if parts.scheme != "https" or not hostname or "@" in parts.netloc:
+    if (
+        parts.scheme != "https"
+        or not hostname
+        or "@" in parts.netloc
+        or parts.query
+        or parts.fragment
+    ):
         raise GatewayConfigError(message)
     return raw
 

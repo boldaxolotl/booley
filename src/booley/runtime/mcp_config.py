@@ -14,6 +14,8 @@ import sys
 from functools import lru_cache
 from types import ModuleType
 
+from booley.config.gateway import GATEWAY_TOKEN_ENV
+
 logger = logging.getLogger(__name__)
 
 HTTP_PORT_ENV = "BOOLEY_MCP_HTTP_PORT"
@@ -127,9 +129,8 @@ _GATEWAY_TOKEN_TIMEOUT_MS = 20_000
 def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
     """Codex custom-provider tables that send the gateway bearer on every request.
 
-    ``auth.command`` prints the token from Codex's own environment, so it is
-    never written to disk. ``-P`` keeps the cwd off ``sys.path`` so a Project
-    ``booley/`` directory cannot shadow the package.
+    ``auth.command`` prints the token from Codex's environment, so it is never
+    written to disk. ``-P`` stops a Project ``booley/`` directory shadowing us.
     """
     table = f"model_providers.{GATEWAY_PROVIDER_ID}"
     return [
@@ -144,6 +145,10 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
         'args = ["-P", "-m", "booley.runtime.gateway_token"]',
         f"cwd = {json.dumps(token_cwd)}",
         f"timeout_ms = {_GATEWAY_TOKEN_TIMEOUT_MS}",
+        "",
+        # Codex 0.160 ignores its default *TOKEN* filter, so exclude explicitly.
+        "[shell_environment_policy]",
+        f"exclude = [{json.dumps(GATEWAY_TOKEN_ENV)}]",
     ]
 
 
