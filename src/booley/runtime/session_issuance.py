@@ -22,6 +22,7 @@ from typing import Any
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.config.host_config import HostConfigError, load_host_policy
 from booley.core.booley_dir_links import is_booley_dir_entry
+from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -1602,9 +1603,19 @@ def _validate_project_data_source(
         raise RuntimeSpecError(
             f"Booley Directory symlink target is not a Booley Directory (no booley.toml): {source}"
         )
+    if linked:
+        _require_host_pin(project)
     # Keep the entry spelling for a link so the mount pin and the /work/.booley
     # shadow match the real-directory layout exactly.
     return candidate if linked else source
+
+
+def _require_host_pin(project: Path) -> None:
+    """Refuse a linked entry whose target the host never pinned (or that moved)."""
+    try:
+        require_pinned_entry(project)
+    except BooleyDirPinError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
 
 
 def _pin_project_data_mount(

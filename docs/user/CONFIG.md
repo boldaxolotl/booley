@@ -59,6 +59,19 @@ separate clone of your Booley Directory. The directory it points to must contain
 `/booley-project` and `/work/.booley` reach it. Cores you keep there still load only from
 its `cores/` folder.
 
+`booley init` pins that link: it records the directory the link resolves to, plus its
+device and inode, in host-private state. Sandbox issuance and host commands refuse a linked
+entry that has no pin, now resolves elsewhere, or points at a directory that was replaced in
+place; Doctor reports one `project.booley-dir-pin` FAIL and stops. A Project that already
+uses a linked entry needs one `booley init` after upgrading to create the pin. After you move
+the link on purpose, run `booley init --repin-booley-dir`, or answer `y` at the interactive
+re-pin prompt; a non-interactive run without the flag leaves the pin unchanged and fails.
+The same flag replaces an unreadable pin. If you did not move it, point `.booley` back at
+the pinned target. A Sandbox that is already running keeps its previous mount until you
+restart it with `booley session refresh`. One gap remains: starting an existing container
+directly with `docker start` bypasses the container-start validation hook, so the pin is not
+checked on that path.
+
 `[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
 [Per-Target environment](TESTS.md#per-target-environment-env) for the last one, which is
 about testbench file-existence checks rather than identity. The sections below

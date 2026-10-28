@@ -9538,3 +9538,47 @@ class TestSymlinkedBooleyDirectoryOwnership:
         assert len(warns) == 1
         assert "declares a 'default:' Target" in warns[0]
         assert passes == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")
+def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
+    """An unpinned or retargeted linked entry is one FAIL; Doctor then stops."""
+    from booley.core import booley_dir_pin
+    from booley.harness import booley as cli
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("ext-a", "ext-b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    entry = project / ".booley"
+    entry.symlink_to(tmp_path / "ext-a", target_is_directory=True)
+    args = argparse.Namespace(verbose=False, deep=False)
+
+    unpinned = doctor.run_doctor_result(args, project)
+    booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
+    entry.unlink()
+    entry.symlink_to(tmp_path / "ext-b", target_is_directory=True)
+    retargeted = doctor.run_doctor_result(args, project)
+
+    for result, remedy in ((unpinned, "booley init"), (retargeted, "--repin-booley-dir")):
+        assert len(result.findings) == 1
+        finding = result.findings[0]
+        assert finding.severity is Severity.FAIL
+        assert finding.check_id == "project.booley-dir-pin"
+        assert remedy in finding.fix
+        assert finding.fix not in finding.message  # the remedy is reported once, as the fix
+        assert result.exit_code == 1
+    cli._require_command_project("doctor", project)
+    for command in ("session", "targets"):
+        with pytest.raises(booley_dir_pin.BooleyDirPinError):
+            cli._require_command_project(command, project)
+
+    # An ancestor's untrusted link is not this checkout's FAIL to report.
+    inner = project / "inner"
+    inner.mkdir()
+    subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
+    with pytest.raises(booley_dir_pin.BooleyDirPinError):
+        cli._require_command_project("doctor", inner)
