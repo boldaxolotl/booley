@@ -24,6 +24,7 @@ from booley.goals.state_store import (
 )
 from booley.goals.store import GoalStore
 from tests.goals.conftest import LINT_KEY, SIM_KEY, passing_sim
+from tests.sharing_error_support import hold_opens
 
 # Each spawned writer imports Booley afresh (~1-3 s); three steps stay far below this.
 _EVENT_TIMEOUT_S = 30
@@ -438,3 +439,22 @@ def test_baseline_failure_keeps_frozen_pins_and_transition_history_without_succe
     assert len(entry.transition_evidence) == 1
     recovered.save()
     assert _load(goal_mode).criteria[LINT_KEY].transition_evidence == entry.transition_evidence
+
+
+# --- Windows sharing errors (#2187) -------------------------------------------------
+
+
+def test_goal_state_read_survives_transient_sharing_error(goal_mode, monkeypatch) -> None:
+    hold_opens(monkeypatch, {_state_file(goal_mode): 1})
+    assert _load(goal_mode).criteria
+
+
+def test_goal_state_read_retries_before_raising_lasting_sharing_error(
+    goal_mode, monkeypatch
+) -> None:
+    state_file = _state_file(goal_mode)
+    attempts = hold_opens(monkeypatch, {state_file: 5})
+    with pytest.raises(GoalStateError, match="cannot read Goal state") as caught:
+        _load(goal_mode)
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[state_file] > 1

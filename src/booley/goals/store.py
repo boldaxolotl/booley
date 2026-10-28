@@ -67,6 +67,7 @@ from booley.runtime.atomic_files import (
     atomic_write_once,
     fsync_directory,
 )
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 
 # The repository identity file inside Git's common directory (D3).
@@ -257,7 +258,7 @@ def _repository_id(common_dir: Path, *, create: bool) -> str | None:
         with contextlib.suppress(WriteOnceConflictError):
             atomic_write_once(path, f"{uuid.uuid4()}\n".encode(), mode=0o644)
     try:
-        return require_uuid4(path.read_text(encoding="utf-8").strip(), field=str(path))
+        return require_uuid4(read_file_bytes(path).decode("utf-8").strip(), field=str(path))
     except (OSError, UnicodeDecodeError, BoundaryError) as exc:
         raise WorktreeIdentityError(f"unreadable repository identity {path}: {exc}") from exc
 
@@ -540,7 +541,7 @@ class GoalStore:
         if not paths.root.is_dir():
             raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
         try:
-            raw: Any = json.loads(paths.record_file.read_bytes().decode("utf-8"))
+            raw: Any = json.loads(read_file_bytes(paths.record_file).decode("utf-8"))
             record = GoalRecord.from_json(raw)
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise GoalRecordCorruptError([CorruptRecord(paths.record_file, str(exc))]) from exc

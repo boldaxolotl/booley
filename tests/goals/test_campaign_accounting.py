@@ -48,6 +48,7 @@ from tests.goals.test_test_run_evidence import (
     _status,
     _transaction,
 )
+from tests.sharing_error_support import hold_opens, no_retry_delay, sharing_error
 
 # Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
 pytestmark = pytest.mark.timeout(120)
@@ -626,3 +627,48 @@ def test_finish_accounts_first_and_refuses_while_a_campaign_runs_or_cannot_be_re
     campaign.error = None
     campaign.rows = [run_row(A, "fail")]
     assert refused().startswith("goal-test-run-failed")
+
+
+# --- Windows sharing errors (#2187) -------------------------------------------------
+
+
+def _registered(two: SimpleNamespace, campaign: _Campaign) -> tuple[Path, str]:
+    campaign.start("run-1")
+    (stored,) = (
+        record_paths(two.control, two.record.id).logs_dir / "acceptance" / "campaigns"
+    ).glob("*.json")
+    return stored, stored.name
+
+
+def test_registration_read_survives_transient_sharing_error(two, campaign, monkeypatch) -> None:
+    stored, _ = _registered(two, campaign)
+    hold_opens(monkeypatch, {stored: 1})
+    assert [found.campaign_id for found in campaign.registrations()] == [CAMPAIGN]
+
+
+def test_lasting_registration_sharing_error_chains_cause(two, campaign, monkeypatch) -> None:
+    stored, _ = _registered(two, campaign)
+    hold_opens(monkeypatch, {stored: 5})
+    with pytest.raises(campaign_accounting.RegistrationFormatError) as caught:
+        campaign_accounting._read(stored)
+    assert getattr(caught.value.__cause__, "winerror", None) == 32
+
+
+def test_quarantine_move_retries_transient_sharing_error(two, campaign, monkeypatch) -> None:
+    stored, name = _registered(two, campaign)
+    stored.write_bytes(b"{torn")
+    no_retry_delay(monkeypatch)
+    real_replace = Path.replace
+    held = [1]
+
+    def replace_once_held(path, target):
+        if held[0]:
+            held[0] -= 1
+            raise sharing_error()
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", replace_once_held)
+    assert campaign_accounting.quarantine_unreadable(GoalStore(two.control), two.record.id) == (
+        name,
+    )
+    assert (stored.parent / "quarantine" / name).is_file()
