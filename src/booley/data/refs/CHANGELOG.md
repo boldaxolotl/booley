@@ -312,8 +312,6 @@ Packaged release history starts at 0.2.7. For older changes, see
   WCP port check is replaced by a check that an attached window's Viewer
   Bridge answers with VaporView ready.
 
-## 0.3.1 - 05 OCT 2026
-
 ### Major features
 
 - **Goal Mode is the workflow for evidence-backed RTL work.** Open an agent

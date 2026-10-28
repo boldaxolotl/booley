@@ -10,7 +10,12 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-from booley.runtime.changelog import ChangelogError, parse_releases, release_entry
+from booley.runtime.changelog import (
+    ChangelogError,
+    parse_releases,
+    parse_stable_version,
+    release_entry,
+)
 
 DEFAULT_ROOT = REPOSITORY_ROOT / "CHANGELOG.md"
 DEFAULT_PACKAGED = REPOSITORY_ROOT / "src" / "booley" / "data" / "refs" / "CHANGELOG.md"
@@ -29,13 +34,23 @@ def validate(
     target: str | None = None,
     notes_file: Path | None = None,
 ) -> None:
-    """Validate ordering, mirror equality, target presence, and optional notes."""
+    """Validate ordering, mirror equality, VERSION bound, target presence, and notes.
+
+    ``VERSION`` is read from the directory holding ``root``.
+    """
     root_bytes = root.read_bytes()
     packaged_bytes = packaged.read_bytes()
     if root_bytes != packaged_bytes:
         raise ChangelogError(f"packaged changelog {packaged} differs from {root}")
     text = root_bytes.decode("utf-8")
-    parse_releases(text)
+    releases = parse_releases(text)
+    version = parse_stable_version((root.parent / "VERSION").read_text(encoding="utf-8").strip())
+    # parse_releases enforces newest-first order, so the first entry is the newest.
+    if releases and releases[0].version > version:
+        raise ChangelogError(
+            f"changelog heading {releases[0].heading!r} is newer than VERSION {version}; "
+            "only '## Unreleased' may describe changes above VERSION"
+        )
     if target is None:
         if notes_file is not None:
             raise ChangelogError("--notes-file requires --target")
