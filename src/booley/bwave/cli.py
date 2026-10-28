@@ -972,10 +972,13 @@ def _resolve_signal_globs(
     selectors = [_parse_display_selector(glob, option=option) for glob in globs]
     listing: dict | None = None
     signals: dict[str, _OpenSignal] = {}
+    unmatched: list[str] = []
     for selector in selectors:
         data = _list_query(trace, [selector.glob])
         if listing is None:
             listing = data
+        if not data.get("signals"):
+            unmatched.append(selector.glob)
         prefix = data.get("scope_prefix") or ""
         for sig in data.get("signals", []):
             name = sig.get("name")
@@ -992,6 +995,9 @@ def _resolve_signal_globs(
         # NO_MATCH_MARKER keeps the two surfaces greppable the same way.
         pat = ", ".join(f"'{g}'" for g in globs)
         _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}")
+    for glob in unmatched:
+        # Like the Rust partial miss: the other selectors still show.
+        print(f"WARNING: {NO_MATCH_MARKER} {option} '{glob}'; not shown", file=sys.stderr)
     resolved = list(signals.values())
     if len(resolved) > cap:
         head = "\n".join(f"  {signal.bwave_name}" for signal in resolved[:5])
@@ -1502,7 +1508,30 @@ class _ViewSession:
 
     def apply(self, session: dict) -> None:
         self.mutated = True
+        if session["displayedSignals"] and self._shows_a_group():
+            self._clear(session)
         self.client.apply(self.path, session)
+
+    def _shows_a_group(self) -> bool:
+        state = self.client.state(self.path)
+        rows = state.get("displayedSignals") if state else None
+        return isinstance(rows, list) and any(
+            isinstance(row, dict) and row.get("dataType") == "signal-group" for row in rows
+        )
+
+    def _clear(self, session: dict) -> None:
+        """Load an empty view and wait for it before loading *session*.
+
+        VaporView 1.6.0 ends with an empty view, not the requested rows, when
+        a load replaces a view that holds a signal group with rows that leave
+        the group out. Every row would then read as dropped.
+        """
+        self.client.apply(self.path, {**session, "displayedSignals": []})
+        deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+        while _state_rows(self.state()):
+            if time.monotonic() >= deadline:
+                raise ViewerControlError("viewer did not clear the previous rows")
+            time.sleep(_VIEW_POLL_INTERVAL)
 
     def set_viewport(self, start: int, end: int) -> None:
         self.client.set_viewport(self.path, start, end)

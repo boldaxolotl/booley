@@ -650,6 +650,9 @@ class _FakeViewer:
         # Model a viewer that drops an unresolved row instead of keeping a
         # placeholder (1.6.0 keeps placeholders; both shapes must work).
         self.omit_unresolved = False
+        # VaporView 1.6.0 ends with an EMPTY view when a load replaces a view
+        # holding a signal group with rows that leave that group out.
+        self.blank_on_group_replace = True
         self.fail_op: dict[str, str] = {}
 
     # -- modeled behavior ---------------------------------------------------
@@ -690,6 +693,12 @@ class _FakeViewer:
             row["children"] = [self._prune(c) for c in row["children"] if self._kept(c)]
         return row
 
+    def _drops_a_group(self, new_rows: list[dict]) -> bool:
+        def group_names(rows: list[dict]) -> set:
+            return {row["groupName"] for row in rows if row.get("dataType") == "signal-group"}
+
+        return bool(new_rows) and not group_names(self.rows) <= group_names(new_rows)
+
     def _snapshot(self) -> dict:
         return copy.deepcopy({**self.session, "displayedSignals": self.rows})
 
@@ -718,7 +727,10 @@ class _FakeViewer:
         if path not in self.docs:  # the real bridge refuses a closed document
             raise bwave_bridge.BridgeRequestError("apply", f"{path} is not open")
         self._stale, self._pending = self._snapshot(), self.lag
-        self.rows = self._resolve_all(state["displayedSignals"])
+        rows = self._resolve_all(state["displayedSignals"])
+        if self.blank_on_group_replace and self._drops_a_group(rows):
+            rows = []
+        self.rows = rows
         for key in ("markerTime", "altMarkerTime", "displayTimeUnit"):
             if key in state:
                 self.session[key] = state[key]
@@ -1003,6 +1015,49 @@ def test_group_radix_tolerates_one_bit_rows_the_viewer_keeps_binary(
     assert by_name["tb.dut.fifo.count"]["colorIndex"] == 4
 
 
+def test_replacing_a_grouped_view_clears_it_first(tmp_path, monkeypatch, fake_rust, capsys):
+    # VaporView 1.6.0 blanks the view when a load drops a group the view held;
+    # loading an empty view first avoids it, so no row is reported as dropped.
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
+    group = {
+        "dataType": "signal-group",
+        "groupName": "G",
+        "children": [_row("tb.dut.fifo.full")],
+    }
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), group])
+
+    _gui(signals=["tb.dut.fifo.empty"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.empty"]
+    assert viewer.applied()[0]["displayedSignals"] == []
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_replacing_a_flat_view_does_not_clear_it_first(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
+    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.dut.fifo.full")])
+
+    _gui(signals=["tb.dut.fifo.empty"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.empty"]
+    assert all(state["displayedSignals"] for state in viewer.applied())
+
+
+def test_unmatched_signal_glob_warns_and_shows_the_rest(tmp_path, monkeypatch, fake_rust, capsys):
+    trace = _seed_default(tmp_path)
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
+    viewer = _viewer_for(trace, monkeypatch)
+
+    _gui(signals=["tb.dut.fifo.full", "tb.nope"])
+
+    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
+    err = capsys.readouterr().err
+    assert "no signals match --signals 'tb.nope'" in err
+    assert "tb.dut.fifo.full'" not in err
+
+
 def test_one_bit_row_still_requires_the_requested_color(tmp_path, monkeypatch, fake_rust):
     trace = _seed_default(tmp_path)
     fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
@@ -1149,7 +1204,7 @@ def test_append_merges_into_existing_group_and_preserves_its_state(
 
     _gui(groups=["Status=tb.dut.fifo.*"], append=True)
 
-    status = viewer.applied()[0]["displayedSignals"][1]
+    status = viewer.applied()[-1]["displayedSignals"][1]
     assert status["collapseState"] == 1
     assert status["children"][0]["colorIndex"] == 3
     assert [item["name"] for item in status["children"]] == [
