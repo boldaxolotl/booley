@@ -411,6 +411,11 @@ class TestAppExtension:
                 id="other-bundled-version",
             ),
             pytest.param([vaporview.BUNDLED_VSIX.upper()], False, id="path-wrong-case"),
+            pytest.param(
+                [vaporview.BUNDLED_VSIX, "/x/lramseyer.vaporview-1.6.0.vsix"],
+                False,
+                id="marketplace-named-vsix-added",
+            ),
         ],
     )
     def test_spec_installs_vaporview_requires_only_the_bundled_vsix(self, entries, current):

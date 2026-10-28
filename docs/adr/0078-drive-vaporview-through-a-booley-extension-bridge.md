@@ -46,10 +46,11 @@ Booley Sandbox Integration extension (`data/vscode/dashboard/`, extension ID
 independent of Dashboard policy, trust, or remote type. `bwave` no longer
 speaks WCP; `bwave/wcp.py` is deleted. The generated spec installs the Booley
 Sandbox Integration extension in every Sandbox (it was Dashboard-only), drops
-the `vaporview.wcp.enabled`/`port` settings, and pins
-`lramseyer.vaporview@1.6.0` (amended 2026-10-28, see Amendments). Drift
-detection requires the 1.6.0 pin, the
-Booley Sandbox Integration extension, the color settings, and the attach
+the `vaporview.wcp.enabled`/`port` settings, and installs
+VaporView 1.6.0 from the VSIX bundled in the Sandbox Image (amended
+2026-10-28, see Amendments; it first pinned `lramseyer.vaporview@1.6.0`).
+Drift detection requires exactly the bundled VSIX path as the VaporView
+entry, the Booley Sandbox Integration extension, the color settings, and the attach
 patch, so every spec from the previous generator reads as drift.
 
 **Thin bridge, verification in Python.** The bridge offers generic

@@ -629,14 +629,13 @@ Booley checks whether VaporView is installed in the attached remote window.
 The Sandbox Image bundles the verified VaporView 1.6.0 build, and the generated
 devcontainer spec installs it from that file, so it needs no network. If it is
 missing, install it from the attached remote window's terminal with
-`code --install-extension /usr/local/libexec/booley/vaporview-1.6.0.vsix`.
+`code --install-extension /usr/local/libexec/booley/vaporview-1.6.0.vsix`;
+if that file does not exist, refresh the Sandbox Image.
 After installation, the Sandbox's background watcher patches the extension
 automatically; then use **Developer: Reload Window**. Verify with
 `code --list-extensions --show-versions` in the remote terminal; it must list
 `lramseyer.vaporview@1.6.0`. Be careful with a host terminal: a plain host
 `code` command may install locally instead of into the attached container.
-If that file does not exist, the Sandbox Image predates it: refresh the
-Sandbox.
 
 VS Code does not auto-update an extension installed from a file. A different
 installed version, such as a newer Marketplace release installed by hand,

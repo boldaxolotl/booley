@@ -20,8 +20,6 @@ VERIFIED_VERSION = "1.6.0"
 # relays gallery installs to the client, which cannot resolve a versioned ID.
 # VS Code records a VSIX install as pinned, so auto-update never replaces it.
 BUNDLED_VSIX = f"/usr/local/libexec/booley/vaporview-{VERIFIED_VERSION}.vsix"
-_VSIX_PREFIX = "vaporview-"
-_VSIX_SUFFIX = ".vsix"
 EDITOR_PROBE_TIMEOUT_SECONDS = 30
 
 # Stable human-facing colors backed by VaporView custom palette slots. Its
@@ -150,7 +148,9 @@ def is_vaporview_entry(entry: object) -> bool:
     if entry.lower().partition("@")[0] == EXTENSION_ID:
         return True
     name = entry.rpartition("/")[2].lower()
-    return name.startswith(_VSIX_PREFIX) and name.endswith(_VSIX_SUFFIX)
+    # Any VSIX file name mentioning VaporView, including Marketplace-style
+    # ``lramseyer.vaporview-1.6.0.vsix``.
+    return "vaporview" in name and name.endswith(".vsix")
 
 
 def probe_home(home: Path) -> ExtensionState:
