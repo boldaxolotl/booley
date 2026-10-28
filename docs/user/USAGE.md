@@ -172,9 +172,6 @@ work, with one linked worktree and Goal Branch per session; see
     run `claude` or `codex` directly. To run several sessions, open more
     container terminals.
 
-    Prefer a chat panel? The Claude Code or Codex VS Code extension is already
-    installed in the container. Open its panel instead of using the terminal.
-
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
     **Dev Containers: Rebuild Container** and try again. See

@@ -404,15 +404,14 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
-| `booley` / `booley chat` | Recommended: launch the configured `claude` or `codex` command inside the Sandbox |
+| `booley` / `booley chat` | Launch the configured `claude` or `codex` command inside the Sandbox |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
 it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
-pass agent-specific options. The selected provider's VS Code extension is an
-optional alternative in the attached container window.
+pass agent-specific options.
 
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the
