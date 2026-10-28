@@ -34,6 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from booley.config.gateway import GATEWAY_AUTH, GATEWAY_TOKEN_ENV, gateway_settings_from_env
 from booley.harness.setup.common import banner, err, info, ok, warn
 from booley.runtime import auth_token
 from booley.runtime.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
@@ -56,9 +57,31 @@ _MODE_DESC = {
 }
 
 
+def _report_gateway_status(app: str | None) -> int:
+    """Report the env-selected gateway policy: Codex only, URL + token required."""
+    app = app or APP_CODEX
+    info(
+        f"configured auth = '{GATEWAY_AUTH}'; "
+        "inherited environment is that of this launching process"
+    )
+    if app != APP_CODEX:
+        err(f"{app}: auth '{GATEWAY_AUTH}' routes Codex only")
+        return 1
+    settings = gateway_settings_from_env()  # GatewayConfigError names the variable
+    ok(
+        f"{app}: agents run on the gateway at {settings.url} "
+        f"({GATEWAY_TOKEN_ENV}; billed by the gateway operator)"
+    )
+    return 0
+
+
 def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
     """Report the launching process's credential under the selected Project policy."""
-    from booley.config.agent import project_credential_policy
+    from booley.config.agent import (
+        env_auth_handoff,
+        gateway_handoff_active,
+        project_credential_policy,
+    )
     from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
@@ -66,6 +89,13 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
         provider, policy = project_credential_policy(project_root)
         app = app or provider
+    if gateway_handoff_active():
+        return _report_gateway_status(app)
+    if env_auth_handoff() == GATEWAY_AUTH:
+        info(
+            "BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it; "
+            "showing the booley.toml policy"
+        )
     apps = [app] if app else list(auth_token.CREDENTIALS)
     usable = 0
     info(f"configured auth = '{policy}'; inherited environment is that of this launching process")
