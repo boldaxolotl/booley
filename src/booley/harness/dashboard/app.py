@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import ClassVar
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -90,6 +91,14 @@ UNMOUNTED_LIST_WIDTH = 160
 NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client calls Booley."
 # Views that replace the list with one full-width detail.
 DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal"})
+# Jobs list columns, left to right. Crit repeats the detail's Criterion line as a mark.
+JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Crit", "Elapsed")
+_TARGET, _RESULT = JOB_COLUMNS.index("Target"), JOB_COLUMNS.index("Result")
+# A Target is cut to this many columns before a Result word is: six name characters,
+# the ellipsis and the gap. The Job detail beside the list shows both in full.
+TARGET_MIN = 8
+_ABSENT = "—"
+_ELLIPSIS = "…"
 
 
 @dataclass(frozen=True)
@@ -232,22 +241,29 @@ def _connection_label(row: SessionRow, now: float) -> str:
     return f"last seen {format_age(row.last_call_at, now=now)} · connection unknown"
 
 
+def _owner_handle(job: JobView, handles: Mapping[str, str] | None) -> str | None:
+    """The owning session's handle; None for a standalone Job."""
+    key = job.record.session_key
+    if key is None:
+        return None
+    return job.owner_handle or (handles or {}).get(key, "S?")
+
+
 def _owner_label(
     job: JobView,
     sessions: tuple[SessionRow, ...],
     now: float,
     handles: Mapping[str, str] | None = None,
 ) -> str:
-    key = job.record.session_key
-    if key is None:
+    label = _owner_handle(job, handles)
+    if label is None:
         return "standalone"
     handles = handles or {}
-    label = job.owner_handle or handles.get(key, "S?")
     row = next(
         (
             row
             for row in sessions
-            if row.attribution.key == key
+            if row.attribution.key == job.record.session_key
             or (label != "S?" and handles.get(row.attribution.key) == label)
         ),
         None,
@@ -260,19 +276,77 @@ def _job_label(job: JobView) -> str:
     return job.handle or job_prefix(job.record.endpoint) + "?"
 
 
-def _job_row(job: JobView, now: float, owner: str) -> str:
-    if job.state == "running":
-        cpu = "—" if job.cpu_percent is None else f"{job.cpu_percent:.1f}% of one core"
-        outcome = f"CPU {cpu} / memory {_measure(job.memory)}"
-    elif job.state in TERMINAL_JOB_STATES:
-        outcome = f"exit {job.record.exit_code} · design verdict {(job.report or {}).get('passed', 'unavailable')}"
-    else:
-        outcome = "resources unavailable"
+def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> tuple[Text, ...]:
+    """The untruncated cells of one Jobs list row, in `JOB_COLUMNS` order."""
+    target = target_arg(job.record.argv)
+    owner = _owner_handle(job, handles)
     elapsed = job_elapsed_seconds(job, now)
+    if job.state in _REPORT_DETAIL_STATES:
+        presentation = _job_presentation(job)
+        result = Text(
+            presentation.flow_word.value,
+            style=SEMANTIC_STYLE.get(presentation.flow_word.semantic, ""),
+        )
+        criterion = presentation.criterion
+        crit = (
+            Text(
+                "✓" if criterion.semantic == "met" else "✗",
+                style=SEMANTIC_STYLE[criterion.semantic],
+            )
+            if criterion is not None
+            else Text()
+        )
+    else:
+        result, crit = Text(_ELLIPSIS, style="dim"), Text()
     return (
-        f"{_job_label(job)} · {job.record.endpoint} · {DashboardApp._target(job)} · {owner} · "
-        f"{job.state} · {format_duration(elapsed) if elapsed is not None else 'unavailable'} · {job.stage or 'stage —'} · {outcome}"
+        Text(_job_label(job)),
+        Text(target) if target else Text(_ABSENT, style="dim"),
+        Text(owner) if owner else Text(_ABSENT, style="dim"),
+        Text(job.state),
+        result,
+        crit,
+        Text(format_duration(elapsed) if elapsed is not None else "unavailable"),
     )
+
+
+def _fit_job_widths(available: int, rows: list[tuple[Text, ...]]) -> tuple[int, ...]:
+    """Column widths (each but the last includes a one-column gap) for the Jobs list.
+
+    Every column but Target and Result takes its natural width. Target then takes
+    what Result leaves; once Target is down to `TARGET_MIN`, Result gives way.
+    """
+    natural = [
+        max([cell_len(label), *(row[index].cell_len for row in rows)])
+        for index, label in enumerate(JOB_COLUMNS)
+    ]
+    gaps = [1] * (len(JOB_COLUMNS) - 1) + [0]
+    widths = [size + gap for size, gap in zip(natural, gaps, strict=True)]
+    spare = available - sum(widths) + widths[_TARGET] + widths[_RESULT]
+    target_max = widths[_TARGET]
+    target_min = min(TARGET_MIN, target_max)
+    result_need = widths[_RESULT]
+    if spare >= result_need + target_min:
+        widths[_TARGET] = min(spare - result_need, target_max)
+    else:
+        widths[_TARGET] = target_min
+        widths[_RESULT] = max(cell_len(JOB_COLUMNS[_RESULT]) + 1, spare - target_min)
+    return tuple(widths)
+
+
+def _truncate_job_rows(
+    rows: list[tuple[Text, ...]], widths: tuple[int, ...]
+) -> list[tuple[Text, ...]]:
+    """Cut Target and Result cells that exceed their column, with an ellipsis."""
+    fitted = []
+    for row in rows:
+        cells = list(row)
+        for index in (_TARGET, _RESULT):
+            limit = max(1, widths[index] - 1)
+            if cells[index].cell_len > limit:
+                cells[index] = cells[index].copy()
+                cells[index].truncate(limit, overflow="ellipsis")
+        fitted.append(tuple(cells))
+    return fitted
 
 
 def _job_presentation(job: JobView) -> ReportPresentation:
@@ -500,10 +574,12 @@ class DashboardApp(App[None]):
         self.row_keys: list[str] = []
         self._read_task: asyncio.Task[DashboardSnapshot] | None = None
         self._rows: list[tuple[object, ...]] = []
-        self._list_label_shown: str | Text = ""
+        self._list_columns_shown: tuple[tuple[str | Text, int | None], ...] = ()
         # The overview's aligned column header and the list width it was fitted to.
         self._overview_header = Text()
         self._overview_width = 0
+        # Table width the Jobs columns were fitted to; layout changes it after the first fit.
+        self._jobs_fit_width = -1
         # Scroll offsets by (window, view, session, filter, detail selection).
         self._scrolls: dict[tuple[str, str, str | None, str, str], float] = {}
         self._detail_shown: tuple[str, str, str | None, str, str] | None = None
@@ -838,18 +914,7 @@ class DashboardApp(App[None]):
                 f" · {self._session_handle(nav.session) if nav.session else 'all sessions and standalone'}",
                 [json.dumps(job.key) for job in jobs],
                 [
-                    (
-                        _job_row(
-                            job,
-                            self.snapshot.observed_at,
-                            _owner_label(
-                                job,
-                                self.snapshot.sessions,
-                                self.snapshot.observed_at,
-                                self.snapshot.session_handles,
-                            ),
-                        ),
-                    )
+                    _job_cells(job, self.snapshot.observed_at, self.snapshot.session_handles)
                     for job in jobs
                 ],
             )
@@ -1043,12 +1108,7 @@ class DashboardApp(App[None]):
             if self._rows
             else self._scrolls.get(self._scroll_key(self.navigation), 0)
         )
-        label = self._list_label()
-        if label != self._list_label_shown:
-            table.clear(columns=True)
-            table.add_column(label)
-            self._list_label_shown = label
-            self._rows = []
+        rows, job_widths = self._apply_list_columns(table, rows)
         if rows != self._rows:
             table.header_rows = frozenset()
             table.clear()
@@ -1062,6 +1122,9 @@ class DashboardApp(App[None]):
         self._render_detail()
         # The list's width settles only after layout (a window switch, a scrollbar).
         self.call_after_refresh(self._refit_overview)
+        if job_widths:
+            # Showing or hiding the detail pane resizes the list after this pass.
+            self.call_after_refresh(self._refit_job_columns)
         # Refreshes keep the keyboard where the user put it; only a hidden or
         # missing focus owner (a view change hid the list) moves it.
         if self.focused is None or not self.focused.display:
@@ -1088,13 +1151,45 @@ class DashboardApp(App[None]):
         ):
             self.render_snapshot()
 
-    def _list_label(self) -> str | Text:
-        """Header of the list column; dedicated details hide the list and keep its label."""
+    def _apply_list_columns(
+        self, table: DataTable, rows: list[tuple[object, ...]]
+    ) -> tuple[list[tuple[object, ...]], tuple[int, ...] | None]:
+        """Fit the Jobs columns to the list, rebuild the table columns, and return fitted rows."""
+        job_widths: tuple[int, ...] | None = None
+        if self.navigation.view == "jobs":
+            self._jobs_fit_width = table.size.width
+            job_widths = _fit_job_widths(
+                self._jobs_fit_width - table.styles.scrollbar_size_vertical, rows
+            )
+            rows = _truncate_job_rows(rows, job_widths)
+        columns = self._list_columns(job_widths)
+        if columns != self._list_columns_shown:
+            table.clear(columns=True)
+            table.cell_padding = 0 if job_widths else 1
+            for label, width in columns:
+                table.add_column(label, width=width)
+            self._list_columns_shown = columns
+            self._rows = []
+        return rows, job_widths
+
+    def _list_columns(
+        self, job_widths: tuple[int, ...] | None
+    ) -> tuple[tuple[str | Text, int | None], ...]:
+        """Header and width of each list column; dedicated details hide the list and keep them."""
+        if job_widths:
+            return tuple(zip(JOB_COLUMNS, job_widths, strict=True))
         return {
-            "overview": self._overview_header,
-            "session": "Goals and activity",
-            "jobs": "Jobs",
-        }.get(self.navigation.view, self._list_label_shown)
+            "overview": ((self._overview_header, None),),
+            "session": (("Goals and activity", None),),
+        }.get(self.navigation.view, self._list_columns_shown)
+
+    def _refit_job_columns(self) -> None:
+        """Fit the Jobs columns again once layout has settled on a different list width."""
+        if (
+            self.navigation.view == "jobs"
+            and self.query_one(DataTable).size.width != self._jobs_fit_width
+        ):
+            self.render_snapshot()
 
     def _selected_goal(self) -> GoalDetail | None:
         _, goal = self._session()

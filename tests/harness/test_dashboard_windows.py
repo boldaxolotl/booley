@@ -440,7 +440,15 @@ async def test_list_header_is_set_per_view():
         assert column_label(app) == overview
         await pilot.press("j")
         await pilot.pause()
-        assert column_label(app) == "Jobs"
+        assert [str(c.label) for c in table_of(app).ordered_columns] == [
+            "Job",
+            "Target",
+            "Session",
+            "State",
+            "Result",
+            "Crit",
+            "Elapsed",
+        ]
 
 
 # --- AC8 ---------------------------------------------------------------------

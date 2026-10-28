@@ -83,7 +83,8 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
         "ensure_http_server",
         lambda *, mode: events.append(f"server:{mode}") or "started",
     )
-    monkeypatch.setattr(reg, "register", lambda _app: "claude:current")
+    monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
+    monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
     monkeypatch.setattr(entry, "observe_upgrade", lambda: events.append("observe") or "current")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: events.append("health") or "started")
 
@@ -144,12 +145,6 @@ class TestClaude:
         reg.upsert_claude(path)
         data = json.loads(path.read_text(encoding="utf-8"))
         assert "other" in data["mcpServers"] and "booley" in data["mcpServers"]
-
-    def test_survives_corrupt_json(self, tmp_path):
-        path = reg.claude_config_path(tmp_path)
-        path.write_text("{not json", encoding="utf-8")
-        assert reg.upsert_claude(path) is True
-        assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["booley"]
 
 
 # ===========================================================================
@@ -680,16 +675,6 @@ class TestApplyStoredCredential:
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in settings.get("env", {})
         assert settings["env"]["FOO"] == "bar"  # only our entry is managed
 
-    def test_claude_survives_corrupt_settings(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
-        path = reg.claude_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text("{not json")
-
-        assert reg.apply_stored_credential("claude", tmp_path) == "written"
-        assert json.loads(path.read_text())["env"]["CLAUDE_CODE_OAUTH_TOKEN"]
-
     # --- Codex: auth.json ---
 
     def test_codex_seed_written_to_auth_json(self, tmp_path, monkeypatch):
@@ -836,15 +821,6 @@ class TestClaudePermissionMode:
         settings = json.loads(path.read_text())
         assert settings["permissions"]["defaultMode"] == "bypassPermissions"
 
-    def test_survives_corrupt_settings(self, tmp_path):
-        path = reg.claude_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text("{ not json")
-
-        assert reg._apply_claude_permission_mode(tmp_path) == "written"
-        settings = json.loads(path.read_text())
-        assert settings["permissions"]["defaultMode"] == "bypassPermissions"
-
     def test_only_claude(self, tmp_path):
         reg.register("codex", home=tmp_path)
         assert not reg.claude_settings_path(tmp_path).exists()
@@ -884,6 +860,8 @@ class TestRegister:
         )
         monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
         monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+        # Under pytest the cwd is Booley's own source checkout, not a Project.
+        monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
         entry.main()
         assert reg.claude_config_path(tmp_path).exists()
         assert requested_modes == ["interactive"]
@@ -1326,3 +1304,418 @@ def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch
     assert "SYNTHETIC" not in str(caught.value)
     assert login.read_bytes() == before
     assert settings.read_bytes() == settings_before
+
+
+# ===========================================================================
+# First-run state — no onboarding, login or folder-trust prompt (#2258)
+# ===========================================================================
+
+_FIRST_RUN_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "BOOLEY_PRIMARY_AUTH",
+    "BOOLEY_DIR",
+    "RTL_PROJECT_ROOT",
+    "BOOLEY_CONTAINER",
+    "CODEX_HOME",
+)
+
+
+@pytest.fixture
+def first_run(tmp_path, monkeypatch):
+    """An unseeded Sandbox home plus Project Root and Booley Directory trust keys."""
+    from booley.runtime import booley_dir
+
+    for name in _FIRST_RUN_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    booley_dir.reset_cache()
+    home = tmp_path / "home"
+    root = tmp_path / "work"
+    booley = tmp_path / "booley-project"
+    for directory in (home, root, booley):
+        directory.mkdir()
+    yield SimpleNamespace(
+        home=home,
+        root=str(root.resolve()),
+        booley=str(booley.resolve()),
+        keys=(str(root.resolve()), str(booley.resolve())),
+    )
+    booley_dir.reset_cache()
+
+
+def _claude_config(home):
+    return json.loads(reg.claude_config_path(home).read_text(encoding="utf-8"))
+
+
+def _claude_settings(home):
+    return json.loads(reg.claude_settings_path(home).read_text(encoding="utf-8"))
+
+
+def _codex_config(home):
+    return tomllib.loads(reg.codex_config_path(home).read_text(encoding="utf-8"))
+
+
+def _write_claude_config(home, data):
+    reg.claude_config_path(home).write_text(json.dumps(data), encoding="utf-8")
+
+
+def _assert_claude_trusted(config, first_run):
+    for key in first_run.keys:
+        assert config["projects"][key]["hasTrustDialogAccepted"] is True
+
+
+def test_claude_unseeded_with_credential_skips_first_run_prompts(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    config = _claude_config(first_run.home)
+    assert config["hasCompletedOnboarding"] is True
+    _assert_claude_trusted(config, first_run)
+    assert _claude_settings(first_run.home)["theme"] == "dark"
+    assert config["mcpServers"]["booley"]["type"] == "http"
+
+
+def test_claude_unseeded_with_login_file_skips_first_run_prompts(first_run):
+    login = first_run.home / ".claude" / ".credentials.json"
+    login.parent.mkdir()
+    login.write_text(json.dumps({"claudeAiOauth": {"accessToken": "fake"}}), encoding="utf-8")
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    config = _claude_config(first_run.home)
+    assert config["hasCompletedOnboarding"] is True
+    _assert_claude_trusted(config, first_run)
+    assert _claude_settings(first_run.home)["theme"] == "dark"
+
+
+def test_claude_api_key_keeps_key_approval_dialog(first_run, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    config = _claude_config(first_run.home)
+    assert config["hasCompletedOnboarding"] is True
+    _assert_claude_trusted(config, first_run)
+    # Claude's "use this API key?" dialog is the billing consent: never pre-answered.
+    assert "customApiKeyResponses" not in config
+
+
+def test_codex_unseeded_with_api_key_skips_login_and_trust(first_run, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test")
+
+    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    auth = json.loads(reg.codex_auth_path(first_run.home).read_text(encoding="utf-8"))
+    assert auth == {"OPENAI_API_KEY": "sk-proj-test"}
+    config = _codex_config(first_run.home)
+    for key in first_run.keys:
+        assert config["projects"][key]["trust_level"] == "trusted"
+    assert config["mcp_servers"]["booley"]["url"].startswith("http://127.0.0.1:")
+
+
+def test_claude_without_credential_keeps_login_and_writes_trust(first_run):
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    config = _claude_config(first_run.home)
+    _assert_claude_trusted(config, first_run)
+    assert "hasCompletedOnboarding" not in config
+    assert "theme" not in _claude_settings(first_run.home)
+
+
+def test_codex_without_credential_keeps_login_and_writes_trust(first_run):
+    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    assert not reg.codex_auth_path(first_run.home).exists()
+    config = _codex_config(first_run.home)
+    for key in first_run.keys:
+        assert config["projects"][key]["trust_level"] == "trusted"
+
+
+def test_claude_seeded_config_keeps_seed_and_adds_sandbox_trust(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    host_entry = {"hasTrustDialogAccepted": True, "allowedTools": ["Bash(ls:*)"]}
+    seed = {
+        "hasCompletedOnboarding": True,
+        "autoUpdates": False,
+        "cachedGrowthBookFeatures": {"gate": 1},
+        "projects": {"/host/checkout": host_entry},
+    }
+    _write_claude_config(first_run.home, seed)
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    config = _claude_config(first_run.home)
+    for kept in ("hasCompletedOnboarding", "autoUpdates", "cachedGrowthBookFeatures"):
+        assert config[kept] == seed[kept]
+    assert config["projects"]["/host/checkout"] == host_entry
+    _assert_claude_trusted(config, first_run)
+
+
+def test_claude_keeps_user_onboarding_choice(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    _write_claude_config(first_run.home, {"hasCompletedOnboarding": False})
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    config = _claude_config(first_run.home)
+    assert config["hasCompletedOnboarding"] is False
+    _assert_claude_trusted(config, first_run)
+
+
+def test_claude_keeps_user_theme(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    settings = reg.claude_settings_path(first_run.home)
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"theme": "light"}), encoding="utf-8")
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    assert _claude_settings(first_run.home)["theme"] == "light"
+    assert _claude_config(first_run.home)["hasCompletedOnboarding"] is True
+
+
+def test_claude_legacy_theme_blocks_default_theme(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    _write_claude_config(first_run.home, {"theme": "light-daltonized"})
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    assert "theme" not in _claude_settings(first_run.home)
+    config = _claude_config(first_run.home)
+    assert config["theme"] == "light-daltonized"
+    assert config["hasCompletedOnboarding"] is True
+
+
+def test_claude_keeps_user_project_entry(first_run):
+    user_entry = {"hasTrustDialogAccepted": False, "allowedTools": ["Read"]}
+    _write_claude_config(first_run.home, {"projects": {first_run.root: dict(user_entry)}})
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    projects = _claude_config(first_run.home)["projects"]
+    assert projects[first_run.root] == user_entry
+    assert projects[first_run.booley]["hasTrustDialogAccepted"] is True
+
+
+def test_codex_keeps_user_trust_level(first_run):
+    block = (
+        "# my notes\n"
+        f"[projects.{json.dumps(first_run.root)}]\n"
+        'trust_level = "untrusted"  # keep this folder out\n'
+    )
+    reg.codex_config_path(first_run.home).parent.mkdir()
+    reg.codex_config_path(first_run.home).write_text(block, encoding="utf-8")
+
+    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    assert block in reg.codex_config_path(first_run.home).read_text(encoding="utf-8")
+    projects = _codex_config(first_run.home)["projects"]
+    assert projects[first_run.root]["trust_level"] == "untrusted"
+    assert projects[first_run.booley]["trust_level"] == "trusted"
+
+
+def test_sandbox_trust_paths_cover_linked_booley_dir(first_run, tmp_path):
+    require_symlinks(tmp_path)
+    real_root = tmp_path / "real-project"
+    real_root.mkdir()
+    spelled_root = tmp_path / "spelled-project"
+    spelled_root.symlink_to(real_root, target_is_directory=True)
+    linked_target = tmp_path / "outside-booley"
+    linked_target.mkdir()
+    (real_root / ".booley").symlink_to(linked_target, target_is_directory=True)
+
+    keys = entry.sandbox_trust_paths(spelled_root)
+
+    assert str(real_root.resolve()) in keys
+    assert str(spelled_root.absolute()) in keys
+    assert str(linked_target.resolve()) in keys
+    assert str(spelled_root / ".booley") in keys
+
+
+def test_main_registers_trust_for_hook_cwd(first_run, tmp_path, monkeypatch):
+    project = tmp_path / "hook-project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("PWD", str(project))
+    monkeypatch.setenv("HOME", str(first_run.home))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley-project"))
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+
+    entry.main()
+
+    projects = _claude_config(first_run.home)["projects"]
+    assert projects[str(project.resolve())]["hasTrustDialogAccepted"] is True
+    assert projects[first_run.booley]["hasTrustDialogAccepted"] is True
+
+
+def test_claude_invalid_config_is_refused_untouched(first_run):
+    path = reg.claude_config_path(first_run.home)
+    path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="repair") as raised:
+        reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    assert str(path) in str(raised.value)
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_claude_invalid_settings_is_refused_untouched(first_run):
+    path = reg.claude_settings_path(first_run.home)
+    path.parent.mkdir()
+    path.write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="repair") as raised:
+        reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    assert str(path) in str(raised.value)
+    assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_codex_invalid_projects_table_is_refused_untouched(first_run):
+    path = reg.codex_config_path(first_run.home)
+    path.parent.mkdir()
+    path.write_text('projects = "x"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="repair") as raised:
+        reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    assert str(path) in str(raised.value)
+    assert path.read_text(encoding="utf-8") == 'projects = "x"\n'
+
+
+def _snapshot(home):
+    """Bytes and mtime of every file under *home*."""
+    return {
+        str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(home.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_repeat_registration_is_a_no_op(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test")
+    for app in ("claude", "codex"):
+        first = reg.register(app, home=first_run.home, trust_paths=first_run.keys)
+        assert "first-run:written" in first
+
+    claude = _claude_config(first_run.home)
+    _assert_claude_trusted(claude, first_run)
+    assert claude["hasCompletedOnboarding"] is True
+    assert _claude_settings(first_run.home)["theme"] == "dark"
+    assert _codex_config(first_run.home)["projects"][first_run.root]["trust_level"] == "trusted"
+    before = _snapshot(first_run.home)
+
+    for app in ("claude", "codex"):
+        again = reg.register(app, home=first_run.home, trust_paths=first_run.keys)
+        assert "first-run:current" in again
+
+    assert _snapshot(first_run.home) == before
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        {"projects": []},
+        {"projects": None},
+        {"projects": {"/x": "not an object"}},
+        {"mcpServers": None},
+    ],
+)
+def test_claude_misshaped_config_is_refused_before_any_write(first_run, existing):
+    path = reg.claude_config_path(first_run.home)
+    original = json.dumps(existing)
+    path.write_text(original, encoding="utf-8")
+    first_run_trust = ("/x", *first_run.keys)
+
+    with pytest.raises(ValueError, match="repair"):
+        reg.register("claude", home=first_run.home, trust_paths=first_run_trust)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not reg.claude_settings_path(first_run.home).exists()
+
+
+def test_claude_existing_entry_without_trust_key_gains_it_and_keeps_others(first_run):
+    _write_claude_config(
+        first_run.home, {"projects": {first_run.root: {"allowedTools": ["Read"]}}}
+    )
+
+    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+
+    project = _claude_config(first_run.home)["projects"][first_run.root]
+    assert project == {"allowedTools": ["Read"], "hasTrustDialogAccepted": True}
+
+
+@pytest.mark.parametrize(
+    ("existing", "root_gets_trust"),
+    [
+        ('[projects."{root}"]\nother = 1\n', True),
+        ('projects = { "/elsewhere" = { trust_level = "trusted" } }\n', False),
+        ('[projects]\n"{root}".other = 1\n', False),
+        ('projects."{root}".other = 1\n', True),
+    ],
+    ids=["table-with-other-key", "inline-table", "dotted-key-in-table", "dotted-root-key"],
+)
+def test_codex_valid_projects_layouts_never_break_registration(
+    first_run, existing, root_gets_trust
+):
+    path = reg.codex_config_path(first_run.home)
+    path.parent.mkdir()
+    # JSON string escaping is valid TOML basic-string escaping (Windows backslashes).
+    path.write_text(existing.replace('"{root}"', json.dumps(first_run.root)), encoding="utf-8")
+
+    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    projects = _codex_config(first_run.home)["projects"]
+    assert ("trust_level" in projects.get(first_run.root, {})) is root_gets_trust
+
+
+def test_codex_trust_covers_non_ascii_paths(first_run, tmp_path):
+    odd = tmp_path / "café-\U0001f600"
+    odd.mkdir()
+
+    reg.register("codex", home=first_run.home, trust_paths=(str(odd.resolve()),))
+
+    assert (
+        _codex_config(first_run.home)["projects"][str(odd.resolve())]["trust_level"] == "trusted"
+    )
+
+
+def test_booley_directory_symlink_to_an_ancestor_is_not_trusted(first_run, tmp_path):
+    require_symlinks(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley").symlink_to(tmp_path, target_is_directory=True)
+
+    keys = entry.sandbox_trust_paths(project)
+
+    assert str(tmp_path.resolve()) not in keys
+    assert str(project.resolve()) in keys
+
+
+def test_main_reports_refused_registration_but_still_runs_the_hook(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    project = tmp_path / "hook-project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("HOME", str(first_run.home))
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    reg.claude_config_path(first_run.home).write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    doctor_runs = []
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: doctor_runs.append(1) or "current")
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+
+    with pytest.raises(SystemExit) as raised:
+        entry.main()
+
+    assert raised.value.code == 1
+    assert doctor_runs == [1]
+    assert "registration refused" in capsys.readouterr().err
