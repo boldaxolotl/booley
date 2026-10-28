@@ -815,6 +815,14 @@ def fake_rust(monkeypatch):
             else:
                 cycles = int(token[:-1]) if token.endswith("c") else int(token)
                 target_tick = cycles * _TICKS_PER_CYCLE
+            if target_tick > state["total_ticks"]:
+                # Like the binary: a time past the trace end is a usage error.
+                return subprocess.CompletedProcess(
+                    cmd,
+                    2,
+                    stdout="",
+                    stderr=f"ERROR: value time {token} is beyond simulation range\n",
+                )
             data = {
                 "scope_prefix": "",
                 "mode": "async" if async_mode else "sync",
@@ -1923,7 +1931,9 @@ def test_time_end_past_the_trace_is_clamped(tmp_path, monkeypatch, fake_rust, ca
 
     assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 1000, "end": end}
     assert viewer.session["altMarkerTime"] == end
-    assert f"showing up to tick {end}" in capsys.readouterr().err
+    assert f"--time end 999999c is past the end of the trace; showing up to tick {end}" in (
+        capsys.readouterr().err
+    )
 
 
 def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
@@ -1933,7 +1943,19 @@ def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, monkeypa
     with pytest.raises(SystemExit) as exc:
         _gui(time="200000c:300000c")
 
-    assert "after the end of the trace" in str(exc.value)
+    assert "--time start 200000c is past the end of the trace" in str(exc.value)
+    assert "--at-time" not in str(exc.value)  # no hint aimed at `bwave value`
+    assert viewer.calls == []
+
+
+def test_cursor_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
+    trace = _seed_default(tmp_path)
+    viewer = _viewer_for(trace, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(time="100c:200c", cursor="999999c")
+
+    assert "--cursor 999999c is past the end of the trace" in str(exc.value)
     assert viewer.calls == []
 
 
@@ -2022,11 +2044,12 @@ def test_gui_surfaces_the_inner_preflight_error(tmp_path, failing_rust):
 def test_nonzero_exit_message_is_not_double_prefixed(tmp_path, failing_rust):
     _seed_default(tmp_path)
     failing_rust["rc"] = 2
+    failing_rust["stderr"] = "ERROR: could not open store: bad magic\n"
 
     with pytest.raises(SystemExit) as exc:
-        _gui(time="160000c:160100c", append=True)
+        _gui(time="100c:200c", append=True)
 
-    assert str(exc.value).startswith("ERROR: --at-time 160000")
+    assert str(exc.value) == "ERROR: could not open store: bad magic"
 
 
 def test_plain_text_failure_on_stdout_is_surfaced(tmp_path, failing_rust):

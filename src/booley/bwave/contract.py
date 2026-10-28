@@ -43,6 +43,11 @@ EXIT_USAGE = 2
 # pattern(s) ..."). Compare against lowercased stderr and EXIT_USAGE.
 NO_MATCH_MARKER = "no signals match"
 
+# Substring of the `value --at` diagnostic for a time past the end of the
+# trace ("ERROR: value time N is beyond simulation range", exit 2). `bwave
+# gui` clamps a --time end on it.
+BEYOND_RANGE_MARKER = "beyond simulation range"
+
 # Substring of the zero-signal-store diagnostic ("ERROR: waveform store has
 # no signals ..."), emitted by queries (exit 2) and by `list` (exit 0, both
 # text and JSON modes put it on stderr).

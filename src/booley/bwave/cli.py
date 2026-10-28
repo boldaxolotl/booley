@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn
 
 from booley.bwave import vaporview_bridge
-from booley.bwave.contract import NO_MATCH_MARKER
+from booley.bwave.contract import BEYOND_RANGE_MARKER, NO_MATCH_MARKER
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import (
     conversion_failure_messages,
@@ -812,11 +812,20 @@ def _run_capture(cmd_args: list[str]) -> dict:
     the user's terminal like _run(); a failure here is an input problem
     (bad glob, bad time token), so the binary's stderr is surfaced verbatim.
     """
+    return _capture_data(_run_query(cmd_args), cmd_args)
+
+
+def _run_query(cmd_args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run one internal Rust query, exiting only on a timeout."""
     cmd = [*_bwave_cmd(), *cmd_args]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     except subprocess.TimeoutExpired:
         sys.exit(f"ERROR: bwave query timed out (120s): {' '.join(cmd_args)}")
+
+
+def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
+    """Return the JSON envelope `data`, surfacing the binary's own error on failure."""
     if result.returncode != 0:
         _exit_with_inner_error(result, cmd_args, "bwave query failed")
     try:
@@ -1109,7 +1118,15 @@ class _TickResolver:
         self.markers = _get_markers(_load_sessions(), alias)
         self._total_ticks: int | None = None
 
-    def to_tick(self, token: str) -> int:
+    def to_tick(self, token: str, *, option: str = "--cursor") -> int:
+        """Resolve *token*; one past the end of the trace is a usage error."""
+        tick = self._tick_within_trace(token)
+        if tick is None:
+            sys.exit(f"ERROR: {option} {token} is past the end of the trace")
+        return tick
+
+    def _tick_within_trace(self, token: str) -> int | None:
+        """Resolve *token* to a tick, or None when it lies past the end of the trace."""
         # Markers are stored as cycle numbers; make the unit explicit so the
         # token survives async traces' bare-integer rejection with a clear
         # error pointing at the cycle grammar rather than a mystery number.
@@ -1124,7 +1141,10 @@ class _TickResolver:
         if token.endswith(("t", "ps", "ns", "us", "ms")):
             command.append("--async")
         command.extend(["--at", token, "--format", "json", "--limit", "1"])
-        data = _run_capture(command)
+        result = _run_query(command)
+        if result.returncode != 0 and BEYOND_RANGE_MARKER in result.stderr.lower():
+            return None
+        data = _capture_data(result, command)
         tick = data.get("target_tick")
         if not isinstance(tick, int):
             sys.exit(f"ERROR: could not resolve time token '{token}' to a tick")
@@ -1152,10 +1172,8 @@ class _TickResolver:
                 "Either end may be omitted: '500c:' or ':100ns'."
             )
         raw_start, raw_end = spec.split(":", 1)
-        start = self.to_tick(raw_start) if raw_start else 0
-        end = self.to_tick(raw_end) if raw_end else self.total_ticks()
-        if start >= end:
-            sys.exit(f"ERROR: empty --time range: start tick {start} >= end tick {end}")
+        start = self.to_tick(raw_start, option="--time start") if raw_start else 0
+        end = self._tick_within_trace(raw_end) if raw_end else self.total_ticks()
         # VaporView rejects a window that ends past the trace (its end is the
         # last timestamp plus a margin, never less than `list`'s total_ticks).
         last = self.total_ticks()
@@ -1164,13 +1182,15 @@ class _TickResolver:
                 f"ERROR: --time starts at tick {start}, at or after the end of the trace "
                 f"(tick {last})"
             )
-        if end > last:
+        if end is None or end > last:
             print(
-                f"NOTE: --time end tick {end} is past the end of the trace; "
+                f"NOTE: --time end {raw_end} is past the end of the trace; "
                 f"showing up to tick {last}",
                 file=sys.stderr,
             )
             end = last
+        if start >= end:
+            sys.exit(f"ERROR: empty --time range: start tick {start} >= end tick {end}")
         return start, end
 
 

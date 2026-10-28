@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from booley.bwave.contract import (
+    BEYOND_RANGE_MARKER,
     EXIT_ENV,
     EXIT_OK,
     EXIT_USAGE,
@@ -134,6 +135,13 @@ def test_total_miss_is_exit_usage_plus_marker(store: Path) -> None:
     result = _run("stats", str(store), "-s", "no_such_signal_anywhere")
     assert result.returncode == EXIT_USAGE, result.stderr
     assert NO_MATCH_MARKER in result.stderr.lower(), result.stderr
+
+
+def test_value_past_the_trace_end_is_exit_usage_plus_marker(store: Path) -> None:
+    """`bwave gui` clamps a --time end on this marker."""
+    result = _run("value", str(store), "--async", "--at", "999999999t", "--format", "json")
+    assert result.returncode == EXIT_USAGE, result.stderr
+    assert BEYOND_RANGE_MARKER in result.stderr.lower(), result.stderr
 
 
 def test_list_tree_stderr_carries_the_scope_line(store: Path) -> None:
