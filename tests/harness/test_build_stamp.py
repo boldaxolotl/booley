@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 import sys
 import tarfile
@@ -149,15 +150,20 @@ class TestWriteBuildStamp:
     @staticmethod
     def _commit_at(repo: Path, committed_at: str) -> None:
         """Add a commit whose committer date is pinned to *committed_at*."""
-        import os
-
         (repo / "README").write_text(f"at {committed_at}\n", encoding="utf-8")
         _git(repo, "add", ".")
         subprocess.run(
             ["git", "-C", str(repo), "commit", "-m", "dated"],
             check=True,
             capture_output=True,
-            env={**os.environ, "GIT_COMMITTER_DATE": committed_at},
+            timeout=60,
+            # Ignore the developer's global git config (signing, hooks).
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_COMMITTER_DATE": committed_at,
+            },
         )
 
     @staticmethod

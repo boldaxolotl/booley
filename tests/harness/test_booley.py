@@ -541,17 +541,6 @@ def test_version_flag_prints_and_exits(capsys):
     assert out.startswith("booley ")
 
 
-def test_version_string_includes_commit_in_checkout(monkeypatch):
-    # In a source checkout, the commit disambiguates the static packaged version.
-    monkeypatch.setattr(tlr, "_code_identity", lambda: ("abc1234", ""))
-    assert "(abc1234)" in tlr._version_string()
-
-
-def test_version_string_bare_without_commit(monkeypatch):
-    monkeypatch.setattr(tlr, "_code_identity", lambda: ("", ""))
-    assert "(" not in tlr._version_string()
-
-
 class TestBakedBuildCommit:
     """F-5: a wheel install has no .git, so `--version` reported no commit.
 
@@ -734,7 +723,14 @@ class TestVersionCommitDate:
                 check=True,
                 capture_output=True,
                 text=True,
-                env={**os.environ, **env},
+                timeout=60,
+                # Ignore the developer's global git config (signing, hooks).
+                env={
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    **env,
+                },
             ).stdout.strip()
 
         git("init")

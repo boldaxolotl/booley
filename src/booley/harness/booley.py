@@ -309,10 +309,16 @@ class _PrintVersion(argparse.Action):
     width; this one also defers the (possibly git-backed) lookup until asked.
     """
 
-    def __init__(self, option_strings, dest, **kwargs):
+    def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
         super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs)
 
-    def __call__(self, parser, namespace, values, option_string=None):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
         sys.stdout.write(_version_string() + "\n")
         parser.exit()
 
@@ -442,7 +448,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action=_PrintVersion,
-        help=("Show the Booley version, plus its commit and UTC commit date when known, and exit"),
+        help="Show the Booley version, plus its commit and UTC commit date when known, and exit",
     )
     # metavar hides unadvertised subcommands (e.g. the debugging-only `shell`,
     # ADR 0028 Decision 2: kept working, stripped from help/docs) from the
