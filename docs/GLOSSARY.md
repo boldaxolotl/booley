@@ -53,7 +53,7 @@ The host-owned act of sealing and vouching for one exact Sandbox specification, 
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
 **Interactive Mode**:
-Execution mode in which a human steers the Developer Agent inside a Sandbox, using the agent CLI in a Sandbox terminal. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
+Execution mode in which a human steers the Developer Agent inside a Sandbox, using the Developer Agent's CLI in a Sandbox terminal. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Goal Mode**:

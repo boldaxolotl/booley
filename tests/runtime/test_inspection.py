@@ -893,17 +893,23 @@ class TestDevcontainerSpecStaleness:
             ({"extensions": ["bitwisecook.tcl"]}, ["bitwisecook.tcl"]),
             ({"extensions": ["Anthropic.claude-code"]}, ["Anthropic.claude-code"]),
             ({"extensions": ["openai.chatgpt"]}, ["openai.chatgpt"]),
-            ({"associations": {"*.sdc": "tcl"}}, ["*.sdc"]),
-            ({"associations": {"*.xdc": "tcl"}}, ["*.xdc"]),
-            ({"pin": agent_pin}, ["remote.extensionKind"]),
-            ({"pin": {"openai.chatgpt": ["workspace"]}}, ["remote.extensionKind"]),
+            ({"associations": {"*.sdc": "tcl"}}, ["files.associations *.sdc"]),
+            ({"associations": {"*.xdc": "tcl"}}, ["files.associations *.xdc"]),
+            ({"pin": agent_pin}, ["remote.extensionKind Anthropic.claude-code"]),
+            ({"pin": {"openai.chatgpt": ["workspace"]}}, ["remote.extensionKind openai.chatgpt"]),
             (
                 {
                     "extensions": ["openai.chatgpt", "bitwisecook.tcl"],
                     "associations": {"*.sdc": "tcl", "*.xdc": "tcl"},
                     "pin": {"openai.chatgpt": ["workspace"]},
                 },
-                ["openai.chatgpt", "bitwisecook.tcl", "*.sdc", "*.xdc", "remote.extensionKind"],
+                [
+                    "openai.chatgpt",
+                    "bitwisecook.tcl",
+                    "files.associations *.sdc",
+                    "files.associations *.xdc",
+                    "remote.extensionKind openai.chatgpt",
+                ],
             ),
         ]
         for index, (injected, expected_names) in enumerate(cases):

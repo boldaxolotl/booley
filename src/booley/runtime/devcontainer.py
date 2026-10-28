@@ -472,8 +472,8 @@ def spec_installs_hdl_highlight(spec: dict) -> bool:
     Like VaporView, the grammar reaches an attached window only through the
     generated spec's ``customizations`` — never via the sandbox image — so a
     spec seeded before it landed renders RTL as plain text until a re-seed.
-    The extension also claims the ``.sdc``/``.xdc`` suffixes, so nothing else
-    is required. ``booley doctor`` reads this to surface the drift.
+    The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
+    mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required. ``booley doctor`` reads this to surface the drift.
     """
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
@@ -487,8 +487,8 @@ def spec_retired_vscode_entries(spec: dict) -> list[str]:
     """Name the retired VS Code entries *spec* still carries, in a stable order.
 
     Lists each retired extension ID in ``extensions``, each retired
-    ``files.associations`` pattern still routed to Tcl, and
-    ``remote.extensionKind`` when it pins a retired agent extension. A spec
+    ``files.associations`` pattern still routed to Tcl, and each retired agent
+    extension still pinned in ``remote.extensionKind``. A spec
     with unexpected shapes reports nothing for the malformed part, like the
     sibling ``spec_*`` detectors. ``booley doctor`` reads this to surface specs
     written before those entries were dropped.
@@ -507,13 +507,13 @@ def spec_retired_vscode_entries(spec: dict) -> list[str]:
     associations = settings.get("files.associations")
     if isinstance(associations, dict):
         found += [
-            pattern
+            f"files.associations {pattern}"
             for pattern, lang in _RETIRED_FILE_ASSOCIATIONS.items()
             if associations.get(pattern) == lang
         ]
     pin = settings.get("remote.extensionKind")
-    if isinstance(pin, dict) and any(ext in pin for ext in _RETIRED_AGENT_EXTENSIONS):
-        found.append("remote.extensionKind")
+    if isinstance(pin, dict):
+        found += [f"remote.extensionKind {ext}" for ext in _RETIRED_AGENT_EXTENSIONS if ext in pin]
     return found
 
 

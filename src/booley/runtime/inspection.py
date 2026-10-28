@@ -314,7 +314,7 @@ def _retired_entries_absent(
             request,
             report,
             "devcontainer.json still lists VS Code entries Booley no longer "
-            f"installs ({', '.join(retired)}); regenerate the spec",
+            f"installs ({', '.join(retired)})",
         )
         return False
     return True
