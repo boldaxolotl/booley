@@ -3062,6 +3062,76 @@ def test_vaporview_versions_probe_parses_output(monkeypatch, returncode, stdout,
     ]
 
 
+def _run_extension_host_probe(monkeypatch, tmp_path, cmdlines):
+    """Execute the real probe source against fake /proc cmdline files; return its exit code."""
+    import pathlib
+
+    fakes = []
+    for index, cmdline in enumerate(cmdlines):
+        path = tmp_path / str(index) / "cmdline"
+        if cmdline is not None:  # None = a process that exits between glob and read
+            path.parent.mkdir()
+            path.write_bytes(cmdline)
+        fakes.append(path)
+    real_glob = pathlib.Path.glob
+
+    def glob(self, pattern, *args, **kwargs):
+        if self == pathlib.Path("/proc"):
+            return iter(fakes)
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "glob", glob)
+    with pytest.raises(SystemExit) as exited:
+        exec(compile(doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE, "<probe>", "exec"), {})
+    return exited.value.code
+
+
+_EXTENSION_HOST_CMDLINE = b"/vscode/node\x00/vscode/out/bootstrap-fork\x00--type=extensionHost\x00"
+
+
+@pytest.mark.parametrize(
+    ("cmdlines", "expected"),
+    [
+        ([b"/usr/bin/sleep\x00100\x00", None, _EXTENSION_HOST_CMDLINE], 0),
+        ([b"/vscode/out/bootstrap-fork\x00--type=ptyHost\x00", None], 3),
+        ([], 3),
+    ],
+)
+def test_extension_host_probe_source_runs_and_reports_attachment(
+    monkeypatch, tmp_path, cmdlines, expected
+):
+    # The probe runs as `python3 -c` in the Sandbox, so execute the real source:
+    # a syntax error used to exit 1, which read as "no window attached".
+    assert _run_extension_host_probe(monkeypatch, tmp_path, cmdlines) == expected
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected"),
+    [(0, True), (3, False), (1, None), (2, None)],
+)
+def test_extension_host_probe_exit_codes(monkeypatch, returncode, expected):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    assert doctor._vscode_extension_host_running(["docker", "exec", "s"]) is expected
+    assert seen == [
+        ["docker", "exec", "s", "python3", "-c", doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE]
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(n for n in dir(doctor) if n.endswith("_PROBE_SOURCE")),
+)
+def test_every_python_probe_source_compiles(name):
+    compile(getattr(doctor, name), name, "exec")
+
+
 @pytest.mark.parametrize(
     ("returncode", "expected"),
     [
