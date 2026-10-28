@@ -4,7 +4,7 @@ A wheel install has no adjacent ``.git``, so ``booley --version`` inside the
 sandbox can only name the commit it was built from if the build bakes the answer
 in. It does that by generating ``src/booley/_build_commit.py`` (gitignored,
 transient) just before ``python -m build`` runs, which
-``booley.harness.booley._packaged_commit`` reads back at runtime.
+``booley.harness.booley._baked_identity`` reads back at runtime.
 
 Both wheel builders go through this module — ``src/booley/data/docker/build.sh``
 and ``booley init``'s in-process build
@@ -353,7 +353,9 @@ def write_build_stamp(
     """Generate the stamp module for *booley_root*; return the stamped commit.
 
     An unknown commit is still stamped (as ``COMMIT = ""``) so the runtime
-    reader has a module to import either way.
+    reader has a module to import either way; likewise an unknown commit
+    time. ``COMMIT_TIME`` is the commit's committer date in UTC RFC 3339,
+    read by ``booley.harness.booley._baked_identity``.
     """
     if not isinstance(profile, BuildProfile):
         raise TypeError("build profile must be a BuildProfile")
@@ -363,6 +365,14 @@ def write_build_stamp(
     context.unlink(missing_ok=True)
     commit = resolve_build_commit(booley_root)
     from booley.runtime.image_build_contracts import source_image_build_contracts
+    from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime
+
+    try:
+        commit_time = rfc3339_from_datetime(
+            parse_timestamp(resolve_source_updated_at(booley_root))
+        )
+    except ValueError:
+        commit_time = ""
 
     image_contracts = source_image_build_contracts(booley_root)
     payload_fingerprint = resolve_payload_fingerprint(booley_root) or ""
@@ -379,6 +389,7 @@ def write_build_stamp(
             '"""Source commit baked in at wheel-build time (generated — do not edit)."""\n'
             "\n"
             f'COMMIT = "{commit}"\n'
+            f'COMMIT_TIME = "{commit_time}"\n'
             f'PAYLOAD_FINGERPRINT = "{payload_fingerprint}"\n'
             f'WHEEL_SOURCE_FINGERPRINT = "{wheel_source_fingerprint}"\n'
             f'RUNTIME_BASE_CONTRACT = "{image_contracts.runtime_base}"\n'
