@@ -431,10 +431,18 @@ on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false
 Each session shows what its agent client last reported: working, waiting for
 tool call, or waiting for user input. Click a report, artifact, or evidence
 path in a detail view to open it in the editor.
+
+The Dashboard has two windows, Sessions and Jobs. Press `←` or `→` to switch
+between them; each window keeps its place, so switching back returns to the
+same detail and row. Press `↑` on the first row (or in an empty list) to reach
+the top bar with the window tabs and Help: `←` and `→` choose, `Enter` applies,
+and `↓` or `Esc` return to the list. `Esc` goes back one level inside a window
+and does nothing at its top level.
+
 Press `s` for the session list, `j` for running Jobs, `r` for recent results,
-or `a` for all Jobs. From a session detail, Job shortcuts show that session's
-Jobs; press `u` to include all sessions and standalone Jobs. `Esc` returns to
-the previous view, and `?` shows help.
+or `a` for all Jobs; the Job keys open the Jobs window. From a session detail,
+Job shortcuts show that session's Jobs; press `u` to include all sessions and
+standalone Jobs. `?` shows help.
 
 Sessions have short, persistent Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline

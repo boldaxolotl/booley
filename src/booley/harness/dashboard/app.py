@@ -13,15 +13,16 @@ from typing import Any, ClassVar
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Static
 
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
-from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_arg
+from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
@@ -34,6 +35,7 @@ from booley.harness.dashboard.results import (
     project_facts,
     proposal_summary,
 )
+from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
@@ -51,6 +53,7 @@ HELP = (
     "1-9 stable session shortcuts · arrows select rows\n"
     "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
+    "←→ Sessions / Jobs · ↑ on the first row: top bar (←→ choose, Enter apply, ↓ or Esc back)\n"
     "Esc back · j Running Jobs · r Recent results · a All Jobs in the current scope\n"
     "s Sessions · u Jobs from all sessions / standalone · ? help · q quit\n"
     "Job shortcuts keep the selected session scope; u clears that scope\n"
@@ -79,6 +82,11 @@ SEMANTIC_STYLE = {
     "unavailable": "dim",
     "ok": "dim",
 }
+
+
+# Views that replace the list with one full-width detail.
+DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal"})
+OVERVIEW_LABEL = "Sessions · arrows / Enter · stable 1-9"
 
 
 @dataclass(frozen=True)
@@ -151,6 +159,29 @@ def _orientation_text(orientation: str) -> Text:
 def _health_text(snapshot: DashboardSnapshot) -> Text:
     text = Text()
     for line in snapshot.health:
+        if text:
+            text.append("\n")
+        text.append(
+            line.text, style=SEMANTIC_STYLE[line.severity] if line.severity is not None else None
+        )
+    for diagnostic in (*snapshot.diagnostics, *snapshot.jobs.diagnostics):
+        if text:
+            text.append("\n")
+        text.append(diagnostic)
+    return text
+
+
+def _doctor_text(snapshot: DashboardSnapshot) -> Text:
+    """Only the Doctor line; review lines and diagnostics go to the notices area."""
+    return _health_text(
+        replace(snapshot, health=snapshot.health[:1], diagnostics=(), jobs=JobSnapshot(()))
+    )
+
+
+def _notices_text(snapshot: DashboardSnapshot) -> Text:
+    """Upgrade-review lines and read diagnostics, below the status line."""
+    text = Text()
+    for line in snapshot.health[1:]:
         if text:
             text.append("\n")
         text.append(
@@ -391,11 +422,17 @@ class DashboardApp(App[None]):
         ("a", "all_jobs", "All Jobs"),
         ("s", "all_sessions", "Sessions"),
         ("u", "all_job_owners", "Jobs: all sessions"),
+        # Priority: the focused DataTable binds left/right/up itself.
+        Binding("left", "switch_window('sessions')", show=False, priority=True),
+        Binding("right", "switch_window('jobs')", show=False, priority=True),
+        Binding("up", "focus_top_bar", show=False, priority=True),
     ]
     CSS = """
     #orientation { height: auto; max-height: 8; }
-    #resources { height: 1; }
-    #health { height: auto; max-height: 6; }
+    #status { height: 1; }
+    #resources { width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    #health { width: auto; height: 1; margin-left: 2; }
+    #notices { height: auto; max-height: 6; display: none; }
     #body { height: 1fr; }
     #list { width: 1fr; }
     #aside { width: 1fr; display: none; padding: 1; }
@@ -411,21 +448,28 @@ class DashboardApp(App[None]):
         self.reader = reader
         self.opener = opener
         self.snapshot = DashboardSnapshot()
-        self.navigation = Navigation()
-        self.history: list[Navigation] = []
+        # Each window keeps its own non-empty history; its first entry is the top level.
+        self.windows: dict[str, list[Navigation]] = {
+            "sessions": [Navigation()],
+            "jobs": [Navigation("jobs", None, "running")],
+        }
+        self.window = "sessions"
         self.shortcuts: dict[str, int] = {}
         self._known_sessions: dict[str, SessionRow] = {}
         self.row_keys: list[str] = []
-        self.goal_columns = 1
         self._read_task: asyncio.Task[DashboardSnapshot] | None = None
         self._rows: list[tuple[object, ...]] = []
-        self._table_columns = 1
-        self._scrolls: dict[tuple[str, str | None, str], float] = {}
+        self._list_label_shown = ""
+        # Scroll offsets by (window, view, session, filter, detail selection).
+        self._scrolls: dict[tuple[str, str, str | None, str, str], float] = {}
+        self._detail_shown: tuple[str, str, str | None, str, str] | None = None
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static(id="resources", markup=False)
-        yield Static(id="health", markup=False)
+        yield TopBar(id="topbar")
+        with Horizontal(id="status"):
+            yield Static(id="resources", markup=False)
+            yield Static(id="health", markup=False)
+        yield Static(id="notices", markup=False)
         yield Static(id="orientation", markup=False)
         yield Static(id="empty", markup=False)
         with Horizontal(id="body"):
@@ -435,11 +479,9 @@ class DashboardApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
-        table = self.query_one(DataTable)
-        table.add_column("Sessions · arrows / Enter · stable 1-9")
         await self.refresh_snapshot()
         self.set_interval(2, self.refresh_snapshot)
-        table.focus()
+        self.query_one(DataTable).focus()
 
     async def refresh_snapshot(self) -> None:
         """Retain slow reads until consumed; all failures leave a responsive stale view."""
@@ -449,7 +491,7 @@ class DashboardApp(App[None]):
             self.snapshot = await asyncio.wait_for(asyncio.shield(self._read_task), READ_BUDGET)
             self._read_task = None
             self._assign_shortcuts()
-            if self._health() is not None:
+            if self._notices() is not None:
                 self.render_snapshot()
         except TimeoutError:
             self._show_stale("read still in progress")
@@ -458,26 +500,27 @@ class DashboardApp(App[None]):
             logger.exception("Dashboard refresh failed")
             self._show_stale(str(exc) or type(exc).__name__)
 
-    def _health(self) -> Static | None:
-        """Return the health line, or None once the view is gone.
+    def _notices(self) -> Static | None:
+        """Return the notices area, or None once the view is gone.
 
         The refresh interval can fire once more while the app shuts down and
         its widgets are already removed; that tick has nothing to update.
         """
         try:
-            return self.query_one("#health", Static)
+            return self.query_one("#notices", Static)
         except NoMatches:
             return None
 
     def _show_stale(self, reason: str) -> None:
-        health = self._health()
-        if health is not None:
-            health.update(
+        notices = self._notices()
+        if notices is not None:
+            notices.update(
                 Text(
                     f"Dashboard data unavailable/stale: {reason}",
                     style=SEMANTIC_STYLE["attention"],
                 )
             )
+            notices.display = True
 
     def _assign_shortcuts(self) -> None:
         connected = {row.attribution.key for row in self.snapshot.sessions}
@@ -496,44 +539,126 @@ class DashboardApp(App[None]):
                 if free is not None:
                     self.shortcuts[key] = free
 
-    def _push(self, navigation: Navigation) -> None:
-        previous = replace(self.navigation, selected=self._selected_key())
-        self._scrolls[(previous.view, previous.session, previous.job_filter)] = self.query_one(
-            DataTable
-        ).scroll_y
-        self.history.append(previous)
-        self.navigation = navigation
+    @property
+    def navigation(self) -> Navigation:
+        """The view on top of the shown window's history."""
+        return self.windows[self.window][-1]
+
+    @navigation.setter
+    def navigation(self, value: Navigation) -> None:
+        self.windows[self.window][-1] = value
+
+    def _scroll_key(self, nav: Navigation) -> tuple[str, str, str | None, str, str]:
+        """Scroll memory is per window; dedicated details are also told apart by subject."""
+        subject = nav.selected if nav.view in DEDICATED_VIEWS else ""
+        return (self.window, nav.view, nav.session, nav.job_filter, subject)
+
+    def _remember(self) -> None:
+        """Save the cursor and scroll offset of the entry about to be left.
+
+        Callers run this before they change a history, so a freshly built
+        entry is never overwritten with the old view's cursor or scroll.
+        """
+        nav = self.navigation
+        scrolled = (
+            self.query_one("#aside") if nav.view in DEDICATED_VIEWS else self.query_one(DataTable)
+        )
+        self._scrolls[self._scroll_key(nav)] = scrolled.scroll_y
+        self.navigation = replace(nav, selected=self._selected_key())
+
+    def _show(self) -> None:
         self.row_keys = []
         self._rows = []
         self.render_snapshot()
 
+    def _push(self, navigation: Navigation) -> None:
+        self._remember()
+        self.windows[self.window].append(navigation)
+        self._show()
+
+    def _navigate(self, window: str, *entries: Navigation) -> None:
+        """Show a window with a fresh history; Sessions keeps its overview as the root."""
+        self._remember()
+        root = self.windows[window][:1] if window == "sessions" else []
+        self.windows[window] = [*root, *entries]
+        self.window = window
+        self._show()
+
+    def _show_window(self, window: str) -> None:
+        """Switch windows; each keeps its own history, selection and scroll."""
+        self._remember()
+        self.window = window
+        self._show()
+
+    def action_switch_window(self, window: str) -> None:
+        """Left shows Sessions, right shows Jobs; toward the shown window does nothing."""
+        if window != self.window:
+            self._show_window(window)
+
+    def action_focus_top_bar(self) -> None:
+        self.query_one(TopBar).focus()
+
+    def _focus_content(self) -> None:
+        """Give the keyboard to the list, or to the detail when the list is hidden."""
+        table = self.query_one(DataTable)
+        (table if table.display else self.query_one("#aside")).focus()
+
+    def _content_at_top(self) -> bool:
+        """True when up has nowhere to go inside the focused content."""
+        table = self.query_one(DataTable)
+        if table.display:
+            return self.focused is table and (table.row_count == 0 or table.cursor_row == 0)
+        aside = self.query_one("#aside")
+        return self.focused is aside and aside.scroll_y == 0
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Window keys act only on the base screen and while the top bar is not focused."""
+        if action not in {"switch_window", "focus_top_bar"}:
+            return True
+        if len(self.screen_stack) > 1 or isinstance(self.focused, TopBar):
+            return False
+        return self._content_at_top() if action == "focus_top_bar" else True
+
+    def on_top_bar_selected(self, message: TopBar.Selected) -> None:
+        if message.window is None:
+            self.action_help()
+        else:
+            self._show_window(message.window)
+
+    def on_top_bar_left(self, _message: TopBar.Left) -> None:
+        self._focus_content()
+
     def action_back(self) -> None:
-        """Return to the previous scope and selection."""
-        self.navigation = self.history.pop() if self.history else Navigation()
-        self.row_keys = []
-        self._rows = []
-        self.render_snapshot()
+        """Go back one level inside the shown window; its top level stays put."""
+        stack = self.windows[self.window]
+        if len(stack) > 1:
+            stack.pop()
+            self._show()
 
     def action_help(self) -> None:
         """Display the available read-only shortcuts."""
-        self._push(Navigation("help", self.navigation.session, self.navigation.job_filter))
+        if self.navigation.view != "help":
+            self._push(Navigation("help", self.navigation.session, self.navigation.job_filter))
+
+    def _job_scope(self) -> str | None:
+        """Job shortcuts keep the current session scope; the overview has none."""
+        return self.navigation.session if self.navigation.view != "overview" else None
 
     def action_jobs(self, job_filter: str) -> None:
         """Session detail shortcuts carry that session's immutable ownership key."""
-        scope = self.navigation.session if self.navigation.view != "overview" else None
-        self._push(Navigation("jobs", scope, job_filter))
+        self._navigate("jobs", Navigation("jobs", self._job_scope(), job_filter))
 
     def action_all_jobs(self) -> None:
         """Show retained running Jobs and results in one list."""
-        self._push(Navigation("jobs", self.navigation.session, "all"))
+        self._navigate("jobs", Navigation("jobs", self.navigation.session, "all"))
 
     def action_all_sessions(self) -> None:
         """Return to the session overview from any view."""
-        self._push(Navigation())
+        self._navigate("sessions")
 
     def action_all_job_owners(self) -> None:
         """Remove the session filter in the Jobs view."""
-        self._push(Navigation("jobs", None, self.navigation.job_filter))
+        self._navigate("jobs", Navigation("jobs", None, self.navigation.job_filter))
 
     def action_open_path(self, path: str) -> None:
         """Open a published path in the editor; a failure is reported, never raised."""
@@ -546,7 +671,7 @@ class DashboardApp(App[None]):
                 (key for key, number in self.shortcuts.items() if number == int(event.key)), None
             )
             if key is not None:
-                self._push(Navigation("session", key))
+                self._navigate("sessions", Navigation("session", key))
                 event.stop()
 
     def on_resize(self, _event: events.Resize) -> None:
@@ -686,8 +811,6 @@ class DashboardApp(App[None]):
 
     def _session_content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
         orientation, goal = self._session()
-        columns = max(1, min(3, self.size.width // 60))
-        self.goal_columns = columns
         keys, cells = [], []
         if goal is not None:
             ordered = sorted(
@@ -706,18 +829,10 @@ class DashboardApp(App[None]):
             orientation += "\n" + goal.diagnostic
         if goal and goal.terminal_summary:
             orientation += "\n" + goal.terminal_summary
-        while len(cells) % columns:
-            cells.append("")
-            keys.append("")
-        activities = self._session_activity(goal)
-        for key, content in activities:
-            keys.extend((key, *("" for _ in range(columns - 1))))
-            cells.extend((content, *("" for _ in range(columns - 1))))
-        return (
-            orientation,
-            keys,
-            [tuple(cells[index : index + columns]) for index in range(0, len(cells), columns)],
-        )
+        for key, content in self._session_activity(goal):
+            keys.append(key)
+            cells.append(content)
+        return orientation, keys, [(cell,) for cell in cells]
 
     def _session_activity(self, goal: GoalView | None) -> list[tuple[str, str]]:
         activities = []
@@ -760,11 +875,7 @@ class DashboardApp(App[None]):
 
     def _selected_key(self) -> str:
         table = self.query_one(DataTable)
-        index = (
-            table.cursor_row * self._table_columns + table.cursor_column
-            if self.navigation.view == "session"
-            else table.cursor_row
-        )
+        index = table.cursor_row
         return self.row_keys[index] if index < len(self.row_keys) else self.navigation.selected
 
     @staticmethod
@@ -848,18 +959,25 @@ class DashboardApp(App[None]):
             )
         )
         self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
-        self.query_one("#health", Static).update(_health_text(self.snapshot))
+        self.query_one("#health", Static).update(_doctor_text(self.snapshot))
+        notices = self.query_one("#notices", Static)
+        notices_text = _notices_text(self.snapshot)
+        notices.update(notices_text)
+        notices.display = bool(notices_text)
+        self.query_one(TopBar).active = self.window
         table = self.query_one(DataTable)
         selected = self._selected_key()
-        scope = (self.navigation.view, self.navigation.session, self.navigation.job_filter)
-        scroll = table.scroll_y if self._rows else self._scrolls.get(scope, 0)
-        columns = self.goal_columns if self.navigation.view == "session" else 1
-        if columns != self._table_columns:
+        scroll = (
+            table.scroll_y
+            if self._rows
+            else self._scrolls.get(self._scroll_key(self.navigation), 0)
+        )
+        label = self._list_label()
+        if label != self._list_label_shown:
             table.clear(columns=True)
-            table.add_columns(*(f"Goals and activity · {number + 1}" for number in range(columns)))
-            self._table_columns = columns
+            table.add_column(label)
+            self._list_label_shown = label
             self._rows = []
-        table.cursor_type = "cell" if self.navigation.view == "session" else "row"
         if rows != self._rows:
             table.clear()
             for row in rows:
@@ -868,11 +986,21 @@ class DashboardApp(App[None]):
                 )
             if selected in keys:
                 index = keys.index(selected)
-                table.move_cursor(row=index // columns, column=index % columns, animate=False)
+                table.move_cursor(row=index, animate=False)
             table.scroll_to(y=scroll, animate=False)
             self._rows = rows
         self.row_keys = keys
         self._render_detail()
+        if not isinstance(self.focused, TopBar):
+            self._focus_content()
+
+    def _list_label(self) -> str:
+        """Header of the list column; dedicated details hide the list and keep its label."""
+        return {
+            "overview": OVERVIEW_LABEL,
+            "session": "Goals and activity",
+            "jobs": "Jobs",
+        }.get(self.navigation.view, self._list_label_shown)
 
     def _selected_goal(self) -> GoalDetail | None:
         _, goal = self._session()
@@ -935,11 +1063,18 @@ class DashboardApp(App[None]):
         nav = self.navigation
         aside = self.query_one("#aside", VerticalScroll)
         detail, paths = self._detail_content()
-        dedicated = nav.view in {"job", "goal", "help", "proposal"}
+        dedicated = nav.view in DEDICATED_VIEWS
         aside.display = dedicated or (nav.view == "jobs" and self.size.width >= 120)
         self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
         self.query_one("#detail", Static).update(linked_text(detail, paths))
+        # Entering a view (or returning to it from the other window) restores its offset;
+        # later refreshes of the same view leave the user's scrolling alone.
+        shown = self._scroll_key(nav)
+        if shown != self._detail_shown:
+            self._detail_shown = shown
+            offset = self._scrolls.get(shown, 0) if dedicated else 0
+            self.call_after_refresh(aside.scroll_to, y=offset, animate=False)
 
     def _job_detail(self, job: JobView) -> Text:
         rows = _job_rows(job, now=self.snapshot.observed_at)
@@ -972,13 +1107,6 @@ class DashboardApp(App[None]):
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self.navigation = replace(self.navigation, selected=self._selected_key())
         self._render_detail()
-
-    def on_data_table_cell_highlighted(self, _event: DataTable.CellHighlighted) -> None:
-        self.navigation = replace(self.navigation, selected=self._selected_key())
-        self._render_detail()
-
-    def on_data_table_cell_selected(self, _event: DataTable.CellSelected) -> None:
-        self._open_selected()
 
     def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
         self._open_selected()
