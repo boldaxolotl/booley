@@ -158,7 +158,7 @@ def test_goal_mode_guide_status_describes_both_selection_cases():
     guide = Path(__file__).parents[2] / "docs/user/GOAL-MODE.md"
     paragraph = next(
         paragraph
-        for paragraph in guide.read_text().split("\n\n")
+        for paragraph in guide.read_text(encoding="utf-8").split("\n\n")
         if paragraph.startswith("For scripted inspection, `booley goal status`")
     )
     text = " ".join(paragraph.split())

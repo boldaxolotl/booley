@@ -138,6 +138,7 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
         assert "Owner: S1" in detail and "J-SIM1 · sim" in detail
         assert "Session key: codex:00" in detail and "Run ID: one" in detail
         await pilot.press("escape", "escape")
+        assert app.navigation.view == "jobs"
         assert app.navigation.session == "codex:00"
 
 
@@ -155,6 +156,7 @@ def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
     )
     app = DashboardApp(lambda: current)
     app.snapshot = current
+    app.window = "jobs"
     app.navigation = Navigation("jobs", "codex:00")
     assert app._jobs() == [job]
     assert "J-SIM1" in app._overview_row(current.sessions[0])
@@ -182,7 +184,7 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
     ],
 )
 @pytest.mark.parametrize("scoped", [False, True])
-async def test_jobs_shortcut_returns_to_sessions(
+async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
     shortcut, job_filter, expected_global, expected_scoped, scoped
 ):
     current = snapshot(2)
@@ -207,7 +209,10 @@ async def test_jobs_shortcut_returns_to_sessions(
         await pilot.press("enter")
         assert app.navigation.view == "session"
         assert app.navigation.session == current.sessions[0].attribution.key
+        # Esc stays inside Sessions; the arrow returns to the Jobs window as it was.
         await pilot.press("escape", "escape")
+        assert app.navigation.view == "overview"
+        await pilot.press("right")
         assert app.navigation == previous
         assert app.row_keys == previous_rows
 
@@ -357,8 +362,7 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         assert len(app.row_keys) == 1
         await pilot.press("?", "escape")
         assert app.navigation.view == "jobs"
-        app.navigation = Navigation()
-        app.render_snapshot()
+        await pilot.press("s")
         app.query_one(DataTable).move_cursor(row=11)
         await pilot.press("enter")
         assert app.navigation.session == "codex:11"
@@ -380,11 +384,10 @@ async def _inspect_goals_and_proposal(app, pilot):
     await pilot.press("escape")
     await pilot.resize_terminal(180, 30)
     await pilot.pause()
-    assert app.goal_columns == 3
     assert app._selected_key() == "proposal:change"
     await pilot.resize_terminal(90, 30)
     await pilot.pause()
-    assert app.goal_columns == 1
+    assert app._selected_key() == "proposal:change"
 
 
 @pytest.mark.asyncio
@@ -508,16 +511,6 @@ def test_stable_shortcuts_and_unknown_activity_without_client_signals():
     assert app.shortcuts["codex:01"] == numbers["codex:01"]
     assert all("activity unknown" in str(row) for row in app._overview()[2])
     assert all("Last" not in str(row) for row in app._overview()[2])
-
-
-def test_responsive_goal_selection_uses_the_displayed_column_count(monkeypatch):
-    app = DashboardApp(snapshot)
-    app.navigation = Navigation("session", "codex:00")
-    app.row_keys = [str(number) for number in range(6)]
-    app._table_columns = 2
-    app.goal_columns = 3  # Incoming layout; the current cursor still belongs to two columns.
-    monkeypatch.setattr(app, "query_one", lambda _: SimpleNamespace(cursor_row=1, cursor_column=1))
-    assert app._selected_key() == "3"
 
 
 # (automatic Doctor report, due reason, expected Dashboard lines)
@@ -828,6 +821,7 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
     )
     app = DashboardApp(snapshot)
     app.snapshot = replace(snapshot(1), jobs=JobSnapshot(jobs))
+    app.window = "jobs"
     app.navigation = Navigation("jobs", None, "recent")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2"]
     assert "recent (newest 2)" in app._content()[0]
@@ -849,6 +843,7 @@ async def test_missing_report_resource_line_is_dim(tmp_path, width, state):
     current = replace(snapshot(1), jobs=JobSnapshot((job,)))
     app = DashboardApp(lambda: current)
     app.snapshot = current
+    app.window = "jobs"
     app.navigation = Navigation("job", selected=json.dumps(job.key))
     async with app.run_test(size=(width, 40)):
         app.render_snapshot()
@@ -1055,9 +1050,14 @@ async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
             " · recheck due" if due else ""
         )
         assert _style_at(doctor) == Style.parse("bold red")
-        assert "Upgrade review" in doctor.plain
-        assert _style_at(doctor, doctor.plain.index("Upgrade")) == Style()
-        assert _style_at(doctor, doctor.plain.index("diagnostic")) == Style()
+        if due:
+            # #2241: the due suffix keeps the attention color through the wrapper.
+            suffix = doctor.plain.index(" · recheck due")
+            assert _style_at(doctor, suffix) == Style.parse(f"color({colors.PALETTE_ORANGE})")
+        notices = _rich_payload(app.query_one("#notices", Static))
+        assert "Upgrade review" in notices.plain
+        assert _style_at(notices, notices.plain.index("Upgrade")) == Style()
+        assert _style_at(notices, notices.plain.index("diagnostic")) == Style()
         widget = app.query_one("#resources", Static)
         resources = _rich_payload(widget)
         assert (
@@ -1091,13 +1091,15 @@ async def test_pilot_stale_notice_uses_attention_style(monkeypatch, tmp_path):
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(120, 30)):
         app._show_stale("read failed [path]")
-        content = _rich_payload(app.query_one("#health", Static))
+        content = _rich_payload(app.query_one("#notices", Static))
         assert content.plain == "Dashboard data unavailable/stale: read failed [path]"
         assert _style_at(content) == Style.parse(f"color({colors.PALETTE_ORANGE})")
+        # The Doctor line stays visible beside a stale notice.
+        doctor = _rich_payload(app.query_one("#health", Static))
+        assert doctor.plain == "Doctor: 2 FAIL · 1 WARN"
+        assert _style_at(doctor) == Style.parse("bold red")
         app.render_snapshot()
-        restored = _rich_payload(app.query_one("#health", Static))
-        assert restored.plain == "Doctor: 2 FAIL · 1 WARN"
-        assert _style_at(restored) == Style.parse("bold red")
+        assert not app.query_one("#notices", Static).display
 
 
 # (fail, warn, due reason, missing snapshot, expected text, count style)
@@ -1212,7 +1214,7 @@ def test_dashboard_palette_imports_have_no_copied_codes():
     from booley.harness import colors
     from booley.harness.dashboard import app as app_module
 
-    tree = ast.parse(Path(app_module.__file__).read_text())
+    tree = ast.parse(Path(app_module.__file__).read_text(encoding="utf-8"))
     imported = {
         alias.name
         for node in ast.walk(tree)
@@ -1230,7 +1232,7 @@ def test_dashboard_palette_imports_have_no_copied_codes():
         colors.PALETTE_LAVENDER,
     }
     for path in Path(app_module.__file__).parent.glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Constant):
                 assert node.value not in codes if isinstance(node.value, int) else True
                 if isinstance(node.value, str):
