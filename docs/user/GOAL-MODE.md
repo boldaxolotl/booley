@@ -444,6 +444,13 @@ or `a` for all Jobs; the Job keys open the Jobs window. From a session detail,
 Job shortcuts show that session's Jobs; press `u` to include all sessions and
 standalone Jobs. `?` shows help.
 
+The Jobs list has the columns Job, Target, Session, State, Result, Crit and
+Elapsed. Crit repeats the detail's `Criterion:` line as `✓` (met) or `✗` (not
+met) and is blank when the Job has none. When the list is too narrow, long
+Targets are cut with `…` first (down to six characters), then long Result
+words. The selected Job's detail shows the full values, plus the exit code, the
+stage and the session's connection.
+
 Sessions have short, persistent Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
 Jobs use `SIM`, synthesis baseline Jobs use `SYN`, and other endpoints use `J-JOB<n>`. One Job counter covers every

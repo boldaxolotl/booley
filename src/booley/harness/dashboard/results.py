@@ -35,6 +35,7 @@ class ReportPresentation:
     """Independent execution and acceptance results plus compact report facts."""
 
     flow_result: ResultLine
+    verdict: ResultLine
     criterion: ResultLine | None
     execution: ResultLine
     result_rows: tuple[ResultLine, ...]
@@ -558,6 +559,7 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     flow_result = _row("Flow result", word + (f" · {headline}" if headline else ""), semantic)
     return ReportPresentation(
         flow_result,
+        _row("Flow result", word, semantic),
         criterion,
         _row("Execution", f"exit {code if code is not None else 'unavailable'}"),
         _cap(rows),
