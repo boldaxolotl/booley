@@ -3,7 +3,7 @@
 Exit codes and load-bearing stderr markers shared between the Rust binary
 (``crates/bwave``) and every Python consumer. The Rust half of the contract
 lives in ``crates/bwave/src/cache.rs`` (``no_match_message``,
-``no_signals_in_store_message``) and the exit sites in
+``no_signals_in_store_message``, ``beyond_range_message``) and the exit sites in
 ``crates/bwave/src/main.rs``; a Rust unit test in ``cache.rs``
 (``contract`` tests at the bottom of its test mod) pins the marker
 substrings, and ``tests/bwave/test_contract.py`` pins them

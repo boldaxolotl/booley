@@ -660,7 +660,9 @@ to `~/.booley/vaporview-install-watch.log` if automatic repair cannot complete.
 
 A view that opens but is missing signals is a different thing: signals the
 viewer has no netlist entry for are left out and named in a WARNING on stderr;
-the trace itself is fine and still queryable. If `bwave gui` reports that the
+the trace itself is fine and still queryable. A `--signals` glob that matches
+nothing in the trace is named in a WARNING the same way; check the full path
+with `bwave list`. If `bwave gui` reports that the
 viewer "did not apply" the requested view, it has already restored the
 previous view; retry once the window is idle (the viewer may still have been
 loading the trace).
