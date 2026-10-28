@@ -59,6 +59,7 @@ from booley.goals.publication import PublicationGate
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.test_run_goals import goal_selectors, names_test_runs
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import TARGET_IDENTITY_PARAM
 
@@ -148,7 +149,7 @@ def read_goal_state_file(path: Path) -> DevelopmentState | None:
     or malformed content.
     """
     try:
-        raw = path.read_bytes()
+        raw = read_file_bytes(path)
     except FileNotFoundError:
         return None
     except OSError as exc:

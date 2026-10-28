@@ -42,6 +42,7 @@ from booley.goals.store import (
 from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 from tests.conftest import symlink_or_skip
 from tests.goals.conftest import git as _git
+from tests.sharing_error_support import hold_opens
 
 SHA = "a" * 40
 GIT_TIMEOUT_S = 30
@@ -717,3 +718,38 @@ def test_a_later_thread_never_passes_for_a_dead_owner(repo: dict[str, Path]) -> 
     finally:
         manager.__exit__(None, None, None)
     assert _other_thread_can_lock(store, record.id)
+
+
+# --- Windows sharing errors (#2187) -------------------------------------------------
+
+
+def test_record_load_survives_transient_sharing_error(repo, monkeypatch) -> None:
+    store, record = _stored(repo, "a-20261006T101500Z")
+    hold_opens(monkeypatch, {record_paths(repo["project"], record.id).record_file: 1})
+    assert store.load(record.id).id == record.id
+
+
+def test_record_load_retries_before_reporting_lasting_sharing_error(repo, monkeypatch) -> None:
+    store, record = _stored(repo, "a-20261006T101500Z")
+    record_file = record_paths(repo["project"], record.id).record_file
+    attempts = hold_opens(monkeypatch, {record_file: 5})
+    with pytest.raises(GoalRecordCorruptError) as caught:
+        store.load(record.id)
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[record_file] > 1
+
+
+def test_repository_id_survives_transient_sharing_error(repo, monkeypatch) -> None:
+    resolve_worktree_identity(repo["main"], create=True)
+    hold_opens(monkeypatch, {repo["main"] / ".git" / "booley" / "repository-id": 1})
+    assert resolve_worktree_identity(repo["linked"]).repository
+
+
+def test_repository_id_retries_before_reporting_lasting_sharing_error(repo, monkeypatch) -> None:
+    resolve_worktree_identity(repo["main"], create=True)
+    id_file = repo["main"] / ".git" / "booley" / "repository-id"
+    attempts = hold_opens(monkeypatch, {id_file: 5})
+    with pytest.raises(WorktreeIdentityError, match="unreadable repository identity") as caught:
+        resolve_worktree_identity(repo["linked"])
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[id_file] > 1

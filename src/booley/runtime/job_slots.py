@@ -259,7 +259,13 @@ def slots_dir(booley_dir: Path | None = None) -> Path | None:
 
 
 def _default_execution_is_terminal(execution_id: str) -> bool:
-    payload = read_json(execution_paths(execution_id).record)
+    try:
+        payload = read_json(execution_paths(execution_id).record)
+    except OSError:
+        # A sharing error that outlasted the read retries: terminal is not
+        # proven, so release keeps the slot and reaping falls through to the
+        # ordinary staleness checks. release() must never raise.
+        return False
     return bool(
         payload is not None
         and payload.get("state") == "terminal"

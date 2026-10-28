@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
+from tests.sharing_error_support import hold_opens, no_retry_delay, sharing_error
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
     campaign_child_entry_manifests,
+    child_context_matches,
     execution_paths,
     gc_terminal_executions,
     read_attachment_heartbeat,
+    read_json,
+    request_cancellation,
     verify_inherited_execution_id,
     write_attachment_heartbeat,
 )
@@ -354,3 +360,183 @@ def test_child_release_refuses_unreadable_slot_entry(tmp_path: Path, monkeypatch
     monkeypatch.undo()
     slot.unlink()  # missing is absent
     _require_child_token_absent(tmp_path, child)
+
+
+# --- Windows sharing errors on protocol reads (#2187) -------------------------------
+
+_EXEC_ID = "d" * 32
+
+
+def _protocol_paths(tmp_path: Path):
+    paths = execution_paths(_EXEC_ID, booley_dir=tmp_path)
+    paths.root.mkdir(parents=True)
+    return paths
+
+
+def _child_context(tmp_path: Path):
+    """A valid child context plus the Project entry that binds its digest."""
+    paths = _protocol_paths(tmp_path)
+    context = {
+        "$schema": "booley.supervised-child-context/v1",
+        "child_execution_id": _EXEC_ID,
+        "parent_execution_id": "sim-20260925T153819Z-1",
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "manifest_sha256": "sha256:" + "1" * 64,
+        "work_item_id": "item:0000:0123456789abcdef",
+        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
+        "attempt_ordinal": 1,
+    }
+    raw = json.dumps(context).encode()
+    paths.context.write_bytes(raw)
+    entry = {
+        "$schema": "booley.simulation-campaign-child-entry/v1",
+        "child_execution_id": _EXEC_ID,
+        "runtime_context_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        **{k: v for k, v in context.items() if k not in {"$schema", "child_execution_id"}},
+    }
+    entries = paths.root.parents[2] / ".runtime" / "campaign-child-executions" / "entries"
+    entries.mkdir(parents=True)
+    (entries / f"{_EXEC_ID}.json").write_text(json.dumps(entry), encoding="utf-8")
+    return paths
+
+
+def _heartbeat(tmp_path: Path):
+    paths = _protocol_paths(tmp_path)
+    write_attachment_heartbeat(paths, generation=7)
+    return paths
+
+
+def _record(tmp_path: Path):
+    paths = _protocol_paths(tmp_path)
+    paths.record.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    return paths
+
+
+def test_record_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _record(tmp_path)
+    hold_opens(monkeypatch, {paths.record: 1})
+    assert read_json(paths.record) == {"state": "running"}
+
+
+def test_context_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _child_context(tmp_path)
+    hold_opens(monkeypatch, {paths.context: 1})
+    assert child_context_matches(paths, _EXEC_ID) is True
+
+
+def test_context_bytes_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _child_context(tmp_path)
+    hold_opens(monkeypatch, {paths.context: 1}, skip=1)  # hold the digest read, not the parse
+    assert child_context_matches(paths, _EXEC_ID) is True
+
+
+def test_heartbeat_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    hold_opens(monkeypatch, {paths.heartbeat: 1})
+    assert read_attachment_heartbeat(paths) == 7
+
+
+def test_record_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _record(tmp_path)
+    attempts = hold_opens(monkeypatch, {paths.record: 5})
+    with pytest.raises(PermissionError):
+        read_json(paths.record)
+    assert attempts[paths.record] > 1
+
+
+def test_context_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _child_context(tmp_path)
+    hold_opens(monkeypatch, {paths.context: 5})
+    with pytest.raises(PermissionError):
+        child_context_matches(paths, _EXEC_ID)
+
+
+def test_context_bytes_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _child_context(tmp_path)
+    hold_opens(monkeypatch, {paths.context: 5}, skip=1)
+    with pytest.raises(PermissionError):
+        child_context_matches(paths, _EXEC_ID)
+
+
+def test_heartbeat_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    hold_opens(monkeypatch, {paths.heartbeat: 5})
+    with pytest.raises(PermissionError):
+        read_attachment_heartbeat(paths)
+
+
+def _hold_heartbeat_replace(monkeypatch, failures: int) -> None:
+    no_retry_delay(monkeypatch)
+    real_replace = Path.replace
+    remaining = [failures]
+
+    def replace_with_holds(self, target):
+        if "attachment-heartbeat" in str(target) and remaining[0] > 0:
+            remaining[0] -= 1
+            raise sharing_error()
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace_with_holds)
+
+
+def test_heartbeat_write_retries_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    _hold_heartbeat_replace(monkeypatch, 1)
+    write_attachment_heartbeat(paths, generation=8)
+    assert read_attachment_heartbeat(paths) == 8
+
+
+def test_heartbeat_write_survives_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    _hold_heartbeat_replace(monkeypatch, 99)
+    write_attachment_heartbeat(paths, generation=8)  # exhausted retries do not fail the run
+    assert read_attachment_heartbeat(paths) == 7
+    assert [p.name for p in paths.root.iterdir()] == ["attachment-heartbeat"]
+
+
+def test_missing_protocol_files_read_as_absent(tmp_path: Path) -> None:
+    paths = _protocol_paths(tmp_path)
+    assert read_json(paths.record) is None
+    assert read_attachment_heartbeat(paths) is None
+
+
+def test_corrupt_protocol_files_read_as_absent(tmp_path: Path) -> None:
+    paths = _protocol_paths(tmp_path)
+    paths.record.write_bytes(b"\xff{not json")
+    paths.heartbeat.write_bytes(b"abc")
+    assert read_json(paths.record) is None
+    assert read_attachment_heartbeat(paths) is None
+
+
+def test_posix_unreadable_protocol_file_reads_as_absent(tmp_path: Path, monkeypatch) -> None:
+    paths = _record(tmp_path)
+    no_retry_delay(monkeypatch)
+    real_open = Path.open
+
+    def denied(path, *args, **kwargs):
+        if path == paths.record:
+            raise PermissionError(13, "Permission denied")  # POSIX EACCES: no winerror
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    # Pin POSIX: on Windows a bare EACCES is a transient C-runtime sharing error.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert read_json(paths.record) is None
+
+
+def test_gc_keeps_record_whose_read_outlasts_sharing_budget(tmp_path: Path, monkeypatch) -> None:
+    _old_terminal(tmp_path, _EXEC_ID)
+    paths = execution_paths(_EXEC_ID, booley_dir=tmp_path)
+    hold_opens(monkeypatch, {paths.record: 99})
+    gc_terminal_executions(tmp_path)
+    assert paths.record.exists()
+
+
+def test_cancellation_request_is_rewritten_when_the_cancel_read_stays_held(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = _protocol_paths(tmp_path)
+    atomic_write_json(paths.cancel, {"force": False, "reason": "old", "signum": 2})
+    hold_opens(monkeypatch, {paths.cancel: 2})  # the whole retry budget
+    request_cancellation(paths, reason="again")  # a held read must not abort the loop
+    assert json.loads(paths.cancel.read_bytes())["reason"] == "again"
