@@ -293,7 +293,7 @@ def test_sealed_authority_read_survives_transient_sharing_error(complete, monkey
         assert operation.sealed_directory("attempt").name == call.operation_id
 
 
-def test_sealed_authority_retries_before_raising_lifecycle_error(complete, monkeypatch):
+def test_sealed_authority_read_retries_before_raising_lifecycle_error(complete, monkeypatch):
     call, store, held, attempts = _frozen(complete, "attempt.authority.json", 5, monkeypatch)
     with bind_operation(store, call) as operation, pytest.raises(LifecycleError) as caught:
         operation.read_sealed("attempt")
