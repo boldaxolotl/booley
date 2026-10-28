@@ -15,6 +15,12 @@ from typing import Any
 
 import anyio
 
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_TOKEN_ENV,
+    GatewayConfigError,
+    gateway_settings_from_env,
+)
 from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
 
 from ._codex_live_usage import CodexLiveUsage
@@ -233,6 +239,12 @@ class CodexBackend:
         codex_bin = shutil.which("codex")
         if codex_bin is None:
             return "Codex CLI not found on PATH (npm i -g @openai/codex)"
+        if self._auth_mode == GATEWAY_AUTH:
+            try:
+                gateway_settings_from_env()
+            except GatewayConfigError as exc:
+                return str(exc)
+            return None
         if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but no OPENAI_API_KEY is exported or stored — "
@@ -486,9 +498,16 @@ def _populate_private_codex_home(
 
     config_path = codex_dir / "config.toml"
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    gateway_url = None
+    if auth_mode == GATEWAY_AUTH:
+        gateway_url = gateway_settings_from_env().url
     config_path.write_text(
         generate_codex_config(
-            enabled_mcp_tools=enabled_mcp_tools, extra_env=booley_env, existing_config=existing
+            enabled_mcp_tools=enabled_mcp_tools,
+            extra_env=booley_env,
+            existing_config=existing,
+            gateway_url=gateway_url,
+            gateway_cwd=str(codex_dir),
         ),
         encoding="utf-8",
     )
@@ -543,7 +562,11 @@ def _ensure_nested_codex_home(
     # bwave, etc.) can locate the project, logs dir, and ticket slug. Codex
     # *replaces* the MCP process env when [env] is present, so we have to
     # enumerate everything the child needs.
-    booley_env = {k: v for k, v in os.environ.items() if k.startswith("BOOLEY_")}
+    # The gateway token reaches Codex only through its inherited environment;
+    # it must never be written into the generated config.toml.
+    booley_env = {
+        k: v for k, v in os.environ.items() if k.startswith("BOOLEY_") and k != GATEWAY_TOKEN_ENV
+    }
     booley_env.update(extra_env or {})
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
@@ -565,6 +588,15 @@ async def _codex_spawn(
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
+    if auth_mode == GATEWAY_AUTH:
+        # Fail before spawning, naming the missing variable.
+        gateway_settings_from_env()
+        if params.text_only:
+            raise AgentProviderError(
+                "text-only Codex Specialists (e.g. coverage_analyst) are not yet "
+                f"supported under auth '{GATEWAY_AUTH}'",
+                provider="codex",
+            )
     env = None
     if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
         from .auth_token import subscription_creds_path

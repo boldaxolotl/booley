@@ -9,6 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from booley.config.gateway import GATEWAY_AUTH
 from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.config_paths import resolve_toml
@@ -38,7 +39,13 @@ _VALID_PROVIDERS = ("codex", "claude")
 #                  credential, so nothing is scrubbed; the backend health
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
+#
+# ``gateway`` is a fourth policy that exists only as the environment hand-off
+# ``BOOLEY_PRIMARY_AUTH=gateway`` (with BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN)
+# inside a Sandbox: Codex Specialists then bill the operator's gateway and no
+# native credential reaches them. It is not a valid ``booley.toml`` value.
 _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
+_ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
 _DEFAULT_AUTH = "auto"
 
 # The three capability tiers every provider maps to concrete models.
@@ -269,14 +276,13 @@ def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
 
 def _lazy_agent_settings() -> AgentSettings:
     """Resolve settings from environment, Project configuration, and defaults."""
-    import os
 
     # Specialists load Project pins lazily when no parent developer configured
     # this process. Provider precedence remains hand-off, Project, app, default.
     project = _project_config_from_env()
     auth = (
         _env_auth()
-        if os.environ.get("BOOLEY_PRIMARY_AUTH") is not None
+        if env_auth_handoff() is not None
         else (project.auth if project else None) or _DEFAULT_AUTH
     )
 
@@ -448,6 +454,9 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
     )
     if provider is None:
         provider = _DEFAULT_PROVIDER
+    if gateway_handoff_active():
+        # Env-only policy: it has no toml home, so it overrides the toml value.
+        auth = GATEWAY_AUTH
 
     _agent_settings = AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
@@ -558,18 +567,40 @@ def parse_auth(agent_section: Mapping[str, Any]) -> str | None:
 _parse_auth = parse_auth
 
 
+def env_auth_handoff(environ: Mapping[str, str] | None = None) -> str | None:
+    """The normalized ``BOOLEY_PRIMARY_AUTH`` hand-off, or ``None`` when unset/blank.
+
+    The single reader of the variable, so a Specialist subprocess, the MCP
+    server, Doctor and ``booley auth --status`` cannot disagree about spellings
+    such as ``"gateway "``. Validity is judged by :func:`_env_auth`.
+    """
+    import os
+
+    raw = (environ if environ is not None else os.environ).get("BOOLEY_PRIMARY_AUTH") or ""
+    return raw.strip().lower() or None
+
+
+def gateway_handoff_active() -> bool:
+    """Whether ``BOOLEY_PRIMARY_AUTH=gateway`` is in force.
+
+    Honored only inside a container: a Booley-issued Sandbox always takes its
+    policy from ``booley.toml`` and never receives BOOLEY_GATEWAY_*, so an
+    export on the host must not silently change what a host-side run bills.
+    """
+    return env_auth_handoff() == GATEWAY_AUTH and _inside_container()
+
+
 def _env_auth() -> str:
     """The auth mode from ``BOOLEY_PRIMARY_AUTH``, warning-and-defaulting on junk.
 
     The env var is a harness hand-off, not user config, so an unknown value is
     degraded to the default with a warning rather than raised (mirrors how
     ``_lazy_agent_settings`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
+    ``gateway`` on a host (outside a container) is treated as unknown.
     """
-    import os
-
-    raw = os.environ.get("BOOLEY_PRIMARY_AUTH", _DEFAULT_AUTH)
-    if raw not in _VALID_AUTH_MODES:
-        logger.warning("Unknown BOOLEY_PRIMARY_AUTH %r; using %s", raw, _DEFAULT_AUTH)
+    raw = env_auth_handoff() or _DEFAULT_AUTH
+    if raw not in _ENV_AUTH_MODES or (raw == GATEWAY_AUTH and not _inside_container()):
+        logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, _DEFAULT_AUTH)
         return _DEFAULT_AUTH
     return raw
 
@@ -587,7 +618,7 @@ def resolve_auth_policy() -> str:
     """
     import os
 
-    if os.environ.get("BOOLEY_PRIMARY_AUTH"):
+    if env_auth_handoff():
         return _env_auth()
 
     booley_dir = os.environ.get("BOOLEY_DIR")

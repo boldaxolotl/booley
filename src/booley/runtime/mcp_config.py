@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from functools import lru_cache
 from types import ModuleType
 
@@ -118,11 +119,41 @@ def _warning_preference(existing_config: str | None) -> bool:
     return value
 
 
+GATEWAY_PROVIDER_ID = "booley_gateway"
+# Importing booley in a cold container can exceed Codex's 5 s default.
+_GATEWAY_TOKEN_TIMEOUT_MS = 20_000
+
+
+def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
+    """Codex custom-provider tables that send the gateway bearer on every request.
+
+    ``auth.command`` prints the token from Codex's own environment, so it is
+    never written to disk. ``-P`` keeps the cwd off ``sys.path`` so a Project
+    ``booley/`` directory cannot shadow the package.
+    """
+    table = f"model_providers.{GATEWAY_PROVIDER_ID}"
+    return [
+        "",
+        f"[{table}]",
+        'name = "Booley gateway"',
+        f"base_url = {json.dumps(url)}",
+        'wire_api = "responses"',
+        "",
+        f"[{table}.auth]",
+        f"command = {json.dumps(sys.executable)}",
+        'args = ["-P", "-m", "booley.runtime.gateway_token"]',
+        f"cwd = {json.dumps(token_cwd)}",
+        f"timeout_ms = {_GATEWAY_TOKEN_TIMEOUT_MS}",
+    ]
+
+
 def generate_codex_config(
     enabled_mcp_tools: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
     *,
     existing_config: str | None = None,
+    gateway_url: str | None = None,
+    gateway_cwd: str = "/",
 ) -> str:
     """Generate config.toml content for the Codex MCP server.
 
@@ -133,6 +164,9 @@ def generate_codex_config(
             Codex replaces (not extends) the MCP process environment
             when [env] is present, so callers must pass through any
             container-level vars (BOOLEY_*, etc.) that MCP endpoints need.
+        gateway_url: When set, route model traffic through the gateway at this
+            https base URL (``BOOLEY_PRIMARY_AUTH=gateway``).
+        gateway_cwd: Working directory of the gateway token command.
 
     Returns:
         TOML-formatted string.
@@ -141,9 +175,12 @@ def generate_codex_config(
     lines = [
         f"suppress_unstable_features_warning = {str(preference).lower()}",
         'web_search = "disabled"',
+        *([f'model_provider = "{GATEWAY_PROVIDER_ID}"'] if gateway_url else []),
         "",
         "[features]",
         "mcp_2026_07_28 = true",
+        # The default priority service tier is rejected by gateways.
+        *(["fast_mode = false"] if gateway_url else []),
         "",
         "[mcp_servers.booley]",
         'command = "python"',
@@ -162,5 +199,8 @@ def generate_codex_config(
         # protects Windows paths such as C:\\Users\\... from becoming invalid
         # escape sequences in the generated config.
         lines.append(f"{key} = {json.dumps(val)}")
+
+    if gateway_url:
+        lines.extend(_gateway_provider_lines(gateway_url, gateway_cwd))
 
     return "\n".join(lines) + "\n"
