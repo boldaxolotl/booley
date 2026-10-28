@@ -2851,3 +2851,128 @@ def test_mcp_simulation_dispatch_reaches_alias_normalization(
     assert len(results) == 1
     assert results[0].exit_code == 0, results[0].outcome.report_text
     assert (data / "reports/sim/1/targets/sim/campaign/manifest.json").is_file()
+
+
+def _seeded_report_files(reports: Path, endpoint: str) -> list[Path]:
+    return [reports / f"{endpoint}.json", reports / endpoint / "1" / "report.json"]
+
+
+def test_report_read_survives_transient_sharing_error(_report_env, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    reports = _seed_report(_report_env, "sim", {"flow": "sim", "passed": True})
+    flat = reports / "sim.json"
+    attempts = hold_opens(monkeypatch, {flat: 1})
+    report = _latest_report("sim")
+    assert report is not None
+    assert report["flow"] == "sim"
+    assert attempts[flat] == 2
+
+
+def test_report_read_raises_lasting_sharing_error_as_job_record_error(_report_env, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    reports = _seed_report(_report_env, "sim", {"flow": "sim"})
+    attempts = hold_opens(monkeypatch, dict.fromkeys(_seeded_report_files(reports, "sim"), 100))
+    with pytest.raises(jobrec.JobRecordError, match="unreadable") as unreadable:
+        _latest_report("sim")
+    assert isinstance(unreadable.value.__cause__, PermissionError)
+    assert sum(attempts.values()) > 1
+
+
+def test_report_read_keeps_missing_and_posix_permission_error_as_unreadable(tmp_path, monkeypatch):
+    import errno
+
+    present = tmp_path / "report.json"
+    present.write_text("{}", encoding="utf-8")
+    assert job_results._read_report_json(tmp_path / "missing.json") is None
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def deny(path, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", deny)
+    assert job_results._read_report_json(present) is None
+
+
+def test_progress_lookup_raises_lasting_sharing_error_as_job_record_error(tmp_path, monkeypatch):
+    from booley.flows import progress_lifecycle
+    from tests.flows.test_progress_lifecycle import _write_progress
+    from tests.sharing_error_support import flaky, no_retry_delay
+
+    _write_progress(tmp_path / "sim" / "1" / "progress.json")
+    no_retry_delay(monkeypatch)
+    opener, _calls = flaky(progress_lifecycle.open_regular_nofollow, 100)
+    monkeypatch.setattr(progress_lifecycle, "open_regular_nofollow", opener)
+    with pytest.raises(jobrec.JobRecordError) as unreadable:
+        job_results._progress_for_run_id("sim", "run-1", report_dirs=(tmp_path,))
+    assert isinstance(unreadable.value.__cause__, PermissionError)
+
+
+def test_held_report_of_another_run_does_not_hide_this_run(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    mine = tmp_path / "sim" / "1" / "report.json"
+    held = tmp_path / "sim" / "2" / "report.json"
+    for path, run_id in ((mine, "mine"), (held, "other")):
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+    os.utime(held, (mine.stat().st_atime + 10, mine.stat().st_mtime + 10))  # scanned first
+    hold_opens(monkeypatch, {held: 100})
+    report = job_results._report_for_run_id("sim", "mine", report_dirs=(tmp_path,))
+    assert report == {"run_id": "mine"}
+    with pytest.raises(jobrec.JobRecordError):
+        job_results._report_for_run_id("sim", "absent", report_dirs=(tmp_path,))
+
+
+def test_report_fetch_tool_returns_error_on_lasting_sharing_error(_report_env, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    reports = _seed_report(_report_env, "sim", {"flow": "sim"})
+    hold_opens(monkeypatch, dict.fromkeys(_seeded_report_files(reports, "sim"), 100))
+    out = _dispatch_report({"endpoint": "sim"})
+    assert isinstance(out, mcp_server.McpDispatchResult)
+    assert out.is_error
+    assert "unreadable" in out.value[0].text
+
+
+def test_inline_result_keeps_verdict_and_notes_unreadable_report(_report_env, monkeypatch):
+    import asyncio
+
+    from tests.sharing_error_support import hold_opens
+
+    reports = _seed_report(_report_env, "sim", {"flow": "sim", "report_text": "RESULT: PASS"})
+    hold_opens(monkeypatch, dict.fromkeys(_seeded_report_files(reports, "sim"), 100))
+    monkeypatch.setattr(
+        mcp_server, "_run_inline_endpoint", AsyncMock(return_value=(0, "done", "", False))
+    )
+    definition = {"module": "lint", "is_flow": True, "default_timeout": 60}
+    result = asyncio.run(
+        mcp_server._dispatch_booley_mcp_tool("lint", {}, definition, {}, MagicMock())
+    )
+    text = _text(result)
+    assert "EXIT_CODE: 0" in text
+    assert "done" in text
+    assert "Report unavailable:" in text
+
+
+def test_running_handoff_notes_unreadable_progress(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from booley.mcp.job_lifecycle import JobPoll
+
+    submission = SimpleNamespace(poll=JobPoll("run-1", "running", True), attached=False)
+    jobs = SimpleNamespace(submit_and_wait=AsyncMock(return_value=submission))
+
+    def unreadable(_run_id):
+        raise jobrec.JobRecordError("Job progress for run-1 unreadable: held")
+
+    monkeypatch.setattr(mcp_server, "_running_progress", unreadable)
+    result = asyncio.run(
+        _dispatch_async_job("sim", [], 60, jobs, context=_call_ctx())  # type: ignore[arg-type]
+    )
+    blocks = result[0] if isinstance(result, tuple) else result
+    assert not isinstance(result, tuple)
+    assert "run-1" in blocks[0].text
+    assert "Progress unavailable: Job progress for run-1 unreadable: held" in blocks[0].text

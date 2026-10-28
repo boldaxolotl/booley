@@ -791,7 +791,10 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
         context = resolve_call_context(arguments)
     except (GoalBindingError, GoalStoreError) as exc:
         return _error_result(str(exc))
-    report = _latest_report(endpoint, context=context)
+    try:
+        report = _latest_report(endpoint, context=context)
+    except jobrec.JobRecordError as exc:
+        return _error_result(str(exc))
     content = [
         TextContent(type="text", text=_format_report_card(report, endpoint, context=context))
     ]
@@ -966,6 +969,15 @@ def _format_job_running_poll(run_id: str) -> str:
 
 def _running_progress(run_id: str) -> dict[str, Any] | None:
     return _MCP_JOB_REPOSITORY.progress(run_id)
+
+
+def _running_handoff_content(text: str, run_id: str) -> McpToolContent:
+    """Running handoff text plus progress; an unreadable checkpoint is noted, not fatal."""
+    try:
+        progress = _running_progress(run_id)
+    except jobrec.JobRecordError as exc:
+        return [TextContent(type="text", text=f"{text}\nProgress unavailable: {exc}")]
+    return _with_structured_report([TextContent(type="text", text=text)], progress)
 
 
 def _running_poll_content(run_id: str) -> McpToolContent:
@@ -1249,9 +1261,7 @@ async def _dispatch_async_job(
         if submission.attached
         else _format_job_running(name, state.run_id)
     )
-    return _with_structured_report(
-        [TextContent(type="text", text=text)], _running_progress(state.run_id)
-    )
+    return _running_handoff_content(text, state.run_id)
 
 
 def _find_attachable_job(
@@ -1267,10 +1277,7 @@ async def _attach_to_job(name: str, run_id: str, jobs: _JobManager) -> McpToolCo
     )
     if state.status != "running" or not state.tracked:
         return _render_job_poll(state, jobs)
-    return _with_structured_report(
-        [TextContent(type="text", text=_format_job_attached(name, run_id))],
-        _running_progress(run_id),
-    )
+    return _running_handoff_content(_format_job_attached(name, run_id), run_id)
 
 
 def _validate_work_dir(value: Any) -> str | None:
@@ -1430,13 +1437,22 @@ async def _dispatch_booley_mcp_tool(
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )
-    report = (
-        None
-        if skip_report
-        else (_latest_report(context=context) if context.binding else _try_read_report())
-    )
+    report_note = ""
+    try:
+        report = (
+            None
+            if skip_report
+            else (_latest_report(context=context) if context.binding else _try_read_report())
+        )
+    except jobrec.JobRecordError as exc:
+        # The run finished: keep its verdict and say the report was unreadable.
+        report = None
+        report_note = f"\nReport unavailable: {exc}"
     content = [
-        TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
+        TextContent(
+            type="text",
+            text=_format_mcp_tool_result(exit_code, stdout, stderr, report) + report_note,
+        )
     ]
     rendered = _with_structured_report(content, report)
     return _goal_warning_result(

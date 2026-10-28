@@ -124,6 +124,7 @@ from booley.runtime.endpoint_execution import (
     normalize_completion_error,
 )
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
@@ -1654,7 +1655,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 @dataclass(frozen=True)
@@ -6485,7 +6486,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         process in the sandbox.
         """
         log_dir = getattr(self, "_run_log_dirs", {}).get(target)
-        return log_dir is not None and run_log_is_current(log_dir)
+        if log_dir is None:
+            return False
+        try:
+            return run_log_is_current(log_dir)
+        except OSError as exc:
+            # A held log is not worth losing a finished verdict: no pointer.
+            logger.warning("Cannot read run log for target %s: %s", target, exc)
+            return False
 
     @property
     def _target_eda_tools(self) -> dict[str, str | None]:

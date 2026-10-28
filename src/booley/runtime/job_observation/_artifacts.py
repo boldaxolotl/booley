@@ -10,6 +10,7 @@ from typing import Any
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import require_dict
 from booley.flows.progress_lifecycle import validate_progress_shape
+from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
 
 MAX_ARTIFACTS = 4096
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
@@ -133,7 +134,10 @@ class JobArtifactCache:
         try:
             if cached is None or cached[:2] != (stamp, size):
                 cached = stamp, size, self._read(path)
-        except OSError:
+        except OSError as exc:
+            if is_transient_read_error(exc):
+                # Surface a lasting sharing error per item instead of as absent.
+                self.diagnostics.append(f"Job artifact unavailable: {path}: {exc}")
             return
         self._next[path] = cached
         data = cached[2]
@@ -145,7 +149,7 @@ class JobArtifactCache:
 
     def _read(self, path: Path) -> dict[str, Any] | None:
         try:
-            data = require_dict(json.loads(path.read_bytes()), field="Job artifact")
+            data = require_dict(json.loads(read_file_bytes(path)), field="Job artifact")
             if path.name == "progress.json":
                 validate_progress_shape(data)
             return data

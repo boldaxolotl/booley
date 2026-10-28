@@ -3163,3 +3163,48 @@ def test_legacy_report_preserves_per_target_tool_identity(tmp_path):
         report = json.loads(flow.write_report(outcome).read_bytes())
     assert report.get("eda_tools") == {"lite": "Verilator", "full": "icarus"}
     assert "eda_tool" not in report
+
+
+def test_target_report_write_survives_transient_replace_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.flow import _atomic_write_json
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "targets" / "sim_a" / "simulation.json"
+    path.parent.mkdir(parents=True)
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    _atomic_write_json(path, {"passed": True})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"passed": True}
+    assert attempts[path] == 2
+
+
+def test_target_report_write_retries_before_raising_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.flow import _atomic_write_json
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "targets" / "sim_a" / "simulation.json"
+    path.parent.mkdir(parents=True)
+    attempts = hold_replaces(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        _atomic_write_json(path, {"passed": True})
+    assert attempts[path] > 1
+
+
+def test_run_log_freshness_warns_on_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    flow = _make_flow(tmp_path, config="lite")
+    build_root = tmp_path / "build" / "lite"
+    build_root.mkdir(parents=True)
+    flow._record_run_log_dir("lite", build_root)
+    write_run_log(build_root, "[SIM_RESULT] PASSED\n")
+    hold_opens(monkeypatch, {build_root / "run.log": 100})
+    with caplog.at_level("WARNING"):
+        assert flow._run_log_is_fresh("lite") is False
+    assert any("lite" in record.getMessage() for record in caplog.records)
+    assert flow._run_log_pointer("lite") is None

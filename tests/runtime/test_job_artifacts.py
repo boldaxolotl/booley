@@ -48,7 +48,7 @@ def test_multi_root_history_reuses_parses(tmp_path, monkeypatch):
     ]
     checkpoints = [progress(root.parent / "flow-reports/sim/1/progress.json") for root in roots]
     before = {p: p.read_bytes() for p in paths + checkpoints}
-    reads = spy(monkeypatch, Path, "read_bytes")
+    reads = spy(monkeypatch, job_artifacts, "read_file_bytes")
     cache = JobArtifactCache(tmp_path)
     for refresh in range(3):
         cache.begin()
@@ -154,7 +154,7 @@ def test_scan_bounds(tmp_path, monkeypatch, file_limit, byte_limit):
     for n, path in enumerate(paths):
         path.write_text(json.dumps({"run_id": "same", "passed": bool(n)}))
         os.utime(path, (100 + n, 100 + n))
-    reads = spy(monkeypatch, Path, "read_bytes")
+    reads = spy(monkeypatch, job_artifacts, "read_file_bytes")
     cache = JobArtifactCache(tmp_path)
     cache.begin()
     assert cache.find(root, "sim", "same", "report")[1] == paths[-1]
@@ -168,7 +168,7 @@ def test_invalid_documents_reused_until_metadata_changes(tmp_path, monkeypatch, 
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
     path.write_text(bad)
-    reads = spy(monkeypatch, Path, "read_bytes")
+    reads = spy(monkeypatch, job_artifacts, "read_file_bytes")
     cache = JobArtifactCache(tmp_path)
     for _ in range(2):
         cache.begin()
@@ -285,3 +285,43 @@ def test_progress_shape_identity_and_size_limit(tmp_path, monkeypatch, limit):
         stream.write(" " * (2 * 1024 * 1024))
     cache.begin()
     assert cache.find(root, "sim", "1", "progress") is None
+
+
+def test_artifact_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root = tmp_path / "jobs"
+    path = report(root, "sim", 1)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    cache = JobArtifactCache(tmp_path)
+    cache.begin()
+    found = cache.find(root, "sim", "1", "report")
+    assert found is not None
+    assert found[0]["run_id"] == "1"
+    assert attempts[path] == 2
+    assert cache.diagnostics == []
+
+
+def test_lasting_artifact_sharing_error_is_a_diagnostic(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root = tmp_path / "jobs"
+    path = report(root, "sim", 1)
+    attempts = hold_opens(monkeypatch, {path: 100})
+    cache = JobArtifactCache(tmp_path)
+    cache.begin()
+    assert cache.find(root, "sim", "1", "report") is None
+    assert attempts[path] > 1
+    assert len(cache.diagnostics) == 1
+    assert cache.diagnostics[0].startswith(f"Job artifact unavailable: {path}: ")
+
+
+def test_artifact_missing_and_corrupt_documents_read_as_absent(tmp_path):
+    root = tmp_path / "jobs"
+    path = report(root, "sim", 1)
+    path.write_text("not json")
+    cache = JobArtifactCache(tmp_path)
+    cache.begin()
+    assert cache.find(root, "sim", "1", "report") is None
+    assert cache.find(root, "sim", "2", "report") is None
+    assert cache.diagnostics == []

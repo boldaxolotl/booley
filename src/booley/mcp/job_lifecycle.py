@@ -536,7 +536,12 @@ class JobLifecycle:
             for root in self._repository.roots()
             for rec in jobrec.list_records(root=root)
         ):
-            self._reconcile_one(located)
+            try:
+                self._reconcile_one(located)
+            except jobrec.JobRecordError as exc:
+                # A held report must not mark a finished Job FAILED: leave it
+                # RUNNING for the next poll or server start.
+                logger.warning("Left job %s unreconciled: %s", located.record.run_id, exc)
 
     def _reconcile_one(self, located: LocatedJob) -> None:
         rec = located.record

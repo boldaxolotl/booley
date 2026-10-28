@@ -9,6 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.booley_dir_links import is_booley_dir_entry
+from booley.runtime.filesystem_utils import (
+    is_transient_read_error,
+    open_with_sharing_retry,
+    replace_file,
+)
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -99,7 +104,10 @@ class RunLogIdentity:
             fingerprint = self._fingerprint(self.path)
             if fingerprint != self.fingerprint:
                 with os.fdopen(
-                    open_regular_nofollow(self.path, booley_dir=self.booley_dir),
+                    open_with_sharing_retry(
+                        lambda: open_regular_nofollow(self.path, booley_dir=self.booley_dir),
+                        self.path,
+                    ),
                     "r",
                     encoding="utf-8",
                 ) as stream:
@@ -114,7 +122,13 @@ class RunLogIdentity:
                 self.path.relative_to(project) if self.path.is_relative_to(project) else self.path
             )
             return {"path": str(representation), "live": True, "complete": False}
-        except (OSError, ValueError):
+        except OSError as exc:
+            # A lasting sharing error is not "no pointer"; the fingerprint stays
+            # unadvanced so the next update re-reads.
+            if is_transient_read_error(exc):
+                raise
+            return None
+        except ValueError:
             return None
 
 
@@ -139,11 +153,18 @@ def parse_run_log_header(line: str) -> dict[str, str] | None:
 
 
 def _read_run_log_head(path: Path) -> tuple[bytes, bytes]:
-    """Read at most the first two bounded lines of a run log."""
+    """Read at most the first two bounded lines of a run log.
+
+    A missing or otherwise unreadable log is an empty head, but a Windows sharing
+    error that outlasts the retry budget raises, so no writer drops the ownership
+    header and no reader mistakes a held log for a headerless one.
+    """
     try:
-        with path.open("rb") as stream:
+        with open_with_sharing_retry(lambda: path.open("rb"), path) as stream:
             return stream.readline(4096), stream.readline(4096)
-    except OSError:
+    except OSError as exc:
+        if is_transient_read_error(exc):
+            raise
         return b"", b""
 
 
@@ -183,7 +204,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_bytes(data)
-        temporary.replace(path)
+        replace_file(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
