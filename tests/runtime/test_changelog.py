@@ -110,3 +110,29 @@ def test_packaged_changelog_retains_pre_review_release_history() -> None:
         "0.2.9",
         "0.2.10",
     ]
+
+
+def test_next_release_review_lists_entries_drafted_from_unreleased() -> None:
+    """Cutting the next release must keep the pre-release entries reviewable.
+
+    Release prep drafts the dated heading directly under ``## Unreleased``, so
+    everything that was unreleased becomes the next release's body. The probe is
+    the section's last line, which comes from the oldest unreleased entry. It is
+    taken from the changelog itself because the release drafter rewords entries.
+    """
+    text = changelog_path().read_text(encoding="utf-8")
+    repo_version = (
+        (Path(__file__).resolve().parents[2] / "VERSION").read_text(encoding="utf-8").strip()
+    )
+    current = changelog.parse_stable_version(repo_version)
+    next_release = f"{current.major}.{current.minor}.{current.patch + 1}"
+    marker = "## Unreleased\n"
+    assert marker in text
+    unreleased = text.split(marker, 1)[1].split("\n## ", 1)[0]
+    probe = unreleased.strip().splitlines()[-1] if unreleased.strip() else ""
+    # Simulate release prep: the drafted heading goes directly under Unreleased.
+    drafted = text.replace(marker, f"{marker}\n## {next_release} - 28 OCT 2026\n", 1)
+
+    review = changelog.releases_between(drafted, "0.3.0", next_release)
+
+    assert probe in "".join(entry.body for entry in review.entries)
