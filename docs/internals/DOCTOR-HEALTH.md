@@ -114,5 +114,6 @@ consumes clean observations announces the recurrence.
 
 The Dashboard reads one non-consuming snapshot and renders compact active FAIL
 and WARN counts, or `Doctor: OK` when clean. It labels unavailable results and
-adds a stale suffix when a recheck is due. The separate `brief_message()` adapter
+ends a due result with ` · recheck due`, drawn in the attention color while the
+counts keep their severity style. The separate `brief_message()` adapter
 retains verbose findings and transcript paths for existing CLI and MCP callers.
