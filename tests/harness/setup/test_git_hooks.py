@@ -2158,10 +2158,7 @@ class TestLineEndingsAutoFix:
         original_dir = self._hardlinked_guidance_project(tmp_path)
         booley_dir = tmp_path / "project-data"
         original_dir.rename(booley_dir)
-        try:
-            original_dir.symlink_to(booley_dir, target_is_directory=True)
-        except OSError:
-            pytest.skip("directory symlinks unavailable")
+        symlink_or_skip(original_dir, booley_dir, target_is_directory=True)
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.setattr("booley.core.booley_dir._cache", None)
         ctx = _ctx(tmp_path)

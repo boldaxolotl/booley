@@ -177,6 +177,7 @@ def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monk
     real = tmp_path / "real-booley-dir"
     entry = tmp_path / "project" / ".booley"
     entry.parent.mkdir()
+    real.mkdir()  # the pin needs an existing target
     symlink_or_skip(entry, real)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(entry / "runtime"))
     monkeypatch.setattr(
