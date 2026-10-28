@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from argparse import Namespace
@@ -540,17 +541,6 @@ def test_version_flag_prints_and_exits(capsys):
     assert out.startswith("booley ")
 
 
-def test_version_string_includes_commit_in_checkout(monkeypatch):
-    # In a source checkout, the commit disambiguates the static packaged version.
-    monkeypatch.setattr(tlr, "_source_commit", lambda: "abc1234")
-    assert "(abc1234)" in tlr._version_string()
-
-
-def test_version_string_bare_without_commit(monkeypatch):
-    monkeypatch.setattr(tlr, "_source_commit", lambda: None)
-    assert "(" not in tlr._version_string()
-
-
 class TestBakedBuildCommit:
     """F-5: a wheel install has no .git, so `--version` reported no commit.
 
@@ -561,13 +551,13 @@ class TestBakedBuildCommit:
 
     def test_absent_stamp_module_yields_none(self, monkeypatch):
         monkeypatch.setattr(
-            tlr, "_baked_commit", tlr._baked_commit
+            tlr, "_baked_identity", tlr._baked_identity
         )  # exercise the real implementation
-        # No _build_commit module is generated in a checkout, so this is None.
+        # No _build_commit module is generated in a checkout, so nothing is known.
         import booley
 
         assert not hasattr(booley, "_build_commit")
-        assert tlr._baked_commit() is None
+        assert tlr._baked_identity() == ("", "")
 
     def test_source_git_failure_does_not_borrow_baked_commit(self, tmp_path, monkeypatch):
         """A checkout must not combine its version with another build's stamp."""
@@ -585,8 +575,8 @@ class TestBakedBuildCommit:
                 source_root=source_root,
             ),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
-        assert tlr._source_commit() is None
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("cafe123", ""))
+        assert tlr._code_identity()[0] == ""
         assert "(cafe123)" not in tlr._version_string()
 
     def test_wheel_uses_baked_commit_without_live_git(self, monkeypatch):
@@ -607,9 +597,9 @@ class TestBakedBuildCommit:
             "source_git_metadata",
             lambda _self: pytest.fail("wheel attribution must not inspect Git"),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("cafe123", ""))
 
-        assert tlr._source_commit() == "cafe123"
+        assert tlr._code_identity() == ("cafe123", "")
 
     def test_live_checkout_wins_over_the_baked_commit(self, monkeypatch):
         """A checkout's live state is the truthful one — it can be +dirty."""
@@ -620,8 +610,8 @@ class TestBakedBuildCommit:
             "source_git_metadata",
             lambda _self: ("live999", "2026-08-30T10:39:40Z"),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
-        assert tlr._source_commit() == "live999"
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("stale00", ""))
+        assert tlr._code_identity() == ("live999", "2026-08-30T10:39:40Z")
 
     def test_source_without_git_does_not_borrow_enclosing_repository(self, tmp_path, monkeypatch):
         import booley
@@ -640,9 +630,9 @@ class TestBakedBuildCommit:
                 source_root=source_root,
             ),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("stale00", ""))
 
-        assert tlr._source_commit() is None
+        assert tlr._code_identity()[0] == ""
 
     def test_baked_commit_reads_the_generated_module(self, monkeypatch):
         import types
@@ -653,7 +643,7 @@ class TestBakedBuildCommit:
         stamp.COMMIT = "abcd123+dirty"
         monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
         monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        assert tlr._baked_commit() == "abcd123+dirty"
+        assert tlr._baked_identity() == ("abcd123+dirty", "")
 
     def test_empty_stamp_is_treated_as_unknown(self, monkeypatch):
         """build.sh writes an empty COMMIT when git is unavailable."""
@@ -665,7 +655,150 @@ class TestBakedBuildCommit:
         stamp.COMMIT = ""
         monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
         monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        assert tlr._baked_commit() is None
+        assert tlr._baked_identity() == ("", "")
+
+
+class TestVersionCommitDate:
+    """`booley --version` shows the UTC commit date next to the commit (#2235)."""
+
+    @staticmethod
+    def _attribute(monkeypatch, origin, **fields):
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution
+
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(version="4.5.6", origin=origin, **fields),
+        )
+
+    @classmethod
+    def _source(cls, monkeypatch, commit, committed_at):
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        cls._attribute(monkeypatch, VersionOrigin.SOURCE, source_root=Path("/unused"))
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: (commit, committed_at),
+        )
+
+    @classmethod
+    def _stamped_wheel(cls, monkeypatch, **stamp_values):
+        import types
+
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        cls._attribute(monkeypatch, VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl")
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
+        )
+        stamp = types.ModuleType("booley._build_commit")
+        for name, value in stamp_values.items():
+            setattr(stamp, name, value)
+        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
+        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+
+    def test_source_checkout_shows_head_commit_date_in_utc(self, monkeypatch):
+        from booley import __version__
+
+        self._source(monkeypatch, "abc1234", "2026-10-26T10:00:00Z")
+        assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-26)"
+
+    def test_dirty_checkout_shows_dirty_commit_and_date(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley import __version__
+        from booley.runtime.version_attribution import VersionOrigin
+
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+
+        def git(*args, **env):
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                # Ignore the developer's global git config (signing, hooks).
+                env={
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    **env,
+                },
+            ).stdout.strip()
+
+        git("init")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (repo / "file.txt").write_text("one\n", encoding="utf-8")
+        git("add", ".")
+        # Distinct author and committer days prove the committer date is shown.
+        git(
+            "commit",
+            "-m",
+            "init",
+            GIT_COMMITTER_DATE="2026-10-26T12:00:00+00:00",
+            GIT_AUTHOR_DATE="2026-09-01T12:00:00+00:00",
+        )
+        short = git("rev-parse", "--short", "HEAD")
+        (repo / "file.txt").write_text("two\n", encoding="utf-8")
+        self._attribute(monkeypatch, VersionOrigin.SOURCE, source_root=repo)
+
+        assert tlr._version_string() == f"booley {__version__} ({short}+dirty, 2026-10-26)"
+
+    def test_source_offset_date_is_converted_to_utc_day(self, monkeypatch):
+        from booley import __version__
+
+        # 23:30 at UTC-7 is already the next day in UTC.
+        self._source(monkeypatch, "abc1234", "2026-10-26T23:30:00-07:00")
+        assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-27)"
+
+    def test_missing_commit_prints_bare_version(self, monkeypatch):
+        from booley import __version__
+
+        self._source(monkeypatch, "", "2026-10-26T10:00:00Z")
+        assert tlr._version_string() == f"booley {__version__}"
+
+    def test_missing_date_prints_commit_only(self, monkeypatch):
+        from booley import __version__
+
+        self._source(monkeypatch, "abc1234", "")
+        assert tlr._version_string() == f"booley {__version__} (abc1234)"
+
+    def test_stamp_without_date_field_prints_commit_only(self, monkeypatch):
+        from booley import __version__
+
+        self._stamped_wheel(monkeypatch, COMMIT="cafe123")
+        assert tlr._version_string() == f"booley {__version__} (cafe123)"
+
+    def test_stamp_with_empty_date_prints_commit_only(self, monkeypatch):
+        from booley import __version__
+
+        self._stamped_wheel(monkeypatch, COMMIT="cafe123", COMMIT_TIME="")
+        assert tlr._version_string() == f"booley {__version__} (cafe123)"
+
+    def test_fallback_version_prints_bare_version(self, monkeypatch):
+        from booley import __version__
+        from booley.runtime.version_attribution import VersionOrigin
+
+        self._attribute(monkeypatch, VersionOrigin.FALLBACK)
+        assert tlr._version_string() == f"booley {__version__}"
+
+    def test_version_flag_stays_one_line_on_narrow_terminal(self, monkeypatch, capsys):
+        monkeypatch.setenv("COLUMNS", "20")
+        self._source(monkeypatch, "d4c94dc35+dirty", "2026-10-26T10:00:00Z")
+        with pytest.raises(SystemExit) as exc:
+            tlr._build_parser().parse_args(["--version"])
+        assert exc.value.code == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 1
+        assert lines[0].endswith("(d4c94dc35+dirty, 2026-10-26)")
 
 
 # ===========================================================================
