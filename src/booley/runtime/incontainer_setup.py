@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -149,18 +150,39 @@ def desired_claude_entry() -> dict:
     return {"type": "http", "url": http_url(), "timeout": _TOOL_TIMEOUT_SEC * 1000}
 
 
+def _read_json_object(path: Path, label: str) -> dict:
+    """Read a user JSON object; missing or blank is ``{}``, anything invalid is refused.
+
+    Registration writers rewrite these files wholesale, so an unreadable or
+    non-object file must stop them before any write: replacing it with ``{}``
+    would silently destroy the user's settings.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(_invalid_json_message(label, path, exc)) from exc
+    if not text.strip():
+        return {}
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(_invalid_json_message(label, path, exc)) from exc
+    if not isinstance(data, dict):
+        raise ValueError(_invalid_json_message(label, path, "top level must be an object"))
+    return data
+
+
+def _invalid_json_message(label: str, path: Path, reason: object) -> str:
+    return (
+        f"Invalid {label} {path}: {reason}; repair or delete this file, then restart the Sandbox"
+    )
+
+
 def upsert_claude(path: Path) -> bool:
     """Ensure ``mcpServers.booley`` exists in *path*. Returns True if changed."""
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-    else:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-
+    data = _read_json_object(path, "Claude config")
     servers = data.setdefault("mcpServers", {})
     desired = desired_claude_entry()
     if servers.get(MCP_SERVER_NAME) == desired:
@@ -320,6 +342,7 @@ def _codex_data(existing: str, *, path: Path | None = None) -> dict:
         for table in ("features", "notice"):
             if table in parsed and not isinstance(parsed[table], dict):
                 raise ValueError(f"{table} must be a table")
+        _require_project_tables(parsed)
         if "suppress_unstable_features_warning" in parsed and not isinstance(
             parsed["suppress_unstable_features_warning"], bool
         ):
@@ -331,6 +354,16 @@ def _codex_data(existing: str, *, path: Path | None = None) -> dict:
             f"Invalid Codex config {path}: {exc}; repair this file and retry"
         ) from exc
     return parsed
+
+
+def _require_project_tables(parsed: dict) -> None:
+    """Reject ``projects`` shapes Codex cannot use, before any write."""
+    projects = parsed.get("projects", {})
+    if not isinstance(projects, dict):
+        raise ValueError("projects must be a table")
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"projects.{key} must be a table")
 
 
 def _read_codex_config(path: Path) -> str:
@@ -517,23 +550,23 @@ def _strip_codex_table(existing: str) -> str:
 
 
 def _upsert_existing_codex_table_setting(
-    existing: str, *, table: str, key: str, value: str
+    existing: str, *, table: tuple[str, ...], key: str, value: str
 ) -> str | None:
     """Update a scalar assignment or insert into its actual table boundary."""
     parser = _codex_toml_parser()
     entries = _toml_entries(existing)
-    target = (table, key)
+    target = (*table, key)
     for index, (statement, path, header) in enumerate(entries):
         if path == target and not header:
             entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
             return "".join(item[0] for item in entries)
     for index, (statement, path, header) in enumerate(entries):
-        if path == (table,) and not header and parser.loads(statement):
+        if path == table and not header and parser.loads(statement):
             updated = _upsert_inline_table_setting(statement, key, value)
             entries[index] = _TomlEntry(updated, path, header)
             return "".join(item.text for item in entries)
     for index, (_statement, path, header) in enumerate(entries):
-        if path == (table,) and header:
+        if path == table and header:
             if not _statement.endswith("\n"):
                 entries[index] = _TomlEntry(_statement + "\n", path, header)
             entries.insert(index + 1, _TomlEntry(f"{key} = {value}\n", target, False))
@@ -548,7 +581,7 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
     if parsed.get("features", {}).get("mcp_2026_07_28") is True:
         return existing
     updated = _upsert_existing_codex_table_setting(
-        existing, table="features", key="mcp_2026_07_28", value="true"
+        existing, table=("features",), key="mcp_2026_07_28", value="true"
     )
     return updated if updated is not None else "features.mcp_2026_07_28 = true\n" + existing
 
@@ -590,7 +623,7 @@ def _upsert_codex_full_access_notice(existing: str) -> str:
     """Acknowledge Codex's one-time full-access warning in existing TOML."""
     updated = _upsert_existing_codex_table_setting(
         existing,
-        table="notice",
+        table=("notice",),
         key="hide_full_access_warning",
         value="true",
     )
@@ -681,12 +714,7 @@ def _apply_claude_credential(token: str | None, home: Path | None = None) -> str
     subscription credentials forever.
     """
     path = claude_settings_path(home)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _read_json_object(path, "Claude settings")
     env_map = data.get("env")
     if not isinstance(env_map, dict):
         env_map = {}
@@ -780,12 +808,7 @@ def _apply_claude_permission_mode(home: Path | None = None) -> str:
     ``deny`` rules alongside it survive untouched.
     """
     path = claude_settings_path(home)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _read_json_object(path, "Claude settings")
     permissions = data.get("permissions")
     if not isinstance(permissions, dict):
         permissions = {}
@@ -885,12 +908,126 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# First-run state — no onboarding, login or folder-trust prompt in the Sandbox
+# ---------------------------------------------------------------------------
+#
+# A Sandbox without a seeded host config (a Codespace, or any host with no
+# agent config to seed from) would otherwise greet the first ``claude`` /
+# ``codex`` with a theme picker, a login picker and a "trust this folder?"
+# dialog. The Sandbox is already the isolation boundary (permission modes
+# above), so trusting the Project's own directories adds no authority.
+#
+# Every write is set-if-absent: a value the user or a host seed already chose,
+# including ``false`` / ``untrusted``, wins. Writes land in the per-Sandbox
+# home, never in the host's agent configuration. Claude's custom-API-key
+# approval dialog is deliberately NOT pre-answered: it is the billing consent.
+_DEFAULT_CLAUDE_THEME = "dark"
+
+
+def trust_keys(paths: Sequence[Path]) -> tuple[str, ...]:
+    """Config keys under which the agent apps may look up each existing *path*.
+
+    Both CLIs check the resolved path; the absolute as-spelled path is kept as
+    well (a symlinked workspace or a ``/booley-project`` bind spelling).
+    Ordered, de-duplicated, pure path work.
+    """
+    keys: dict[str, None] = {}
+    for path in paths:
+        if path.exists():
+            keys[str(path.resolve())] = None
+            keys[str(path.absolute())] = None
+    return tuple(keys)
+
+
+def _claude_credential_present(home: Path | None) -> bool:
+    """Whether Claude would find a login credential, by the registrar's own inputs."""
+    policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "auto")
+    credential = auth_token.effective_credential(
+        auth_token.APP_CLAUDE, policy, home=home or _agent_home()
+    )
+    return credential is not None
+
+
+def _trust_claude_projects(config: dict, trust: Sequence[str]) -> None:
+    """Add ``hasTrustDialogAccepted`` to each *trust* project entry that lacks it."""
+    if not trust:
+        return
+    projects = config.setdefault("projects", {})
+    if not isinstance(projects, dict):
+        raise ValueError("projects must be an object")
+    for key in trust:
+        entry = projects.setdefault(key, {})
+        if not isinstance(entry, dict):
+            raise ValueError(f"projects.{key} must be an object")
+        entry.setdefault("hasTrustDialogAccepted", True)
+
+
+def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard: bool) -> str:
+    """Trust *trust* paths, and with a credential skip onboarding and the theme picker.
+
+    Returns ``"written"`` or ``"current"``. Both files are validated before
+    either is written, so an invalid file stops registration untouched.
+    """
+    config_path = claude_config_path(home)
+    settings_path = claude_settings_path(home)
+    config = _read_json_object(config_path, "Claude config")
+    settings = _read_json_object(settings_path, "Claude settings")
+    before = json.dumps(config, sort_keys=True)
+    try:
+        _trust_claude_projects(config, trust)
+    except ValueError as exc:
+        raise ValueError(_invalid_json_message("Claude config", config_path, exc)) from exc
+    if onboard:
+        config.setdefault("hasCompletedOnboarding", True)
+    status = "current"
+    if json.dumps(config, sort_keys=True) != before:
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        status = "written"
+    if onboard and "theme" not in settings and "theme" not in config:
+        settings["theme"] = _DEFAULT_CLAUDE_THEME
+        # Private-mode write: the same file carries the OAuth token in ``env``.
+        _write_private_json(settings_path, settings)
+        status = "written"
+    return status
+
+
+def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
+    """Add ``trust_level = "trusted"`` for each *trust* path without a ``trust_level``.
+
+    Edits the TOML in place, keeping comments and every other byte, and
+    publishes once atomically. Returns ``"written"`` or ``"current"``.
+    """
+    path = codex_config_path(home)
+    existing = _read_codex_config(path)
+    projects = _codex_data(existing, path=path).get("projects", {})
+    updated = existing
+    for key in trust:
+        if "trust_level" in projects.get(key, {}):
+            continue
+        edited = _upsert_existing_codex_table_setting(
+            updated, table=("projects", key), key="trust_level", value='"trusted"'
+        )
+        if edited is None:
+            separator = "" if not updated or updated.endswith("\n") else "\n"
+            edited = f'{updated}{separator}[projects.{json.dumps(key)}]\ntrust_level = "trusted"\n'
+        updated = edited
+    if updated == existing:
+        return "current"
+    _publish_codex_config(path, updated)
+    return "written"
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
-def register(app: str, *, home: Path | None = None) -> str:
-    """Write the client registration for *app*. Returns a short status string."""
+def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] = ()) -> str:
+    """Write the client registration for *app*. Returns a short status string.
+
+    *trust_paths* are the config keys (see :func:`trust_keys`) the app should
+    trust without asking.
+    """
     if app == "claude":
         changed = upsert_claude(claude_config_path(home))
         linked = deploy_skills(app, home)
@@ -899,14 +1036,24 @@ def register(app: str, *, home: Path | None = None) -> str:
         # After the credential: both writers rewrite settings.json wholesale,
         # so the last one to read it must see the other's result.
         perm = _apply_claude_permission_mode(home)
+        first = _apply_claude_first_run(
+            home, trust_paths, onboard=_claude_credential_present(home)
+        )
         mcp = "written" if changed else "current"
-        return f"claude:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
+        return (
+            f"claude:{mcp} skills:+{linked} host-skills:+{host_linked} "
+            f"cred:{cred} perm:{perm} first-run:{first}"
+        )
     if app == "codex":
         changed = upsert_codex(codex_config_path(home))
         linked = deploy_skills(app, home)
         host_linked = deploy_host_skills(app, home)
         cred = apply_stored_credential(app, home)
         perm = _apply_codex_permission_mode(home)
+        first = _apply_codex_trust(home, trust_paths)
         mcp = "written" if changed else "current"
-        return f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
+        return (
+            f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} "
+            f"cred:{cred} perm:{perm} first-run:{first}"
+        )
     return "none"

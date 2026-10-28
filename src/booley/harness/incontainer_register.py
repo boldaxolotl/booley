@@ -33,13 +33,44 @@ def observe_upgrade(project_root: Path | None = None) -> str:
         return "unavailable"
 
 
+def sandbox_trust_paths(start: Path) -> tuple[str, ...]:
+    """Config keys of the Project Root and Booley Directory the agents may trust.
+
+    The Project Root is *start*, the lifecycle hook's working directory: the
+    workspace folder the Sandbox mounts, Git checkout or not. The Booley
+    Directory comes from its own resolution, from the literal ``$BOOLEY_DIR``
+    spelling, and from a ``.booley`` symlink. A resolution failure keeps the
+    Project Root keys: registration must still run.
+    """
+    candidates = [start]
+    try:
+        candidates.append(resolve_booley_dir(start, cache_result=False))
+    except Exception as exc:  # noqa: BLE001 -- trust for the Booley Directory is fail-soft
+        print(f"warning: workspace trust for the Booley Directory skipped: {exc}", file=sys.stderr)
+    if env_dir := os.environ.get("BOOLEY_DIR"):
+        candidates.append(Path(env_dir))
+    if (start / ".booley").is_symlink():
+        candidates.append(start / ".booley")
+    return incontainer_setup.trust_keys(candidates)
+
+
+def _hook_start_directory() -> Path:
+    """The hook's working directory, keeping a symlinked ``$PWD`` spelling."""
+    cwd = Path.cwd()
+    pwd = os.environ.get("PWD")
+    if pwd and Path(pwd).is_absolute() and Path(pwd).resolve() == cwd.resolve():
+        return Path(pwd)
+    return cwd
+
+
 def main() -> None:
     """Start mechanisms, apply registration, and launch advisory Harness policy."""
     app = os.environ.get("BOOLEY_AGENT_APP", "none")
     server = (
         "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
     )
-    status = incontainer_setup.register(app)
+    trust = () if app == "none" else sandbox_trust_paths(_hook_start_directory())
+    status = incontainer_setup.register(app, trust_paths=trust)
     upgrade = observe_upgrade()
     health = launch_auto_doctor()
     print(
