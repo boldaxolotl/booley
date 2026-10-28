@@ -335,9 +335,8 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
     for item in inputs:
         path = Path(item.path)
         resolved = (path if path.is_absolute() else root / path).resolve()
-        if booley_dir is not None:
-            # Inputs behind a symlinked Booley Directory stay project-relative (#2191).
-            resolved = lexical_booley_path(booley_dir, resolved)
+        # Inputs behind a symlinked Booley Directory stay project-relative (#2191).
+        resolved = lexical_booley_path(booley_dir, resolved)
         try:
             relative = resolved.relative_to(root).as_posix()
             raw = resolved.read_bytes()
