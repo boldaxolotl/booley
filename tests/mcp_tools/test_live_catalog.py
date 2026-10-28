@@ -499,8 +499,25 @@ def assert_worker_pid_stopped(pid):
         )
         assert all(len(row) < 2 or row[1] != pid for row in csv.reader(result.stdout.splitlines()))
     else:
-        stat = Path(f"/proc/{pid}/stat")
-        assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+        # A stopped process may vanish while we look at it: before open() gives
+        # FileNotFoundError, between open() and read() gives ProcessLookupError.
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except (FileNotFoundError, ProcessLookupError):
+            return
+        # The state field follows the (possibly paren-laden) comm; a zombie is stopped.
+        assert stat_text.rsplit(")", 1)[1].split()[0] == "Z"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="reads /proc")
+@pytest.mark.parametrize("vanished", [FileNotFoundError, ProcessLookupError])
+def test_pid_stopped_check_accepts_process_vanishing_mid_read(monkeypatch, vanished):
+    def read_text(*_args, **_kwargs):
+        raise vanished
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    # A live pid makes /proc/<pid>/stat exist, so only the read can fail.
+    assert_worker_pid_stopped(str(os.getpid()))
 
 
 def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):

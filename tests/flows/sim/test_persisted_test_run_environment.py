@@ -8,6 +8,7 @@ integration do not own. The export renderer refuses anything else again.
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from types import SimpleNamespace
@@ -105,7 +106,8 @@ def test_a_valid_environment_renders_shell_safe_exports(value: str):
         ["sh", "-c", f'{line} && printf %s "$FAULT_MODE"'],
         capture_output=True,
         text=True,
-        timeout=10,
+        # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
+        timeout=60 if os.name == "nt" else 10,
         check=True,
     )
     assert shown.stdout == value

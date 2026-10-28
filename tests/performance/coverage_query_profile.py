@@ -82,7 +82,8 @@ def _worker(campaign_path: Path, point_count: int) -> dict[str, object]:
 def _resident_kib(process_id: int) -> int:
     try:
         status = Path(f"/proc/{process_id}/status").read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # The process exited before or during the read.
         return 0
     for line in status.splitlines():
         if line.startswith("VmRSS:"):

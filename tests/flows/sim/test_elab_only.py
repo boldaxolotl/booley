@@ -293,7 +293,8 @@ def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> Non
         check=False,
         capture_output=True,
         text=True,
-        timeout=10,
+        # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
+        timeout=60 if os.name == "nt" else 10,
     )
 
     assert completed.returncode == 7
