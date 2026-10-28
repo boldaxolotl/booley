@@ -230,21 +230,32 @@ async def test_jobs_window_opens_on_all_sessions_from_any_window_or_detail():
         await choose(app, pilot, 1)
         assert (app.window, app.navigation.session) == ("jobs", None)
 
-        # An owner chosen inside the Jobs window is kept, like the rest of
-        # that window's position, whichever way it is entered again.
+        # An owner chosen inside the Jobs window is dropped when the window is
+        # opened again from anywhere; the status filter is kept.
         await choose(app, pilot, OWNER)
         assert app.navigation.session == "codex:00"
+        await choose(app, pilot, RUNNING)
+        assert listed(app) == ["one"]
         await pilot.press("down", "s")  # back to the list, then to Sessions
         await pilot.press("right")
+        assert (app.navigation.session, app.navigation.job_filter) == (None, "running")
+        assert sorted(listed(app)) == ["one", "two"]
+
+        # The same through j from a session detail.
+        await focus_bar(app, pilot)
+        await choose(app, pilot, OWNER)
         assert app.navigation.session == "codex:00"
-        await pilot.press("1", "right")
-        assert app.navigation.session == "codex:00"
-        await pilot.press("1", "j")
-        assert app.navigation.session == "codex:00"
-        assert listed(app) == ["one"]
-        await pilot.press("u")
+        await pilot.press("down", "s", "1", "j")
         assert app.navigation.session is None
         assert sorted(listed(app)) == ["one", "two"]
+
+        # Inside the Jobs window r keeps the owner and u clears it.
+        await focus_bar(app, pilot)
+        await choose(app, pilot, OWNER)
+        await pilot.press("down", "r")
+        assert app.navigation.session == "codex:00"
+        await pilot.press("u")
+        assert app.navigation.session is None
 
 
 @pytest.mark.asyncio

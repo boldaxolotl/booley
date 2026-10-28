@@ -60,7 +60,7 @@ HELP = (
     "each session, standalone); the Jobs tab counts unfinished Jobs\n"
     "Esc back · j Running Jobs · r Finished Jobs · a All Jobs\n"
     "s Sessions · u Jobs from all sessions · ? help · q quit\n"
-    "The Jobs window opens on all sessions; the owner you pick there is kept\n"
+    "The Jobs window always opens on all sessions; the Running / Finished / All choice is kept\n"
     "Click a report, artifact or evidence path to open it in the editor\n"
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
@@ -617,6 +617,8 @@ class DashboardApp(App[None]):
     def _show_window(self, window: str) -> None:
         """Switch windows; each keeps its own history, selection and scroll."""
         self._remember()
+        if window == "jobs" and self.window != "jobs":
+            self._reset_jobs_owner()
         self.window = window
         self._show()
 
@@ -678,15 +680,24 @@ class DashboardApp(App[None]):
         """The Jobs window's top level, which holds its owner and status filters."""
         return self.windows["jobs"][0]
 
+    def _reset_jobs_owner(self) -> None:
+        """Opening the Jobs window starts on All sessions; its status filter is kept."""
+        root = self._jobs_root()
+        if root.session is not None:
+            self.windows["jobs"][0] = replace(root, session=None, selected="")
+
     def _set_jobs_filter(self, **changes: Any) -> None:
         """Show the Jobs list with a new status or owner filter and the other one kept.
 
         A filter chosen while a narrow Job detail is open returns to the list.
+        Reaching the Jobs window from another one starts on All sessions.
         """
+        if self.window != "jobs":
+            self._reset_jobs_owner()
         self._navigate("jobs", replace(self._jobs_root(), selected="", **changes))
 
     def action_jobs(self, job_filter: str) -> None:
-        """Show Jobs with this status filter; the owner filter stays as the user left it."""
+        """Show Jobs with this status filter; from another window the owner is All sessions."""
         self._set_jobs_filter(job_filter=job_filter)
 
     def action_all_jobs(self) -> None:
@@ -905,10 +916,9 @@ class DashboardApp(App[None]):
         if self.navigation.job_filter == "running":
             subject = "" if owner is None else f"{who} has "
             return f"No Jobs running{scope}. {subject}{finished} finished — choose Finished above."
-        if self.navigation.job_filter == "finished":
-            hint = f" {running} running — choose Running above." if running else ""
-            return f"No finished Jobs{scope} yet.{hint}"
-        return f"No Jobs for {who}."
+        # Only Running and Finished can be empty while the owner has Jobs: All lists them.
+        hint = f" {running} running — choose Running above." if running else ""
+        return f"No finished Jobs{scope} yet.{hint}"
 
     def _content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
         nav = self.navigation

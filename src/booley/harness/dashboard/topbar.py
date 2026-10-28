@@ -13,7 +13,7 @@ from textual.widget import Widget
 from booley.harness.colors import PALETTE_DODGER_BLUE
 
 # (label, window name) for the window tabs. Help is an action, not a window.
-ITEMS: tuple[tuple[str, str | None], ...] = (
+ITEMS: tuple[tuple[str, str], ...] = (
     ("Sessions", "sessions"),
     ("Jobs", "jobs"),
 )
@@ -97,7 +97,7 @@ class TopBar(Widget, can_focus=True):
         self.cursor = max(0, min(len(self._items()) - 1, self.cursor + step))
 
     def action_choose(self) -> None:
-        _, kind, value = self._items()[min(self.cursor, len(self._items()) - 1)]
+        _, kind, value = self._items()[self.cursor]
         self.post_message(self.Selected(kind, value))
 
     def action_leave(self) -> None:

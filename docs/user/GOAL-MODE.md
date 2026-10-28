@@ -448,8 +448,9 @@ list says why and which filter shows something.
 
 Press `s` for the session list, `j` for running Jobs, `r` for finished Jobs,
 or `a` for all Jobs; the Job keys open the Jobs window. The Jobs window opens
-on all sessions, whichever window or detail you came from, and keeps the owner
-you pick there while you switch windows; press `u` to go back to all sessions.
+on all sessions, whichever window or detail you came from, and keeps the
+Running, Finished or All choice while you switch windows; press `u` to go back
+to all sessions.
 `?` shows help.
 
 Sessions have short, persistent Project handles such as `S17`. Jobs include
