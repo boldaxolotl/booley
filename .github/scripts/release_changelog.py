@@ -34,7 +34,10 @@ def validate(
     target: str | None = None,
     notes_file: Path | None = None,
 ) -> None:
-    """Validate ordering, mirror equality, VERSION bound, target presence, and notes."""
+    """Validate ordering, mirror equality, VERSION bound, target presence, and notes.
+
+    ``VERSION`` is read from the directory holding ``root``.
+    """
     root_bytes = root.read_bytes()
     packaged_bytes = packaged.read_bytes()
     if root_bytes != packaged_bytes:
