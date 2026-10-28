@@ -448,8 +448,8 @@ The Jobs list has the columns Job, Target, Session, State, Result, Crit and
 Elapsed. Crit repeats the detail's `Criterion:` line as `✓` (met) or `✗` (not
 met) and is blank when the Job has none. When the list is too narrow, long
 Targets are cut with `…` first (down to six characters), then long Result
-words. The selected Job's detail shows the full values, plus the exit code, the
-stage and the session's connection.
+words. The Job detail (beside the list on wide windows, or open with Enter) shows the
+full values, plus the exit code, the stage and the session's connection.
 
 Sessions have short, persistent Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline

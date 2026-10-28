@@ -35,7 +35,7 @@ class ReportPresentation:
     """Independent execution and acceptance results plus compact report facts."""
 
     flow_result: ResultLine
-    verdict: ResultLine
+    flow_word: ResultLine
     criterion: ResultLine | None
     execution: ResultLine
     result_rows: tuple[ResultLine, ...]

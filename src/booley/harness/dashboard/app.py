@@ -281,7 +281,8 @@ def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> t
     if job.state in _REPORT_DETAIL_STATES:
         presentation = _job_presentation(job)
         result = Text(
-            presentation.verdict.value, style=SEMANTIC_STYLE.get(presentation.verdict.semantic, "")
+            presentation.flow_word.value,
+            style=SEMANTIC_STYLE.get(presentation.flow_word.semantic, ""),
         )
         criterion = presentation.criterion
         crit = (
@@ -1041,21 +1042,7 @@ class DashboardApp(App[None]):
             if self._rows
             else self._scrolls.get(self._scroll_key(self.navigation), 0)
         )
-        job_widths: tuple[int, ...] | None = None
-        if self.navigation.view == "jobs":
-            self._jobs_fit_width = table.size.width
-            job_widths = _fit_job_widths(
-                self._jobs_fit_width - table.styles.scrollbar_size_vertical, rows
-            )
-            rows = _truncate_job_rows(rows, job_widths)
-        columns = self._list_columns(job_widths)
-        if columns != self._list_columns_shown:
-            table.clear(columns=True)
-            table.cell_padding = 0 if job_widths else 1
-            for label, width in columns:
-                table.add_column(label, width=width)
-            self._list_columns_shown = columns
-            self._rows = []
+        rows, job_widths = self._apply_list_columns(table, rows)
         if rows != self._rows:
             table.clear()
             for row in rows:
@@ -1076,6 +1063,27 @@ class DashboardApp(App[None]):
         # missing focus owner (a view change hid the list) moves it.
         if self.focused is None or not self.focused.display:
             self._focus_content()
+
+    def _apply_list_columns(
+        self, table: DataTable, rows: list[tuple[object, ...]]
+    ) -> tuple[list[tuple[object, ...]], tuple[int, ...] | None]:
+        """Fit the Jobs columns to the list, rebuild the table columns, and return fitted rows."""
+        job_widths: tuple[int, ...] | None = None
+        if self.navigation.view == "jobs":
+            self._jobs_fit_width = table.size.width
+            job_widths = _fit_job_widths(
+                self._jobs_fit_width - table.styles.scrollbar_size_vertical, rows
+            )
+            rows = _truncate_job_rows(rows, job_widths)
+        columns = self._list_columns(job_widths)
+        if columns != self._list_columns_shown:
+            table.clear(columns=True)
+            table.cell_padding = 0 if job_widths else 1
+            for label, width in columns:
+                table.add_column(label, width=width)
+            self._list_columns_shown = columns
+            self._rows = []
+        return rows, job_widths
 
     def _list_columns(
         self, job_widths: tuple[int, ...] | None
