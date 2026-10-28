@@ -122,8 +122,6 @@ def _warning_preference(existing_config: str | None) -> bool:
 
 
 GATEWAY_PROVIDER_ID = "booley_gateway"
-# Importing booley in a cold container can exceed Codex's 5 s default.
-_GATEWAY_TOKEN_TIMEOUT_MS = 20_000
 
 
 def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
@@ -144,7 +142,7 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
         f"command = {json.dumps(sys.executable)}",
         'args = ["-P", "-m", "booley.runtime.gateway_token"]',
         f"cwd = {json.dumps(token_cwd)}",
-        f"timeout_ms = {_GATEWAY_TOKEN_TIMEOUT_MS}",
+        "timeout_ms = 20000",  # a cold-container import can exceed the 5 s default
         "",
         # Codex 0.160 ignores its default *TOKEN* filter, so exclude explicitly.
         "[shell_environment_policy]",
@@ -184,7 +182,6 @@ def generate_codex_config(
         "",
         "[features]",
         "mcp_2026_07_28 = true",
-        # The default priority service tier is rejected by gateways.
         *(["fast_mode = false"] if gateway_url else []),
         "",
         "[mcp_servers.booley]",

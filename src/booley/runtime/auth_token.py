@@ -250,11 +250,7 @@ def _api_key_policy_credential(
 
 
 def _gateway_credential(app: str) -> EffectiveCredential | None:
-    """The gateway as *app*'s credential; only Codex routes through it.
-
-    ``None`` when the gateway environment is incomplete (or *app* is not
-    Codex), which pinned-policy callers report as a misconfiguration.
-    """
+    """The gateway as *app*'s credential; ``None`` if incomplete or *app* is not Codex."""
     if app != APP_CODEX:
         return None
     try:
