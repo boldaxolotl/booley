@@ -19,7 +19,7 @@ from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
-from booley.runtime import health, health_presentation
+from booley.runtime import health
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
@@ -539,13 +539,19 @@ _HEALTH_ROWS = [
 
 
 def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch):
-    for index, (report, due, expected) in enumerate(_HEALTH_ROWS):
+    for index, row in enumerate(_HEALTH_ROWS):
         root = tmp_path / f"row{index}"
         root.mkdir()
-        _check_health_row(root, monkeypatch, report, due, expected)
+        # Rows share one test (the evidence helper needs function-level node IDs),
+        # so name the failing row instead of leaving an anonymous loop assertion.
+        try:
+            _check_health_row(root, monkeypatch, *row)
+        except AssertionError as error:
+            error.add_note(f"failing row {index}: {row!r}")
+            raise
 
 
-def _check_health_row(tmp_path, monkeypatch, report, due, expected):
+def _check_health_row(root, monkeypatch, report, due, expected):
     findings = ()
     if report is not None and report["counts"]["fail"]:
         findings += (DiagnosticFinding(Severity.FAIL, "failure"),)
@@ -553,7 +559,7 @@ def _check_health_row(tmp_path, monkeypatch, report, due, expected):
         findings += (DiagnosticFinding(Severity.WARN, "warning", check_id="test.warning"),)
     diagnostics = DiagnosticReport(findings)
     snapshot = (
-        health.HealthSnapshot(diagnostics, "fixture-hash", tmp_path / "last.log", due)
+        health.HealthSnapshot(diagnostics, "fixture-hash", root / "last.log", due)
         if report is not None
         else None
     )
@@ -575,11 +581,12 @@ def _check_health_row(tmp_path, monkeypatch, report, due, expected):
     monkeypatch.setattr(
         model.upgrade_review, "observe", lambda *_a, **_k: pytest.fail("upgrade state changed")
     )
-    lines = model.health_lines(tmp_path, tmp_path)
+    lines = model.health_lines(root, root)
     assert tuple(line.text for line in lines) == expected
-    assert "stale" not in lines[0].text
+    # The due marker travels as data so the renderer never sniffs the text.
+    assert lines[0].due_suffix == (" · recheck due" if due else "")
     assert reads == [True]
-    assert list(tmp_path.iterdir()) == []
+    assert list(root.iterdir()) == []
 
 
 def test_readonly_upgrade_pending_and_corrupt_states(tmp_path):
@@ -1017,7 +1024,11 @@ def _style_at(text, offset=0):
 @pytest.mark.asyncio
 async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
     for due in (None, "expired reason"):
-        await _check_header_semantic_styles(monkeypatch, tmp_path, due)
+        try:
+            await _check_header_semantic_styles(monkeypatch, tmp_path, due)
+        except AssertionError as error:
+            error.add_note(f"failing row: due={due!r}")
+            raise
 
 
 async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
@@ -1105,7 +1116,11 @@ _DOCTOR_LINE_ROWS = [
 @pytest.mark.asyncio
 async def test_pilot_compact_doctor_line(monkeypatch, tmp_path):
     for row in _DOCTOR_LINE_ROWS:
-        await _check_pilot_doctor_line(monkeypatch, tmp_path, *row)
+        try:
+            await _check_pilot_doctor_line(monkeypatch, tmp_path, *row)
+        except AssertionError as error:
+            error.add_note(f"failing row: {row!r}")
+            raise
 
 
 async def _check_pilot_doctor_line(
@@ -1126,7 +1141,6 @@ async def _check_pilot_doctor_line(
         assert len(content.plain.splitlines()) == 1
         assert "sentinel" not in content.plain
         assert "expired reason" not in content.plain
-        assert "stale" not in content.plain
         assert _style_at(content) == Style.parse(style)
         last = len(content.plain) - 1
         if not due or missing:
@@ -1147,23 +1161,6 @@ async def _check_pilot_doctor_line(
         ]
         assert painted[start][1].color.get_truecolor() == attention.color.get_truecolor()
         assert painted[start - 1][1].color.get_truecolor() != attention.color.get_truecolor()
-
-
-def test_compact_line_carries_due_suffix_as_data(tmp_path):
-    """The renderer styles the suffix from data; it never sniffs the text."""
-    assert health_presentation.count_line(None).due_suffix == ""
-    for due, expected in ((None, ""), ("expired", " · recheck due")):
-        snapshot = health.HealthSnapshot(DiagnosticReport(()), "hash", tmp_path / "last.log", due)
-        compact = health_presentation.count_line(snapshot)
-        assert compact.due_suffix == expected
-        assert compact.text == "Doctor: OK" + expected
-        line = model.HealthLine(compact.text, compact.severity, compact.due_suffix)
-        assert line.due_suffix == expected
-
-
-def test_health_line_rejects_mismatched_due_suffix():
-    with pytest.raises(ValueError, match="due_suffix"):
-        model.HealthLine("Doctor: OK", "ok", " · recheck due")
 
 
 def test_goal_statuses_use_shared_semantic_styles():

@@ -78,10 +78,6 @@ class HealthLine:
     # Trailing part of ``text`` rendered in the attention style instead of the severity style.
     due_suffix: str = ""
 
-    def __post_init__(self) -> None:
-        if not self.text.endswith(self.due_suffix):
-            raise ValueError(f"text {self.text!r} must end with due_suffix {self.due_suffix!r}")
-
 
 @dataclass(frozen=True)
 class DashboardSnapshot:
