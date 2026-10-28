@@ -86,7 +86,7 @@ recovery command.
 
 ### `booley` is missing from `/mcp` in Claude Code or Codex
 
-Run **Developer: Reload Window** so the Developer Agent session re-reads its MCP config.
+Exit the agent CLI and start it again with `booley` so it re-reads its MCP config.
 If it still doesn't appear, check the server is actually serving, from a
 terminal inside the Sandbox:
 
@@ -100,7 +100,7 @@ A healthy server answers the slashed URL with `406` — it wants an SSE `Accept`
 header, which is exactly what a live MCP endpoint does; `200`/`405` are equally
 fine. Connection refused means it's not up. Your *client* URL stays `/mcp` (the
 redirect is transparent to it). The log is at `/tmp/booley_mcp_http.log`.
-Reload the VS Code window first. If the service still does not return after the
+Restart the agent CLI first. If the service still does not return after the
 Sandbox restarts, run `booley init --seed` on the host and rebuild or
 reopen the container. A server that remains absent after that supported
 lifecycle is a Booley bug; report it with the Doctor output and MCP log.

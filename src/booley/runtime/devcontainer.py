@@ -84,16 +84,6 @@ BOOLEY_DIR_BASENAME = ".booley"
 # absolute host path instead of relying on env-var indirection here.
 DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 
-# VS Code Marketplace extension IDs for the supported agent apps. Listed under
-# ``customizations`` so VS Code installs them container-side; update if the
-# published identifiers change.
-_APP_EXTENSION = {
-    # Canonical Marketplace IDs (publisher.name); verified against the
-    # VS Code Marketplace / official docs (2026-06).
-    APP_CLAUDE: "Anthropic.claude-code",
-    APP_CODEX: "openai.chatgpt",
-}
-
 # Waveform Viewer (ADR 0078): VaporView is installed for every app so
 # `bwave gui` works in the attached window, driven through the Booley
 # extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
@@ -107,11 +97,13 @@ _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # is attached.
 _HDL_EXTENSION = "mshr-h.veriloghdl"
 
-# Tcl syntax highlighting: constraint files (SDC/XDC, ADR 0029/0031) are Tcl,
-# and synth/impl flows are driven by Tcl scripts. The grammar alone doesn't
-# claim the .sdc/.xdc suffixes, so _HIGHLIGHT_FILE_ASSOCIATIONS maps them to
-# the tcl language id.
-_TCL_EXTENSION = "bitwisecook.tcl"
+# VS Code entries older Booley specs installed and no current spec carries:
+# the Claude Code / Codex agent extensions (the agent CLI is the only agent
+# surface), the Tcl grammar, and the *.sdc/*.xdc -> tcl associations (the HDL
+# extension claims those suffixes itself). Doctor flags a spec still listing them.
+_RETIRED_AGENT_EXTENSIONS = ("Anthropic.claude-code", "openai.chatgpt")
+_RETIRED_EXTENSIONS = ("bitwisecook.tcl", *_RETIRED_AGENT_EXTENSIONS)
+_RETIRED_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
 # VS Code tab. Installed for every app so human-facing reports (including the
@@ -130,10 +122,6 @@ _LIVE_PREVIEW_SETTINGS = {
     "remote.restoreForwardedPorts": False,
     "livePreview.portNumber": _LIVE_PREVIEW_SEED_PORT,
 }
-
-# files.associations entries that route constraint suffixes to the Tcl grammar
-# above; emitted into the spec's VS Code settings for every app.
-_HIGHLIGHT_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 
 # The Sandbox installs the framework and its Python dependencies system-wide;
 # a workspace ``.venv`` belongs to the host and is neither needed nor reliably
@@ -170,8 +158,8 @@ _APP_STATE_DIR = {
 # (see ``_APP_STATE_DIR``), so the state volume does NOT cover it and it is
 # reborn empty on every container (re)create. A fresh config re-rolls the
 # stableID and drops the cached grants, so gated models silently vanish from
-# the in-container ``/model`` picker even when the CLI, extension, and
-# credentials all match the host. We seed the container's copy from the host's
+# the in-container ``/model`` picker even when the CLI and
+# credentials match the host. We seed the container's copy from the host's
 # config (read-only bind + copy) so the grants carry over;
 # ``incontainer_register`` then merges the container-local ``mcpServers.booley``
 # entry on top (``upsert_claude`` preserves existing keys). Only Claude keeps
@@ -279,11 +267,6 @@ def _post_attach_has(spec: dict, command: str) -> bool:
     """Whether *command* is one complete step in the generated attach hook."""
     value = spec.get("postAttachCommand")
     return isinstance(value, str) and command in (part.strip() for part in value.split("&&"))
-
-
-def _vscode_extension_for_app(app: str) -> str | None:
-    """Return the VS Code extension ID for *app*, or ``None`` for ``"none"``."""
-    return _APP_EXTENSION.get(app)
 
 
 def _auth_target_for_app(app: str) -> str | None:
@@ -484,34 +467,54 @@ def spec_installs_vaporview(spec: dict) -> bool:
 
 
 def spec_installs_hdl_highlight(spec: dict) -> bool:
-    """Whether *spec* installs the RTL + constraints highlighting extensions.
+    """Whether *spec* installs the Verilog/SystemVerilog highlighting extension.
 
-    Like VaporView, the grammars reach an attached window only through the
+    Like VaporView, the grammar reaches an attached window only through the
     generated spec's ``customizations`` — never via the sandbox image — so a
-    spec seeded before they landed renders RTL and SDC/XDC constraints as
-    plain text until a re-seed. Requires the Verilog/SystemVerilog and Tcl
-    extensions AND the ``files.associations`` entries that route the
-    constraint suffixes to the Tcl grammar (the extension alone doesn't claim
-    them). ``booley doctor`` reads this to surface the drift.
+    spec seeded before it landed renders RTL as plain text until a re-seed.
+    The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
+    mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required. ``booley doctor`` reads this to surface the drift.
     """
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     if not isinstance(vscode, dict):
         return False
     extensions = vscode.get("extensions")
-    if not (
-        isinstance(extensions, list)
-        and _HDL_EXTENSION in extensions
-        and _TCL_EXTENSION in extensions
-    ):
-        return False
+    return isinstance(extensions, list) and _HDL_EXTENSION in extensions
+
+
+def spec_retired_vscode_entries(spec: dict) -> list[str]:
+    """Name the retired VS Code entries *spec* still carries, in a stable order.
+
+    Lists each retired extension ID in ``extensions``, each retired
+    ``files.associations`` pattern still routed to Tcl, and each retired agent
+    extension still pinned in ``remote.extensionKind``. A spec
+    with unexpected shapes reports nothing for the malformed part, like the
+    sibling ``spec_*`` detectors. ``booley doctor`` reads this to surface specs
+    written before those entries were dropped.
+    """
+    customizations = spec.get("customizations")
+    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
+    if not isinstance(vscode, dict):
+        return []
+    found: list[str] = []
+    extensions = vscode.get("extensions")
+    if isinstance(extensions, list):
+        found += [ext for ext in _RETIRED_EXTENSIONS if ext in extensions]
     settings = vscode.get("settings")
-    associations = settings.get("files.associations") if isinstance(settings, dict) else None
-    if not isinstance(associations, dict):
-        return False
-    return all(
-        associations.get(pattern) == lang for pattern, lang in _HIGHLIGHT_FILE_ASSOCIATIONS.items()
-    )
+    if not isinstance(settings, dict):
+        return found
+    associations = settings.get("files.associations")
+    if isinstance(associations, dict):
+        found += [
+            f"files.associations {pattern}"
+            for pattern, lang in _RETIRED_FILE_ASSOCIATIONS.items()
+            if associations.get(pattern) == lang
+        ]
+    pin = settings.get("remote.extensionKind")
+    if isinstance(pin, dict):
+        found += [f"remote.extensionKind {ext}" for ext in _RETIRED_AGENT_EXTENSIONS if ext in pin]
+    return found
 
 
 def spec_installs_live_preview(spec: dict) -> bool:
@@ -796,7 +799,7 @@ def _build_post_create_command(
 ) -> str | None:
     """Build the ``postCreateCommand`` string for :func:`build_devcontainer_spec`.
 
-    Runs once during creation, BEFORE the agent extension starts its first
+    Runs once during creation, BEFORE the agent CLI starts its first
     session — Claude Code reads ~/.claude.json only at session start, so both
     the config seed and MCP registration land before anything reads it. The
     seed MUST precede the registrar: incontainer_register's upsert_claude
@@ -934,8 +937,8 @@ def build_devcontainer_spec(
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
     Args:
-        app: one of :data:`SUPPORTED_APPS`; selects the agent extension and the
-            auth-token target. ``"none"`` installs no agent extension.
+        app: one of :data:`SUPPORTED_APPS`; selects the auth-token target, seeds
+            and state volume. ``"none"`` configures no agent.
         image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
         booley_dir_source: host-side mount source for ``.booley``.
@@ -1104,23 +1107,17 @@ def build_devcontainer_spec(
     # The Waveform Viewer (ADR 0078, VaporView) rides along for every app —
     # including "none": viewing a trace isn't tied to which app is attached —
     # so the customizations block is unconditional now.
-    extension = _vscode_extension_for_app(app)
     vscode: dict = {
-        "extensions": ([extension] if extension else [])
-        + [
+        "extensions": [
             # The verified build bundled in the image, installed by path: the
             # egress-locked Sandbox cannot reach a gallery, and VS Code pins a
             # VSIX install so auto-update leaves it there.
             _vaporview.BUNDLED_VSIX,
             _HDL_EXTENSION,
-            _TCL_EXTENSION,
             _LIVE_PREVIEW_EXTENSION,
         ],
-        # VaporView's own manifest already declares extensionKind
-        # ["workspace"], so it is not pinned here.
         "settings": {
             **_VAPORVIEW_PRESENTATION_SETTINGS,
-            "files.associations": dict(_HIGHLIGHT_FILE_ASSOCIATIONS),
             **_LIVE_PREVIEW_SETTINGS,
             **_PYTHON_TERMINAL_SETTINGS,
         },
@@ -1132,10 +1129,6 @@ def build_devcontainer_spec(
     # also opens the Dashboard terminal.
     vscode["extensions"].append(VSIX_PATH)
     vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
-    if extension:
-        # Pin the agent extension workspace-side (reinforces the
-        # container-install above; enforcement is client-side).
-        vscode["settings"]["remote.extensionKind"] = {extension: ["workspace"]}
     spec["customizations"] = {"vscode": vscode}
 
     # The residual VaporView patch (theme lookup, palette scope) edits the
