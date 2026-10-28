@@ -1631,3 +1631,19 @@ def test_holder_fractional_duration_uses_original_interval(root, world):
         assert f"held {expected}" in store.describe_holders(CLASS_HEAVY), (
             "holder fractional display missing"
         )
+
+
+def test_unreadable_execution_record_is_not_proven_terminal(monkeypatch) -> None:
+    """A lasting sharing error keeps the slot: release() must never raise."""
+    from types import SimpleNamespace
+
+    from tests.sharing_error_support import sharing_error
+
+    def held(_path: Path) -> None:
+        raise sharing_error()
+
+    monkeypatch.setattr(job_slots, "read_json", held)
+    monkeypatch.setattr(
+        job_slots, "execution_paths", lambda _id: SimpleNamespace(record=Path("r"))
+    )
+    assert job_slots._default_execution_is_terminal("a" * 32) is False

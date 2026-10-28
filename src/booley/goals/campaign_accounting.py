@@ -194,7 +194,7 @@ class CampaignRegistration:
         except (BoundaryError, ValueError) as exc:
             if isinstance(exc, RegistrationFormatError):
                 raise
-            raise RegistrationFormatError(f"{where}: {exc}") from exc
+            raise RegistrationFormatError(f"{where}: {exc}") from None
         return registration
 
 

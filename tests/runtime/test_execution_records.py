@@ -21,6 +21,7 @@ from booley.runtime.execution_records import (
     gc_terminal_executions,
     read_attachment_heartbeat,
     read_json,
+    request_cancellation,
     verify_inherited_execution_id,
     write_attachment_heartbeat,
 )
@@ -526,3 +527,13 @@ def test_gc_keeps_record_whose_read_outlasts_sharing_budget(tmp_path: Path, monk
     hold_opens(monkeypatch, {paths.record: 99})
     gc_terminal_executions(tmp_path)
     assert paths.record.exists()
+
+
+def test_cancellation_request_is_rewritten_when_the_cancel_read_stays_held(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = _protocol_paths(tmp_path)
+    atomic_write_json(paths.cancel, {"force": False, "reason": "old", "signum": 2})
+    hold_opens(monkeypatch, {paths.cancel: 2})  # the whole retry budget
+    request_cancellation(paths, reason="again")  # a held read must not abort the loop
+    assert json.loads(paths.cancel.read_bytes())["reason"] == "again"

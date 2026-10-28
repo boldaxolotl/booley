@@ -342,7 +342,12 @@ def request_cancellation(
     if force:
         paths.root.mkdir(parents=True, exist_ok=True)
         paths.force.touch(exist_ok=True)
-    current = read_json(paths.cancel)
+    try:
+        current = read_json(paths.cancel)
+    except OSError:
+        # A sharing error that outlasted the read retries: the request is
+        # idempotent, so write it again rather than abort a cancellation loop.
+        current = None
     force = force or paths.force.exists()
     if current is not None and (not force or current.get("force") is True):
         return
