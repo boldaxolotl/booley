@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import stat
 import sys
 import threading
@@ -280,11 +281,41 @@ class TestReadFileBytes:
         posix = _FlakyOpen(path, [PermissionError(13, "Permission denied")])
         posix.install(monkeypatch)
         delays.clear()
-        with pytest.raises(PermissionError):
-            read_file_bytes(path, sleep=delays.append)
+        # Pin POSIX: on Windows a bare EACCES is a transient C-runtime sharing error.
+        with monkeypatch.context() as posix_host:
+            posix_host.setattr(sys, "platform", "linux")
+            with pytest.raises(PermissionError):
+                read_file_bytes(path, sleep=delays.append)
         assert posix.calls == 1
         assert delays == []
 
         with pytest.raises(FileNotFoundError):
             read_file_bytes(tmp_path / "missing.json", sleep=delays.append)
         assert delays == []
+
+    def test_retries_bare_eacces_from_the_windows_c_runtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Windows open() goes through the C runtime, which reports a sharing
+        violation as plain EACCES with no winerror (#2352)."""
+        from booley.runtime.filesystem_utils import read_file_bytes
+
+        path = tmp_path / "record.json"
+        path.write_bytes(b"payload")
+        flaky = _FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 3)
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        with monkeypatch.context() as windows:
+            windows.setattr(sys, "platform", "win32")
+            assert read_file_bytes(path, sleep=delays.append) == b"payload"
+        assert flaky.calls == 4
+        assert len(delays) == 3
+
+        persistent = _FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 100)
+        persistent.install(monkeypatch)
+        delays.clear()
+        with monkeypatch.context() as windows:
+            windows.setattr(sys, "platform", "win32")
+            with pytest.raises(PermissionError):
+                read_file_bytes(path, sleep=delays.append)
+        assert persistent.calls == len(delays) + 1
