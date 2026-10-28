@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -363,3 +363,13 @@ Field use showed the overview was hard to scan: each session was one long `·`-j
 - **Session detail.** Goals use one column, still grouped by status. Only the session's unfinished Jobs are listed there; its finished Jobs are reached through the Jobs window's owner filter.
 - **Jobs filters.** Running (queued or running), Finished (newest 50) and All. The owner filter cycles All, each session handle, and Standalone, and the Jobs window always opens on All. An empty list says why it is empty and which filter shows something.
 - **Doctor freshness.** A due result reads ` · recheck due`, in the attention color, instead of ` · stale`.
+
+## Amendments (2026-10-29)
+
+### 2026-10-29: Jobs list columns (#1516)
+
+Job rows were one long `·`-joined line that overflowed the list beside the detail pane. This amendment supersedes the **Job list** rule above, including its rule that running rows show CPU and memory.
+
+- **Columns.** A Job row is aligned columns: Job, Target, Session, State, Result, Crit, Elapsed. A Flow-typed Job's handle names its Flow, so there is no Flow column; other Jobs show a generic handle and the detail names the endpoint. Result is the Flow-result word shared with Job detail (a dim `…` while the Job is unfinished). Crit is `✓` or `✗` from the Criterion line, blank when there is none. Absent Target or Session shows a dim `—`.
+- **Moved to detail.** Stage, exit code, session connection and running CPU and memory appear only in the selected Job's detail.
+- **Fit.** Typical rows fit beside the detail pane at 120 columns with no horizontal scroll; Job, Session, State, Crit and Elapsed keep their natural width, so unusually wide cells in them can still overflow. Target is cut with `…` first, down to six characters; then a long Result word is cut with `…`. The detail shows the full values.
