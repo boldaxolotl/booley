@@ -199,10 +199,10 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
         reset_cache()
 
 
-def _configure_claude(monkeypatch):
+def _configure_claude(monkeypatch, provider="claude"):
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
-    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": "claude"}))
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": provider}))
 
 
 def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
@@ -354,19 +354,13 @@ def _capture_exec(monkeypatch) -> list[tuple[str, list[str]]]:
     return executed
 
 
-def _configure_provider(monkeypatch, provider):
-    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
-    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
-    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": provider}))
-
-
 def _launch(tmp_path, agent_args):
     with pytest.raises(_ExecCalledError):
         chat_cmd.run(argparse.Namespace(agent_args=agent_args), tmp_path)
 
 
 def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
-    _configure_provider(monkeypatch, "codex")
+    _configure_claude(monkeypatch, "codex")
     executed = _capture_exec(monkeypatch)
     forwarded = ["resume", "--last"]
     native = ("/native/codex", ["S23", "--no-daemon"])

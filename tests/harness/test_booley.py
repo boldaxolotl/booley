@@ -151,6 +151,20 @@ def test_chat_forwards_arguments_after_chat(monkeypatch):
     assert args._cli_selection.value == "P"
 
 
+def test_chat_later_booley_options_are_forwarded(monkeypatch, capsys):
+    """Only leading -h/-C/--project are Booley's; later ones belong to the agent."""
+    for tail in (["--resume", "x", "--project", "P"], ["--resume", "x", "-C", "P"]):
+        args = _parse_argv(monkeypatch, "chat", *tail)
+        assert args.agent_args == tail
+        assert not hasattr(args, "_cli_selection")
+    assert _parse_argv(monkeypatch, "chat", "--resume", "x", "--help").agent_args == [
+        "--resume",
+        "x",
+        "--help",
+    ]
+    assert capsys.readouterr().out == ""
+
+
 def test_chat_separator_forwards_reserved_options(monkeypatch, capsys):
     assert _parse_argv(monkeypatch, "chat", "--", "--help").agent_args == ["--help"]
     assert capsys.readouterr().out == ""

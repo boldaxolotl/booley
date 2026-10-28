@@ -826,7 +826,7 @@ def _add_utility_subparsers(sub) -> None:
             "Arguments after `chat` are passed unchanged to the agent CLI, after "
             "Booley's own launch arguments, for example `booley chat --resume <id>` "
             "(Claude) or `booley chat resume --last` (Codex). Booley reads -h/--help "
-            "and -C/--project only when they come first after `chat`. Put `--` "
+            "and -C/--project only before any other argument. Put `--` "
             "first to forward them to the agent: `booley chat -- --help`."
         ),
     )
