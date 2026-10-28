@@ -303,36 +303,48 @@ class TestMaskPathsValidation:
 
 
 class TestAppExtension:
-    def test_claude_extension_pinned_workspace_side(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        vscode = spec["customizations"]["vscode"]
-        ext = "Anthropic.claude-code"
+    def test_claude_spec_installs_no_agent_extension(self):
+        vscode = dc.build_devcontainer_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
-            ext,
             vaporview.BUNDLED_VSIX,
             "mshr-h.veriloghdl",
-            "bitwisecook.tcl",
             "ms-vscode.live-server",
             VSIX_PATH,
         ]
-        assert vscode["settings"]["remote.extensionKind"] == {ext: ["workspace"]}
+        assert "remote.extensionKind" not in vscode["settings"]
         # The viewer bridge drives VaporView; its own WCP endpoint stays off.
         assert not any(key.startswith("vaporview.wcp.") for key in vscode["settings"])
         assert vscode["settings"]["vaporview.customColor5"] == "#e5484d"
         assert vscode["settings"]["vaporview.customColor6"] == "#3b82f6"
         assert vscode["settings"]["vaporview.customColor7"] == "#2da44e"
 
-    def test_codex_extension(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CODEX)
-        vscode = spec["customizations"]["vscode"]
+    def test_codex_spec_installs_no_agent_extension(self):
+        vscode = dc.build_devcontainer_spec(dc.APP_CODEX)["customizations"]["vscode"]
         assert vscode["extensions"] == [
-            "openai.chatgpt",
             vaporview.BUNDLED_VSIX,
             "mshr-h.veriloghdl",
-            "bitwisecook.tcl",
             "ms-vscode.live-server",
             VSIX_PATH,
         ]
+        assert "remote.extensionKind" not in vscode["settings"]
+
+    def test_generated_spec_omits_tcl_highlighting(self):
+        # The HDL extension owns .sdc/.xdc; no Tcl grammar or association is needed.
+        for app in dc.SUPPORTED_APPS:
+            vscode = dc.build_devcontainer_spec(app)["customizations"]["vscode"]
+            assert "bitwisecook.tcl" not in vscode["extensions"]
+            assert "files.associations" not in vscode["settings"]
+
+    def test_generated_spec_has_no_retired_entries(self):
+        for app in dc.SUPPORTED_APPS:
+            assert dc.spec_retired_vscode_entries(dc.build_devcontainer_spec(app)) == []
+
+    def test_spec_installs_hdl_highlight_without_tcl(self):
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        vscode = spec["customizations"]["vscode"]
+        vscode["extensions"] = [e for e in vscode["extensions"] if e != "bitwisecook.tcl"]
+        vscode["settings"].pop("files.associations", None)
+        assert dc.spec_installs_hdl_highlight(spec) is True
 
     def test_none_installs_no_agent_extension(self):
         # Waveform viewing isn't tied to an agent app, so "none" carries the
@@ -342,7 +354,6 @@ class TestAppExtension:
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
             "mshr-h.veriloghdl",
-            "bitwisecook.tcl",
             "ms-vscode.live-server",
             VSIX_PATH,
         ]
@@ -432,20 +443,15 @@ class TestAppExtension:
         for app in dc.SUPPORTED_APPS:
             assert dc.spec_installs_hdl_highlight(dc.build_devcontainer_spec(app)) is True
         assert dc.spec_installs_hdl_highlight({}) is False
-        # Any missing piece — either grammar extension or the constraint-file
-        # associations that route .sdc/.xdc to Tcl — means a stale spec.
+        # A missing HDL grammar extension means a stale spec.
         legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         legacy["customizations"]["vscode"]["extensions"] = [
             "Anthropic.claude-code",
             "lramseyer.vaporview",
         ]
         assert dc.spec_installs_hdl_highlight(legacy) is False
-        for drop in ("mshr-h.veriloghdl", "bitwisecook.tcl"):
-            spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-            spec["customizations"]["vscode"]["extensions"].remove(drop)
-            assert dc.spec_installs_hdl_highlight(spec) is False
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        del spec["customizations"]["vscode"]["settings"]["files.associations"]["*.sdc"]
+        spec["customizations"]["vscode"]["extensions"].remove("mshr-h.veriloghdl")
         assert dc.spec_installs_hdl_highlight(spec) is False
 
     def test_spec_installs_live_preview_detector(self):
@@ -488,13 +494,6 @@ class TestAppExtension:
             assert dc.build_devcontainer_spec(app)["postAttachCommand"] == (
                 f"{dc.live_preview_port_command()} && {dc.vaporview_patch_command()}"
             )
-
-    def test_constraint_files_associated_with_tcl(self):
-        # SDC/XDC constraints are Tcl but the grammar doesn't claim the
-        # suffixes; the spec's files.associations must, for every app.
-        for app in dc.SUPPORTED_APPS:
-            settings = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["settings"]
-            assert settings["files.associations"] == {"*.sdc": "tcl", "*.xdc": "tcl"}
 
     def test_python_terminal_autoactivation_disabled_for_every_app(self):
         # The runtime already has its Python stack system-wide.  Do not let a
@@ -557,14 +556,6 @@ class TestAppExtension:
             spec = dc.build_devcontainer_spec(app)
             assert spec["postAttachCommand"] == dc.post_attach_command()
             assert "booley.runtime.incontainer_vaporview" in spec["postAttachCommand"]
-
-    def test_extension_kind_pin_stays_agent_only(self):
-        # VaporView's own manifest declares extensionKind ["workspace"] — it
-        # must never appear in the remote.extensionKind pin.
-        for app in (dc.APP_CLAUDE, dc.APP_CODEX):
-            vscode = dc.build_devcontainer_spec(app)["customizations"]["vscode"]
-            pin = vscode["settings"]["remote.extensionKind"]
-            assert list(pin) == [dc._APP_EXTENSION[app]]
 
 
 class TestAuthMount:
