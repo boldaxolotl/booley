@@ -13,6 +13,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   VaporView version) now run when a VS Code window is attached to the Sandbox.
   Before, they always skipped with "no VS Code extension host attached", so
   Doctor stayed green even when VaporView was missing.
+- VaporView now installs in local Sandboxes. The Sandbox Image bundles the
+  verified VaporView 1.6.0 build (with its GPL-3.0 license and source pointer
+  under `/usr/local/share/booley/licenses/vaporview/`), and the generated
+  devcontainer spec installs it from
+  `/usr/local/libexec/booley/vaporview-1.6.0.vsix`, so it needs no network and
+  VS Code does not auto-update it. Doctor reports existing Sandboxes as
+  devcontainer drift; refresh the Sandbox to pick up the bundled build.
+
 - Goal entry and Goal changes now refuse a Goal that names a Test its Target
   skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
   status names a Test skipped after entry as skipped, not as gone. Remove the

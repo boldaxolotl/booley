@@ -625,27 +625,24 @@ showing the trace, then the window you used most recently. When it cannot
 tell, it says so: run it from a terminal of the window you want, or close the
 windows you do not need.
 
-Booley checks whether VaporView is installed in the attached remote window. If
-it is missing, install it there with
-`code --install-extension lramseyer.vaporview@1.6.0`. If the Sandbox cannot
-reach the Marketplace, obtain the official VaporView VSIX on a networked host,
-from the matching version on the
-[official VaporView releases page](https://github.com/Lramseyer/vaporview/releases)
-(`vaporview-1.6.0.vsix` for Booley's currently verified VaporView 1.6.0), then
-use **Extensions: Install from VSIX...** in the attached remote window.
+Booley checks whether VaporView is installed in the attached remote window.
+The Sandbox Image bundles the verified VaporView 1.6.0 build, and the generated
+devcontainer spec installs it from that file, so it needs no network. If it is
+missing, install it from the attached remote window's terminal with
+`code --install-extension /usr/local/libexec/booley/vaporview-1.6.0.vsix`;
+if that file does not exist, refresh the Sandbox Image.
 After installation, the Sandbox's background watcher patches the extension
 automatically; then use **Developer: Reload Window**. Verify with
 `code --list-extensions --show-versions` in the remote terminal; it must list
 `lramseyer.vaporview@1.6.0`. Be careful with a host terminal: a plain host
 `code` command may install locally instead of into the attached container.
 
-The generated devcontainer spec pins VaporView to `lramseyer.vaporview@1.6.0`,
-and VS Code does not auto-update a pinned extension. A different installed
-version, such as a newer Marketplace release, cannot drive scoped views.
-`bwave gui` and Doctor report it with both versions. Run the pinned install
-command above in the attached remote window, then **Developer: Reload Window**.
-If Doctor also reports devcontainer drift, refresh the Sandbox so its spec
-carries the pin.
+VS Code does not auto-update an extension installed from a file. A different
+installed version, such as a newer Marketplace release installed by hand,
+cannot drive scoped views. `bwave gui` and Doctor report it with both
+versions. Run the install command above in the attached remote window, then
+**Developer: Reload Window**. If Doctor also reports devcontainer drift,
+refresh the Sandbox so its spec installs the bundled build.
 
 Booley's attach hook applies one small compatibility patch to the installed
 VaporView. It stops the remote extension host from looking up your desktop
@@ -656,7 +653,7 @@ waveform. It also makes the three palette slots behind `@red`, `@blue`, and
 exact official 1.6.0 build; a different or modified build is left untouched and
 reported as unsupported. On the first window of a fresh container it lands
 after VaporView has started, so it takes effect at the next **Developer: Reload
-Window**. When Marketplace installation is delayed, the attach hook leaves one
+Window**. When installation is delayed, the attach hook leaves one
 background watcher until VaporView arrives. It patches VS Code's hidden staging
 copy before the completed install is published. Watcher diagnostics are written
 to `~/.booley/vaporview-install-watch.log` if automatic repair cannot complete.

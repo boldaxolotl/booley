@@ -444,7 +444,7 @@ def spec_installs_vaporview(spec: dict) -> bool:
     """Whether *spec* installs VaporView and the Booley bridge that drives it.
 
     The Waveform Viewer (ADR 0078) reaches an attached VS Code window only
-    through the generated spec: the pinned ``lramseyer.vaporview`` install,
+    through the generated spec: the image-bundled VaporView VSIX install,
     the image-local Booley Sandbox Integration extension that hosts the Viewer Bridge, the
     semantic waveform-color settings, AND the ``postAttachCommand`` patch
     that makes those colors effective. A spec seeded before any of these
@@ -452,8 +452,9 @@ def spec_installs_vaporview(spec: dict) -> bool:
     image rebuild, which never touches the spec. ``booley doctor`` reads this
     to surface the drift.
 
-    Returns ``True`` only when VaporView is listed exactly once and pinned to
-    ``vaporview.PINNED_EXTENSION``, the Booley Sandbox Integration extension is listed, the
+    Returns ``True`` only when VaporView is listed exactly once, as the
+    bundled ``vaporview.BUNDLED_VSIX`` path (any gallery ID is drift: an
+    egress-locked Sandbox cannot install it), the Booley Sandbox Integration extension is listed, the
     presentation palette is intact, AND the patch is wired; any miss means a
     stale or hand-edited spec that a refresh would fix.
     """
@@ -466,10 +467,11 @@ def spec_installs_vaporview(spec: dict) -> bool:
     extensions = vscode.get("extensions")
     if not isinstance(extensions, list) or VSIX_PATH not in extensions:
         return False
-    # Exactly one VaporView entry, pinned to the verified build: an unpinned or
-    # differently pinned entry lets VS Code install a release Booley rejects.
+    # Exactly one VaporView entry, the bundled VSIX: a gallery entry (pinned or
+    # not) never installs in an egress-locked Sandbox, and another VSIX path
+    # names a build Booley has not verified.
     requested = [entry for entry in extensions if _vaporview.is_vaporview_entry(entry)]
-    if not (len(requested) == 1 and _vaporview.is_pinned_entry(requested[0])):
+    if requested != [_vaporview.BUNDLED_VSIX]:
         return False
     settings = vscode.get("settings")
     if not isinstance(settings, dict):
@@ -1106,9 +1108,10 @@ def build_devcontainer_spec(
     vscode: dict = {
         "extensions": ([extension] if extension else [])
         + [
-            # Pinned so a fresh Sandbox gets the build Booley verified, and VS
-            # Code's auto-update leaves it there.
-            _vaporview.PINNED_EXTENSION,
+            # The verified build bundled in the image, installed by path: the
+            # egress-locked Sandbox cannot reach a gallery, and VS Code pins a
+            # VSIX install so auto-update leaves it there.
+            _vaporview.BUNDLED_VSIX,
             _HDL_EXTENSION,
             _TCL_EXTENSION,
             _LIVE_PREVIEW_EXTENSION,

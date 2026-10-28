@@ -14,10 +14,12 @@ from booley.runtime import vscode_server
 
 EXTENSION_ID = "lramseyer.vaporview"
 VERIFIED_VERSION = "1.6.0"
-# The Sandbox spec installs this exact build. VS Code marks a versioned install
-# as pinned, so auto-update cannot move it to a release Booley has not verified.
-PINNED_EXTENSION = f"{EXTENSION_ID}@{VERIFIED_VERSION}"
-RELEASES_URL = "https://github.com/Lramseyer/vaporview/releases"
+# The Sandbox Image bundles this exact official build (Dockerfile.base keeps its
+# VAPORVIEW_VERSION in lockstep with VERIFIED_VERSION) and the generated spec
+# installs it by path. A gallery ID cannot work there: an egress-locked Sandbox
+# relays gallery installs to the client, which cannot resolve a versioned ID.
+# VS Code records a VSIX install as pinned, so auto-update never replaces it.
+BUNDLED_VSIX = f"/usr/local/libexec/booley/vaporview-{VERIFIED_VERSION}.vsix"
 EDITOR_PROBE_TIMEOUT_SECONDS = 30
 
 # Stable human-facing colors backed by VaporView custom palette slots. Its
@@ -134,14 +136,21 @@ def _directory_versions(root: Path) -> set[str] | None:
     return versions
 
 
-def is_pinned_entry(entry: object) -> bool:
-    """Whether a devcontainer ``extensions`` entry requests exactly the verified build."""
-    return isinstance(entry, str) and entry.lower() == PINNED_EXTENSION.lower()
-
-
 def is_vaporview_entry(entry: object) -> bool:
-    """Whether a devcontainer ``extensions`` entry requests VaporView at any version."""
-    return isinstance(entry, str) and entry.lower().partition("@")[0] == EXTENSION_ID
+    """Whether a devcontainer ``extensions`` entry requests VaporView in any form.
+
+    Matches a gallery ID at any version (``lramseyer.vaporview``,
+    ``lramseyer.vaporview@1.6.0``) and a bundled VSIX path for any version, so
+    drift detection can insist that :data:`BUNDLED_VSIX` is the only one.
+    """
+    if not isinstance(entry, str):
+        return False
+    if entry.lower().partition("@")[0] == EXTENSION_ID:
+        return True
+    name = entry.rpartition("/")[2].lower()
+    # Any VSIX file name mentioning VaporView, including Marketplace-style
+    # ``lramseyer.vaporview-1.6.0.vsix``.
+    return "vaporview" in name and name.endswith(".vsix")
 
 
 def probe_home(home: Path) -> ExtensionState:
@@ -237,17 +246,16 @@ def aggregate_states(states: Iterable[ExtensionState]) -> ExtensionState:
 
 
 def install_guidance(*, editor: str = "code") -> str:
-    """Explain online and offline installation into the attached remote window."""
+    """Explain installing the image-bundled build into the attached remote window."""
     return (
-        "Install it in the attached remote window:\n"
-        f"  {editor} --install-extension {PINNED_EXTENSION}\n"
-        "If the container cannot reach the Marketplace, download "
-        f"vaporview-{VERIFIED_VERSION}.vsix from the official releases page on a "
-        f'networked host ({RELEASES_URL}), then run "Extensions: Install from VSIX..." in '
-        "the attached remote window. Booley's attach watcher patches a late install "
-        'automatically; afterward run "Developer: Reload Window". Verify in the remote '
-        "terminal with:\n"
+        "Install the build bundled in the Sandbox Image from the attached remote "
+        "window's terminal (no network needed):\n"
+        f"  {editor} --install-extension {BUNDLED_VSIX}\n"
+        "Booley's attach watcher patches a late install automatically; afterward run "
+        '"Developer: Reload Window". Verify in the remote terminal with:\n'
         f"  {editor} --list-extensions --show-versions\n"
-        f"which must list {PINNED_EXTENSION}. A host CLI without the remote "
-        "window selected may install locally instead of into the container."
+        f"which must list {EXTENSION_ID}@{VERIFIED_VERSION}. If {BUNDLED_VSIX} is "
+        "missing, the Sandbox Image predates it: refresh the Sandbox. A host CLI "
+        "without the remote window selected may install locally instead of into "
+        "the container."
     )

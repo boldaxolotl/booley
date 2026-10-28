@@ -381,6 +381,7 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
     for checksum_arg in (
         "SV2V_SHA256",
         "VERIBLE_SHA256",
+        "VAPORVIEW_SHA256",
         "NODE_SHA256",
     ):
         assert f"ARG {checksum_arg}=" in dockerfile
@@ -402,6 +403,40 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
     assert '"@openai/codex": "0.160.0"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
+
+
+def _base_build_arg(dockerfile: str, name: str) -> str:
+    """Return the default of one ``ARG name=value`` line in the base recipe."""
+    match = re.search(rf"^ARG {name}=(\S+)$", dockerfile, re.MULTILINE)
+    assert match, f"Dockerfile.base declares no default for {name}"
+    return match.group(1)
+
+
+def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> None:
+    """The image bundles exactly the build the spec installs and Booley patches."""
+    from booley.runtime import vaporview
+
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    version = _base_build_arg(dockerfile, "VAPORVIEW_VERSION")
+    sha256 = _base_build_arg(dockerfile, "VAPORVIEW_SHA256")
+
+    assert version == vaporview.VERIFIED_VERSION
+    assert re.fullmatch(r"[0-9a-f]{64}", sha256)
+    region = dockerfile[dockerfile.index("ARG VAPORVIEW_VERSION=") :]
+    region = region[: region.index("\n\n")]
+    install_target = '"/usr/local/libexec/booley/vaporview-${VAPORVIEW_VERSION}.vsix"'
+    assert f"install -m 0644 /tmp/vaporview.vsix {install_target}" in region
+    assert install_target.strip('"').replace("${VAPORVIEW_VERSION}", version) == (
+        vaporview.BUNDLED_VSIX
+    )
+    # Verified before it is installed, fetched over HTTPS only.
+    assert region.index("sha256sum -c -") < region.index("install -m 0644 /tmp/vaporview.vsix")
+    assert "curl --proto '=https' --tlsv1.2 -fsSL" in region
+    # GPL-3.0: the license and the corresponding-source pointer ship beside it.
+    assert "/usr/local/share/booley/licenses/vaporview/LICENSE.txt" in region
+    assert "/usr/local/share/booley/licenses/vaporview/SOURCE.txt" in region
+    assert "https://github.com/Lramseyer/vaporview" in region
+    assert re.search(r"^ARG VAPORVIEW_SOURCE_COMMIT=[0-9a-f]{40}$", region, re.MULTILINE)
 
 
 def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:

@@ -838,20 +838,27 @@ class TestDevcontainerSpecStaleness:
         assert rec.fails() == []
         assert any(lvl == "warn" and "VaporView" in m and "--seed" in m for lvl, m in rec.events)
 
-    def test_unpinned_vaporview_spec_warns_with_the_pin(self, tmp_path, monkeypatch):
-        # Specs seeded before the pin request the latest Marketplace release,
-        # which Booley may not support; Doctor must send them to regenerate.
+    @pytest.mark.parametrize(
+        "gallery_entry",
+        ["lramseyer.vaporview", "lramseyer.vaporview@1.6.0"],
+        ids=["unpinned", "pinned"],
+    )
+    def test_gallery_vaporview_spec_warns_with_the_bundled_vsix(
+        self, tmp_path, monkeypatch, gallery_entry
+    ):
+        # Older specs request VaporView from a gallery, which an egress-locked
+        # Sandbox cannot install; Doctor must send them to regenerate.
         from booley.runtime import devcontainer as dc
         from booley.runtime import vaporview
 
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         extensions = spec["customizations"]["vscode"]["extensions"]
-        extensions[extensions.index(vaporview.PINNED_EXTENSION)] = vaporview.EXTENSION_ID
+        extensions[extensions.index(vaporview.BUNDLED_VSIX)] = gallery_entry
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
         assert rec.fails() == []
         assert any(
-            lvl == "warn" and vaporview.PINNED_EXTENSION in m and "--seed" in m
+            lvl == "warn" and vaporview.BUNDLED_VSIX in m and "--seed" in m
             for lvl, m in rec.events
         )
 
@@ -867,7 +874,7 @@ class TestDevcontainerSpecStaleness:
 
         spec["customizations"]["vscode"]["extensions"] = [
             "Anthropic.claude-code",
-            vaporview.PINNED_EXTENSION,
+            vaporview.BUNDLED_VSIX,
             VSIX_PATH,
         ]
         dc.write_devcontainer(tmp_path, spec)

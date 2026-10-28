@@ -1,6 +1,6 @@
 # Drive VaporView through a Booley extension bridge
 
-Status: accepted
+Status: accepted (amended 2026-10-28: VaporView ships as a bundled VSIX, see Amendments)
 
 Supersedes the transport and compatibility-patch parts of ADR 0035 (scoped
 Waveform Viewer views over VaporView's WCP server). ADR 0035's user-facing
@@ -46,9 +46,11 @@ Booley Sandbox Integration extension (`data/vscode/dashboard/`, extension ID
 independent of Dashboard policy, trust, or remote type. `bwave` no longer
 speaks WCP; `bwave/wcp.py` is deleted. The generated spec installs the Booley
 Sandbox Integration extension in every Sandbox (it was Dashboard-only), drops
-the `vaporview.wcp.enabled`/`port` settings, and pins
-`lramseyer.vaporview@1.6.0`. Drift detection requires the 1.6.0 pin, the
-Booley Sandbox Integration extension, the color settings, and the attach
+the `vaporview.wcp.enabled`/`port` settings, and installs
+VaporView 1.6.0 from the VSIX bundled in the Sandbox Image (amended
+2026-10-28, see Amendments; it first pinned `lramseyer.vaporview@1.6.0`).
+Drift detection requires exactly the bundled VSIX path as the VaporView
+entry, the Booley Sandbox Integration extension, the color settings, and the attach
 patch, so every spec from the previous generator reads as drift.
 
 **Thin bridge, verification in Python.** The bridge offers generic
@@ -195,3 +197,19 @@ last active tab, and per-row commands cannot create groups or verify order.
   session-file loading, the per-document listener) is covered by unit tests
   with a mocked `vscode` module only, and needs a manual check in a real
   attached window.
+
+## Amendments (2026-10-28)
+
+- **VaporView ships as a bundled VSIX, not a pinned gallery ID.** A local
+  Sandbox has no direct internet, so the VS Code server relays gallery
+  installs to the client, and the client cannot resolve the versioned ID
+  `lramseyer.vaporview@1.6.0`: VaporView never installed. The Sandbox runtime
+  base now downloads the official 1.6.0 VSIX from Open VSX (SHA-256 pinned)
+  to `/usr/local/libexec/booley/vaporview-1.6.0.vsix`, with its GPL-3.0
+  license and a corresponding-source pointer under
+  `/usr/local/share/booley/licenses/vaporview/`. The spec installs that path;
+  VS Code records a VSIX install as pinned, so auto-update still leaves it
+  alone. Drift detection requires that path as the only VaporView entry, so
+  a spec carrying any gallery VaporView entry reads as drift. The installed
+  files are byte-identical to the Marketplace build, so the residual patch's
+  fingerprints are unchanged.

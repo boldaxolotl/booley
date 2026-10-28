@@ -382,7 +382,7 @@ def test_no_viewer_cli_prints_path_and_hint(tmp_path, monkeypatch):
 
     msg = str(exc.value)
     assert str(trace.resolve()) in msg
-    assert "lramseyer.vaporview" in msg
+    assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in msg
     assert exc.value.code  # nonzero exit
 
 
@@ -398,7 +398,7 @@ def test_failed_launch_prints_same_fallback(tmp_path, monkeypatch):
 
     msg = str(exc.value)
     assert str(trace.resolve()) in msg
-    assert "lramseyer.vaporview" in msg
+    assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in msg
     assert exc.value.code
 
 
@@ -479,7 +479,7 @@ def test_missing_extension_prints_hint_and_skips_launch(tmp_path, monkeypatch):
 
     msg = str(exc.value)
     assert str(trace.resolve()) in msg
-    assert f"code --install-extension {vaporview.PINNED_EXTENSION}" in msg
+    assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in msg
     assert exc.value.code
     assert calls == []  # a raw-binary tab helps nobody — don't launch
 
@@ -498,7 +498,7 @@ def test_missing_extension_hint_names_the_probed_cli(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         _gui()
 
-    assert f"cursor --install-extension {vaporview.PINNED_EXTENSION}" in str(exc.value)
+    assert f"cursor --install-extension {vaporview.BUNDLED_VSIX}" in str(exc.value)
 
 
 # ── bare open through the bridge ────────────────────────────────────────────
@@ -1196,7 +1196,7 @@ def test_wrong_vaporview_version_refuses_before_mutation(tmp_path, monkeypatch, 
 
     message = str(exc.value)
     assert "runs VaporView 1.5.9" in message
-    assert "--install-extension lramseyer.vaporview@" in message
+    assert f"--install-extension {vaporview.BUNDLED_VSIX}" in message
     assert viewer.calls == []
 
 
@@ -1210,7 +1210,7 @@ def test_window_without_vaporview_refuses_with_install_guidance(tmp_path, monkey
     message = str(exc.value)
     assert "no usable VaporView extension" in message
     assert "is not installed" in message
-    assert "Install from VSIX" in message
+    assert f"--install-extension {vaporview.BUNDLED_VSIX}" in message
     assert viewer.calls == []
 
 
@@ -1639,7 +1639,7 @@ def test_scoped_open_missing_extension_leads_with_install(
     msg = str(exc.value)
     assert "VaporView extension is not installed" in msg
     assert "--install-extension" in msg
-    assert "Install from VSIX" in msg
+    assert f"--install-extension {vaporview.BUNDLED_VSIX}" in msg
     assert 'Reload Window" there' not in msg
     assert launched == []
 
@@ -1674,7 +1674,7 @@ def test_scoped_open_cursor_only_names_cursor_installer(tmp_path, monkeypatch, f
     with pytest.raises(SystemExit) as exc:
         _gui(signals=["tb.dut.fifo.*"])
 
-    assert "cursor --install-extension lramseyer.vaporview" in str(exc.value)
+    assert f"cursor --install-extension {vaporview.BUNDLED_VSIX}" in str(exc.value)
 
 
 def test_scoped_open_unknown_extension_state_does_not_claim_it_is_missing(
