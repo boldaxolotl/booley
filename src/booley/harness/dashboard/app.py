@@ -162,8 +162,11 @@ def _health_text(snapshot: DashboardSnapshot) -> Text:
         if text:
             text.append("\n")
         text.append(
-            line.text, style=SEMANTIC_STYLE[line.severity] if line.severity is not None else None
+            line.text.removesuffix(line.due_suffix),
+            style=SEMANTIC_STYLE[line.severity] if line.severity is not None else None,
         )
+        if line.due_suffix:
+            text.append(line.due_suffix, style=SEMANTIC_STYLE["attention"])
     for diagnostic in (*snapshot.diagnostics, *snapshot.jobs.diagnostics):
         if text:
             text.append("\n")

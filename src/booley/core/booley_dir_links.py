@@ -22,14 +22,15 @@ def is_booley_dir_entry(path: Path, booley_dir: Path | None) -> bool:
     return booley_dir is not None and path.absolute() == booley_dir.absolute()
 
 
-def lexical_booley_path(booley_dir: Path, path: Path) -> Path:
+def lexical_booley_path(booley_dir: Path | None, path: Path) -> Path:
     """Re-spell a path below the entry's physical target as ``booley_dir / rel``.
 
     Returns *path* unchanged unless *booley_dir* itself is a symlink, so it is the
     identity in the plain layout for any caller spelling (including an aliased
-    Project Root). Paths not below the entry's target are returned unchanged.
+    Project Root) and for a checkout with no Booley Directory (``None``). Paths
+    not below the entry's target are returned unchanged.
     """
-    if not booley_dir.is_symlink():
+    if booley_dir is None or not booley_dir.is_symlink():
         return path
     try:
         return booley_dir / path.relative_to(booley_dir.resolve())
