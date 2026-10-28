@@ -1499,6 +1499,8 @@ class _ViewSession:
         self.client = client
         self.path = path
         self.mutated = False
+        # Rows the viewer showed right before the latest load (after any clear).
+        self.rows_before_load: list[dict] = []
 
     def state(self) -> dict:
         state = self.client.state(self.path)
@@ -1508,16 +1510,18 @@ class _ViewSession:
 
     def apply(self, session: dict) -> None:
         self.mutated = True
-        if session["displayedSignals"] and self._shows_a_group():
+        rows = self._current_rows()
+        if session["displayedSignals"] and any(
+            row.get("dataType") == "signal-group" for row in rows
+        ):
             self._clear(session)
+            rows = []
+        self.rows_before_load = rows
         self.client.apply(self.path, session)
 
-    def _shows_a_group(self) -> bool:
+    def _current_rows(self) -> list[dict]:
         state = self.client.state(self.path)
-        rows = state.get("displayedSignals") if state else None
-        return isinstance(rows, list) and any(
-            isinstance(row, dict) and row.get("dataType") == "signal-group" for row in rows
-        )
+        return _state_rows(state) if state else []
 
     def _clear(self, session: dict) -> None:
         """Load an empty view and wait for it before loading *session*.
@@ -1554,13 +1558,14 @@ class _ViewSession:
                 raise ViewerControlError(failure)
             time.sleep(_VIEW_POLL_INTERVAL)
 
-    def settle_probe(self, target: _ViewTarget, previous: list[dict]) -> dict:
+    def settle_probe(self, target: _ViewTarget) -> dict:
         """Poll until the viewer shows *target*, tolerating omitted rows we added.
 
-        A tolerant match that still equals the pre-apply rows may just be the
-        old state, so it is accepted only once the rows change or the
-        deadline passes.
+        A tolerant match that still equals the rows shown right before the
+        load may just be the old state, so it is accepted only once the rows
+        change or the deadline passes.
         """
+        previous = self.rows_before_load
         deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
         while True:
             state = self.state()
@@ -1602,16 +1607,15 @@ def _resolve_rows(
     signals = list(request.plan.signals)
     target = request.compose(signals)
     view.apply(target.session())
-    state = view.settle_probe(target, request.base)
+    state = view.settle_probe(target)
     missing = _unresolved(_state_rows(state), target.added)
     retry = {signal.bwave_name for signal in missing if signal.fallback is not None}
     if not retry:
         return target, missing
-    previous = _state_rows(state)
     signals = [_as_identifier(s) if s.bwave_name in retry else s for s in signals]
     target = request.compose(signals)
     view.apply(target.session())
-    state = view.settle_probe(target, previous)
+    state = view.settle_probe(target)
     return target, _unresolved(_state_rows(state), target.added)
 
 

@@ -1026,6 +1026,9 @@ def test_replacing_a_grouped_view_clears_it_first(tmp_path, monkeypatch, fake_ru
         "children": [_row("tb.dut.fifo.full")],
     }
     viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), group])
+    # Like the live viewer: right after the load, state still reads the
+    # cleared view, which must not pass for "every row was dropped".
+    viewer.lag = 1
 
     _gui(signals=["tb.dut.fifo.empty"])
 
