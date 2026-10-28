@@ -51,6 +51,10 @@ def _anthropic(inp: float, out: float, context_window: int | None) -> ModelPrici
 # NOTE: Sonnet 5 carries an introductory $2/$10 rate through 2026-08-31. We list
 # the $3/$15 sticker price, so cost readouts for Sonnet 5 runs made before that
 # date are an over-estimate rather than a surprise.
+#
+# NOTE: claude-haiku-5-5 (above 100K input) and gpt-6-luna (above 272K input)
+# carry long-context surcharges that this table does not model, so readouts for
+# very long prompts under-estimate.
 MODEL_PRICING: dict[str, ModelPricing] = {
     # --- Anthropic ---
     "claude-fable-5": _anthropic(10.00, 50.00, _CTX_1M),
@@ -61,9 +65,11 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "claude-opus-4-6": _anthropic(5.00, 25.00, _CTX_1M),
     "claude-sonnet-5": _anthropic(3.00, 15.00, _CTX_1M),
     "claude-sonnet-4-6": _anthropic(3.00, 15.00, _CTX_1M),
+    "claude-haiku-5-5": _anthropic(0.10, 0.50, _CTX_1M),
     "claude-haiku-4-5": _anthropic(1.00, 5.00, _CTX_200K),
     # --- OpenAI (Codex backend). Context windows are not tracked here, so the
     # Console renders their context usage without a denominator. ---
+    "gpt-6-luna": ModelPricing(0.10, 0.50, 0.01, 0.125),
     "gpt-5.6-sol": ModelPricing(5.00, 30.00, 0.50, 6.25),
     "gpt-5.6-terra": ModelPricing(2.50, 15.00, 0.25, 3.125),
     "gpt-5.6-luna": ModelPricing(1.00, 6.00, 0.10, 1.25),
@@ -76,13 +82,15 @@ MODEL_PRICING: dict[str, ModelPricing] = {
 # Family fallbacks for ids we don't recognise exactly (e.g. a dated snapshot of
 # a model released after this table was written). Each maps to a table key
 # whose price is the most expensive in that family, so an unknown id is
-# over-costed rather than silently reported as free.
+# over-costed rather than silently reported as free. An unknown GPT id resolves
+# to the most expensive known GPT row (a floor: a newer model may list higher).
 _FAMILY_FALLBACK: tuple[tuple[str, str], ...] = (
     ("fable", "claude-fable-5"),
     ("mythos", "claude-mythos-5"),
     ("opus", "claude-fable-5"),
     ("sonnet", "claude-sonnet-5"),
     ("haiku", "claude-haiku-4-5"),
+    ("gpt-", "gpt-5.6-sol"),
 )
 
 # Substring candidates, longest first: a bare "o3" must not shadow a longer,
