@@ -110,3 +110,24 @@ def test_packaged_changelog_retains_pre_review_release_history() -> None:
         "0.2.9",
         "0.2.10",
     ]
+
+
+def test_next_release_review_from_0_3_0_lists_former_0_3_1_entries() -> None:
+    """Cutting the next release must keep the pre-release entries reviewable.
+
+    ``(#1233)`` appears only in entries that shipped after 0.3.0, so it must
+    survive release preparation. An issue reference is pinned rather than
+    prose because the release drafter rewords entries.
+    """
+    text = changelog_path().read_text(encoding="utf-8")
+    repo_version = (Path(__file__).parents[2] / "VERSION").read_text(encoding="utf-8").strip()
+    current = changelog.parse_stable_version(repo_version)
+    next_release = f"{current.major}.{current.minor}.{current.patch + 1}"
+    marker = "## Unreleased\n"
+    assert marker in text
+    # Simulate release prep: the drafted heading goes directly under Unreleased.
+    drafted = text.replace(marker, f"{marker}\n## {next_release} - 28 OCT 2026\n", 1)
+
+    review = changelog.releases_between(drafted, "0.3.0", next_release)
+
+    assert "(#1233)" in "".join(entry.body for entry in review.entries)
