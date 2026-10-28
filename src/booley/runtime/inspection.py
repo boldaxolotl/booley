@@ -162,6 +162,8 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     if not _preview_terminal_current(request, spec, report):
         return
+    if not _retired_entries_absent(request, spec, report):
+        return
     if seed_currency is not None:
         report.pass_("devcontainer.json present and structurally current")
 
@@ -295,9 +297,24 @@ def _viewer_extensions_current(
         return False
     if not dc.spec_installs_hdl_highlight(spec):
         report.note(
-            "devcontainer.json predates the Verilog/SystemVerilog + Tcl "
-            "highlighting extensions: RTL and SDC/XDC constraints render as "
-            "plain text in attached VS Code windows; " + request.remedy
+            "devcontainer.json predates the Verilog/SystemVerilog "
+            "highlighting extension: RTL renders as plain text in attached "
+            "VS Code windows; " + request.remedy
+        )
+        return False
+    return True
+
+
+def _retired_entries_absent(
+    request: RuntimeInspectionRequest, spec: dict, report: Findings
+) -> bool:
+    retired = dc.spec_retired_vscode_entries(spec)
+    if retired:
+        _spec_warning(
+            request,
+            report,
+            "devcontainer.json still lists VS Code entries Booley no longer "
+            f"installs ({', '.join(retired)}); regenerate the spec",
         )
         return False
     return True

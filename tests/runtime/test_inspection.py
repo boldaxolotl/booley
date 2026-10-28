@@ -882,6 +882,60 @@ class TestDevcontainerSpecStaleness:
         assert rec.fails() == []
         assert any(lvl == "note" and "highlighting" in m for lvl, m in rec.events)
 
+    def test_each_retired_vscode_entry_warns(self, tmp_path, monkeypatch):
+        # Specs written by older Booley installed the agent and Tcl extensions
+        # and pinned them; an otherwise current spec still listing any of them
+        # earns one WARN naming each entry and pointing at regeneration.
+        from booley.runtime import devcontainer as dc
+
+        agent_pin = {"Anthropic.claude-code": ["workspace"]}
+        cases = [
+            ({"extensions": ["bitwisecook.tcl"]}, ["bitwisecook.tcl"]),
+            ({"extensions": ["Anthropic.claude-code"]}, ["Anthropic.claude-code"]),
+            ({"extensions": ["openai.chatgpt"]}, ["openai.chatgpt"]),
+            ({"associations": {"*.sdc": "tcl"}}, ["*.sdc"]),
+            ({"associations": {"*.xdc": "tcl"}}, ["*.xdc"]),
+            ({"pin": agent_pin}, ["remote.extensionKind"]),
+            ({"pin": {"openai.chatgpt": ["workspace"]}}, ["remote.extensionKind"]),
+            (
+                {
+                    "extensions": ["openai.chatgpt", "bitwisecook.tcl"],
+                    "associations": {"*.sdc": "tcl", "*.xdc": "tcl"},
+                    "pin": {"openai.chatgpt": ["workspace"]},
+                },
+                ["openai.chatgpt", "bitwisecook.tcl", "*.sdc", "*.xdc", "remote.extensionKind"],
+            ),
+        ]
+        for index, (injected, expected_names) in enumerate(cases):
+            root = tmp_path / f"case{index}"
+            spec = dc.build_devcontainer_spec(dc.APP_CODEX)
+            vscode = spec["customizations"]["vscode"]
+            vscode["extensions"] += injected.get("extensions", [])
+            if "associations" in injected:
+                vscode["settings"]["files.associations"] = injected["associations"]
+            if "pin" in injected:
+                vscode["settings"]["remote.extensionKind"] = injected["pin"]
+            dc.write_devcontainer(root, spec)
+            rec = self._run(root, monkeypatch)
+            assert rec.fails() == [], injected
+            warns = [m for lvl, m in rec.events if lvl == "warn"]
+            assert len(warns) == 1, (injected, warns)
+            assert all(name in warns[0] for name in expected_names), (injected, warns[0])
+            assert "booley init" in warns[0], warns[0]
+
+    def test_spec_without_tcl_highlighting_is_current(self, tmp_path, monkeypatch):
+        from booley.runtime import devcontainer as dc
+
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        vscode = spec["customizations"]["vscode"]
+        vscode["extensions"] = [e for e in vscode["extensions"] if e != "bitwisecook.tcl"]
+        vscode["settings"].pop("files.associations", None)
+        dc.write_devcontainer(tmp_path, spec)
+        rec = self._run(tmp_path, monkeypatch)
+        assert rec.fails() == []
+        assert not any("highlighting" in m for _, m in rec.events)
+        assert not any(lvl == "warn" for lvl, _ in rec.events)
+
     def test_spec_without_live_preview_warns(self, tmp_path, monkeypatch):
         # Live Preview is spec-delivered, so a project seeded before it landed
         # cannot render review HTML in its attached container window.
