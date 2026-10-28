@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.conftest import symlink_or_skip
 
 
 @pytest.mark.parametrize("name", [".booley", "custom-data"])
@@ -166,7 +167,7 @@ def test_checkout_owned_external_symlink_data_resolves_logical_parent(
     data = tmp_path / "external-data"
     outer.mkdir()
     data.mkdir()
-    (outer / ".booley").symlink_to(data, target_is_directory=True)
+    symlink_or_skip(outer / ".booley", data, target_is_directory=True)
     for root in (outer, data):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
@@ -195,7 +196,7 @@ def test_explicit_external_data_symlink_is_refused(tmp_path, monkeypatch):
     outer.mkdir()
     data.mkdir()
     alias = outer / ".booley"
-    alias.symlink_to(data, target_is_directory=True)
+    symlink_or_skip(alias, data, target_is_directory=True)
     for root in (outer, data):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
@@ -430,3 +431,24 @@ def test_authoritative_directory_resolved_once_per_invocation(tmp_path, monkeypa
     config.write_text(f'[project]\ndir = "{replacement.as_posix()}"\n')
     assert discovery.discover_project_root(alias) == data
     assert calls == {data: 1, owner: 1}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")
+def test_unpinned_linked_ancestor_does_not_block_nested_discovery(tmp_path, monkeypatch):
+    from booley.runtime.project_discovery import discover_project_root
+
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    inner.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    (outer / ".booley").symlink_to(external, target_is_directory=True)
+    (inner / ".booley").mkdir()
+    for root in (outer, inner):
+        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+
+    assert discover_project_root(inner) == inner

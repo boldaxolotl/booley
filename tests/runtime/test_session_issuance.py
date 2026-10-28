@@ -2200,6 +2200,9 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
     external = tmp_path / "external-data"
     entry.rename(external)
     _link_booley_dir_entry(project, external)
+    from booley.core import booley_dir_pin
+
+    booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
     spec = _sealed_fresh_spec(project)
 
     assert spec["mounts"] == real_directory_mounts
@@ -2210,6 +2213,52 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
     assert runtime_spec.validate(project, spec, path) == stamp
     assert stamp.project_data_source == str(entry)
     assert stamp.project_data_layout == ("canonical-alias" if alias_capable else "legacy")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires host privilege")
+def test_linked_entry_issuance_requires_the_host_pin(issued, tmp_path: Path) -> None:
+    """A linked entry is issued only while it still resolves to the target ``init`` pinned."""
+    project, _spec, _path, _stamp = issued
+    entry = project / ".booley"
+    ext_a, ext_b = tmp_path / "ext-a", tmp_path / "ext-b"
+    for directory in (ext_a, ext_b):
+        directory.mkdir()
+        (directory / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    entry.rename(tmp_path / "original-entry")
+    entry.symlink_to(ext_a, target_is_directory=True)
+
+    # No host record authorizes the target yet: refuse with the init remedy.
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="booley init"):
+        runtime_spec.authorized_project_data_source(project)
+
+    from booley.core import booley_dir_pin
+
+    booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
+    spec = _sealed_fresh_spec(project)
+    path = dc.write_devcontainer(project, spec)
+    runtime_spec.issue(project, spec, path)
+    runtime_spec.validate(project, spec, path)
+
+    def assert_refused(action) -> None:
+        with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
+            action()
+        for expected in (str(ext_a.resolve()), str(ext_b.resolve()), "--repin-booley-dir"):
+            assert expected in str(raised.value)
+
+    entry.unlink()
+    entry.symlink_to(ext_b, target_is_directory=True)
+    assert_refused(lambda: runtime_spec.validate(project, spec, path))
+    assert_refused(lambda: _sealed_fresh_spec(project))
+    assert_refused(lambda: runtime_spec.issue(project, spec, path))
+
+    entry.unlink()
+    entry.symlink_to(os.path.relpath(ext_b, project), target_is_directory=True)
+    assert_refused(lambda: _sealed_fresh_spec(project))
+
+    # The pin is on the target, not the spelling: a relative link back to it passes.
+    entry.unlink()
+    entry.symlink_to(os.path.relpath(ext_a, project), target_is_directory=True)
+    runtime_spec.validate(project, spec, path)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="directory symlink requires host privilege")

@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_dir_pin import require_pinned_entry
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
     require_current_layout,
@@ -168,6 +169,7 @@ def resolve_booley_dir(start: Path | None = None, *, cache_result: bool = True) 
             candidate != Path.home() / BOOLEY_DIR_NAME
             or any((candidate / name).is_file() for name in ("booley.toml", "pipeline.toml"))
         ):
+            require_pinned_entry(parent)
             if cache_result:
                 _cache = candidate
             return candidate
@@ -182,7 +184,10 @@ def _resolve_explicit_booley_dir(root: Path) -> Path | None:
     if toml_result is not None:
         return toml_result
     local = root / BOOLEY_DIR_NAME
-    return local if local.is_dir() else None
+    if not local.is_dir():
+        return None
+    require_pinned_entry(root)
+    return local
 
 
 _input_projects: ContextVar[dict[Path, Path] | None] = ContextVar(

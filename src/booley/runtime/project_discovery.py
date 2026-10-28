@@ -10,6 +10,7 @@ from itertools import chain
 from pathlib import Path, PurePosixPath
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_authoritative_booley_dir
+from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
 from booley.runtime.booley_dir import contains
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
@@ -113,7 +114,9 @@ def discover_project_root(
     def checkout_data(root):
         try:
             return resolve_authoritative_booley_dir(require_project_checkout(root))
-        except SourceCheckoutProjectError:
+        except (SourceCheckoutProjectError, BooleyDirPinError):
+            # An unpinned or retargeted linked entry is no match here; commands
+            # run inside that Project are refused by the dispatch guard.
             return None
 
     current, checkouts = _checkout_candidates(start)

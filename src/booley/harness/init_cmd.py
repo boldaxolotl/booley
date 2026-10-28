@@ -2405,6 +2405,71 @@ def _project_checkout_ready(ctx: InitContext) -> bool:
     return True
 
 
+def _confirm_repin(old_target: str, new_target: str) -> bool:
+    """Ask whether to accept a retargeted entry; no answer means no."""
+    from booley.harness.setup.scaffold import _ask_yes_no
+
+    return _ask_yes_no(
+        f"Booley Directory entry was pinned to {old_target}; now {new_target}. Re-pin?",
+        default=False,
+    )
+
+
+def _reconcile_booley_dir_pin(ctx: InitContext, args: argparse.Namespace) -> bool:
+    """Pin (or, on explicit consent, re-pin) a symlinked ``.booley`` entry.
+
+    Only full init writes a pin. ``--seed`` and ``--check-only`` refuse an
+    unpinned or mismatched entry, since every later step would follow the link.
+    Returns False when init must stop.
+    """
+    from booley.core.booley_dir_pin import (
+        BooleyDirPinError,
+        current_target,
+        entry_needs_pin,
+        read_pin,
+        require_pinned_entry,
+        write_pin,
+    )
+    from booley.core.booley_layout import BOOLEY_DIR_NAME
+
+    root = ctx.project_root
+    if not entry_needs_pin(root):
+        return True
+    try:
+        require_pinned_entry(root)
+        return True
+    except BooleyDirPinError as exc:
+        refusal = exc
+    try:
+        current = current_target(root / BOOLEY_DIR_NAME)
+        pinned = read_pin(root)
+    except (OSError, RuntimeError, BooleyDirPinError) as exc:
+        err(str(exc))
+        ctx.record("booley_dir_pin", "err", str(exc))
+        return False
+    if getattr(args, "seed", False) or ctx.check_only:
+        err(str(refusal))
+        ctx.record("booley_dir_pin", "err", refusal.remedy)
+        return False
+    if pinned is not None and not (
+        getattr(args, "repin_booley_dir", False)
+        or (ctx.interactive and _confirm_repin(pinned.target, current.target))
+    ):
+        err(f"{refusal}; a non-interactive run needs --repin-booley-dir")
+        ctx.record("booley_dir_pin", "err", "pin unchanged; pass --repin-booley-dir to re-pin")
+        return False
+    write_pin(root, current)
+    if pinned is None:
+        ok(f"pinned {BOOLEY_DIR_NAME} -> {current.target}")
+    else:
+        ok(
+            f"re-pinned {BOOLEY_DIR_NAME}: {pinned.target} -> {current.target}; "
+            "restart a running Sandbox with `booley session refresh`"
+        )
+    ctx.record("booley_dir_pin", "ok", current.target)
+    return True
+
+
 def _run_init_unlocked(
     args: argparse.Namespace,
     project_root: Path,
@@ -2414,7 +2479,7 @@ def _run_init_unlocked(
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
 
-    if not _project_checkout_ready(ctx):
+    if not _project_checkout_ready(ctx) or not _reconcile_booley_dir_pin(ctx, args):
         return _print_summary(ctx)
 
     bootstrap_result = _reconcile_init_bootstrap(ctx, args)
