@@ -1502,7 +1502,7 @@ def test_claude_keeps_user_project_entry(first_run):
 def test_codex_keeps_user_trust_level(first_run):
     block = (
         "# my notes\n"
-        f'[projects."{first_run.root}"]\n'
+        f"[projects.{json.dumps(first_run.root)}]\n"
         'trust_level = "untrusted"  # keep this folder out\n'
     )
     reg.codex_config_path(first_run.home).parent.mkdir()
@@ -1667,7 +1667,8 @@ def test_codex_valid_projects_layouts_never_break_registration(
 ):
     path = reg.codex_config_path(first_run.home)
     path.parent.mkdir()
-    path.write_text(existing.replace("{root}", first_run.root), encoding="utf-8")
+    # JSON string escaping is valid TOML basic-string escaping (Windows backslashes).
+    path.write_text(existing.replace('"{root}"', json.dumps(first_run.root)), encoding="utf-8")
 
     reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
 
