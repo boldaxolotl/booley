@@ -949,13 +949,13 @@ async def _capture_time_pilot(monkeypatch, current, completed, orientation, size
 
 
 def test_absent_time_fields_keep_unavailable_markers():
-    from booley.harness.dashboard.app import _evidence_detail, _job_row, _job_summary, job_detail
+    from booley.harness.dashboard.app import _evidence_detail, _job_cells, _job_summary, job_detail
 
     current = snapshot(1)
     missing = replace(current.jobs.jobs[0], state="completed", report=None)
-    assert "completed · unavailable" in _job_row(missing, current.observed_at, "S1"), (
-        "absent time marker changed"
-    )
+    assert _job_cells(missing, current.observed_at, current.session_handles)[6].plain == (
+        "unavailable"
+    ), "absent time marker changed"
     assert "unavailable" in _job_summary(missing, current.observed_at), (
         "absent time marker changed"
     )
