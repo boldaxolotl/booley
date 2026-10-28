@@ -303,3 +303,47 @@ def test_unreadable_proc_entry_with_malformed_stat_does_not_match(
     (proc / "stat").write_text("malformed\n", encoding="utf-8")
 
     assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
+
+
+def test_recovery_refuses_to_overwrite_an_unreadable_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record that cannot be read must not be replaced by a fieldless terminal one."""
+    from booley.runtime import execution_recovery
+
+    booley_dir = tmp_path / ".booley"
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    original = {"schema_version": 1, "state": "running", "exit_code": 7, "leader": None}
+    atomic_write_json(paths.record, original)
+
+    def held_by_another_process(_path: Path, **_kwargs: object) -> None:
+        raise PermissionError(13, "held by a scanner")
+
+    with monkeypatch.context() as held:
+        held.setattr(execution_recovery, "read_json_object", held_by_another_process)
+        assert not execution_recovery._recover_windows_execution(
+            execution_id, None, booley_dir=booley_dir
+        )
+    assert read_json(paths.record) == original
+
+    # Once readable, recovery publishes and keeps the record's existing fields.
+    assert execution_recovery._recover_windows_execution(execution_id, None, booley_dir=booley_dir)
+    terminal = read_json(paths.record)
+    assert terminal is not None
+    assert terminal["state"] == "terminal" and terminal["tree_terminal"] is True
+    assert terminal["exit_code"] == 7
+
+
+def test_recovery_publishes_terminal_when_record_is_missing(tmp_path: Path) -> None:
+    from booley.runtime import execution_recovery
+
+    booley_dir = tmp_path / ".booley"
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    paths.root.mkdir(parents=True)
+    assert execution_recovery._recover_windows_execution(execution_id, None, booley_dir=booley_dir)
+    terminal = read_json(paths.record)
+    assert terminal is not None
+    assert terminal["terminal_cause"] == "orphan_recovered"
+    assert terminal["exit_code"] == 125

@@ -24,7 +24,7 @@ from booley.runtime.execution_records import (
     atomic_write_json,
     execution_paths,
     read_json,
-    read_slot_entry,
+    read_json_object,
     request_cancellation,
 )
 from booley.runtime.execution_recovery import recover_execution
@@ -498,7 +498,7 @@ class ChildExecutionRegistry:
         slots = self._project_data / "runtime" / "jobs" / "slots"
         for path in slots.glob("*/*.json"):
             try:
-                payload = read_slot_entry(path)
+                payload = read_json_object(path)
             except OSError as exc:
                 raise SimulationCampaignIntegrityError(
                     "child token presence cannot be reconciled: slot entry unreadable"

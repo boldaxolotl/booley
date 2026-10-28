@@ -19,6 +19,7 @@ from booley.runtime.execution_records import (
     child_context_matches,
     execution_paths,
     read_json,
+    read_json_object,
     request_cancellation,
 )
 from booley.runtime.pid import (
@@ -130,9 +131,19 @@ def _wait_for_empty(execution_id: ExecutionId, signum: int, timeout_s: float) ->
 
 def _publish_recovered_terminal(
     execution_id: ExecutionId, *, booley_dir: Path | None = None
-) -> None:
+) -> bool:
+    """Mark the record terminal, keeping its fields; refuse if it cannot be read.
+
+    A missing or corrupt record is replaced. An unreadable one (for example a
+    Windows sharing violation that outlasted the read retry) is left alone:
+    overwriting it would drop fields this process never saw. Returns whether
+    the terminal record was published; callers retry recovery when it was not.
+    """
     paths = execution_paths(execution_id, booley_dir=booley_dir)
-    current = read_json(paths.record) or {}
+    try:
+        current = read_json_object(paths.record) or {}
+    except OSError:
+        return False
     exit_code = as_int(current.get("exit_code"), 125) or 125
     atomic_write_json(
         paths.record,
@@ -146,6 +157,7 @@ def _publish_recovered_terminal(
             "updated_at": utc_now_rfc3339(),
         },
     )
+    return True
 
 
 def _recover_windows_execution(
@@ -157,8 +169,7 @@ def _recover_windows_execution(
     leader = ProcessIdentity.from_payload(record.get("leader") if record is not None else None)
     if leader is not None and observe_process(leader).state in {RUNNING, UNKNOWN}:
         return False
-    _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
-    return True
+    return _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
 
 
 def _recover_posix_execution(execution_id: ExecutionId, *, booley_dir: Path | None) -> bool:
@@ -166,8 +177,7 @@ def _recover_posix_execution(execution_id: ExecutionId, *, booley_dir: Path | No
         return False
     for signum, timeout_s in _RECOVERY_STAGES:
         if _wait_for_empty(execution_id, signum, timeout_s):
-            _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
-            return True
+            return _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
     return False
 
 

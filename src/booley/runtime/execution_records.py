@@ -141,6 +141,26 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def read_json_object(
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any] | None:
+    """Read one JSON object, keeping "missing" apart from "unreadable".
+
+    Returns the payload, or ``None`` when the file is missing or its content is
+    corrupt (not UTF-8, not JSON, not an object). Any other ``OSError``,
+    including a Windows sharing error that outlasted the shared retry budget,
+    propagates so the caller can fail closed (for example, instead of reading
+    "no token" or overwriting a record it could not see).
+    """
+    try:
+        payload = json.loads(read_file_bytes(path, sleep=sleep).decode("utf-8"))
+    except (FileNotFoundError, ValueError):  # ValueError: bad UTF-8 or bad JSON
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def read_json(
     path: Path,
     *,
@@ -153,29 +173,9 @@ def read_json(
     that within a bounded budget before the read collapses to ``None``.
     """
     try:
-        payload = json.loads(read_file_bytes(path, sleep=sleep).decode("utf-8"))
-    except (OSError, ValueError):  # ValueError: bad UTF-8 or bad JSON
+        return read_json_object(path, sleep=sleep)
+    except OSError:
         return None
-    return payload if isinstance(payload, dict) else None
-
-
-def read_slot_entry(
-    path: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> dict[str, Any] | None:
-    """Read one Job Slot entry, keeping "missing" apart from "unreadable".
-
-    Returns the payload, or ``None`` when the file is missing or its content is
-    corrupt (not UTF-8, not JSON, not an object). Any other ``OSError``,
-    including a Windows sharing error that outlasted the shared retry budget,
-    propagates so the caller can fail closed instead of reading "no token".
-    """
-    try:
-        payload = json.loads(read_file_bytes(path, sleep=sleep).decode("utf-8"))
-    except (FileNotFoundError, ValueError):  # ValueError: bad UTF-8 or bad JSON
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def verify_inherited_execution_id(
@@ -347,7 +347,7 @@ def _referenced_execution_ids(booley_dir: Path) -> set[str] | None:
     slots = booley_dir / "runtime" / "jobs" / "slots"
     for path in slots.glob("*/*.json"):
         try:
-            payload = read_slot_entry(path)
+            payload = read_json_object(path)
         except OSError:
             return None
         execution_id = payload.get("execution_id") if payload is not None else None
@@ -607,7 +607,7 @@ def _require_child_token_absent(booley_dir: Path, execution_id: ExecutionId) -> 
     slots = booley_dir / "runtime" / "jobs" / "slots"
     for path in slots.glob("*/*.json"):
         try:
-            payload = read_slot_entry(path)
+            payload = read_json_object(path)
         except OSError as exc:
             raise ValueError(
                 "cannot prove retired campaign child owns no Job Slot token: "

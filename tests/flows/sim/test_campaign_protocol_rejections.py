@@ -304,7 +304,7 @@ def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monke
     token_path.parent.mkdir(parents=True)
     token_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        child_protocol, "read_slot_entry", lambda _path: {"execution_id": execution_id}
+        child_protocol, "read_json_object", lambda _path: {"execution_id": execution_id}
     )
     with pytest.raises(SimulationCampaignIntegrityError, match="cannot be reconciled"):
         registry._assert_no_unmanaged_token(execution_id)
@@ -312,7 +312,7 @@ def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monke
     def unreadable(_path):
         raise PermissionError(13, "held by a scanner")
 
-    monkeypatch.setattr(child_protocol, "read_slot_entry", unreadable)
+    monkeypatch.setattr(child_protocol, "read_json_object", unreadable)
     with pytest.raises(SimulationCampaignIntegrityError, match="entry unreadable"):
         registry._assert_no_unmanaged_token(execution_id)
 

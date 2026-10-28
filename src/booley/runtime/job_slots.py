@@ -54,7 +54,7 @@ from booley.runtime.execution_records import (
     ExecutionId,
     execution_paths,
     read_json,
-    read_slot_entry,
+    read_json_object,
     request_cancellation,
     verify_inherited_execution_id,
 )
@@ -1004,7 +1004,7 @@ class SlotStore:
         if parsed is None:
             return None
         _state, priority, seq, pid, n = parsed
-        payload = read_slot_entry(path, sleep=self._sleep)
+        payload = read_json_object(path, sleep=self._sleep)
         if payload is None or not isinstance(payload.get("argv", []), list):
             return None
         owner_identity = ProcessIdentity.from_payload(payload.get("owner_identity"))
