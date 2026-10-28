@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import signal
 import sys
@@ -34,6 +35,8 @@ from booley.runtime.pid import (
 )
 from booley.runtime.process_tree import descendant_pids
 from booley.runtime.timefmt import utc_now_rfc3339
+
+logger = logging.getLogger(__name__)
 
 _POLL_SECONDS = 0.05
 _PF_KTHREAD = 0x00200000
@@ -137,12 +140,19 @@ def _publish_recovered_terminal(
     A missing or corrupt record is replaced. An unreadable one (for example a
     Windows sharing violation that outlasted the read retry) is left alone:
     overwriting it would drop fields this process never saw. Returns whether
-    the terminal record was published; callers retry recovery when it was not.
+    the terminal record was published; when it was not, recovery stays
+    incomplete until a later attempt can read the record.
     """
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     try:
         current = read_json_object(paths.record) or {}
-    except OSError:
+    except OSError as exc:
+        logger.warning(
+            "Execution %s recovery deferred: record %s is unreadable (%s)",
+            execution_id,
+            paths.record,
+            exc,
+        )
         return False
     exit_code = as_int(current.get("exit_code"), 125) or 125
     atomic_write_json(

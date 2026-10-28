@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.filesystem_utils import replace_file, safe_rmtree, unlink_file
+from tests.filesystem_test_support import FlakyOpen
 
 # ---------------------------------------------------------------------------
 # safe_rmtree
@@ -219,28 +220,6 @@ class TestUnlinkFile:
         assert sum(delays) < 2.0
 
 
-class _FlakyOpen:
-    """Stand-in for Path.open that fails the first reads of one path."""
-
-    def __init__(self, target: Path, failures: list[OSError]) -> None:
-        self.target = target
-        self.failures = failures
-        self.calls = 0
-
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real_open = Path.open
-
-        # A plain function (not this instance) so Path binds it as a method.
-        def flaky_open(path: Path, *args: object, **kwargs: object):
-            if path == self.target:
-                self.calls += 1
-                if self.failures:
-                    raise self.failures.pop(0)
-            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
-
-        monkeypatch.setattr(Path, "open", flaky_open)
-
-
 class TestReadFileBytes:
     def test_retries_transient_windows_sharing_errors(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -249,7 +228,7 @@ class TestReadFileBytes:
 
         path = tmp_path / "record.json"
         path.write_bytes(b"payload")
-        flaky = _FlakyOpen(
+        flaky = FlakyOpen(
             path,
             [
                 _windows_permission_error(5),
@@ -270,7 +249,7 @@ class TestReadFileBytes:
 
         path = tmp_path / "record.json"
         path.write_bytes(b"payload")
-        flaky = _FlakyOpen(path, [_windows_permission_error(32)] * 100)
+        flaky = FlakyOpen(path, [_windows_permission_error(32)] * 100)
         flaky.install(monkeypatch)
         delays: list[float] = []
         with pytest.raises(PermissionError):
@@ -278,7 +257,7 @@ class TestReadFileBytes:
         assert flaky.calls == len(delays) + 1
         assert sum(delays) < 2.0
 
-        posix = _FlakyOpen(path, [PermissionError(13, "Permission denied")])
+        posix = FlakyOpen(path, [PermissionError(13, "Permission denied")])
         posix.install(monkeypatch)
         delays.clear()
         # Pin POSIX: on Windows a bare EACCES is a transient C-runtime sharing error.
@@ -302,7 +281,7 @@ class TestReadFileBytes:
 
         path = tmp_path / "record.json"
         path.write_bytes(b"payload")
-        flaky = _FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 3)
+        flaky = FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 3)
         flaky.install(monkeypatch)
         delays: list[float] = []
         with monkeypatch.context() as windows:
@@ -311,7 +290,7 @@ class TestReadFileBytes:
         assert flaky.calls == 4
         assert len(delays) == 3
 
-        persistent = _FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 100)
+        persistent = FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 100)
         persistent.install(monkeypatch)
         delays.clear()
         with monkeypatch.context() as windows:

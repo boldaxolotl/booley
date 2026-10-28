@@ -181,8 +181,7 @@ class ChildExecutionRegistry:
         context_raw = canonical_json_bytes(self._context(identity))
         paths = execution_paths(execution_id, booley_dir=self._project_data)
         _publish_or_verify(paths.context, context_raw, booley_dir=self._booley_dir)
-        if read_json(paths.record) is None:
-            atomic_write_json(paths.record, _waiting_record())
+        _ensure_child_record(paths.record)
         return PreparedChild(execution_id, paths.context)
 
     def mark_terminal(
@@ -454,8 +453,7 @@ class ChildExecutionRegistry:
             raise SimulationCampaignIntegrityError("child context digest disagrees with entry")
         _publish_or_verify(child.context_path, raw, booley_dir=self._booley_dir)
         paths = execution_paths(child.execution_id, booley_dir=self._project_data)
-        if read_json(paths.record) is None:
-            atomic_write_json(paths.record, _waiting_record())
+        _ensure_child_record(paths.record)
         if not self.is_terminal(child.execution_id) and not self.cancel(child.execution_id):
             raise SimulationCampaignIntegrityError(
                 f"child execution recovery is incomplete: {child.execution_id}"
@@ -519,6 +517,23 @@ class ChildExecutionRegistry:
             "attempt_id": identity.attempt_id,
             "attempt_ordinal": identity.attempt_ordinal,
         }
+
+
+def _ensure_child_record(record_path: Path) -> None:
+    """Seed a waiting record when none is usable; never replace an unreadable one.
+
+    A missing or corrupt record is replaced. An unreadable record (for example
+    a Windows sharing violation that outlasted the read retry) may hold a
+    terminal outcome, so overwriting it would lose the real exit code.
+    """
+    try:
+        current = read_json_object(record_path)
+    except OSError as exc:
+        raise SimulationCampaignIntegrityError(
+            f"child execution record is unreadable: {record_path}"
+        ) from exc
+    if current is None:
+        atomic_write_json(record_path, _waiting_record())
 
 
 def _waiting_record() -> dict[str, object]:

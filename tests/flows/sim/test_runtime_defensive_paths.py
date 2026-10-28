@@ -154,12 +154,13 @@ def test_windows_recovery_waits_for_live_leader_then_publishes(monkeypatch) -> N
     )
 
     published = []
+
+    def record_publication(*args, **kwargs) -> bool:
+        published.append((args, kwargs))
+        return True
+
     monkeypatch.setattr(execution_recovery.ProcessIdentity, "from_payload", lambda _payload: None)
-    monkeypatch.setattr(
-        execution_recovery,
-        "_publish_recovered_terminal",
-        lambda *args, **kwargs: published.append((args, kwargs)) or True,
-    )
+    monkeypatch.setattr(execution_recovery, "_publish_recovered_terminal", record_publication)
     assert execution_recovery._recover_windows_execution(execution_id, None, booley_dir=None)
     assert published
 

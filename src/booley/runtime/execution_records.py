@@ -161,11 +161,7 @@ def read_json_object(
     return payload if isinstance(payload, dict) else None
 
 
-def read_json(
-    path: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> dict[str, Any] | None:
+def read_json(path: Path) -> dict[str, Any] | None:
     """Read one protocol object; corrupt, missing, or unreadable input is indeterminate.
 
     Protocol files are rewritten through ``replace_file``, so a concurrent read
@@ -173,7 +169,7 @@ def read_json(
     that within a bounded budget before the read collapses to ``None``.
     """
     try:
-        return read_json_object(path, sleep=sleep)
+        return read_json_object(path)
     except OSError:
         return None
 

@@ -420,3 +420,34 @@ def test_recover_lane_treats_an_unreadable_record_as_indeterminate(
 
     with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
         registry.recover_lane(lane.execution_id)
+
+
+def test_child_record_seeding_never_replaces_an_unreadable_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # An unreadable record may hold a terminal outcome; replacing it loses the exit code.
+    record = tmp_path / "record.json"
+    record.write_text('{"state": "terminal", "exit_code": 3}', encoding="utf-8")
+
+    def held_by_another_process(_path, **_kwargs):
+        raise PermissionError(13, "held by a scanner")
+
+    with monkeypatch.context() as held:
+        held.setattr(child_protocol, "read_json_object", held_by_another_process)
+        with pytest.raises(SimulationCampaignIntegrityError, match="unreadable"):
+            child_protocol._ensure_child_record(record)
+    assert json.loads(record.read_text(encoding="utf-8"))["exit_code"] == 3
+
+    child_protocol._ensure_child_record(record)
+    assert json.loads(record.read_text(encoding="utf-8"))["state"] == "terminal"
+
+
+@pytest.mark.parametrize("content", [None, "{truncated"], ids=["missing", "corrupt"])
+def test_child_record_seeding_replaces_missing_or_corrupt_record(
+    tmp_path: Path, content: str | None
+) -> None:
+    record = tmp_path / "record.json"
+    if content is not None:
+        record.write_text(content, encoding="utf-8")
+    child_protocol._ensure_child_record(record)
+    assert json.loads(record.read_text(encoding="utf-8"))["state"] == "waiting"
