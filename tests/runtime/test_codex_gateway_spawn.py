@@ -66,6 +66,12 @@ if token_run and token_run["stdout"] == "SYNTHETIC_STALE_TOKEN":
     print(json.dumps({"type": "error", "message": failure}))
     print(json.dumps({"type": "turn.failed", "error": {"message": failure}}))
     sys.exit(1)
+catalog = None
+for index, argument in enumerate(sys.argv):
+    if argument == "-c" and sys.argv[index + 1].startswith("model_catalog_json="):
+        catalog_path = json.loads(sys.argv[index + 1].split("=", 1)[1])
+        with open(catalog_path, encoding="utf-8") as handle:
+            catalog = json.load(handle)
 report = {
     "model_provider": provider_id,
     "base_url": provider.get("base_url"),
@@ -82,6 +88,8 @@ report = {
     ),
     "token_command_var_present": "BOOLEY_GATEWAY_TOKEN_COMMAND" in os.environ,
     "home": home,
+    "argv": sys.argv[1:],
+    "catalog": catalog,
 }
 message = {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(report)}}
 print(json.dumps(message))
@@ -216,10 +224,84 @@ async def test_gateway_spawn_with_incomplete_config_fails_naming_the_missing_var
         await cb._codex_spawn([str(gateway_sandbox)], _params(tmp_path), "gateway")
 
 
+def _coverage_params(tmp_path):
+    """Real Coverage Analyst call parameters: text-only, one nested tool, pinned model."""
+    from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
+
+    project = tmp_path / "project"
+    project.mkdir()
+    analyst = CoverageAnalystSpecialist()
+    analyst.parse_args(["--project", str(project), "--campaign", str(tmp_path / "campaign.json")])
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    params = analyst._coverage_agent_params(
+        "p", analysis_dir, tmp_path / "campaign.json", analysis_dir / "evidence-audit.json"
+    )
+    params.transcript_path = tmp_path / "transcripts" / "run.jsonl"
+    return params
+
+
+def _assert_no_secret(report, root, *secrets):
+    """No secret in the fake's argv or in any file written under *root*."""
+    written = [
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in root.rglob("*")
+        if path.is_file()
+    ]
+    assert written, "the analysis directory must contain the private Codex home"
+    for secret in secrets:
+        assert not any(secret in argument for argument in report["argv"])
+        assert not any(secret in text for text in written)
+
+
 @pytest.mark.asyncio
-async def test_text_only_codex_under_gateway_fails_naming_the_policy(gateway_sandbox, tmp_path):
-    with pytest.raises(AgentProviderError, match="gateway"):
-        await cb._codex_spawn([str(gateway_sandbox)], _params(tmp_path, text_only=True), "gateway")
+async def test_fake_codex_text_only_specialist_reaches_gateway_with_pinned_model(
+    gateway_sandbox, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "codex")
+    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", "gw-text-model")
+    monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "low")
+    settings = agent_config.get_agent_settings()
+    params = _coverage_params(tmp_path)
+
+    result = await cb.CodexBackend(auth_mode=settings.auth)._call_once(
+        params, full_prompt="p", transcript_path=params.transcript_path
+    )
+    report = json.loads(result.output)
+
+    assert params.text_only
+    assert report["model_provider"] == "booley_gateway"
+    assert report["base_url"] == _URL
+    assert report["token_run"]["stdout"] == _TOKEN
+    assert report["argv"][report["argv"].index("-m") + 1] == "gw-text-model"
+    assert 'model_reasoning_effort="low"' in report["argv"]
+    (entry,) = report["catalog"]["models"]
+    assert entry["slug"] == "gw-text-model"
+    assert entry["shell_type"] == "disabled"
+    assert "low" in [level["effort"] for level in entry["supported_reasoning_levels"]]
+    assert report["credentials_present"] == []
+    assert report["auth_json_exists"] is False
+    assert Path(report["home"]).is_relative_to(tmp_path / "analysis")
+    _assert_no_secret(report, tmp_path / "analysis", _TOKEN)
+
+
+@pytest.mark.asyncio
+async def test_fake_codex_text_only_specialist_gets_token_command_token(
+    gateway_sandbox, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "codex")
+    command, _, _ = _use_token_command(monkeypatch, tmp_path, [_FRESH_TOKEN])
+    params = _coverage_params(tmp_path)
+
+    result = await cb.CodexBackend(auth_mode="gateway").call(params)
+    report = json.loads(result.output)
+
+    assert report["token_run"]["stdout"] == _FRESH_TOKEN
+    assert report["token_command_var_present"] is False
+    assert report["shell_exclude"] == ["BOOLEY_GATEWAY_TOKEN"]
+    _assert_no_secret(report, tmp_path / "analysis", _FRESH_TOKEN, command)
 
 
 def test_codex_health_check_reports_gateway_misconfiguration(gateway_sandbox, monkeypatch):

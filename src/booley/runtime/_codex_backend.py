@@ -623,7 +623,7 @@ def _with_command_token(env: dict[str, str] | None, token: str) -> dict[str, str
     return child_env
 
 
-async def _resolve_gateway_command_token(params: AgentCallParams) -> str | None:
+async def _resolve_gateway_command_token() -> str | None:
     """Validate the gateway config before spawning; return the command's token if any.
 
     Raises :class:`GatewayConfigError` naming the missing variable, or the token
@@ -631,12 +631,6 @@ async def _resolve_gateway_command_token(params: AgentCallParams) -> str | None:
     blocks the event loop.
     """
     settings = gateway_settings_from_env()
-    if params.text_only:
-        raise AgentProviderError(
-            "text-only Codex Specialists (e.g. coverage_analyst) are not yet "
-            f"supported under auth '{GATEWAY_AUTH}'",
-            provider="codex",
-        )
     if settings.token_command is None:
         return None
     return await anyio.to_thread.run_sync(gateway_token_for, settings)
@@ -653,9 +647,7 @@ async def _codex_spawn(
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
-    command_token = (
-        await _resolve_gateway_command_token(params) if auth_mode == GATEWAY_AUTH else None
-    )
+    command_token = await _resolve_gateway_command_token() if auth_mode == GATEWAY_AUTH else None
     env = None
     if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
         from .auth_token import subscription_creds_path

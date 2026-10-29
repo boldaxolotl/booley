@@ -111,8 +111,40 @@ def test_pinned_codex_request_contains_no_tools(tmp_path, container_bypass):
         thread.join(timeout=5)
 
 
-def _run_probe(binary: str, work: Path, original: Path, port: int, bypass: bool):
-    params = AgentCallParams(prompt="Return {}", model="coverage-test", cwd=work, text_only=True)
+def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
+    binary = os.environ.get("BOOLEY_CODEX_TEXT_ONLY_BINARY")
+    if not binary:
+        pytest.skip("Set BOOLEY_CODEX_TEXT_ONLY_BINARY to run the pinned CLI localhost probe")
+    original = tmp_path / "original"
+    original.mkdir()
+    work = tmp_path / "empty"
+    work.mkdir()
+    requests = []
+    server = HTTPServer(("127.0.0.1", 0), _recording_handler(requests))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_probe(binary, work, original, server.server_port, False, gateway=True)
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert len(requests) == 1
+        assert not requests[0].get("tools")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _run_probe(
+    binary: str, work: Path, original: Path, port: int, bypass: bool, *, gateway: bool = False
+):
+    params = AgentCallParams(
+        prompt="Return {}",
+        model="coverage-test",
+        cwd=work,
+        text_only=True,
+        reasoning_effort="low" if gateway else None,
+        nested_mcp_tools=["coverage_evidence"] if gateway else None,
+    )
     command = [
         binary,
         "exec",
@@ -134,8 +166,17 @@ def _run_probe(binary: str, work: Path, original: Path, port: int, bypass: bool)
     ]
     if bypass:
         command.append("--dangerously-bypass-approvals-and-sandbox")
+    if gateway:
+        # The generated gateway provider and Booley MCP server stay out of the probe.
+        command += ["-c", "mcp_servers.booley.enabled=false"]
+    environment = {**os.environ, "CODEX_HOME": str(original)}
+    if gateway:
+        environment |= {
+            "BOOLEY_GATEWAY_URL": "https://gateway.example/v1",
+            "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
+        }
     command, environment = prepare_codex_text_only(
-        [*command, "-"], params, {**os.environ, "CODEX_HOME": str(original)}
+        [*command, "-"], params, environment, auth_mode="gateway" if gateway else "auto"
     )
     return subprocess.run(
         command,
