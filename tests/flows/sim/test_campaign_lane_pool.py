@@ -46,7 +46,7 @@ class _Campaign:
         project = tmp_path / "project"
         project.mkdir()
         (project / ".booley").mkdir()
-        self.registry = ChildExecutionRegistry(self.store, self.manifest, project)
+        self.registry = ChildExecutionRegistry(self.manifest, project)
         # Like production, the store reads the child records the registry writes, so
         # any reap reclaims a child token once that child is terminal.
         terminal = SlotRecovery(

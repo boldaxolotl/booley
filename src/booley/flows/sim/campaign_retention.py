@@ -35,6 +35,7 @@ from .campaign import (
     RetainedCampaignStatus,
     SimulationCampaignIntegrityError,
     SimulationProjection,
+    UnsupportedSimulationCampaignFormatError,
     authenticate_retained_campaign_inventory,
     decode_simulation_projection,
     inspect_retained_campaign,
@@ -752,7 +753,6 @@ def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
         _validate_invocation_targets(root)
         _validate_invocation_inventory(root)
         _recover_campaign_resources(root, campaigns, project_data)
-        _release_child_indexes(root, project_data)
         write_campaign_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
         )
@@ -789,98 +789,13 @@ def _valid_lock_sentinel(lock: Path) -> bool:
 
 
 def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None:
-    from booley.runtime.execution_records import (
-        campaign_child_entry_manifests,
-        retained_campaign_child_manifests,
-        validate_retired_campaign_children,
-    )
-
     booley_dir = invocation_booley_dir(root)
     for directory in _campaign_directories(root):
         status = inspect_retained_campaign(directory / "manifest.json", booley_dir=booley_dir)
-        children = directory / "child-executions"
-        if not children.exists():
-            if status.interrupted and project_data is None:
-                raise CampaignRetentionError(
-                    "Booley Directory is required to recover interrupted Simulation Campaign resources"
-                )
-            continue
-        entry_manifests = campaign_child_entry_manifests(children)
-        resolved = project_data
-        if entry_manifests:
-            owner = _child_ownership_root(children, campaign_child_entry_manifests)
-            if owner is not None:
-                resolved = _owner_project_data(owner, project_data)
-        if status.interrupted and resolved is None:
+        if status.interrupted and project_data is None:
             raise CampaignRetentionError(
                 "Booley Directory is required to recover interrupted Simulation Campaign resources"
             )
-        ownership = _child_ownership_root(children, retained_campaign_child_manifests)
-        if ownership is None:
-            validate_retired_campaign_children(children)
-            continue
-        inferred = _infer_project_data(ownership)
-        if inferred is None:
-            raise CampaignRetentionError(
-                "Simulation Campaign child ownership cannot resolve its Booley Directory"
-            )
-        if project_data is not None and Path(project_data).resolve() != inferred.resolve():
-            raise CampaignRetentionError(
-                "Booley Directory disagrees with the canonical Simulation Campaign owner"
-            )
-
-
-def _release_child_indexes(root: Path, project_data: Path | None) -> None:
-    from booley.runtime.execution_records import (
-        release_retired_campaign_children,
-        retained_campaign_child_manifests,
-        validate_retired_campaign_children,
-    )
-
-    target_root = root / "targets"
-    campaign_children = tuple(target_root.glob("*/campaign/child-executions"))
-    if not campaign_children:
-        return
-    try:
-        for children in campaign_children:
-            ownership_root = _child_ownership_root(children, retained_campaign_child_manifests)
-            if ownership_root is None:
-                validate_retired_campaign_children(children)
-            else:
-                inferred = _infer_project_data(ownership_root)
-                if inferred is None:
-                    raise CampaignRetentionError(
-                        "Simulation Campaign child ownership cannot resolve its Booley Directory"
-                    )
-                resolved = Path(project_data).resolve() if project_data else inferred
-                if resolved.resolve() != inferred.resolve():
-                    raise CampaignRetentionError(
-                        "Booley Directory disagrees with the canonical Simulation Campaign owner"
-                    )
-                release_retired_campaign_children(resolved, children)
-    except (OSError, ValueError) as exc:
-        raise CampaignRetentionError(
-            f"Simulation Campaign child retention is invalid: {exc}"
-        ) from exc
-
-
-def _child_ownership_root(children: Path, manifest_paths) -> Path | None:
-    """Return the canonical invocation root, or classify this mirror as detached."""
-    local = children.parent / "manifest.json"
-    producer_paths = manifest_paths(children)
-    matches: list[bool] = []
-    for producer in producer_paths:
-        try:
-            matches.append(producer.samefile(local))
-        except OSError:
-            matches.append(False)
-    if matches and all(matches):
-        # Producer paths are persisted resolved; every one is ``samefile`` with *local*, so
-        # the caller's spelling names the same invocation root without losing a link (#2191).
-        return local.parents[3]
-    if any(matches):
-        raise CampaignRetentionError("Simulation Campaign child ownership is ambiguous")
-    return None
 
 
 def _campaign_directories(root: Path) -> tuple[Path, ...]:
@@ -912,39 +827,17 @@ def _campaign_mutation_locks(campaigns: tuple[Path, ...]) -> Iterator[None]:
 def _recover_campaign_resources(
     root: Path, campaigns: tuple[Path, ...], project_data: Path | None
 ) -> None:
-    from booley.runtime.execution_records import campaign_child_entry_manifests
-
     try:
         booley_dir = invocation_booley_dir(root)
+        # Only this invocation's own lanes and run directories can survive.
+        resolved = project_data or _infer_project_data(root)
         for directory in campaigns:
             status = inspect_retained_campaign(directory / "manifest.json", booley_dir=booley_dir)
-            children = directory / "child-executions"
-            if not campaign_child_entry_manifests(children):
-                # No child records: only this invocation's own run directories can survive.
-                resolved = project_data or _infer_project_data(root)
-            else:
-                owner = _child_ownership_root(children, campaign_child_entry_manifests)
-                if owner is None:
-                    # A detached copy has no authority over its producer's resources.
-                    continue
-                resolved = _owner_project_data(owner, project_data)
             recover_retained_campaign_resources(status, resolved, booley_dir=booley_dir)
     except CampaignRetentionError:
         raise
     except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
         raise CampaignRetentionError(f"Campaign recovery is invalid: {exc}") from exc
-
-
-def _owner_project_data(owner: Path, project_data: Path | None) -> Path | None:
-    """Resolve Booley Directory for a canonical owner; an explicit value must agree."""
-    inferred = _infer_project_data(owner)
-    if inferred is None:
-        return project_data
-    if project_data is not None and Path(project_data).resolve() != inferred.resolve():
-        raise CampaignRetentionError(
-            "Booley Directory disagrees with the canonical Simulation Campaign owner"
-        )
-    return inferred
 
 
 def _infer_project_data(root: Path) -> Path | None:
@@ -1132,11 +1025,6 @@ def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
             if not _valid_lock_sentinel(lock):
                 raise CampaignRetentionError(f"Campaign lock content is invalid: {lock}")
             expected.add(lock.absolute())
-        for registry in ("entries", "retired", "released"):
-            expected.update(
-                path.absolute()
-                for path in (campaign / "child-executions" / registry).glob("*.json")
-            )
     return expected
 
 
@@ -1204,6 +1092,8 @@ def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligi
         status = inspect_retained_campaign(
             campaign / "manifest.json", booley_dir=invocation_booley_dir(target.parents[1])
         )
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CampaignRetentionError(str(exc)) from exc
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
@@ -1221,6 +1111,8 @@ def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligi
                 _read_object(projection_path),
                 coverage_expected=(target / "coverage.json").is_file(),
             )
+        except UnsupportedSimulationCampaignFormatError as exc:
+            raise CampaignRetentionError(str(exc.located(target.parents[1]))) from exc
         except (OSError, ValueError) as exc:
             raise CampaignRetentionError(
                 f"Simulation Campaign is invalid and cannot be pruned: {exc}"
@@ -1352,9 +1244,8 @@ def main() -> None:
         "--project-data",
         type=Path,
         help=(
-            "Resolved Booley Directory root used only to verify canonical ownership for "
-            "--full; it never grants a detached copy authority to release shared "
-            "indexes and is not required for --native-target"
+            "Resolved Booley Directory root, needed by --full only when an interrupted lane "
+            "or owned run directory must be recovered; not used by --native-target"
         ),
     )
     operation = parser.add_mutually_exclusive_group(required=True)
@@ -1363,7 +1254,7 @@ def main() -> None:
         "--full",
         action="store_true",
         help=(
-            "Remove the full invocation after bounded orphan-child recovery and "
+            "Remove the full invocation after cancelling interrupted lane executions and "
             "marker-checked cleanup of owned templated run directories"
         ),
     )

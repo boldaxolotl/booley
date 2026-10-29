@@ -32,7 +32,7 @@ class _Campaign:
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         (project / ".booley").mkdir(parents=True)
-        registry = ChildExecutionRegistry(self.store, self.manifest, project)
+        registry = ChildExecutionRegistry(self.manifest, project)
         self.slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=max_heavy))
         self.outer = self.slots.acquire(
             CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)

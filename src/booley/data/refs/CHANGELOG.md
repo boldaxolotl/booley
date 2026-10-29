@@ -98,9 +98,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   no longer appears, and `` `line `` directives or token joins no longer suppress
   `COV_RTL_SOURCE_WITHOUT_POINTS`. The Analyst `zero_point_sources` view and
   overview drop `discovery_status`, `comparison_status` and `unusable_findings`,
-  and the verdict card omits the source line when there are no gaps. Campaigns
-  from 0.3.0 still load. A coverage Simulation Campaign interrupted before the
-  upgrade cannot be resumed because its command model changed; collect it again.
+  and the verdict card omits the source line when there are no gaps. A coverage
+  Simulation Campaign interrupted before the upgrade cannot be resumed because
+  its command model changed; collect it again.
 - Deep Doctor now keeps only the latest completed deep attempt: a failed or
   incomplete attempt makes deep status due until the next qualifying run, reports one
   "latest deep attempt failed" reason, and `deep_status` no longer includes
@@ -410,9 +410,17 @@ Packaged release history starts at 0.2.7. For older changes, see
   Cocotb batch that is not the default suite at the Default Seed is written
   to `tests/batch-<hex>/`. Update scripts that build these paths; read them
   from `report.json` and `simulation.json` instead.
-- **A Simulation Campaign started before the upgrade cannot be resumed**
-  (#1233). `--resume-from` on such a manifest exits with "start a new
-  Simulation Campaign". Its reports stay readable.
+- **Simulation Campaigns written by Booley 0.3.0 are no longer read** (#2342).
+  Booley no longer resumes, inspects, prunes, analyzes or uses as a Cycle Count
+  baseline a Simulation Campaign written by 0.3.0, and no longer reads its
+  results or `simulation.json`. (Coverage analysis is refused only through a
+  `coverage.json` reference into such a Simulation Campaign; nothing here is
+  about Coverage Campaign records.) Goal completion that selected evidence from
+  such a Campaign also stops. Each stops with an error such as `Simulation
+  Campaign manifest booley.simulation-campaign-manifest/v1 was written by Booley
+  0.3.0 and is no longer supported; delete the Simulation invocation directory
+  <path> by hand`. Delete that directory by hand. `.runtime/campaign-child-executions/`
+  under the Booley Directory is no longer used; you can delete it.
 - **Active Goal Modes need one more Simulation Flow run** (#1233). A Goal
   Record that is active across the upgrade has no frozen Test Runs. Booley
   freezes them on the next Flow run or status read, and simulation, Cycle

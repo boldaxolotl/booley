@@ -29,7 +29,7 @@ def test_build_result_golden_discriminators(raw: bytes) -> None:
     assert encode_bundle_build_result(value) == raw
 
 
-def _legacy_simulation_result(state: str) -> bytes:
+def _simulation_result(state: str) -> bytes:
     blocked = state == "blocked_by_build"
     execution = (
         state
@@ -54,10 +54,10 @@ def _legacy_simulation_result(state: str) -> bytes:
     assertions = '"clean"' if state == "completed" else '"not_observed"'
     grade = "error" if state == "aborted" else "pass" if state == "completed" else "fail"
     return (
-        f'{{"$schema":"booley.simulation-result/v2","attempt_id":"550e8400-e29b-41d4-a716-446655440001","attempt_ordinal":1,'
+        f'{{"$schema":"booley.simulation-result/v3","attempt_id":"550e8400-e29b-41d4-a716-446655440001","attempt_ordinal":1,'
         f'"build_result":{{"build_attempt_id":"550e8400-e29b-41d4-a716-446655440000","bytes":1,"kind":"bundle_build_result","owner":"550e8400-e29b-41d4-a716-446655440000","path":"build-result.json","sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sharing":"shared_variant","state":"{build_state}"}},'
         f'"bundle_id":{bundle_id},"campaign_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","diagnostics":[],"elapsed_seconds":1.0,"evidence":[],"executable_snapshot":{snapshot},"finished_at":"2026-09-21T10:00:02Z","grade":"{grade}","manifest_sha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111",'
-        f'"observations":[{{"assertion_count":0,"assertions":{assertions},"cycle_count":null,"detail":{{}},"execution":"{execution}","failure_class":{failure},"functional":{functional},"test":"smoke"}}],"producer_invocation_id":1,"runtime_inputs":[],"state":"{state}","work_item_id":"item:0000:0123456789abcdef","workload_sha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222"}}\n'
+        f'"observations":[{{"assertion_count":0,"assertions":{assertions},"cycle_count":null,"detail":{{}},"execution":"{execution}","failure_class":{failure},"functional":{functional},"test":"smoke","test_run":"smoke"}}],"producer_invocation_id":1,"runtime_inputs":[],"state":"{state}","work_item_id":"item:0000:0123456789abcdef","workload_sha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222"}}\n'
     ).encode()
 
 
@@ -65,7 +65,7 @@ def _legacy_simulation_result(state: str) -> bytes:
     "state", ["completed", "timeout", "crash", "aborted", "setup_error", "blocked_by_build"]
 )
 def test_simulation_result_golden_discriminators(state: str) -> None:
-    raw = _legacy_simulation_result(state)
+    raw = _simulation_result(state)
     value = decode_simulation_result(raw)
     assert value.canonical_bytes() == raw
     assert encode_simulation_result(value) == raw
@@ -76,7 +76,7 @@ def test_simulation_result_golden_discriminators(state: str) -> None:
     st.sampled_from(["build", "simulation"]),
 )
 def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> None:
-    raw = _BUILD_READY if kind == "build" else _legacy_simulation_result("completed")
+    raw = _BUILD_READY if kind == "build" else _simulation_result("completed")
     document = json.loads(raw)
     decoder = decode_build_result if kind == "build" else decode_simulation_result
     reference = document["build_attempt" if kind == "build" else "build_result"]
@@ -109,14 +109,14 @@ def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> N
 
 @pytest.mark.parametrize("field", ["test", "detail"])
 def test_simulation_result_rejects_observation_resource_overflow(field: str) -> None:
-    document = json.loads(_legacy_simulation_result("completed"))
+    document = json.loads(_simulation_result("completed"))
     document["observations"][0][field] = "x" * (513 if field == "test" else 2049)
     with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
         decode_simulation_result(canonical_json_bytes(document))
 
 
 def test_nested_evidence_reference_rejects_unknown_fields() -> None:
-    document = json.loads(_legacy_simulation_result("completed"))
+    document = json.loads(_simulation_result("completed"))
     document["executable_snapshot"]["manifest"]["unexpected"] = True
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         decode_simulation_result(canonical_json_bytes(document))

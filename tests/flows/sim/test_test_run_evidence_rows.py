@@ -89,21 +89,6 @@ def _v3_document(tmp_path: Path) -> dict:
     return json.loads(json.dumps({**projection, "complete": True}))
 
 
-def test_projection_v2_without_test_runs_still_decodes(tmp_path: Path):
-    document = _v3_document(tmp_path)
-    del document["test_runs"]
-    document["$schema"] = "booley.simulation-projection/v2"
-    decoded = decode_simulation_projection(document, coverage_expected=False)
-    assert decoded.trust is ProjectionTrust.AUTHENTICATED
-    # Each version has exactly its own fields.
-    with pytest.raises(ValueError, match="fields are not exact"):
-        decode_simulation_projection({**document, "test_runs": []}, coverage_expected=False)
-    with pytest.raises(ValueError, match="unsupported Simulation projection schema"):
-        decode_simulation_projection(
-            {**document, "$schema": "booley.simulation-projection/v4"}, coverage_expected=False
-        )
-
-
 @pytest.mark.parametrize(
     ("alter", "message"),
     [

@@ -378,7 +378,6 @@ def test_facts_older_than_test_runs_still_bind_by_test():
 
 
 def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
-    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
     from booley.flows.sim.campaign.coordinator import _baseline_test_run_facts
     from booley.flows.test_runs import build_test_run, test_run_document
 
@@ -387,8 +386,6 @@ def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
         "test_run": "stress+soak@7",
         "test_run_fingerprint": run.fingerprint,
     }
-    with pytest.raises(SimulationCampaignIntegrityError, match="records no Test Run to compare"):
-        _baseline_test_run_facts(None)
 
 
 @pytest.mark.parametrize(
