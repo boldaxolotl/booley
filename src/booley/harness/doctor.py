@@ -138,6 +138,9 @@ from booley.runtime import (
     vaporview,
 )
 from booley.runtime import devcontainer as dc
+from booley.runtime import (
+    handles as handle_maps,
+)
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import (
@@ -3539,6 +3542,7 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.booley_dir, reporter.warn_)
+    _check_handle_map_size(project.booley_dir, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
@@ -3626,6 +3630,24 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
             else (f"move its rules into a Goalset under .booley/goalsets/, then delete {path}")
         )
         warning(f"leftover Ticket guidance in {path}", fix)
+
+
+def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
+    """Warn when a display handle map nears the cap past which allocation fails."""
+    for jobs in (False, True):
+        path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
+        subject = "job" if jobs else "session"
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > handle_maps.MAP_WARN_BYTES:
+            _warning_sink(_warn, "handles.map-size", subject=subject)(
+                f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
+                f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
+                "run `booley session down`, then `booley session up`: the MCP server "
+                "prunes expired handles at start",
+            )
 
 
 def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
