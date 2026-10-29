@@ -48,3 +48,29 @@ non-destructive preparation rather than forced deinitialization by init.
 This supersedes path spellings in ADR 0057 and ADR 0067 while preserving their
 source-checkout separation, Goal authority, and immutable-history decisions.
 Sandbox home `~/.booley/`, XDG configuration, and caches keep their names.
+
+## Amendments (2026-10-29)
+
+Inside a Sandbox, Doctor accepts exactly two spellings of the Booley Directory:
+`BOOLEY_DIR=/booley-project` (when that path is a directory) and
+`BOOLEY_DIR=<Project Root>/.booley`. The second is the `.booley` entry directly
+under the Project Root, as spelled: an absolute path without a `..` component,
+whose parent is the Project Root, naming a directory or a link to one. Every
+other value fails, including the link target spelled directly, a `.booley`
+under another directory, a relative path, and a dangling or non-directory
+entry. A Sandbox without the `/booley-project` alias (a Codespace has no
+`/work`) therefore passes with the second spelling.
+
+The rule reads only `BOOLEY_DIR`, the Project Root and the filesystem. It
+ignores `CODESPACES` and every other platform variable: they are ambient and
+spoofable, so Booley never infers trust from them (ADR 0077).
+
+Link targets are pinned on the host only; inside a Sandbox a `.booley` link to
+any existing directory is accepted. That adds no authority, because the Sandbox
+is the isolation boundary (ADR 0079). The rule only checks that the spelling
+names the Project Root's own `.booley` entry, which the `..` ban keeps equal to
+the literal parent the MCP server derives. Workspace trust still refuses a
+spelling that resolves to the Project Root or one of its parents (ADR 0079).
+
+A failed identity check no longer stops inspection: the Docker-socket,
+EDA-credential, `~/.ssh` and Vivado checks still run and report.
