@@ -156,3 +156,78 @@ def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path)
     native.unlink()
     prepare_codex_text_only(command, params, environment, auth_mode="subscription")
     assert not copied.exists()
+
+
+def test_text_only_gateway_seeds_pinned_model_catalog_entry(tmp_path):
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "auth.json").write_text('{"tokens": {}}', encoding="utf-8")
+    cache = original / "models_cache.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gw-model",
+                        "base_instructions": "NATIVE",
+                        "apply_patch_tool_type": "freeform",
+                        "shell_type": "shell_command",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    root = tmp_path / "invocation"
+    root.mkdir()
+    environment = {
+        "CODEX_HOME": str(original),
+        "BOOLEY_GATEWAY_URL": "https://gateway.example/v1",
+        "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
+    }
+    params = AgentCallParams(
+        prompt="Analyze",
+        model="gw-model",
+        cwd=root,
+        text_only=True,
+        reasoning_effort="low",
+        nested_mcp_tools=["coverage_evidence"],
+    )
+
+    def prepare():
+        _, env = prepare_codex_text_only(
+            ["codex", "exec", "-"], params, environment, auth_mode="gateway"
+        )
+        return Path(env["CODEX_HOME"])
+
+    private = prepare()
+    models = json.loads((private / "model-catalog.json").read_text(encoding="utf-8"))["models"]
+    (entry,) = models
+    assert entry["slug"] == "gw-model"
+    assert entry["base_instructions"] not in ("", "NATIVE")
+    assert entry["shell_type"] == "disabled"
+    assert entry["apply_patch_tool_type"] is None
+    assert entry["experimental_supported_tools"] == []
+    assert entry["default_reasoning_level"] == "low"
+    config = tomllib.loads((private / "config.toml").read_text(encoding="utf-8"))
+    assert config["model_provider"] == "booley_gateway"
+    provider = config["model_providers"]["booley_gateway"]
+    assert provider["base_url"] == "https://gateway.example/v1"
+    assert provider["auth"]["cwd"] == str(private)
+    assert not (private / "auth.json").exists()
+    assert not any(
+        "SYNTHETIC_GATEWAY_TOKEN" in path.read_text(encoding="utf-8", errors="replace")
+        for path in private.rglob("*")
+        if path.is_file()
+    )
+
+    # The seeded entry does not depend on the Codex models cache.
+    cache.unlink()
+    assert prepare() == private
+    assert json.loads((private / "model-catalog.json").read_text(encoding="utf-8")) == {
+        "models": models
+    }
+
+    params.nested_mcp_tools = None
+    with pytest.raises(ValueError, match="nested MCP tool allowlist"):
+        prepare()

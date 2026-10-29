@@ -1,6 +1,6 @@
 # Route Codex Specialists through an env-selected gateway
 
-Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; see Amendments)
+Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; and text-only Specialists, #2269; see Amendments)
 
 ## Context
 
@@ -46,7 +46,7 @@ verbatim) and `BOOLEY_GATEWAY_TOKEN`.
   it only as `${localEnv:ANTHROPIC_AUTH_TOKEN}` under `auto`.
 - **Fail loud.** A missing or non-`https` URL, userinfo or whitespace in the
   URL, or a missing token fails before any spawn, naming the variable without
-  echoing the value. Text-only Codex Specialists (#2269) fail naming the policy.
+  echoing the value.
 - **Registrar.** Under the gateway policy the in-Sandbox registrar adds and
   selects the same provider in the user's Codex config (amended, see
   Amendments, #2270).
@@ -82,6 +82,22 @@ source, `BOOLEY_GATEWAY_TOKEN_COMMAND`. Set exactly one of it and
   safe to run repeatedly (Doctor runs it too). Its stderr is shown verbatim on
   failure; its stdout never is. Whoever can run the command in the Sandbox can
   mint a token.
+
+### Text-only Specialists (#2269)
+
+Under `gateway`, text-only Codex Specialists such as `coverage_analyst` get the
+same provider configuration and token handling as other Specialists.
+
+- **Booley generates the model-catalog entry** instead of reading
+  `models_cache.json`: that cache is filled by the native login the policy
+  excludes, so in a gateway Sandbox it is absent or describes another service.
+  The entry uses Codex 0.160's fallback values except for three deviations: the
+  tool fields are off, the reasoning level is the configured effort, and a short
+  Booley base instruction replaces Codex's coding-agent prompt.
+- **A text-only run under `gateway` without a nested tool allowlist fails
+  loud**, because the provider shares `config.toml` with the Booley MCP server.
+- **Rejected:** refusing every text-only run under `gateway` with an actionable
+  message, which would leave the gateway Sandbox with no coverage analysis.
 
 ## Amendments (#2270)
 
