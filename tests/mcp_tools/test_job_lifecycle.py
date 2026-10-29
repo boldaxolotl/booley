@@ -673,9 +673,7 @@ def test_reconcile_adopts_report_after_transient_sharing_error(context, monkeypa
     rec, report = _orphan_with_report(context)
     # Hold longer than the report lookup's fallback reads, so only the retry can adopt it.
     attempts = hold_opens(monkeypatch, {report: 3})
-    monkeypatch.setattr(
-        "booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS", (0.0,) * 4
-    )
+    monkeypatch.setattr("booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS", (0.0,) * 4)
     JobLifecycle().reconcile_orphaned()
     final = job_records.read_record(rec.run_id, context.jobs_root)
     assert (final.status, final.exit_code) == ("done", 0)
