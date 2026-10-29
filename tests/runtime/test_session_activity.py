@@ -255,3 +255,30 @@ def test_prune_removes_unretained_end_markers_at_once_and_spares_a_replacement(
     assert store.prune(set(), now=NOW, quiet_after=7200) == 0
     assert calls == 2
     assert kept.exists()
+
+
+def test_prune_keeps_a_fresh_file_that_is_not_readable_as_an_end_marker(tmp_path):
+    """A fresh file whose bytes are not JSON or not a marker is no marker: the quiet rule applies."""
+    store = ActivityStore(tmp_path)
+    store.root.mkdir(parents=True)
+    garbage = store.path("codex:garbage")
+    garbage.write_bytes(b"\xff not json")
+    # A marker stored under another key's file name is not this file's marker.
+    misplaced = store.path("codex:misplaced")
+    misplaced.write_text(
+        json.dumps({"schema": 1, "key": "codex:other", "state": "ended", "at": STAMP}),
+        encoding="utf-8",
+    )
+    for path in (garbage, misplaced):
+        os.utime(path, (NOW + 60, NOW + 60))
+    assert store.prune(set(), now=NOW, quiet_after=7200) == 0
+    assert garbage.exists()
+    assert misplaced.exists()
+
+
+def test_store_ignores_a_symlinked_end_marker(tmp_path):
+    store = ActivityStore(tmp_path)
+    target = write_activity_signal(tmp_path / "elsewhere", "codex:b", "ended", STAMP)
+    store.root.mkdir(parents=True)
+    symlink_or_skip(store.path("codex:b"), target)
+    assert store.ended_at("codex:b", now=NOW) is None

@@ -300,6 +300,8 @@ async def test_tools_list_never_refreshes_an_existing_row(tmp_path, monkeypatch)
             "tools/call",
             {"name": "probe", "arguments": {"work_dir": str(tmp_path)}, "_meta": meta},
         )
+        if observer._pending is not None:  # Let the call's registry write finish first.
+            await observer._pending
         before = row.read_bytes()
         clock[0] = 200.0
         await post("tools/list", {"_meta": meta})
