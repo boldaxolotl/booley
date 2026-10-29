@@ -56,7 +56,6 @@ from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
     GATEWAY_MODEL_ENV,
-    GATEWAY_TOKEN_ENV,
     GatewayConfigError,
     gateway_model_pin_from_env,
     gateway_settings_from_env,
@@ -148,6 +147,7 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
+from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.git import _git_common_dir
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
@@ -2664,7 +2664,14 @@ def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
     except GatewayConfigError as exc:
         reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
         return
-    reporter.pass_(f"Codex auth: the gateway at {settings.url} ({GATEWAY_TOKEN_ENV})")
+    if settings.token_command:
+        # A fresh check, not the cache: Doctor reports whether the command works now.
+        try:
+            run_token_command(settings.token_command)
+        except GatewayTokenCommandError as exc:
+            reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+            return
+    reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
 
 
 def _check_interactive_logs_tracked(

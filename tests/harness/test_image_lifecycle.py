@@ -4263,3 +4263,36 @@ def test_docker_inventory_requires_complete_exact_id_evidence(monkeypatch, respo
     else:
         with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inventory"):
             lifecycle._DockerCli().image_ids()
+
+
+def _empty_ownership_record(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    owned = lifecycle.OwnedImages(tmp_path)
+    owned.store.ensure_directory()
+    record = {"version": 1, "owned_ids": [], "candidate_refs": {}}
+    owned.store.atomic_write_text(owned.name, json.dumps(record))
+    return lifecycle.OwnedImages(tmp_path), owned.store.root / owned.name
+
+
+def test_empty_ownership_removal_survives_transient_unlink_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_unlinks
+
+    owned, record = _empty_ownership_record(tmp_path, monkeypatch)
+    attempts = hold_unlinks(monkeypatch, {record: 1})
+    owned.record({})
+    assert attempts[record] == 2
+    assert not record.exists()
+
+
+def test_empty_ownership_removal_retries_before_raising_lasting_sharing_error(
+    tmp_path, monkeypatch
+):
+    from tests.sharing_error_support import hold_unlinks
+
+    owned, record = _empty_ownership_record(tmp_path, monkeypatch)
+    attempts = hold_unlinks(monkeypatch, {record: 99})
+    with pytest.raises(PermissionError):
+        owned.record({})
+    assert attempts[record] > 1

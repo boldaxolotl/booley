@@ -34,6 +34,7 @@ from booley.core.differences import format_differences
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 if TYPE_CHECKING:
@@ -366,7 +367,7 @@ def _load_spec(workspace: Path) -> dict:
 
     path = dc.devcontainer_path(workspace)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_file_bytes(path).decode("utf-8"))
     except FileNotFoundError:
         raise SessionError(
             f"no {path} — run `booley init` in this folder to generate it"

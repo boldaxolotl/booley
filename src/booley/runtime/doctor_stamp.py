@@ -43,6 +43,11 @@ from booley.core.differences import format_differences
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.devcontainer import devcontainer_path
+from booley.runtime.filesystem_utils import (
+    is_transient_read_error,
+    read_file_bytes,
+    replace_file,
+)
 from booley.runtime.timefmt import format_age, format_human_date, parse_timestamp, utc_now_rfc3339
 
 STAMP_FILENAME = "doctor_stamp.json"
@@ -114,17 +119,27 @@ def record_clean_run(booley_dir: Path, project_root: Path, *, deep: bool) -> Pat
         # tmp + rename so a concurrent reader never sees a partial file.
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        replace_file(tmp, path)
     except OSError:
         return None
     return path
 
 
 def load_stamp(booley_dir: Path) -> dict | None:
-    """The recorded stamp dict, or None when absent/corrupt."""
+    """The recorded stamp dict, or None when absent/corrupt.
+
+    A Windows sharing error that outlasts the read retry budget raises: a stamp
+    held by a concurrent writer is unreadable, not absent.
+    """
     try:
-        data = json.loads(stamp_path(booley_dir).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+        raw = read_file_bytes(stamp_path(booley_dir))
+    except OSError as exc:
+        if is_transient_read_error(exc):
+            raise
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -174,10 +189,16 @@ def check_stamp_advisory(
     unreadable timestamp, package-version drift, config drift, then age beyond
     *max_age_days*.
     """
-    stamp = load_stamp(booley_dir)
+    unreadable: str | None = None
+    try:
+        stamp = load_stamp(booley_dir)
+    except OSError as exc:
+        stamp = None
+        unreadable = f"the recorded `booley doctor` stamp could not be read ({exc})"
     if stamp is None:
         return StampAdvisory(
-            "no warning-free `booley doctor` run is stamped -- Doctor records "
+            unreadable
+            or "no warning-free `booley doctor` run is stamped -- Doctor records "
             "freshness only after zero FAILs and zero active WARNs; resolve or "
             "waive the warnings, then re-run `booley doctor`"
         )

@@ -10,6 +10,7 @@ from booley.core.boundary import BoundaryError, require_dict, require_str
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning.licensing import flexnet_docker
+from booley.runtime.filesystem_utils import unlink_file
 
 _SUFFIX = ".json"
 
@@ -28,7 +29,7 @@ def prepare(project_root: str) -> None:
 
 def cancel(project_root: str) -> None:
     """Remove one Project's journal once its invalidation is complete."""
-    _path(project_root).unlink(missing_ok=True)
+    unlink_file(_path(project_root), missing_ok=True)
 
 
 def has_pending(project_root: Path) -> bool:

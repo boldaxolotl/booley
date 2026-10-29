@@ -78,7 +78,7 @@ Ordinary CLI Flow calls remain diagnostic; evidence that should count toward a G
 
 The agent cannot meet a Goal by assertion: only structured Booley Flow or Specialist evidence counts. Publication revalidates the Run Binding, and relevant source or Target changes make old evidence stale. A Goal Change Proposal requires human approval and is recorded in the Change Log. Finish requires fresh evidence for every Goal at a clean committed HEAD, unchanged Protected Inputs, and a Session Summary; it presents a Review Package without merging the branch. Abandon keeps the work and the abandoned record.
 
-`booley goal` provides status and abandonment, and `booley dashboard` is the read-only Sandbox view. See [GOAL-MODE.md](../user/GOAL-MODE.md#goal-mode), [ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md), and the [Goal Mode glossary](../../src/booley/goals/GLOSSARY.md).
+`booley goal` provides status and abandonment, and `booley dashboard` is the read-only Sandbox view. Its layout rules are in [DASHBOARD.md](DASHBOARD.md). See [GOAL-MODE.md](../user/GOAL-MODE.md#goal-mode), [ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md), and the [Goal Mode glossary](../../src/booley/goals/GLOSSARY.md).
 
 ### Shared execution and evidence
 

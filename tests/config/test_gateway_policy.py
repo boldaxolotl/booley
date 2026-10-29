@@ -18,6 +18,7 @@ def gateway_container(monkeypatch):
         "BOOLEY_PRIMARY_AUTH",
         "BOOLEY_GATEWAY_URL",
         "BOOLEY_GATEWAY_TOKEN",
+        "BOOLEY_GATEWAY_TOKEN_COMMAND",
         "BOOLEY_DIR",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -33,6 +34,44 @@ def test_gateway_policy_accepts_complete_https_config():
     )
     assert settings == config.gateway.GatewaySettings(url=_URL, token=_TOKEN)
     assert _TOKEN not in repr(settings)
+
+
+def test_gateway_policy_accepts_token_command_alone():
+    settings = config.gateway.gateway_settings_from_env(
+        {
+            "BOOLEY_GATEWAY_URL": _URL,
+            "BOOLEY_GATEWAY_TOKEN_COMMAND": " gateway-login --print-token \n",
+        }
+    )
+
+    assert settings.token is None
+    assert settings.token_command == "gateway-login --print-token"
+    assert settings.token_source == "BOOLEY_GATEWAY_TOKEN_COMMAND"
+    assert "gateway-login" not in repr(settings)
+
+
+def test_gateway_policy_rejects_both_token_and_token_command():
+    with pytest.raises(ValueError, match="exactly one of BOOLEY_GATEWAY_TOKEN and"):
+        config.gateway.gateway_settings_from_env(
+            {
+                "BOOLEY_GATEWAY_URL": _URL,
+                "BOOLEY_GATEWAY_TOKEN": _TOKEN,
+                "BOOLEY_GATEWAY_TOKEN_COMMAND": "gateway-login",
+            }
+        )
+
+
+def test_gateway_policy_rejects_neither_token_nor_token_command():
+    with pytest.raises(ValueError, match="BOOLEY_GATEWAY_TOKEN or BOOLEY_GATEWAY_TOKEN_COMMAND"):
+        config.gateway.gateway_settings_from_env({"BOOLEY_GATEWAY_URL": _URL})
+
+
+def test_gateway_policy_rejects_unparsable_token_command_without_echoing_it():
+    with pytest.raises(ValueError, match="BOOLEY_GATEWAY_TOKEN_COMMAND") as caught:
+        config.gateway.gateway_settings_from_env(
+            {"BOOLEY_GATEWAY_URL": _URL, "BOOLEY_GATEWAY_TOKEN_COMMAND": "'SYNTHETIC_UNTERMINATED"}
+        )
+    assert "SYNTHETIC" not in str(caught.value)
 
 
 def test_gateway_policy_rejects_missing_url():

@@ -50,7 +50,6 @@ from pathlib import Path
 
 from booley.config.gateway import (
     GATEWAY_AUTH,
-    GATEWAY_TOKEN_ENV,
     GatewayConfigError,
     gateway_settings_from_env,
 )
@@ -260,7 +259,7 @@ def _gateway_credential(app: str) -> EffectiveCredential | None:
     return EffectiveCredential(
         app=app,
         mode=GATEWAY_AUTH,
-        source=f"the gateway at {settings.url} ({GATEWAY_TOKEN_ENV})",
+        source=f"the gateway at {settings.url} ({settings.token_source})",
         rotation_free=True,
         overridden=(),
     )

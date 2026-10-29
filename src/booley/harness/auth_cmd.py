@@ -34,7 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.config.gateway import GATEWAY_AUTH, GATEWAY_TOKEN_ENV, gateway_settings_from_env
+from booley.config.gateway import GATEWAY_AUTH, gateway_settings_from_env
 from booley.harness.setup.common import banner, err, info, ok, warn
 from booley.runtime import auth_token
 from booley.runtime.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
@@ -70,7 +70,7 @@ def _report_gateway_status(app: str | None) -> int:
     settings = gateway_settings_from_env()  # GatewayConfigError names the variable
     ok(
         f"{app}: agents run on the gateway at {settings.url} "
-        f"({GATEWAY_TOKEN_ENV}; billed by the gateway operator)"
+        f"({settings.token_source}; billed by the gateway operator)"
     )
     return 0
 

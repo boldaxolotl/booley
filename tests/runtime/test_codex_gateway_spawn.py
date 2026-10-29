@@ -15,10 +15,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.gateway_command_support import count_runs, write_token_command
 
 from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.runtime import _codex_backend as cb
+from booley.runtime import agent_errors, gateway_token
 from booley.runtime.agent_errors import AgentProviderError
 
 _URL = "https://gateway.example/v1"
@@ -29,6 +31,8 @@ _NATIVE_CREDENTIALS = {
     "ANTHROPIC_AUTH_TOKEN": "SYNTHETIC_ANTHROPIC_BEARER",
     "CLAUDE_CODE_OAUTH_TOKEN": "SYNTHETIC_CLAUDE_OAUTH",
 }
+_STALE_TOKEN = "SYNTHETIC_STALE_TOKEN"
+_FRESH_TOKEN = "SYNTHETIC_FRESH_TOKEN"
 _SRC = Path(__file__).resolve().parents[2] / "src"
 
 _FAKE_CODEX = """\
@@ -50,6 +54,18 @@ if auth:
         text=True,
     )
     token_run = {"stdout": done.stdout, "stderr": done.stderr, "code": done.returncode}
+if os.environ.get("FAKE_CODEX_LAUNCHES"):
+    with open(os.environ["FAKE_CODEX_LAUNCHES"], "a", encoding="utf-8") as launches:
+        launches.write("launch\\n")
+if token_run and token_run["stdout"] == "SYNTHETIC_STALE_TOKEN":
+    # The shape of Codex 0.164 when the gateway answers 401 (after its own retries).
+    failure = (
+        "unexpected status 401 Unauthorized: invalid token, "
+        "url: https://gateway.example/v1/responses"
+    )
+    print(json.dumps({"type": "error", "message": failure}))
+    print(json.dumps({"type": "turn.failed", "error": {"message": failure}}))
+    sys.exit(1)
 report = {
     "model_provider": provider_id,
     "base_url": provider.get("base_url"),
@@ -64,6 +80,7 @@ report = {
                      "CLAUDE_CODE_OAUTH_TOKEN")
         if os.environ.get(name)
     ),
+    "token_command_var_present": "BOOLEY_GATEWAY_TOKEN_COMMAND" in os.environ,
     "home": home,
 }
 message = {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(report)}}
@@ -262,3 +279,110 @@ def test_registrar_under_gateway_leaves_credential_copies_untouched(
 
     assert incontainer_setup.apply_stored_credential("codex", container) == "none"
     assert managed.read_text(encoding="utf-8") == '{"OPENAI_API_KEY": "SYNTHETIC_MANAGED_COPY"}'
+
+
+# --- #2267: BOOLEY_GATEWAY_TOKEN_COMMAND ------------------------------------
+
+
+def _use_token_command(monkeypatch, tmp_path, tokens):
+    """Switch the sandbox from a static token to a fake token command.
+
+    Returns ``(command, command_counter, codex_launch_counter)`` and gives the
+    test a fresh process-wide token cache.
+    """
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+    command, command_counter = write_token_command(tmp_path, tokens)
+    launches = tmp_path / "codex-launches.txt"
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", command)
+    monkeypatch.setenv("FAKE_CODEX_LAUNCHES", str(launches))
+    monkeypatch.setattr(gateway_token, "_CACHE", gateway_token.GatewayTokenCache())
+    return command, command_counter, launches
+
+
+async def _backend_call(tmp_path):
+    """One real ``CodexBackend.call()`` through the gateway; returns the fake's report."""
+    backend = cb.CodexBackend(auth_mode="gateway")
+    result = await backend.call(_params(tmp_path, transcript_path=tmp_path / "transcript.jsonl"))
+    return json.loads(result.output)
+
+
+@pytest.mark.asyncio
+async def test_gateway_runs_within_ttl_share_one_token_command_run(
+    gateway_sandbox, tmp_path, monkeypatch
+):
+    _, command_runs, launches = _use_token_command(monkeypatch, tmp_path, [_FRESH_TOKEN, "OTHER"])
+
+    first = await _backend_call(tmp_path)
+    second = await _backend_call(tmp_path)
+
+    assert first["token_run"]["stdout"] == second["token_run"]["stdout"] == _FRESH_TOKEN
+    assert count_runs(command_runs) == 1
+    assert count_runs(launches) == 2
+
+
+@pytest.mark.asyncio
+async def test_gateway_auth_failure_reruns_token_command_once_and_retries_run(
+    gateway_sandbox, tmp_path, monkeypatch
+):
+    _, command_runs, launches = _use_token_command(
+        monkeypatch, tmp_path, [_STALE_TOKEN, _FRESH_TOKEN]
+    )
+
+    report = await _backend_call(tmp_path)
+
+    assert report["token_run"]["stdout"] == _FRESH_TOKEN
+    assert count_runs(command_runs) == 2
+    assert count_runs(launches) == 2
+    assert (tmp_path / "transcript.jsonl").exists()
+    assert (tmp_path / "transcript-retry2.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_repeated_auth_failure_stops_after_one_refresh(
+    gateway_sandbox, tmp_path, monkeypatch
+):
+    _, command_runs, launches = _use_token_command(monkeypatch, tmp_path, [_STALE_TOKEN])
+
+    with pytest.raises(agent_errors.AgentAuthError):
+        await _backend_call(tmp_path)
+
+    assert count_runs(command_runs) == 2
+    assert count_runs(launches) == 2
+
+
+def test_auth_failure_text_is_classified_only_under_a_gateway_token_command(monkeypatch):
+    detail = "unexpected status 401 Unauthorized: invalid token"
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN_COMMAND", raising=False)
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_STATIC_TOKEN")
+
+    with pytest.raises(AgentProviderError) as static:
+        cb._raise_for_codex_detail(detail, prefix="Codex error")
+
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", "synthetic-token-command")
+    with pytest.raises(agent_errors.AgentAuthError):
+        cb._raise_for_codex_detail(detail, prefix="Codex error")
+
+    assert not isinstance(static.value, agent_errors.AgentAuthError)
+
+
+@pytest.mark.asyncio
+async def test_token_command_token_reaches_codex_but_no_file_or_shell_env(
+    gateway_sandbox, tmp_path, monkeypatch
+):
+    command, _, _ = _use_token_command(monkeypatch, tmp_path, [_FRESH_TOKEN])
+
+    report = await _run_fake_codex(tmp_path, gateway_sandbox)
+
+    assert report["token_run"]["stdout"] == _FRESH_TOKEN
+    assert report["shell_exclude"] == ["BOOLEY_GATEWAY_TOKEN"]
+    assert report["token_command_var_present"] is False
+    assert report["credentials_present"] == []
+    written = [
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in Path(report["home"]).parent.rglob("*")
+        if path.is_file()
+    ]
+    assert written, "the private Codex home must contain the generated config"
+    assert not any(_FRESH_TOKEN in text or command in text for text in written)
