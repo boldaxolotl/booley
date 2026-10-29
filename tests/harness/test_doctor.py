@@ -6182,6 +6182,7 @@ class TestDeveloperProbe:
         class _Cfg:
             def __init__(self):
                 self.settings = self
+                self.effort_pin = None
 
             def model_for_tier(self, tier):
                 return "test-model"
@@ -6283,6 +6284,7 @@ class TestDeveloperProbe:
         class _Cfg:
             def __init__(self):
                 self.settings = self
+                self.effort_pin = None
 
             def model_for_tier(self, tier):
                 assert tier == "light"  # cheapest real call
@@ -6325,6 +6327,7 @@ class TestDeveloperProbe:
         class _Cfg:
             def __init__(self):
                 self.settings = self
+                self.effort_pin = None
 
             def model_for_tier(self, tier):
                 return "test-model"
