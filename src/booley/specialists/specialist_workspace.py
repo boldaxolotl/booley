@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -19,6 +18,7 @@ from booley.agent_workspace.isolation import (
     owned_copy_roots,
 )
 from booley.core.models import AgentCallParams, AgentResult
+from booley.runtime.owned_scratch import owned_tempdir
 
 WorkspaceAccess = Literal["read_only", "read_write"]
 
@@ -192,8 +192,11 @@ def isolated_agent_workspace(
         category_files, scope = _project_category_paths(real_cwd, real_root, scope)
         excluded_roots = (*owned_copy_roots(real_cwd), *excluded_roots)
     relative_cwd = real_cwd.relative_to(real_root)
-    with tempfile.TemporaryDirectory(prefix="booley-specialist-ro-") as temp_dir:
-        snapshot = WorkspaceSnapshot(real_root, Path(temp_dir).resolve())
+    with owned_tempdir("booley-specialist-ro-") as owned:
+        # The owner marker sits beside the snapshot, invisible to the agent and Git.
+        snapshot_root = owned.resolve() / "workspace"
+        snapshot_root.mkdir()
+        snapshot = WorkspaceSnapshot(real_root, snapshot_root)
         _populate_snapshot(real_root, snapshot.snapshot_root)
         if category is not None:
             assert category_files is not None

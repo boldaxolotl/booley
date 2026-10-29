@@ -1,15 +1,116 @@
 """Nested Codex HOME environment and destination preservation."""
 
+import os
+import shutil
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
 import pytest
+from tests.conftest import require_symlinks
+from tests.owned_scratch_support import complete_runs, make_repo
+
+
+def _isolate_scratch(tmp_path, monkeypatch) -> Path:
+    """Point the system temp directory (and the login home) inside *tmp_path*."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    return scratch
+
+
+def _real_login(tmp_path) -> Path:
+    login = tmp_path / "home" / ".codex" / "auth.json"
+    login.parent.mkdir(parents=True)
+    login.write_text('{"tokens":{"access_token":"SYNTHETIC_OLD"}}', encoding="utf-8")
+    return login
+
+
+def test_nested_codex_auth_links_real_login(tmp_path, monkeypatch):
+    """AC1: the nested home holds a link to the real login, never a copy."""
+    from booley.runtime import _codex_backend as cb
+
+    require_symlinks(tmp_path)
+    _isolate_scratch(tmp_path, monkeypatch)
+    login = _real_login(tmp_path)
+    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+    nested = Path(cb._ensure_nested_codex_home("link", ["lint"]))
+    try:
+        auth = nested / ".codex" / "auth.json"
+        assert auth.is_symlink()
+        assert auth.resolve() == login.resolve()
+        assert [p for p in nested.rglob("auth.json") if not p.is_symlink()] == []
+    finally:
+        shutil.rmtree(nested, ignore_errors=True)
+
+
+def test_refresh_through_nested_home_reaches_real_login(tmp_path, monkeypatch):
+    """AC2: a token refresh written through the nested path lands in the real login."""
+    from booley.runtime import _codex_backend as cb
+
+    require_symlinks(tmp_path)
+    _isolate_scratch(tmp_path, monkeypatch)
+    login = _real_login(tmp_path)
+    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+    nested = Path(cb._ensure_nested_codex_home("refresh", ["lint"]))
+    try:
+        refreshed = '{"tokens":{"access_token":"SYNTHETIC_REFRESHED"}}'
+        (nested / ".codex" / "auth.json").write_text(refreshed, encoding="utf-8")
+        assert login.read_text(encoding="utf-8") == refreshed
+    finally:
+        shutil.rmtree(nested, ignore_errors=True)
+
+
+@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key", "gateway"])
+def test_missing_login_leaves_no_auth_entry(tmp_path, monkeypatch, policy):
+    """No login, or a policy that excludes it: no file and no dangling link."""
+    from booley.runtime import _codex_backend as cb
+
+    require_symlinks(tmp_path)
+    _isolate_scratch(tmp_path, monkeypatch)
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example.test/v1")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC")
+    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+
+    def ensure() -> Path:
+        cb._NESTED_HOMES.clear()
+        return Path(cb._ensure_nested_codex_home("missing", ["lint"], auth_mode=policy))
+
+    auth = ensure() / ".codex" / "auth.json"
+    assert not os.path.lexists(auth)
+    login = _real_login(tmp_path)
+    ensure()
+    # Only the policies that may use the login link it.
+    assert auth.is_symlink() is (policy in {"auto", "subscription"})
+    login.unlink()
+    ensure()
+    assert not os.path.lexists(auth)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="nested homes exist only in the Linux Sandbox")
+def test_completed_runs_leave_no_nested_home(tmp_path):
+    """AC3: after several completed runs in one process, no nested home remains."""
+    require_symlinks(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    _real_login(tmp_path)
+    repo = make_repo(tmp_path / "repo")
+    homes = complete_runs(repo, scratch, tmp_path / "home")
+    try:
+        assert len(homes) == 3
+        assert [home for home in homes if home.exists()] == []
+    finally:
+        for home in homes:  # unfixed code leaves these in the real /tmp
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def test_nested_codex_home_includes_scoped_environment(tmp_path, monkeypatch):
     from booley.runtime import _codex_backend as cb
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _isolate_scratch(tmp_path, monkeypatch)
     monkeypatch.setenv("BOOLEY_SLUG", "coverage")
     cb._NESTED_HOMES.clear()
 
@@ -34,12 +135,7 @@ def test_private_codex_writers_preserve_destination_choice(
     from booley.runtime import _codex_backend as cb
 
     real_path = Path
-
-    def isolated_path(value):
-        value = str(value)
-        return tmp_path / Path(value).name if value.startswith("/tmp/codex-") else real_path(value)
-
-    monkeypatch.setattr(cb, "Path", isolated_path)
+    _isolate_scratch(tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
     create = cb._ensure_nested_codex_home
@@ -73,15 +169,7 @@ def test_private_codex_writer_invalid_destination(tmp_path, monkeypatch, existin
     from booley.runtime import _codex_backend as cb
 
     real_path = Path
-    monkeypatch.setattr(
-        cb,
-        "Path",
-        lambda value: (
-            tmp_path / real_path(value).name
-            if str(value).startswith("/tmp/codex-")
-            else real_path(value)
-        ),
-    )
+    _isolate_scratch(tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
     create = cb._ensure_nested_codex_home

@@ -1389,7 +1389,9 @@ class TestDispatchUsage:
 
 def test_private_codex_auth_reconciles_same_cached_home(tmp_path, monkeypatch):
     from booley.runtime import _codex_backend
+    from tests.conftest import require_symlinks
 
+    require_symlinks(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     original = tmp_path / ".codex" / "auth.json"
@@ -1400,11 +1402,11 @@ def test_private_codex_auth_reconciles_same_cached_home(tmp_path, monkeypatch):
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
     assert (private / "auth.json").exists()
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="api_key")
-    assert not (private / "auth.json").exists()
+    assert not os.path.lexists(private / "auth.json")
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
     original.unlink()
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
-    assert not (private / "auth.json").exists()
+    assert not os.path.lexists(private / "auth.json")
 
 
 @pytest.mark.asyncio
@@ -1437,7 +1439,9 @@ async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, mo
 
 def test_private_codex_copy_uses_cli_home(tmp_path, monkeypatch):
     from booley.runtime import _codex_backend
+    from tests.conftest import require_symlinks
 
+    require_symlinks(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     default = tmp_path / ".codex" / "auth.json"

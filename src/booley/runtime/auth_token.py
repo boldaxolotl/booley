@@ -606,29 +606,30 @@ def credential_plan(
     )
 
 
-def copy_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
-    """Reconcile a Booley-owned private auth copy at every invocation."""
-    import shutil
-    import tempfile
+def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
+    """Make a Booley-owned private auth entry a link to the real login.
 
+    A link, not a copy: Codex rotates ``auth.json`` in place, so a copy would
+    strand the rotated tokens in scratch and leave a credential behind. When
+    the policy excludes the login, or it is missing, no entry remains.
+    """
     allowed_credential_keys(APP_CODEX, policy)
     allowed = policy == "auto" or (
         policy == "subscription" and subscription_available(APP_CODEX, policy, source)
     )
-    if source.is_file() and allowed:
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{destination.name}.", dir=destination.parent
-        )
-        os.close(descriptor)
-        temporary_path = Path(temporary)
-        try:
-            shutil.copyfile(source, temporary_path)
-            temporary_path.chmod(0o600)
-            temporary_path.replace(destination)
-        finally:
-            temporary_path.unlink(missing_ok=True)
-    else:
+    if not (source.is_file() and allowed):
         destination.unlink(missing_ok=True)
+        return
+    target = source.absolute()
+    if destination.is_symlink() and destination.readlink() == target:
+        return
+    pending = destination.parent / f".{destination.name}.{os.getpid()}.{os.urandom(4).hex()}"
+    try:
+        pending.symlink_to(target)
+        # Atomic: an interrupted relink keeps the previous entry.
+        pending.replace(destination)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def credential_warnings(plan: CredentialPlan) -> tuple[str, ...]:

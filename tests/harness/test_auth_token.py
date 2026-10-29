@@ -897,23 +897,32 @@ def test_plan_repr_never_contains_credential(isolated_home, monkeypatch):
     }
 
 
-def test_codex_auth_refresh_preserves_complete_copy_on_interruption(tmp_path, monkeypatch):
-    import shutil
+def test_codex_auth_link_replaces_legacy_copy_atomically(tmp_path, monkeypatch):
+    from tests.conftest import require_symlinks
 
+    require_symlinks(tmp_path)
     source = tmp_path / "source.json"
     destination = tmp_path / "auth.json"
     source.write_text('{"OPENAI_API_KEY":"NEW_SYNTHETIC"}')
     previous = b'{"OPENAI_API_KEY":"OLD_SYNTHETIC"}'
     destination.write_bytes(previous)
 
-    def interrupted_copy(source, target, *args, **kwargs):
-        Path(target).write_text('{"OPENAI_API_KEY":')
-        raise OSError("synthetic interrupted copy")
+    def interrupted_replace(self, target):
+        raise OSError("synthetic interrupted replace")
 
-    monkeypatch.setattr(shutil, "copyfile", interrupted_copy)
-    with pytest.raises(OSError, match="interrupted"):
-        auth_token.copy_codex_auth(source, destination)
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "replace", interrupted_replace)
+        with pytest.raises(OSError, match="interrupted"):
+            auth_token.link_codex_auth(source, destination)
+    # An interrupted relink keeps the previous entry and leaves no stray link.
     assert destination.read_bytes() == previous
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
+
+    auth_token.link_codex_auth(source, destination)
+    assert destination.is_symlink()
+    assert destination.resolve() == source.resolve()
+    # A second call with the link in place changes nothing.
+    auth_token.link_codex_auth(source, destination)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
 
 

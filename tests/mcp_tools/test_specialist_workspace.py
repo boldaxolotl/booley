@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
+import sys
+import tempfile
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -557,7 +561,7 @@ def test_snapshot_refuses_tracked_file_beneath_external_symlink_parent(tmp_path)
 def test_snapshot_rebases_relative_reentry_symlink_without_writing_live_files(
     tmp_path, monkeypatch
 ):
-    import tempfile
+    from contextlib import contextmanager
 
     from tests.conftest import symlink_or_skip
     from tests.test_target_catalog import _category_sim_core
@@ -573,15 +577,18 @@ def test_snapshot_rebases_relative_reentry_symlink_without_writing_live_files(
     (parent / "dut.sv").unlink()
     parent.rmdir()
     symlink_or_skip(parent, "../repo/shared", target_is_directory=True)
-    snapshots = tmp_path / "snapshots"
-    outsider = snapshots / "repo/shared"
+    # The snapshot root is <owned>/workspace, so "../repo/shared" escapes to
+    # <owned>/repo/shared: plant the outsider exactly there.
+    owned = tmp_path / "owned"
+    outsider = owned / "repo/shared"
     outsider.mkdir(parents=True)
     (outsider / "dut.sv").write_text("must remain unchanged\n")
-    original = tempfile.TemporaryDirectory
-    monkeypatch.setattr(
-        "booley.specialists.specialist_workspace.tempfile.TemporaryDirectory",
-        lambda **kwargs: original(dir=snapshots, **kwargs),
-    )
+
+    @contextmanager
+    def fixed_owned_dir(_prefix):
+        yield owned
+
+    monkeypatch.setattr("booley.specialists.specialist_workspace.owned_tempdir", fixed_owned_dir)
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with isolated_agent_workspace(params, "read_only", "rtl"):
         assert (outsider / "dut.sv").read_text() == "must remain unchanged\n"
@@ -835,3 +842,50 @@ def test_spaced_source_cannot_gain_opposite_scope(tmp_path, category, suffix, co
     assert name in partition
     assert validate_scope_category([name], category, repo)
     assert source.read_text() == "authored source\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs SIGKILL and the Linux Sandbox")
+def test_specialist_launch_reclaims_killed_run_scratch(tmp_path, monkeypatch):
+    """AC4/AC5: a launch removes the scratch of a SIGKILL-ed run and nothing else."""
+    from tests.owned_scratch_support import (
+        exited_process_payload,
+        kill_child_with_scratch,
+        write_marker,
+    )
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    repo = _repo(tmp_path)
+    killed = kill_child_with_scratch(repo, scratch, tmp_path / "home")
+    live = scratch / "booley-specialist-ro-live"
+    dead = scratch / "booley-specialist-ro-dead"
+    unmarked = scratch / "booley-specialist-ro-unmarked"
+    for directory in (live, dead, unmarked):
+        directory.mkdir()
+    from booley.runtime.pid import capture_process_identity
+
+    own_identity = capture_process_identity(os.getpid())
+    assert own_identity is not None
+    write_marker(live, own_identity.to_payload())
+    write_marker(dead, exited_process_payload())
+    endpoint = ReviewerSpecialist()
+    endpoint._args = argparse.Namespace(category=None, scope="", report_dir=None)
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    try:
+        with (
+            patch(
+                "booley.specialists.specialist._call_agent_sync",
+                return_value=AgentResult(output="ok"),
+            ),
+            patch(
+                "booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()
+            ),
+        ):
+            endpoint._invoke_agent(params, on_event=lambda _event: None)
+        assert [path for path in (*killed, dead) if path.exists()] == []
+        assert live.is_dir()
+        assert unmarked.is_dir()
+    finally:
+        for path in killed:  # unfixed code leaves the nested home in the real /tmp
+            shutil.rmtree(path, ignore_errors=True)
