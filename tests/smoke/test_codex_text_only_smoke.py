@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from booley.core.models import AgentCallParams
-from booley.runtime.text_only_agent import prepare_codex_text_only
+from booley.runtime.text_only_agent import _GATEWAY_BASE_INSTRUCTIONS, prepare_codex_text_only
 
 
 def _model():
@@ -128,6 +128,10 @@ def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
         assert result.returncode == 0, result.stderr + result.stdout
         assert len(requests) == 1
         assert not requests[0].get("tools")
+        # The seeded entry's instructions and the configured effort reach the request.
+        assert requests[0]["instructions"] == _GATEWAY_BASE_INSTRUCTIONS
+        assert requests[0]["reasoning"]["effort"] == "low"
+        assert '"type":"turn.completed"' in result.stdout
     finally:
         server.shutdown()
         server.server_close()
@@ -169,6 +173,7 @@ def _run_probe(
     if gateway:
         # The generated gateway provider and Booley MCP server stay out of the probe.
         command += ["-c", "mcp_servers.booley.enabled=false"]
+        command += ["-c", f'model_reasoning_effort="{params.reasoning_effort}"']
     environment = {**os.environ, "CODEX_HOME": str(original)}
     if gateway:
         environment |= {

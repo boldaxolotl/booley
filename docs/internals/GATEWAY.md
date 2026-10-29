@@ -23,8 +23,8 @@ hand-written devcontainer. Booley-issued Sandboxes take their policy from
 `[agent] provider` must be `codex`. Codex Specialists use the gateway; no
 OpenAI or Anthropic credential and no Codex login reaches them. The gateway
 host must be reachable from the Sandbox. Text-only Codex Specialists such as
-`coverage_analyst` use the gateway too, on the pinned model. They need no Codex
-models cache: Booley writes the model's catalog entry.
+`coverage_analyst` use the gateway too, on the same model as other Specialists.
+They need no Codex models cache: Booley writes the model's catalog entry.
 
 ## Validation
 

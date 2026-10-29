@@ -94,5 +94,5 @@ same provider configuration and token handling as other Specialists.
   Booley base instruction replaces Codex's coding-agent prompt.
 - **A text-only run under `gateway` without a nested tool allowlist fails
   loud**, because the provider shares `config.toml` with the Booley MCP server.
-- **Rejected:** failing with an actionable message, which would leave the
-  gateway Sandbox with no coverage analysis.
+- **Rejected:** refusing every text-only run under `gateway` with an actionable
+  message, which would leave the gateway Sandbox with no coverage analysis.
