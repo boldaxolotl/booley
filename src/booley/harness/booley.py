@@ -621,6 +621,12 @@ def _add_init_scaffold_arguments(init_p) -> None:
         metavar="PART",
         help="Scaffold: enable fpga for this Vivado part (default off)",
     )
+    init_p.add_argument(
+        "--stealth",
+        action="store_true",
+        help="Scaffold: keep Booley out of git history ([stealth] enabled = true, "
+        "Booley-authored cores under .booley/cores/; default off)",
+    )
 
 
 def _add_init_subparser(sub) -> None:
