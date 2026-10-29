@@ -389,6 +389,32 @@ def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path
     spawn.assert_not_called()
 
 
+def test_pre_sim_spawn_failure_records_no_command_start(tmp_path: Path) -> None:
+    from tests.flows.test_terminal_progress import observer
+
+    handle = _handle(tmp_path)
+    sink = observer(tmp_path, flow="sim")
+    with (
+        sink.installed(),
+        patch(
+            "booley.flows.sim.execution.pre_sim.subprocess.Popen",
+            side_effect=OSError("resource temporarily unavailable"),
+        ),
+    ):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+        )
+    assert evidence is not None and evidence.status == "failed"
+    assert "command started" not in sink.stream.getvalue(), (
+        "unstarted command must not record a start"
+    )
+    assert sink.worker is None
+
+
 def test_actual_hook_normalizes_invalid_utf8_output(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     evidence = run_pre_sim_commands(
