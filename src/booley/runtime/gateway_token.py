@@ -1,15 +1,17 @@
 """Gateway bearer token: the Codex ``auth.command`` helper and the token command.
 
 Codex runs ``python -P -m booley.runtime.gateway_token`` and reads the token
-from stdout. The helper prints ``BOOLEY_GATEWAY_TOKEN`` from the environment
-Codex inherited, so it never touches disk.
+from stdout. The helper prints the token for the environment Codex inherited
+(``BOOLEY_GATEWAY_TOKEN``, else the output of the token command), so it never
+touches disk. An interactive Codex session runs it on each auth call.
 
 ``BOOLEY_GATEWAY_TOKEN_COMMAND`` is the second token source (#2267, ADR 0080
-amendment). The Booley process that spawns Codex runs the command, keeps its
-output in memory for :data:`TOKEN_TTL_S`, and hands the result to the Codex
-child as ``BOOLEY_GATEWAY_TOKEN``. The token is never logged, put in an error
-message, or written to disk; a failing command's *stderr* is shown to the user
-verbatim, so the command must never print the token there.
+amendment). For a Specialist, the Booley process that spawns Codex runs the
+command, keeps its output in memory for :data:`TOKEN_TTL_S`, and hands the
+result to the Codex child as ``BOOLEY_GATEWAY_TOKEN``. The token is never
+logged, put in an error message, or written to disk; a failing command's
+*stderr* is shown to the user verbatim, so the command must never print the
+token there.
 """
 
 from __future__ import annotations
