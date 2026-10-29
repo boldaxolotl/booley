@@ -445,9 +445,14 @@ your input, or holding a pending Goal-change proposal), WORKING, and UNKNOWN
 belong to no session, and only while one runs. Inside a group the session that
 has been in its state longest comes first. Each row has the columns Session,
 Mode, Branch, Work dir, Started and Activity; a missing branch or work dir
-shows as a dim `—`. On a narrow terminal Started disappears first, then Work
-dir, then Branch, and values that still do not fit end in `…`. The Sessions
-tab reads `Sessions N◆` while N sessions need you.
+shows as a dim `—`. When the list is narrow (a narrow terminal, or beside the
+preview) Started disappears first, then Work dir, then Branch, and values that
+still do not fit end in `…`. On a terminal 120 columns or wider, a preview of
+the highlighted row sits beside the list: a session's mode, activity, branch,
+work dir, start age, connection, last Booley call, shared-worktree warning,
+Goal summary and unfinished Jobs, or a standalone Job's detail. `Enter` still
+opens the session detail. The Sessions tab reads `Sessions N◆` while N sessions
+need you.
 
 While the Jobs window is shown, the top bar also holds its filters: Running
 (queued or running Jobs), Finished (the newest 50) and All, then an owner chip.
