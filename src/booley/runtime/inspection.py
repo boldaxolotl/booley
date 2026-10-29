@@ -520,10 +520,11 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
     (ADR 0077) and never widen the rule.
     """
     selected = Path(value)
+    if value == sandbox_layout.BOOLEY_DIR_TARGET:
+        # Compared as text: a POSIX alias is not "absolute" to a Windows-flavoured Path.
+        return selected.is_dir()
     if not selected.is_absolute() or not selected.is_dir():
         return False  # relative spellings depend on cwd; dangling entries are not directories
-    if selected == Path(sandbox_layout.BOOLEY_DIR_TARGET):
-        return True
     if selected.name != BOOLEY_DIR_NAME:
         return False
     try:
