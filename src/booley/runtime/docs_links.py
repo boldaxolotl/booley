@@ -1,4 +1,4 @@
-"""Public URLs of Booley's user docs on the project site (ADR 0076).
+"""Public URLs of Booley's user docs on the project site (ADR 0081).
 
 ``docs/user/*.md`` is the only authored copy of the user docs; the project
 site publishes each file at ``docs/<slug>/``. Messages Booley prints for

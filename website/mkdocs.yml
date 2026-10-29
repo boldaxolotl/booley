@@ -31,7 +31,7 @@ plugins:
       draft_on_serve: true
 
 # Publishes the repository's docs/user/ at /docs/<slug>/ and builds the
-# Pagefind search index (ADR 0076).
+# Pagefind search index (ADR 0081).
 hooks:
   - hooks/user_docs.py
 
