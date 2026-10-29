@@ -1184,3 +1184,23 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
         return
     with flow.publication_resources:
         assert flow._next_invocation_dir(report_dir) == report_dir / "sim" / "1"
+
+
+def test_campaign_json_write_survives_transient_replace_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "simulation.json"
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    campaign_reports.write_campaign_json(path, {"passed": True})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"passed": True}
+    assert attempts[path] == 2
+
+
+def test_campaign_json_write_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "simulation.json"
+    attempts = hold_replaces(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        campaign_reports.write_campaign_json(path, {"passed": True})
+    assert attempts[path] > 1

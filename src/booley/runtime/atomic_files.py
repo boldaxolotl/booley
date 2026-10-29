@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from booley.runtime.filesystem_utils import replace_file
+from booley.runtime.filesystem_utils import replace_file, unlink_file
 
 
 class WriteOnceConflictError(RuntimeError):
@@ -76,7 +76,7 @@ def atomic_write_once(path: Path, content: bytes, *, mode: int = 0o600) -> bool:
 def durable_unlink(path: Path) -> bool:
     """Remove *path* and persist the removal; return whether it existed."""
     try:
-        path.unlink()
+        unlink_file(path)
     except FileNotFoundError:
         return False
     fsync_directory(path.parent)

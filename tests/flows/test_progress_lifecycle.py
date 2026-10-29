@@ -381,3 +381,103 @@ def test_coverage_supersede_follows_only_the_booley_dir_entry(tmp_path: Path, li
     assert (superseded, phase) == (
         (True, "superseded") if linked == "entry" else (False, "running")
     )
+
+
+def test_progress_write_survives_transient_replace_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.progress_lifecycle import write_progress_json
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "sim" / "1" / "progress.json"
+    document = _write_progress(path)
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    write_progress_json(path, {**document, "phase": "complete", "complete": True})
+    assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "complete"
+    assert attempts[path] == 2
+
+
+def test_progress_write_retries_before_raising_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.progress_lifecycle import write_progress_json
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "sim" / "1" / "progress.json"
+    document = _write_progress(path)
+    attempts = hold_replaces(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        write_progress_json(path, document)
+    assert attempts[path] > 1
+
+
+def _flaky_progress_open(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
+    from tests.sharing_error_support import flaky, no_retry_delay
+
+    no_retry_delay(monkeypatch)
+    opener, calls = flaky(progress_module.open_regular_nofollow, failures)
+    monkeypatch.setattr(progress_module, "open_regular_nofollow", opener)
+    return calls
+
+
+def test_progress_read_survives_transient_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "sim" / "1" / "progress.json"
+    _write_progress(path)
+    calls = _flaky_progress_open(monkeypatch, 1)
+    found = read_progress_for_run((tmp_path,), "sim", "run-1")
+    assert found is not None
+    assert found[0] == path
+    assert calls == [2]
+
+
+def test_progress_read_raises_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_progress(tmp_path / "sim" / "1" / "progress.json")
+    calls = _flaky_progress_open(monkeypatch, 100)
+    with pytest.raises(PermissionError):
+        read_progress_for_run((tmp_path,), "sim", "run-1")
+    assert calls[0] > 1
+
+
+def test_progress_read_keeps_posix_permission_error_as_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    _write_progress(tmp_path / "sim" / "1" / "progress.json")
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def deny(*_args: object, **_kwargs: object) -> int:
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(progress_module, "open_regular_nofollow", deny)
+    assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
+
+
+def test_held_checkpoint_of_another_run_does_not_hide_this_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from tests.sharing_error_support import no_retry_delay, sharing_error
+
+    mine = tmp_path / "sim" / "1" / "progress.json"
+    held = tmp_path / "sim" / "2" / "progress.json"
+    _write_progress(mine)
+    _write_progress(held, run_id="other")
+    os.utime(held, (mine.stat().st_atime + 10, mine.stat().st_mtime + 10))  # newest first
+    no_retry_delay(monkeypatch)
+    real_open = progress_module.open_regular_nofollow
+
+    def open_unless_held(path: Path, **kwargs: object) -> int:
+        if Path(path) == held:
+            raise sharing_error()
+        return real_open(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(progress_module, "open_regular_nofollow", open_unless_held)
+    found = read_progress_for_run((tmp_path,), "sim", "run-1")
+    assert found is not None
+    assert found[0] == mine

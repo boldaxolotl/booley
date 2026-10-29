@@ -182,3 +182,23 @@ def test_session_keys_match_the_registry_format():
     assert not activity.valid_thread_id("")
     assert not activity.valid_thread_id("a\nb")
     assert not activity.valid_thread_id(7)
+
+
+def test_activity_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = ActivityStore(tmp_path)
+    write_activity_signal(tmp_path, "codex:a", activity.WORKING, STAMP)
+    attempts = hold_opens(monkeypatch, {store.path("codex:a"): 1})
+    assert store.read("codex:a") == ActivitySignal("codex:a", activity.WORKING, STAMP)
+    assert attempts[store.path("codex:a")] == 2
+
+
+def test_lasting_activity_sharing_error_reads_unknown_after_retrying(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = ActivityStore(tmp_path)
+    write_activity_signal(tmp_path, "codex:a", activity.WORKING, STAMP)
+    attempts = hold_opens(monkeypatch, {store.path("codex:a"): 99})
+    assert store.read("codex:a") is None
+    assert attempts[store.path("codex:a")] > 1

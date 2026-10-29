@@ -83,9 +83,9 @@ class TestRecordRoundTrip:
     ):
         rec = jobrec.JobRecord(run_id="sim-held-1", endpoint="sim", started_at="t", timeout_s=60)
         jobrec.write_record(rec, root=_jobs_env)
-        monkeypatch.setattr(
-            "booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS", (0.0,), raising=False
-        )
+        from tests.sharing_error_support import retry_delays_target
+
+        monkeypatch.setattr(retry_delays_target(), (0.0,), raising=False)
         real_open = Path.open
 
         def held_open(path: Path, *args: object, **kwargs: object):

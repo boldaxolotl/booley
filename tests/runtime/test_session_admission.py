@@ -776,3 +776,40 @@ def test_project_inventory_still_inspects_possible_sandboxes(tmp_path: Path, row
     with pytest.raises(session_admission.AdmissionError):
         session_admission.running_project_sandboxes(project, run=run)
     assert inspected == ["odd-id"]
+
+
+def _pending_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
+    )
+    assert session_admission.claim_vscode_start(project, run=lambda *_a, **_kw: _completed())
+    root = session_admission._canonical_root(project)
+    return project, session_admission._store().root / session_admission._claim_filename(root)
+
+
+def test_claim_clear_survives_transient_unlink_sharing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, claim = _pending_claim(monkeypatch, tmp_path)
+    attempts = hold_unlinks(monkeypatch, {claim: 1})
+    assert session_admission.clear_vscode_claim(project) is True
+    assert attempts[claim] == 2
+    assert not claim.exists()
+
+
+def test_claim_clear_retries_before_raising_lasting_sharing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, claim = _pending_claim(monkeypatch, tmp_path)
+    attempts = hold_unlinks(monkeypatch, {claim: 99})
+    with pytest.raises(PermissionError):
+        session_admission.clear_vscode_claim(project)
+    assert attempts[claim] > 1

@@ -63,3 +63,30 @@ def test_durable_unlink_reports_whether_the_path_existed(tmp_path: Path) -> None
     assert atomic_files.durable_unlink(destination) is True
     assert not destination.exists()
     assert atomic_files.durable_unlink(destination) is False
+
+
+def test_durable_unlink_survives_transient_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    destination = tmp_path / "claim.json"
+    destination.write_bytes(b"claim\n")
+    attempts = hold_unlinks(monkeypatch, {destination: 1})
+    assert atomic_files.durable_unlink(destination) is True
+    assert not destination.exists()
+    assert attempts[destination] == 2
+
+
+def test_durable_unlink_retries_before_raising_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    destination = tmp_path / "claim.json"
+    destination.write_bytes(b"claim\n")
+    attempts = hold_unlinks(monkeypatch, {destination: 100})
+    with pytest.raises(PermissionError):
+        atomic_files.durable_unlink(destination)
+    assert attempts[destination] > 1
+    assert destination.exists()

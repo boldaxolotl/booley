@@ -19,6 +19,7 @@ from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
+from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.session_spec import (
     SessionSpecSnapshot,
@@ -256,7 +257,7 @@ def _load_journal(project_root: Path) -> _RefreshJournal | None:
 def _delete_journal(project_root: Path) -> None:
     store = _journal_store()
     path = store.root / _journal_name(project_root)
-    path.unlink(missing_ok=True)
+    unlink_file(path, missing_ok=True)
     if os.name != "nt":
         descriptor = os.open(store.root, os.O_RDONLY)
         try:

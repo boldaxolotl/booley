@@ -48,6 +48,7 @@ from booley.runtime.devcontainer import (
     spec_mounts_token_seed,
     spec_state_is_persisted,
 )
+from booley.runtime.filesystem_utils import read_file_bytes
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,7 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     try:
         spec = require_dict(
-            json.loads(path.read_text(encoding="utf-8")), field="devcontainer.json"
+            json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
     except (OSError, ValueError) as exc:
         report.fail(f"{path} does not parse: {exc}", "re-run booley init")
@@ -359,7 +360,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
     path = devcontainer_path(request.project_root)
     try:
         spec = require_dict(
-            json.loads(path.read_text(encoding="utf-8")), field="devcontainer.json"
+            json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:

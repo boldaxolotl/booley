@@ -21,7 +21,7 @@ from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime.job_records import JobRecord
-from tests.harness.test_dashboard import STAMP, snapshot
+from tests.harness.test_dashboard import STAMP, open_session, snapshot
 
 # Positions in the Jobs window's bar: Sessions, Jobs, Running, Finished, All, owner, Help.
 RUNNING, FINISHED, ALL, OWNER = 2, 3, 4, 5
@@ -169,11 +169,12 @@ async def test_owner_chip_cycles_handles_in_order_then_standalone():
     box = [world(jobs, handles={ALIAS_KEY: "S1"})]
     app = DashboardApp(lambda: box[0])
     async with app.run_test(size=(100, 24)) as pilot:
-        await pilot.press("right", "a")
+        await pilot.press("right")
+        await focus_bar(app, pilot)
+        await choose(app, pilot, ALL)
         assert owner_chip(app) == "All sessions"
         assert sorted(listed(app)) == ["alias", "alone", "gone", "one"]
 
-        await focus_bar(app, pilot)
         await choose(app, pilot, OWNER)
         assert owner_chip(app) == "S1"
         assert sorted(listed(app)) == ["alias", "one"]  # the alias-owned Job belongs to S1
@@ -208,24 +209,37 @@ async def test_owner_chip_cycles_handles_in_order_then_standalone():
         assert app.navigation.session is None
 
 
+async def _status_filter_keeps_owner_and_chip_clears_it(app, pilot):
+    """Inside the Jobs window a status filter keeps the owner and the chip clears it."""
+    await focus_bar(app, pilot)
+    await choose(app, pilot, OWNER)
+    await choose(app, pilot, FINISHED)
+    assert app.navigation.session == "codex:00"
+    for _ in range(3):  # S1 -> S2 -> Standalone -> All sessions
+        await choose(app, pilot, OWNER)
+    assert app.navigation.session is None
+
+
 @pytest.mark.asyncio
 async def test_jobs_window_opens_on_all_sessions_from_any_window_or_detail():
     current = world([job("one", "running", "codex:00"), job("two", "running")])
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(100, 24)) as pilot:
-        for key in ("j", "r", "a"):
-            await pilot.press("1", key)
+        for index in (RUNNING, FINISHED, ALL):
+            await open_session(app, pilot, "codex:00")
+            await pilot.press("right")
             assert app.navigation.view == "jobs"
-            assert app.navigation.session is None, f"{key} from a session detail"
+            assert app.navigation.session is None, f"filter {index} from a session detail"
             assert orientation(app).endswith("All sessions")
-        await pilot.press("1", "right")
-        assert (app.navigation.view, app.navigation.session) == ("jobs", None)
-        await pilot.press("s")
-        assert app.window == "sessions"
-        await pilot.press("right")
-        assert app.navigation.session is None
+            await focus_bar(app, pilot)
+            await choose(app, pilot, index)
+            await pilot.press("down")
+            assert orientation(app).endswith("All sessions")
+            await pilot.press("left", "escape")  # back to the overview
+            assert app.window == "sessions"
         # Through the Jobs tab of the top bar, from a session detail.
-        await pilot.press("1")
+        await pilot.press("left")
+        await open_session(app, pilot, "codex:00")
         await focus_bar(app, pilot)
         await choose(app, pilot, 1)
         assert (app.window, app.navigation.session) == ("jobs", None)
@@ -236,26 +250,20 @@ async def test_jobs_window_opens_on_all_sessions_from_any_window_or_detail():
         assert app.navigation.session == "codex:00"
         await choose(app, pilot, RUNNING)
         assert listed(app) == ["one"]
-        await pilot.press("down", "s")  # back to the list, then to Sessions
+        await pilot.press("down", "left")  # back to the list, then to Sessions
         await pilot.press("right")
         assert (app.navigation.session, app.navigation.job_filter) == (None, "running")
         assert sorted(listed(app)) == ["one", "two"]
 
-        # The same through j from a session detail.
+        # The same from the Sessions overview.
         await focus_bar(app, pilot)
         await choose(app, pilot, OWNER)
         assert app.navigation.session == "codex:00"
-        await pilot.press("down", "s", "1", "j")
+        await pilot.press("down", "left", "escape", "right")
         assert app.navigation.session is None
         assert sorted(listed(app)) == ["one", "two"]
 
-        # Inside the Jobs window r keeps the owner and u clears it.
-        await focus_bar(app, pilot)
-        await choose(app, pilot, OWNER)
-        await pilot.press("down", "r")
-        assert app.navigation.session == "codex:00"
-        await pilot.press("u")
-        assert app.navigation.session is None
+        await _status_filter_keeps_owner_and_chip_clears_it(app, pilot)
 
 
 @pytest.mark.asyncio
@@ -282,11 +290,12 @@ async def test_finished_empty_says_none_yet():
     current = world([job("a", "running", "codex:00"), job("b", "queued")])
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(100, 24)) as pilot:
-        await pilot.press("right", "r")
+        await pilot.press("right")
+        await focus_bar(app, pilot)
+        await choose(app, pilot, FINISHED)
         assert app.navigation.job_filter == "finished"
         assert listed(app) == []
         assert empty_text(app) == "No finished Jobs yet. 2 running — choose Running above."
-        await focus_bar(app, pilot)
         await choose(app, pilot, OWNER)
         assert owner_chip(app) == "S1"
         assert empty_text(app) == "No finished Jobs for S1 yet. 1 running — choose Running above."
@@ -352,8 +361,9 @@ async def test_no_jobs_filter_text_says_recent_or_results():
         app = DashboardApp(lambda snap=snap: snap)
         async with app.run_test(size=(100, 24)) as pilot:
             await pilot.press("right")
-            for key in ("j", "r", "a"):
-                await pilot.press(key)
+            for index in (RUNNING, FINISHED, ALL):
+                await focus_bar(app, pilot)
+                await choose(app, pilot, index)
                 texts += [bar_text(app), orientation(app), empty_text(app)]
     excerpt = GOAL_MODE_DOC.read_text(encoding="utf-8")
     excerpt = excerpt.split("The Dashboard has two windows")[1].split("Sessions have short")[0]
