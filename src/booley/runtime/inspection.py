@@ -517,10 +517,10 @@ def _check_runtime_isolation(project_root: Path, report: Findings) -> bool:
     if not identity_ok:
         expected = project_root / BOOLEY_DIR_NAME
         # repr() keeps a control character in the environment from forging report lines.
-        shown = repr(value) if value else "(unset)"
+        shown = "(unset)" if value is None else repr(value)
         report.fail(
-            f"Sandbox Booley Directory identity: BOOLEY_DIR={shown} is neither "
-            f"{BOOLEY_DIR_TARGET} nor an existing {expected}",
+            f"Sandbox Booley Directory identity: BOOLEY_DIR={shown} is not an existing "
+            f"{BOOLEY_DIR_TARGET} or {expected}",
             f"set BOOLEY_DIR to {expected} (an existing directory or a link to one), "
             "or open the Project through a Sandbox that Booley issued",
         )

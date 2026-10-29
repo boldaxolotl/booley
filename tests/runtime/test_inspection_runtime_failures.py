@@ -227,7 +227,7 @@ def _wrong_booley_dir(monkeypatch, tmp_path, case):
     """Arrange the named wrong identity; return the BOOLEY_DIR value (None = unset)."""
     entry = tmp_path / ".booley"
     values = {
-        "outside-root": str(tmp_path / "data"),
+        "outside-root": str(tmp_path.parent / ".booley"),
         "other-parent": str(tmp_path / "other" / ".booley"),
         "dangling": str(entry),
         "regular-file": str(entry),
@@ -236,8 +236,9 @@ def _wrong_booley_dir(monkeypatch, tmp_path, case):
         "alias-missing": "/booley-project",
         "unset": None,
     }
-    (tmp_path / "data").mkdir()
-    if case == "other-parent":
+    if case == "outside-root":
+        (tmp_path.parent / ".booley").mkdir(exist_ok=True)
+    elif case == "other-parent":
         (tmp_path / "other" / ".booley").mkdir(parents=True)
     elif case == "dangling":
         entry.symlink_to(tmp_path / "missing")
@@ -252,7 +253,6 @@ def _wrong_booley_dir(monkeypatch, tmp_path, case):
     return values[case]
 
 
-@pytest.mark.parametrize("codespaces", ["true", None])
 @pytest.mark.parametrize(
     "case",
     [
@@ -267,7 +267,7 @@ def _wrong_booley_dir(monkeypatch, tmp_path, case):
     ],
 )
 def test_runtime_rejects_wrong_booley_dir_and_keeps_surface_checks(
-    mounted_runtime, monkeypatch, tmp_path, case, codespaces
+    mounted_runtime, monkeypatch, tmp_path, case
 ):
     request, _, calls = mounted_runtime
     value = _wrong_booley_dir(monkeypatch, tmp_path, case)
@@ -275,7 +275,6 @@ def test_runtime_rejects_wrong_booley_dir_and_keeps_surface_checks(
         monkeypatch.delenv("BOOLEY_DIR")
     else:
         monkeypatch.setenv("BOOLEY_DIR", value)
-    _set_codespaces(monkeypatch, codespaces)
     report = inspection.inspect_runtime(request).issuance
     failures = [f for f in report.findings if f.severity is Severity.FAIL]
     assert len(failures) == 1

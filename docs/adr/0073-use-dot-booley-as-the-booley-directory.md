@@ -63,11 +63,14 @@ entry. A Sandbox without the `/booley-project` alias (a Codespace has no
 
 The rule reads only `BOOLEY_DIR`, the Project Root and the filesystem. It
 ignores `CODESPACES` and every other platform variable: they are ambient and
-spoofable, so Booley never infers trust from them (ADR 0077). Link targets are
-pinned on the host only; inside a Sandbox a `.booley` link to any existing
-directory is accepted. That adds no authority, because the Sandbox is the
-isolation boundary and the rule only checks that Doctor and the MCP server read
-the same directory.
+spoofable, so Booley never infers trust from them (ADR 0077).
+
+Link targets are pinned on the host only; inside a Sandbox a `.booley` link to
+any existing directory is accepted. That adds no authority, because the Sandbox
+is the isolation boundary (ADR 0079). The rule only checks that the spelling
+names the Project Root's own `.booley` entry, which the `..` ban keeps equal to
+the literal parent the MCP server derives. Workspace trust still refuses a
+spelling that resolves to the Project Root or one of its parents (ADR 0079).
 
 A failed identity check no longer stops inspection: the Docker-socket,
 EDA-credential, `~/.ssh` and Vivado checks still run and report.
