@@ -467,9 +467,12 @@ startup problems, see [Dashboard troubleshooting](TROUBLESHOOTING.md#the-dashboa
 `quiet_after` is a finite number of seconds from 60 through 604800, default
 7200 (two hours). Quiet thread and worktree-fallback presence expires at this
 threshold; process presence is removed only when its captured identity is
-observably gone, reused, or a zombie. Unknown liveness is retained. Quiet-session
-Doctor warnings describe the absence of recent attributable Booley calls;
-they do not establish client inactivity or abandonment and never end Goal Mode.
+observably gone, reused, or a zombie. Unknown liveness is retained. Any session
+is also hidden, then removed, once its client reports the session ended after
+its last Booley call; a session is listed from its first Booley tool call.
+Quiet-session Doctor warnings describe the absence of recent attributable
+Booley calls (they can follow an ended session within about a minute); they do
+not establish client inactivity or abandonment and never end Goal Mode.
 
 ## Advanced setups
 
