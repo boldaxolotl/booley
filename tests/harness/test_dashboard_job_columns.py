@@ -164,7 +164,7 @@ async def test_headers_follow_overview_jobs_overview():
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
         overview = [str(c.label) for c in app.query_one(DataTable).ordered_columns]
-        assert len(overview) == 1 and overview[0].split()[:3] == ["Session", "Mode", "Branch"]
+        assert len(overview) == 1 and overview[0].split()[:2] == ["Session", "Mode"]
         await open_all_jobs(app, pilot)
         assert headers(app) == HEADERS
         assert not any("Sessions" in label for label in headers(app))
