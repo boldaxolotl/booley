@@ -576,15 +576,20 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
 
     now = 1_800_000_000.0
     root = tmp_path / ".interactive_logs/old/.runtime/jobs"
-    for run_id, ended_ago in [("sim-expired", 2 * 86400), ("sim-recent", 3600)]:
-        ended = rfc3339_from_epoch(now - ended_ago)
+    for run_id, ended_ago in [
+        ("sim-expired", 2 * 86400),
+        ("sim-recent", 3600),
+        ("sim-running", None),
+    ]:
+        running = ended_ago is None
+        age = 3 * 86400 if running else ended_ago
         record = job_records.JobRecord(
             run_id,
             "sim",
-            rfc3339_from_epoch(now - ended_ago - 10),
+            rfc3339_from_epoch(now - age - 10),
             60,
-            status=job_records.STATUS_DONE,
-            ended_at=ended,
+            status=job_records.STATUS_RUNNING if running else job_records.STATUS_DONE,
+            ended_at=None if running else rfc3339_from_epoch(now - age),
             session_key="codex:gone",
         )
         job_records.write_record(record, root)
@@ -596,3 +601,4 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
     assert app._owner_handle(expired, {}) == "codex:gone"
     assert app._job_label(recent) == "J-SIM?"
     assert app._owner_handle(recent, {}) == "S?"
+    assert app._job_label(views["sim-running"]) == "J-SIM?"

@@ -169,7 +169,7 @@ def _prune_quietly() -> None:
         return
     try:
         prune_project_handles(booley_dir, now=time.time())
-    except (OSError, ValueError, UnicodeError, RecursionError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:  # includes UnicodeError, RecursionError
         logger.warning("Handle pruning skipped: %s", exc)
 
 

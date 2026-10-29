@@ -5,7 +5,7 @@ import pytest
 from booley.harness import doctor
 from booley.runtime import handles
 
-THRESHOLD = handles.MAX_MAP_BYTES * 3 // 4
+THRESHOLD = handles.MAP_WARN_BYTES
 
 
 @pytest.mark.parametrize(
