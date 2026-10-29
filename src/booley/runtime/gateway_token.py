@@ -14,11 +14,8 @@ verbatim, so the command must never print the token there.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import os
 import shlex
-import signal
 import subprocess
 import sys
 import threading
@@ -30,6 +27,11 @@ from booley.config.gateway import (
     GatewayConfigError,
     GatewaySettings,
     gateway_settings_from_env,
+)
+from booley.runtime.process_group import (
+    capture_process_group,
+    force_group_termination,
+    new_group_kwargs,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,15 +53,6 @@ def _failure(reason: str, stderr: bytes | None = None) -> GatewayTokenCommandErr
     if detail:
         message = f"{message}\n{detail}"
     return GatewayTokenCommandError(message)
-
-
-def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
-    """Kill *proc* and its descendants so none can hold the pipes open."""
-    if sys.platform == "win32":
-        proc.kill()
-        return
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)
 
 
 def _stderr_after_kill(proc: subprocess.Popen[bytes]) -> bytes:
@@ -96,7 +89,7 @@ def run_token_command(command: str, *, timeout_s: int = COMMAND_TIMEOUT_S) -> st
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
+            **new_group_kwargs(),
         )
     except (OSError, ValueError) as exc:
         # Raised below, outside the handler: the OSError names the program and the
@@ -106,6 +99,7 @@ def run_token_command(command: str, *, timeout_s: int = COMMAND_TIMEOUT_S) -> st
         start_failure = None
     if start_failure is not None:
         raise start_failure
+    group = capture_process_group(proc)
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -114,7 +108,7 @@ def run_token_command(command: str, *, timeout_s: int = COMMAND_TIMEOUT_S) -> st
     else:
         timed_out = False
     if timed_out:
-        _kill_process_group(proc)
+        force_group_termination(proc, group)
         raise _failure(f"timed out after {timeout_s} s", _stderr_after_kill(proc))
     if proc.returncode != 0:
         raise _failure(f"exited {proc.returncode}", stderr)
