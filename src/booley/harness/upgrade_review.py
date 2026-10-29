@@ -20,14 +20,15 @@ from typing import IO, Any
 
 from booley.core.boundary import (
     BoundaryError,
-    as_dict,
     as_str,
     require_dict,
     require_opt_str,
     require_str,
 )
+from booley.runtime import doctor_stamp
 from booley.runtime.changelog import ChangelogError, StableVersion, parse_releases
 from booley.runtime.file_lock import LockContentionError, acquire_file_lock, release_file_lock
+from booley.runtime.filesystem_utils import read_file_bytes, replace_file
 from booley.runtime.paths import changelog_path
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
 
@@ -166,7 +167,7 @@ def _validate_state(data: object) -> ReviewState:
 
 def _read_state(path: Path) -> ReviewState | None:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_file_bytes(path).decode("utf-8")
     except FileNotFoundError:
         return None
     except UnicodeError as exc:
@@ -180,11 +181,13 @@ def _read_state(path: Path) -> ReviewState | None:
 
 
 def _doctor_bootstrap_version(booley_dir: Path) -> StableVersion | None:
-    path = booley_dir / "runtime" / "doctor_stamp.json"
     try:
-        data = as_dict(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
-        return None
+        data = doctor_stamp.load_stamp(booley_dir)
+    except OSError as exc:
+        # A stamp held past the retry budget must not baseline the review at
+        # the running version and silently drop a pending upgrade review.
+        path = doctor_stamp.stamp_path(booley_dir)
+        raise ReviewStorageError(f"cannot read {path}: {exc}") from exc
     if data is None:
         return None
     try:
@@ -197,7 +200,7 @@ def _atomic_write(path: Path, state: ReviewState) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         temporary.write_text(json.dumps(state.payload(), indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        replace_file(temporary, path)
     except OSError as exc:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO
 
 from booley.core.file_lock import acquire_file_lock, release_file_lock
+from booley.core.sharing_retry import open_with_sharing_retry, replace_file
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +59,7 @@ class PrivateStore:
         path = self.root / filename
         if path.is_symlink():
             self._raise(f"{self.subject} file must not be a symlink: {path}")
-        descriptor = os.open(path, self._read_flags())
+        descriptor = open_with_sharing_retry(lambda: os.open(path, self._read_flags()), path)
         try:
             self._validate_private_file(path, os.fstat(descriptor))
             with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
@@ -96,7 +97,7 @@ class PrivateStore:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
-            temp_path.replace(path)
+            replace_file(temp_path, path)
             self._fsync_directory()
         finally:
             temp_path.unlink(missing_ok=True)

@@ -538,3 +538,32 @@ def test_maintenance_prunes_without_allocating_historical_handles(tmp_path_facto
         assert not handles.HandleStore(tmp_path, jobs=True).path.exists(), broken
         assert (root / "old.json").read_bytes() == before, broken
         assert store.path.read_text() == "broken" if broken else not store.path.exists(), broken
+
+
+def _saved_handle_store(tmp_path):
+    store = handles.HandleStore(tmp_path)
+    with handles.session_writer(tmp_path):
+        state = store.load()
+        state.reserve("codex:one", "S")
+        store.save(state)
+    return store
+
+
+def test_handle_map_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = _saved_handle_store(tmp_path)
+    attempts = hold_opens(monkeypatch, {store.path: 1})
+    assert store.load().labels() == {"codex:one": "S1"}
+    assert attempts[store.path] == 2
+
+
+def test_lasting_handle_map_sharing_error_is_a_snapshot_diagnostic(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = _saved_handle_store(tmp_path)
+    attempts = hold_opens(monkeypatch, {store.path: 99})
+    labels, diagnostics = store.snapshot()
+    assert labels == {}
+    assert "handles unavailable" in diagnostics[0]
+    assert attempts[store.path] > 1

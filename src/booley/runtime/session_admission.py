@@ -35,6 +35,7 @@ from booley.core.private_store import PrivateStore
 from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
+from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.platform_paths import host_path_from_docker_mount
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
@@ -152,7 +153,7 @@ def clear_vscode_claim(project_root: Path) -> bool:
     existed = path.exists()
     if existed:
         _load_claim(path)
-        path.unlink()
+        unlink_file(path)
     return existed
 
 
@@ -540,7 +541,7 @@ def _reconcile_claims(
         else:
             remaining.append(claim)
     for claim in consumed:
-        (_store().root / _claim_filename(claim.project_root)).unlink()
+        unlink_file(_store().root / _claim_filename(claim.project_root))
     return tuple(remaining), tuple(diagnostics)
 
 

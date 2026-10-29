@@ -455,12 +455,11 @@ sessions known only through retained Jobs), Standalone, and back. The Jobs tab
 shows how many Jobs are unfinished, and nothing when there are none. An empty
 list says why and which filter shows something.
 
-Press `s` for the session list, `j` for running Jobs, `r` for finished Jobs,
-or `a` for all Jobs; the Job keys open the Jobs window. The Jobs window opens
-on all sessions, whichever window or detail you came from, and keeps the
-Running, Finished or All choice while you switch windows; press `u` to go back
-to all sessions.
-`?` shows help.
+The Jobs window opens on all sessions, whichever window or detail you came
+from, and keeps the Running, Finished or All choice while you switch windows.
+
+The footer shows only the keys that apply where the cursor is, for example
+`↑↓ move · ⏎ open · ←→ Sessions / Jobs`; Help in the top bar summarizes them.
 
 The Jobs list has the columns Job, Target, Session, State, Result, Crit and
 Elapsed. Crit repeats the detail's `Criterion:` line as `✓` (met) or `✗` (not
@@ -473,8 +472,7 @@ Sessions have short, persistent Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
 Jobs use `SIM`, synthesis baseline Jobs use `SYN`, and other endpoints use `J-JOB<n>`. One Job counter covers every
 kind, so numbers may skip within a kind. Handles survive Dashboard restarts
-and session pruning. The `1`–`9` keys remain navigation shortcuts, independent
-of handles. Full session keys and Job run IDs are secondary text in details;
+and session pruning. Full session keys and Job run IDs are secondary text in details;
 MCP polling continues to use the full run ID.
 
 Sessions receive handles when registered; Jobs receive them when created.

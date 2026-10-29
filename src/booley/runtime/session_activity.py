@@ -19,6 +19,7 @@ from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
@@ -124,7 +125,7 @@ class ActivityStore:
             refuse_symlinks(path, booley_dir=self.booley_dir)
             if path.stat().st_size > MAX_SIGNAL_BYTES:
                 return None
-            return _parse(path.read_bytes(), key)
+            return _parse(read_file_bytes(path), key)
         except (OSError, ValueError, UnicodeError):
             return None
 

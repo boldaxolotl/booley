@@ -82,3 +82,27 @@ def test_feedback_report_renders_real_doctor_stamp(tmp_path, monkeypatch):
 
     report = (booley_dir / "SETUP-REPORT.md").read_text(encoding="utf-8")
     assert "| doctor --deep clean | yes |" in report
+
+
+def _record_deep_stamp(tmp_path):
+    booley_dir = tmp_path / ".booley"
+    doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=True)
+    return booley_dir, doctor_stamp.stamp_path(booley_dir)
+
+
+def test_feedback_environment_survives_transient_stamp_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir, path = _record_deep_stamp(tmp_path)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert feedback_environment.resolve_feedback_environment(booley_dir).doctor_deep_clean is True
+    assert attempts[path] == 2
+
+
+def test_feedback_environment_is_fail_soft_for_lasting_stamp_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir, path = _record_deep_stamp(tmp_path)
+    attempts = hold_opens(monkeypatch, {path: 1000})
+    assert feedback_environment.resolve_feedback_environment(booley_dir).doctor_deep_clean is None
+    assert attempts[path] > 1

@@ -18,6 +18,7 @@ from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
+from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime import health
 from booley.runtime.job_records import JobRecord
@@ -106,6 +107,39 @@ def snapshot(count=12):
     )
 
 
+async def open_session(app, pilot, key):
+    """Arrow the overview cursor onto a session row and press Enter.
+
+    Works wherever the cursor is and whatever the group order; group header
+    rows never hold the cursor, so the walk is bounded by the row count.
+    """
+    table = app.query_one(DataTable)
+    target = app.row_keys.index(key)
+    for _ in range(len(app.row_keys)):
+        if table.cursor_row == target:
+            break
+        await pilot.press("down" if table.cursor_row < target else "up")
+    assert app._selected_key() == key
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+async def choose_in_bar(app, pilot, label):
+    """Reach the top bar, arrow to the item whose label starts with `label`, apply it.
+
+    Focus stays on the bar afterwards; callers press `down` to return to the list.
+    """
+    if not isinstance(app.focused, TopBar):
+        await pilot.press("up")
+    assert isinstance(app.focused, TopBar), "up did not reach the top bar"
+    bar = app.query_one(TopBar)
+    labels = [item[0] for item in bar._items()]
+    index = next(index for index, text in enumerate(labels) if text.startswith(label))
+    step = index - bar.cursor
+    await pilot.press(*(["right" if step > 0 else "left"] * abs(step)), "enter")
+    await pilot.pause()
+
+
 @pytest.mark.asyncio
 async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_details():
     current = snapshot(12)
@@ -124,12 +158,12 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
         # Row 0 is the UNKNOWN group header; S1 follows it.
         assert "J-SIM1" in str(app._content()[2][1])
         assert "codex:00" not in str(app._content()[2])
-        await pilot.press("1")
+        await open_session(app, pilot, "codex:00")
         orientation, _, rows = app._content()
         assert orientation.startswith("S1 ·")
         assert "Session key: codex:00" in orientation
         assert "J-SIM1" in str(rows)
-        await pilot.press("j")
+        await pilot.press("right")
         orientation, _, rows = app._content()
         # The Jobs window starts on all sessions, whichever session it was reached from.
         assert orientation.endswith(" · All sessions")
@@ -178,23 +212,25 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("shortcut", "job_filter", "expected"),
+    ("label", "job_filter", "expected"),
     [
-        ("r", "finished", ["two"]),
-        ("j", "running", ["one"]),
-        ("a", "all", ["one", "two"]),
+        ("Finished", "finished", ["two"]),
+        ("Running", "running", ["one"]),
+        ("All", "all", ["one", "two"]),
     ],
 )
 @pytest.mark.parametrize("scoped", [False, True])
-async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
-    shortcut, job_filter, expected, scoped
+async def test_jobs_filter_opens_jobs_window_and_left_returns_to_sessions(
+    label, job_filter, expected, scoped
 ):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
         if scoped:
-            await pilot.press("1")
-        await pilot.press(shortcut)
+            await open_session(app, pilot, "codex:00")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, label)
+        await pilot.press("down")
         assert app.navigation.view == "jobs"
         assert app.navigation.job_filter == job_filter
         assert app.navigation.session is None
@@ -202,7 +238,11 @@ async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
         previous = app.navigation
         previous_rows = app.row_keys.copy()
 
-        await pilot.press("s")
+        await pilot.press("left")
+        # A scoped visit left the session detail open; Esc steps back to the overview.
+        if scoped:
+            assert app.navigation.view == "session"
+            await pilot.press("escape")
         assert app.navigation.view == "overview"
         assert app.navigation.session is None
         assert app.row_keys == [
@@ -222,60 +262,71 @@ async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shortcut", ["j", "r", "a"])
+@pytest.mark.parametrize("label", ["Running", "Finished", "All"])
 @pytest.mark.parametrize("via_help", [False, True])
-async def test_all_job_owners_shortcut_preserves_filter(shortcut, via_help):
+async def test_owner_chip_back_to_all_sessions_preserves_filter(label, via_help):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
-        await pilot.press("1", shortcut)
+        await open_session(app, pilot, "codex:00")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, label)
         job_filter = app.navigation.job_filter
+        # The chip cycles All sessions -> S1 -> S2 -> Standalone -> All sessions.
+        await choose_in_bar(app, pilot, "Owner")
+        assert app.navigation.session == "codex:00"
         if via_help:
-            await pilot.press("?")
-        await pilot.press("u")
+            await choose_in_bar(app, pilot, "Help")
+            await pilot.press("down", "escape")
+        for _ in range(3):
+            await choose_in_bar(app, pilot, "Owner")
         assert app.navigation.view == "jobs"
         assert app.navigation.session is None
         assert app.navigation.job_filter == job_filter
-        expected = {"j": ["one"], "r": ["two"], "a": ["one", "two"]}
-        assert [json.loads(key)[1] for key in app.row_keys] == expected[shortcut]
+        expected = {"Running": ["one"], "Finished": ["two"], "All": ["one", "two"]}
+        assert [json.loads(key)[1] for key in app.row_keys] == expected[label]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shortcut", ["j", "r", "a"])
-async def test_all_job_owners_shortcut_from_narrow_job_detail(shortcut):
+@pytest.mark.parametrize("label", ["Running", "Finished", "All"])
+async def test_filter_choice_from_narrow_job_detail_returns_to_list(label):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
-        await pilot.press(shortcut, "enter")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, label)
+        await pilot.press("down", "enter")
         assert app.navigation.view == "job"
         job_filter = app.navigation.job_filter
-        await pilot.press("u")
+        await choose_in_bar(app, pilot, label)
         assert app.navigation.view == "jobs"
         assert app.navigation.session is None
         assert app.navigation.job_filter == job_filter
-        expected = {"j": ["one"], "r": ["two"], "a": ["one", "two"]}
-        assert [json.loads(key)[1] for key in app.row_keys] == expected[shortcut]
+        expected = {"Running": ["one"], "Finished": ["two"], "All": ["one", "two"]}
+        assert [json.loads(key)[1] for key in app.row_keys] == expected[label]
 
 
 @pytest.mark.asyncio
-async def test_session_arrows_help_back_and_quit_shortcuts():
+async def test_session_arrows_help_back_and_quit():
     current = snapshot()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
         for number in range(1, 10):
-            await pilot.press(str(number))
+            await open_session(app, pilot, f"codex:{number - 1:02}")
             assert app.navigation.view == "session"
             assert app.navigation.session == f"codex:{number - 1:02}"
-        await pilot.press("s", "down", "enter")
+            await pilot.press("escape")
+        await open_session(app, pilot, "codex:01")
         assert app.navigation.session == "codex:01"
         await pilot.press("escape", "up", "enter")
         assert app.navigation.session == "codex:00"
-        await pilot.press("j")
+        await pilot.press("right")
         previous = app.navigation
         previous_rows = app.row_keys.copy()
-        await pilot.press("?")
+        await choose_in_bar(app, pilot, "Help")
+        await pilot.press("down")
         assert app.navigation.view == "help"
-        assert "Navigation is read-only" in str(app.query_one("#detail", Static).render())
+        assert "read-only" in str(app.query_one("#detail", Static).render())
         await pilot.press("escape")
         assert app.navigation == previous
         assert app.row_keys == previous_rows
@@ -349,30 +400,39 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         from textual.coordinate import Coordinate
 
         assert isinstance(app.query_one(DataTable).get_cell_at(Coordinate(0, 0)), Text)
-        await pilot.press("1")
+        await open_session(app, pilot, "codex:00")
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
         await _inspect_goals_and_proposal(app, pilot)
-        await pilot.press("j")
-        assert app.navigation.session is None
-        assert len(app.row_keys) == 1
-        await pilot.press("enter")
-        assert app.navigation.view == "job"
-        await pilot.press("escape", "escape", "r")
-        assert app.navigation.job_filter == "finished"
-        assert [json.loads(key)[1] for key in app.row_keys] == ["two"]
-        await pilot.press("u")
-        assert app.navigation.view == "jobs"
-        assert app.navigation.session is None
-        assert len(app.row_keys) == 1
-        await pilot.press("?", "escape")
-        assert app.navigation.view == "jobs"
-        await pilot.press("s")
+        await _inspect_jobs_window_and_help(app, pilot)
+        # Left shows Sessions with the session detail still open; Esc steps back.
+        await pilot.press("left", "escape")
+        assert app.navigation.view == "overview"
         app.query_one(DataTable).move_cursor(row=app.row_keys.index("codex:11"))
         await pilot.press("enter")
         assert app.navigation.session == "codex:11"
         current = replace(current, sessions=())
         await app.refresh_snapshot()
         assert "disconnected" in str(app.query_one("#orientation", Static).render())
+
+
+async def _inspect_jobs_window_and_help(app, pilot):
+    await pilot.press("right")
+    assert app.navigation.session is None
+    assert len(app.row_keys) == 1
+    await pilot.press("enter")
+    assert app.navigation.view == "job"
+    await pilot.press("escape")
+    await choose_in_bar(app, pilot, "Finished")
+    await pilot.press("down")
+    assert app.navigation.job_filter == "finished"
+    assert [json.loads(key)[1] for key in app.row_keys] == ["two"]
+    # The Jobs window lists every owner; the owner chip is not scoped.
+    assert app.navigation.view == "jobs"
+    assert app.navigation.session is None
+    assert len(app.row_keys) == 1
+    await choose_in_bar(app, pilot, "Help")
+    await pilot.press("down", "escape")
+    assert app.navigation.view == "jobs"
 
 
 async def _inspect_goals_and_proposal(app, pilot):
@@ -428,7 +488,7 @@ async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
     current = replace(current, jobs=JobSnapshot((*current.jobs.jobs, *extra)))
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
-        await pilot.press("j")
+        await pilot.press("right")
         assert app.query_one("#aside").display
         previous = app.navigation
         await pilot.press("enter")
@@ -494,7 +554,6 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
             "codex:01": Activity(WAITING_USER, STAMP),
         },
     )
-    app._assign_shortcuts()
     keys, rows = app._overview()[1], [row[0].plain for row in app._overview()[2]]
     by_key = dict(zip(keys, rows, strict=True))
     # The overview says the same thing shorter, and the third session has no signal.
@@ -507,14 +566,10 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     assert "\nActivity unknown" in app._session()[0]
 
 
-def test_stable_shortcuts_and_unknown_activity_without_client_signals():
+def test_unknown_activity_without_client_signals():
     app = DashboardApp(snapshot)
-    app.snapshot = snapshot()
-    app._assign_shortcuts()
-    numbers = dict(app.shortcuts)
-    app.snapshot = replace(app.snapshot, sessions=app.snapshot.sessions[1:])
-    app._assign_shortcuts()
-    assert app.shortcuts["codex:01"] == numbers["codex:01"]
+    # The first session owns a running Job, which its Activity cell lists after "unknown".
+    app.snapshot = replace(snapshot(), sessions=snapshot().sessions[1:])
     keys, rows = app._overview()[1], app._overview()[2]
     session_rows = [
         row[0].plain for key, row in zip(keys, rows, strict=True) if key.startswith("codex:")
@@ -784,9 +839,9 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
 
     app = DashboardApp(lambda: current, opener)
     async with app.run_test(size=(max(90, 2 * max(len(report), len(log)) + 40), 40)) as pilot:
-        await pilot.press("r")
-        await pilot.pause()
-        await pilot.press("enter")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, "Finished")
+        await pilot.press("down", "enter")
         assert app.navigation.view == ("job" if app.size.width < 120 else "jobs")
         detail = app.query_one("#detail", Static)
         lines = str(detail.render()).split("\n")
@@ -879,7 +934,6 @@ async def test_time_display_pilot_snapshots(monkeypatch):
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    app._assign_shortcuts()
     orientation, _ = app._session()
     assert "Started 10m ago" in orientation
     assert "· 10m ago" in orientation
@@ -1255,8 +1309,9 @@ async def _result_pilot(report, expected, code=0, compact=False):
     current = replace(snapshot(1), jobs=JobSnapshot((item,)))
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("r")
-        await pilot.pause()
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, "Finished")
+        await pilot.press("down")
         widget = app.query_one("#detail", Static)
         text = str(widget.content)
         assert "Flow result:" in text, "Pilot must show the new Flow result in the selected pane"

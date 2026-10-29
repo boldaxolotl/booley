@@ -5275,3 +5275,30 @@ def test_session_owner_selection_routes(tmp_path, monkeypatch, route):
         ]
     assert _linked_cli(monkeypatch, argv) == 0
     assert selected == [root]
+
+
+def _write_spec_file(workspace: Path) -> Path:
+    path = dc.devcontainer_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"image": "x"}', encoding="utf-8")
+    return path
+
+
+def test_spec_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    path = _write_spec_file(tmp_path)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert sr._load_spec(tmp_path) == {"image": "x"}
+    assert attempts[path] == 2
+
+
+def test_lasting_spec_sharing_error_is_a_session_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    path = _write_spec_file(tmp_path)
+    attempts = hold_opens(monkeypatch, {path: 99})
+    with pytest.raises(sr.SessionError, match="could not read") as caught:
+        sr._load_spec(tmp_path)
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[path] > 1
