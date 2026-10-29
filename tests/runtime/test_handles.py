@@ -567,3 +567,32 @@ def test_lasting_handle_map_sharing_error_is_a_snapshot_diagnostic(tmp_path, mon
     assert labels == {}
     assert "handles unavailable" in diagnostics[0]
     assert attempts[store.path] > 1
+
+
+def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch):
+    from booley.harness.dashboard import app
+    from booley.harness.dashboard.model import DashboardReader
+    from booley.runtime.timefmt import rfc3339_from_epoch
+
+    now = 1_800_000_000.0
+    root = tmp_path / ".interactive_logs/old/.runtime/jobs"
+    for run_id, ended_ago in [("sim-expired", 2 * 86400), ("sim-recent", 3600)]:
+        ended = rfc3339_from_epoch(now - ended_ago)
+        record = job_records.JobRecord(
+            run_id,
+            "sim",
+            rfc3339_from_epoch(now - ended_ago - 10),
+            60,
+            status=job_records.STATUS_DONE,
+            ended_at=ended,
+            session_key="codex:gone",
+        )
+        job_records.write_record(record, root)
+    monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
+    monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: now)
+    views = {j.record.run_id: j for j in DashboardReader(tmp_path, tmp_path).read().jobs.jobs}
+    expired, recent = views["sim-expired"], views["sim-recent"]
+    assert app._job_label(expired) == "sim-expired"
+    assert app._owner_handle(expired, {}) == "codex:gone"
+    assert app._job_label(recent) == "J-SIM?"
+    assert app._owner_handle(recent, {}) == "S?"

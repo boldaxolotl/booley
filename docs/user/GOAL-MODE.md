@@ -468,17 +468,24 @@ Targets are cut with `…` first (down to six characters), then long Result
 words. The Job detail (beside the list on wide windows, or open with Enter) shows the
 full values, plus the exit code, the stage and the session's connection.
 
-Sessions have short, persistent Project handles such as `S17`. Jobs include
+Sessions have short Project handles such as `S17`. Jobs include
 their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
 Jobs use `SIM`, synthesis baseline Jobs use `SYN`, and other endpoints use `J-JOB<n>`. One Job counter covers every
-kind, so numbers may skip within a kind. Handles survive Dashboard restarts
-and session pruning. Full session keys and Job run IDs are secondary text in details;
+kind, so numbers may skip within a kind. Handles survive Dashboard restarts.
+Full session keys and Job run IDs are secondary text in details;
 MCP polling continues to use the full run ID.
 
-Sessions receive handles when registered; Jobs receive them when created.
-Historical records without allocations keep `S?` or `J-SIM?` (and the equivalent
-for other kinds). Handle-storage failures show a diagnostic. The Dashboard
-itself only reads handles and never allocates them.
+Sessions receive handles when registered; Jobs receive them when created. A Job
+keeps its handle while it runs and for 24 hours after it ends. A session keeps
+its handle while its presence is current (presence expires after about two idle
+hours), while it owns such a Job, or, for a tab started with `booley chat`,
+while that tab's process is still running, so a session resumed after a long
+pause may get a new handle. When the Booley MCP server starts, it removes the
+other handles and restarts numbering at 1 once none are left. An expired Job
+shows its run ID in place of a handle. `S?` or `J-SIM?` (and the equivalent for
+other kinds) marks a live session or Job without a handle. Handle-storage
+failures show a diagnostic. The Dashboard itself only reads handles and never
+allocates or removes them.
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none. In a
