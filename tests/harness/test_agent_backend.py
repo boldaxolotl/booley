@@ -1067,7 +1067,7 @@ class TestCallOnceTimeoutResultSalvage:
         counters = cb._UsageCounters()
         counters.final_text = "partial findings so far"
 
-        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st):
+        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st, **_kwargs):
             c.got_result = True  # result already landed before the stall
             raise TimeoutError
 
@@ -1096,7 +1096,7 @@ class TestCallOnceTimeoutResultSalvage:
         backend = ClaudeSDKBackend()
         counters = cb._UsageCounters()
 
-        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st):
+        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st, **_kwargs):
             raise TimeoutError  # no result captured
 
         with (
