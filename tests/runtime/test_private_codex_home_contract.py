@@ -18,6 +18,7 @@ def _isolate_scratch(tmp_path, monkeypatch) -> Path:
     scratch.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Path.home() on Windows
     monkeypatch.delenv("CODEX_HOME", raising=False)
     return scratch
 
