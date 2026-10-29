@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -154,13 +155,8 @@ def _private_codex_destination(tmp_path, monkeypatch, kind):
     from booley.runtime.text_only_agent import prepare_codex_text_only
 
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
-    monkeypatch.setattr(
-        cb,
-        "Path",
-        lambda value: (
-            tmp_path / Path(value).name if str(value).startswith("/tmp/codex-") else Path(value)
-        ),
-    )
+    # Nested homes are created under the system temp directory.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     if kind == "text-only":
         original = tmp_path / "original"

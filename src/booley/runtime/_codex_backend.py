@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import copy
 import json
@@ -56,6 +57,8 @@ from .agent_errors import (
     is_usage_limit,
 )
 from .gateway_token import gateway_token_for, refresh_gateway_token
+from .owned_scratch import mark_owned, remove_owned, scratch_root
+from .pid import capture_process_identity
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
@@ -477,13 +480,29 @@ def _codex_thread_id(events: list[dict[str, Any]]) -> str | None:
 _NESTED_HOMES: dict[str, str] = {}
 
 
+def _remove_nested_homes() -> None:
+    """Remove every nested home this process created (runs at normal interpreter exit)."""
+    for home in list(_NESTED_HOMES.values()):
+        remove_owned(Path(home))
+    _NESTED_HOMES.clear()
+
+
+# A SIGKILL or default-disposition SIGTERM skips this; the next sweep reclaims it.
+atexit.register(_remove_nested_homes)
+
+
 def _ticket_home_scope() -> str:
-    """Return a filesystem-safe namespace unique to this ticket run."""
+    """Return a filesystem-safe namespace unique to this process incarnation.
+
+    The process start token keeps a reused PID from re-adopting the
+    deterministic home path of a dead process.
+    """
     import hashlib
-    import os
 
     slug = os.environ.get("BOOLEY_SLUG", "").strip() or "ticket"
-    identity = f"{slug}-pid-{os.getpid()}"
+    process = capture_process_identity(os.getpid())
+    start_token = process.start_token if process is not None else 0
+    identity = f"{slug}-pid-{os.getpid()}-{start_token}"
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in identity)[:32]
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
     return f"{safe or 'ticket'}-{digest}"
@@ -495,7 +514,7 @@ def _populate_private_codex_home(
     enabled_mcp_tools: list[str] | None = None,
     auth_mode: str = "auto",
 ) -> None:
-    """Regenerate one destination config and copy the existing native credential."""
+    """Regenerate one destination config and link the existing native credential."""
     from .mcp_config import generate_codex_config
 
     config_path = codex_dir / "config.toml"
@@ -513,9 +532,9 @@ def _populate_private_codex_home(
         ),
         encoding="utf-8",
     )
-    from .auth_token import copy_codex_auth, subscription_creds_path
+    from .auth_token import link_codex_auth, subscription_creds_path
 
-    copy_codex_auth(subscription_creds_path("codex"), codex_dir / "auth.json", auth_mode)
+    link_codex_auth(subscription_creds_path("codex"), codex_dir / "auth.json", auth_mode)
 
 
 def _ensure_nested_codex_home(
@@ -543,9 +562,9 @@ def _ensure_nested_codex_home(
     cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}:{auth_mode}"
     cached = _NESTED_HOMES.get(cache_key)
     if cached is not None:
-        from .auth_token import copy_codex_auth, subscription_creds_path
+        from .auth_token import link_codex_auth, subscription_creds_path
 
-        copy_codex_auth(
+        link_codex_auth(
             subscription_creds_path("codex"), Path(cached) / ".codex" / "auth.json", auth_mode
         )
         return cached
@@ -556,9 +575,10 @@ def _ensure_nested_codex_home(
     safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in (parent_label or "anon"))[
         :40
     ]
-    nested = Path(f"/tmp/codex-nested-home-{ticket_scope}-{safe_label}-{digest}")
+    nested = scratch_root() / f"codex-nested-home-{ticket_scope}-{safe_label}-{digest}"
     codex_dir = nested / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
+    mark_owned(nested)
 
     # Forward all BOOLEY_* env so MCP-spawned MCP endpoint subprocesses (run_sim_batch,
     # bwave, etc.) can locate the project, logs dir, and ticket slug. Codex

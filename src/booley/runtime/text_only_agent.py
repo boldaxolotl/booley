@@ -73,9 +73,9 @@ def prepare_codex_text_only(
     private = Path(params.cwd) / ".text-only-codex"
     private.mkdir(exist_ok=True, mode=0o700)
     catalog = _write_catalog(private, selected)
-    from .auth_token import copy_codex_auth
+    from .auth_token import link_codex_auth
 
-    copy_codex_auth(original / "auth.json", private / "auth.json", auth_mode)
+    link_codex_auth(original / "auth.json", private / "auth.json", auth_mode)
     if params.nested_mcp_tools:
         _write_config(private, params, gateway_url)
     env = {**environment, "CODEX_HOME": str(private)}
