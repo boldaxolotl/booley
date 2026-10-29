@@ -259,6 +259,8 @@ def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": "claude"}))
+    # The chat launcher resolves the CLI first; CI hosts have no claude on PATH.
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda provider, **_kw: f"/bin/{provider}")
     monkeypatch.setattr(chat_cmd, "capture_process_identity", lambda _pid: object())
     monkeypatch.setattr(chat_cmd, "process_session_key", lambda _identity: "key")
     monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args: "S17")

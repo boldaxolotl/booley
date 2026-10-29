@@ -30,7 +30,14 @@ class AgentBackend(Protocol):
         params: AgentCallParams,
         **kwargs: Any,
     ) -> AgentResult:
-        """Run an agent with the given params and return the result."""
+        """Run an agent with the given params and return the result.
+
+        Optional keyword ``on_start``: a callable the backend invokes once it
+        confirms the agent started (the child spawned, or the first message
+        arrived). It may be invoked more than once (per attempt or message), so
+        callers pass an idempotent callable, and it must not raise: a raise
+        would abort a call that is already running.
+        """
         ...
 
     def health_check(self) -> str | None:

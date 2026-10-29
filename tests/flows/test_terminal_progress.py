@@ -741,6 +741,17 @@ def test_missing_executable_finishes_observation_and_can_run_again(tmp_path):
     assert "second command" in sink.stream.getvalue()
 
 
+def test_missing_executable_records_no_command_start(tmp_path):
+    flow = LintFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
+    sink = observer(tmp_path, flow="lint", tool_output=True)
+    with sink.installed():
+        assert flow._execute_boundary([str(tmp_path / "missing-tool")]).returncode == -1
+    assert "command started" not in sink.stream.getvalue(), (
+        "unstarted command must not record a start"
+    )
+
+
 def test_campaign_worker_inherits_invocation_observer(tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace

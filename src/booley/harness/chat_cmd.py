@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -44,6 +45,12 @@ def _claude_argv(project_root: Path, agent_args: list[str]) -> list[str]:
         return ["claude"]
 
 
+def _cli_not_found(provider: str) -> int:
+    """Report that the configured agent CLI is absent and return the exit code."""
+    print(f"ERROR: configured agent CLI '{provider}' was not found on PATH.", file=sys.stderr)
+    return 2
+
+
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """Replace Booley with the Project's configured interactive agent CLI."""
     try:
@@ -57,8 +64,11 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         print(f"ERROR: could not resolve the Project's agent provider: {exc}", file=sys.stderr)
         return 2
 
+    # Existence only (F_OK): a non-executable file keeps the launch error below.
+    if shutil.which(provider, mode=os.F_OK) is None:
+        return _cli_not_found(provider)
+
     try:
-        print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
         executable, argv = provider, [provider]
         if provider == "codex":
             try:
@@ -67,12 +77,12 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
                 print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
         elif provider == "claude":
             argv = _claude_argv(project_root, args.agent_args)
+        # Last statement before the process is replaced: the CLI exists and the
+        # launch arguments are settled, so the notice only precedes a real start.
+        print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
         os.execvp(executable, [*argv, *args.agent_args])
     except FileNotFoundError:
-        print(
-            f"ERROR: configured agent CLI '{provider}' was not found on PATH.",
-            file=sys.stderr,
-        )
+        return _cli_not_found(provider)
     except OSError as exc:
         print(f"ERROR: could not launch agent CLI '{provider}': {exc}", file=sys.stderr)
     return 2

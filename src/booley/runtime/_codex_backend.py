@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
@@ -270,6 +270,7 @@ class CodexBackend:
         **kwargs: Any,
     ) -> AgentResult:
         on_event = kwargs.pop("on_event", None)
+        on_start = kwargs.pop("on_start", None)
         tag = self._log_start(params)
         full_prompt = _codex_build_prompt(
             params.prompt,
@@ -288,6 +289,7 @@ class CodexBackend:
                     full_prompt=full_prompt,
                     transcript_path=_transcript_path_for_attempt(params.transcript_path, launch),
                     on_event=on_event,
+                    on_start=on_start,
                 )
             except (UsageLimitError, ContextExhaustedError):
                 raise
@@ -323,6 +325,7 @@ class CodexBackend:
         full_prompt: str,
         transcript_path: Path | None,
         on_event: Any = None,
+        on_start: Callable[[], None] | None = None,
     ) -> AgentResult:
         """Single Codex CLI invocation."""
         source = transcript_path_for_label(transcript_path, params.label)
@@ -340,6 +343,7 @@ class CodexBackend:
                 full_prompt=full_prompt,
                 on_event=on_event,
                 auth_mode=self._auth_mode,
+                on_start=on_start,
             )
             output, in_tok, out_tok, cached_tok, error_msg, events = _codex_parse_events(
                 raw_output
@@ -731,6 +735,7 @@ async def _codex_run_subprocess(
     full_prompt: str,
     on_event: Any,
     auth_mode: str = "auto",
+    on_start: Callable[[], None] | None = None,
 ) -> tuple[str, str, int]:
     """Spawn codex exec, stream I/O, return (stdout, stderr, returncode)."""
     proc, session_root = await _codex_spawn(cmd, params, auth_mode)
@@ -747,6 +752,10 @@ async def _codex_run_subprocess(
             stderr_buf.extend(chunk)
 
     async def _stream_and_drain() -> None:
+        # The child exists: the start is confirmed. Inside the timeout/cancel
+        # cleanup of ``_run_codex_work``, so the notice never outlives a kill.
+        if on_start is not None:
+            on_start()
         assert proc.stdin is not None
         proc.stdin.write(full_prompt.encode("utf-8"))
         await proc.stdin.drain()
