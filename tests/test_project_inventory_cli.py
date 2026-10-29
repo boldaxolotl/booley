@@ -482,6 +482,62 @@ def test_prune_digest_ignores_unrelated_observations(
     assert first["digest"] == second["digest"]
 
 
+def _nothing_eligible_host(tmp_path: Path, keeper_host: FakeDocker) -> None:
+    """Two keepers, both protected: one inventoried, one orphan used by a container."""
+    project = _remember(tmp_path)
+    in_use = keeper_image(tmp_path / "orphan")
+    keeper_host.tags[keeper_image(project)] = "sha256:" + "a" * 64
+    keeper_host.tags[in_use] = "sha256:" + "b" * 64
+    keeper_host.containers["c" * 64] = keeper_host.tags[in_use]
+
+
+def test_prune_with_nothing_eligible_offers_no_confirmation(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _nothing_eligible_host(tmp_path, keeper_host)
+    assert _run(_parser().parse_args(["projects", "prune-keepers"])) == 0
+    human = capsys.readouterr().out
+    assert "Nothing to release." in human
+    assert "Preview digest" not in human and "--confirm" not in human
+    status, preview = _prune(capsys)
+    assert status == 0
+    assert preview["digest"] is None and preview["schema"] == 1
+    assert preview["candidates"] and not any(item["eligible"] for item in preview["candidates"])
+    assert set(preview) == {"digest", "candidates", "released", "retained", "errors", "schema"}
+
+
+def test_prune_confirm_with_nothing_eligible_is_refused(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import hashlib
+
+    from booley.runtime import image_lifecycle
+
+    cleanups: list[str] = []
+    monkeypatch.setattr(
+        image_lifecycle, "cleanup_owned_images", lambda *a, **k: cleanups.append("called") or []
+    )
+    _nothing_eligible_host(tmp_path, keeper_host)
+    tags_before = dict(keeper_host.tags)
+    _, preview = _prune(capsys)
+    # Deliberately mirrors the digest algorithm in runtime.image_keepers._preview (unchanged
+    # for eligible snapshots): it is the digest an older preview would have printed here.
+    copied = hashlib.sha256(
+        json.dumps(preview["candidates"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    for confirm in (copied, "0" * 64):
+        status, result = _prune(capsys, confirm)
+        assert status == 2, confirm
+        assert any("nothing to release" in error for error in result["errors"])
+        assert result["released"] == []
+    assert keeper_host.tags == tags_before
+    assert not any(call[:2] == ["image", "rm"] for call in keeper_host.calls)
+    assert cleanups == []
+
+
 def test_prune_partial_failure_accounts_for_prior_releases(
     tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -585,7 +641,7 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
     keeper_host.tags["booley-issued-BAD:session"] = "sha256:" + "a" * 64
     _, preview = _prune(capsys)
     assert all(item["reason"] == "inventoried" for item in preview["candidates"])
-    assert _prune(capsys, preview["digest"])[0] == 0
+    assert preview["digest"] is None and _prune(capsys, "0" * 64)[0] == 2
     assert len(keeper_host.tags) == 4
 
 
