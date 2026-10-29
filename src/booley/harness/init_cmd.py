@@ -423,8 +423,9 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     fresh stealth setup was versioned *nowhere* until the user ran `git init` by
     hand. Do it for them, guarded:
 
-    - only in stealth mode (the default; a ``--scaffold`` demo opts out with
-      ``[stealth] enabled = false`` and is throwaway), and
+    - only in stealth mode (the default; an open ``--scaffold`` demo writes
+      ``[stealth] enabled = false`` and is throwaway, ``--scaffold --stealth``
+      keeps it on), and
     - only when ``target`` is not already its own git work tree (idempotent,
       never touches an existing repo).
 
@@ -490,7 +491,11 @@ def _step_core_projections(ctx: InitContext) -> None:
             ctx.record("core_projections", "skip", "current")
         return
 
-    add_git_excludes(ctx.project_root, [PROJECTED_CORE_GLOB])
+    # Explicit Stealth also hides the Booley Directory itself, so the hidden
+    # footprint holds even when the Interactive step returns early (offline).
+    add_git_excludes(
+        ctx.project_root, [PROJECTED_CORE_GLOB, ".booley"] if enabled else [PROJECTED_CORE_GLOB]
+    )
     try:
         result = reconcile_projected_cores(ctx.project_root)
     except (CoreProjectionError, OSError) as exc:

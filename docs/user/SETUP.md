@@ -240,6 +240,7 @@ answer is also a flag, for non-interactive runs that otherwise take the defaults
 | Lint EDA tool | Verilator / Verible | `--lint-eda-tool` |
 | Flows to enable | ASIC synthesis, FPGA (and the part) | `--asic` / `--no-asic`, `--fpga-part` |
 | ASIC synthesis mode | `physical` (default) / `logical` | `--synth-mode` |
+| Keep Booley out of git history | off (default) / on | `--stealth` |
 
 Two combinations to know about: cocotb requires an image-provisioned simulator,
 and the currently supported choices are Verilator and Icarus. Commercial
@@ -257,12 +258,15 @@ What lands, wired together and ready to run:
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
 - `my_ip.core`: one Target per enabled flow (`sim`, `lint`, and optionally
-  `synth` (plus SDC in physical mode), `fpga` + XDC)
+  `synth` (plus SDC in physical mode), `fpga` + XDC); with `--stealth` it
+  lives at `.booley/cores/my_ip.core`
 - `.booley/booley.toml` and `tests.toml`, populated rather than
-  skeletons. The scaffolded config also turns
+  skeletons. The scaffolded config turns
   [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
-  exercise Booley and commit messages should stay verbatim (set
-  `[stealth] enabled = true` to opt in)
+  exercise Booley and commit messages should stay verbatim. `--stealth`
+  writes `[stealth] enabled = true` instead and puts the design and Doctor
+  selftest cores under `.booley/cores/`. Setting `enabled = true` later leaves those
+  cores tracked at the root; Doctor warns and names each one to move
 
 The scaffold refuses to run in a repo that already contains `.core` or RTL
 files. That's a porting job, so use a plain `booley init` there. Once the

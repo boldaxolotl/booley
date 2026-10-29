@@ -109,6 +109,21 @@ def test_setup_grills_one_dependency_frontier_per_round():
     assert "one question at a time" not in contract.lower()
 
 
+def test_setup_greenfield_passes_stealth_request():
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+
+    # The hidden git-history answer reaches the scaffold command.
+    assert "`--stealth` when the user confirmed Yes/hidden" in greenfield
+    # Unattended setup keeps stealth off, so it must not pass the flag.
+    assert "unattended setup omits it" in greenfield
+    assert "`.booley/cores/`" in greenfield
+    # Step 0 no longer leaves scaffold-authored root cores in place when hidden.
+    assert "scaffold-authored root cores" in plan
+    assert "`.booley/cores/`" in plan
+    assert "stealth.scaffold-core-tracked" in plan
+
+
 def test_setup_preserves_upstream_verdict_sources_when_adapter_is_sufficient():
     plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split()).replace("*", "")
     project_config = " ".join(
