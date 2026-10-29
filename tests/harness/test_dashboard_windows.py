@@ -444,7 +444,7 @@ async def test_list_header_is_set_per_view():
         await pilot.pause()
         overview = column_label(app)
         # The overview header is the aligned column line.
-        assert overview.split()[:3] == ["Session", "Mode", "Branch"]
+        assert overview.split()[:2] == ["Session", "Mode"]
         assert overview.split()[-1] == "Activity"
         await open_session(app, pilot, "codex:00")
         assert column_label(app) == "Goals and activity"

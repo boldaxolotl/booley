@@ -469,28 +469,31 @@ async def test_empty_state_text_and_standalone_group_still_shows():
 
 
 @pytest.mark.asyncio
-async def test_returning_from_the_jobs_window_refits_the_overview_to_the_full_width():
+async def test_returning_to_the_overview_refits_it_to_the_list_beside_the_preview():
     activity = {f"codex:{n:02}": Activity(WORKING, stamp(100 + n)) for n in range(5)}
     app = DashboardApp(lambda: world(activity))
     async with app.run_test(size=(130, 20)) as pilot:
         await pilot.pause()
-        assert "Started" in app._overview_header.plain
-        app._show_window("jobs")
+        assert "Started" not in app._overview_header.plain
+        # Session detail has no preview, so the list is full width there.
+        await pilot.press("enter")
         await pilot.pause()
-        app._show_window("sessions")
+        assert app.navigation.view == "session"
+        await pilot.press("escape")
         await pilot.pause()
         await pilot.pause()
-        assert "Started" in app._overview_header.plain
+        assert app._overview_width == app._list_width()
+        assert "Started" not in app._overview_header.plain
 
 
 @pytest.mark.asyncio
 async def test_moved_selection_stays_in_view_when_textual_does_not_scroll_it(monkeypatch):
     # Windows runs lost the race between Textual's deferred scroll-into-view and the
-    # restored offset; take Textual's scroll away so the order cannot matter.
+    # restored offset; take Textual's scroll away so the order cannot matter (wide: the list sits beside the preview).
     working = {f"codex:{n:02}": Activity(WORKING, stamp(1000 - n)) for n in range(25)}
     current = {"snapshot": world(working, count=25)}
     app = DashboardApp(lambda: current["snapshot"])
-    async with app.run_test(size=(100, 14)) as pilot:
+    async with app.run_test(size=(140, 14)) as pilot:
         table = app.query_one(DataTable)
         await pilot.pause()
         table.move_cursor(row=app.row_keys.index("codex:24"), animate=False)
