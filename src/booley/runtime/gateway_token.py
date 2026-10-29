@@ -67,6 +67,10 @@ def _stderr_after_kill(proc: subprocess.Popen[bytes]) -> bytes:
     try:
         return proc.communicate(timeout=_REAP_TIMEOUT_S)[1]
     except subprocess.TimeoutExpired:
+        # A descendant escaped the group and holds the pipes: release ours.
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
         return b""
 
 
@@ -75,8 +79,8 @@ def _validated_token(stdout: bytes, stderr: bytes) -> str:
     token = stdout.decode("utf-8", errors="replace").strip()
     if not token:
         raise _failure("printed no token", stderr)
-    if any(character.isspace() or not character.isprintable() for character in token):
-        raise _failure("printed an invalid token (it must be one printable line)", stderr)
+    if not token.isascii() or any(not c.isprintable() or c.isspace() for c in token):
+        raise _failure("printed an invalid token (it must be one printable ASCII line)", stderr)
     return token
 
 
@@ -95,12 +99,23 @@ def run_token_command(command: str, *, timeout_s: int = COMMAND_TIMEOUT_S) -> st
             start_new_session=True,
         )
     except (OSError, ValueError) as exc:
-        raise _failure(f"could not be started ({type(exc).__name__})") from None
+        # Raised below, outside the handler: the OSError names the program and the
+        # chained context must not carry it.
+        start_failure = _failure(f"could not be started ({type(exc).__name__})")
+    else:
+        start_failure = None
+    if start_failure is not None:
+        raise start_failure
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        # TimeoutExpired holds the argv and partial stdout; keep it out of the chain.
+        timed_out = True
+    else:
+        timed_out = False
+    if timed_out:
         _kill_process_group(proc)
-        raise _failure(f"timed out after {timeout_s} s", _stderr_after_kill(proc)) from None
+        raise _failure(f"timed out after {timeout_s} s", _stderr_after_kill(proc))
     if proc.returncode != 0:
         raise _failure(f"exited {proc.returncode}", stderr)
     return _validated_token(stdout, stderr)

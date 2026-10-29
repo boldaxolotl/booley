@@ -393,7 +393,7 @@ warns about it).
 | `BOOLEY_GATEWAY_TOKEN_COMMAND` | A command that prints the current token, used instead of `BOOLEY_GATEWAY_TOKEN` when the token is short-lived. Set exactly one of the two. |
 
 The token command is split into words like a shell would (no shell runs; wrap a
-pipeline in `sh -c '...'`). Booley runs it when a Specialist needs a token,
+pipeline in `sh -c '...'`). Booley runs it when a Codex Specialist needs a token,
 keeps the output in memory for about 5 minutes, and runs it once more, retrying
 the Specialist once, if the gateway rejects the token (HTTP 401). The command
 must print the current token on one line and be safe to run repeatedly: Doctor
@@ -406,9 +406,10 @@ command can get a token.
 `[agent] provider` must be `codex`. Codex Specialists use the gateway; no
 OpenAI or Anthropic credential and no Codex login reaches them. The gateway
 host must be reachable from the Sandbox. A missing variable, both or neither token
-source, a non-`https` URL, a failing token command (Doctor quotes its stderr),
-or a Claude provider fails `booley doctor` and `booley auth --status` naming the
-problem; a complete configuration passes Doctor and exits 0. Text-only Codex
+source, a non-`https` URL, or a Claude provider fails `booley doctor` and
+`booley auth --status` naming the problem; a failing token command fails
+`booley doctor` (it quotes the command's stderr; `booley auth --status` does not
+run the command). A complete configuration passes Doctor and exits 0. Text-only Codex
 Specialists such as `coverage_analyst` do not support this policy yet.
 
 #### Git identity (`[agent.git]`)

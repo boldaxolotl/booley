@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import shlex
 import sys
-import time
 
 import pytest
 from tests.gateway_command_support import count_runs, write_token_command
@@ -72,11 +71,12 @@ def test_token_command_nonzero_exit_fails_with_stderr_verbatim(tmp_path):
     assert "SYNTHETIC_LEAKED_STDOUT" not in message
 
 
-def test_token_command_timeout_fails_with_stderr_verbatim():
-    # The backgrounded sleep inherits the pipes: only a process-group kill
-    # lets the call return before it ends.
+def test_token_command_timeout_fails_with_stderr_verbatim(monkeypatch):
+    # The backgrounded sleep inherits the pipes: only a process-group kill closes
+    # them, so stderr is collected only when the kill worked (the short reap
+    # bound makes a missing kill show as lost stderr, not as a slow test).
+    monkeypatch.setattr(gateway_token, "_REAP_TIMEOUT_S", 2)
     command = "sh -c 'echo \"claim a token first\" >&2; echo SYNTHETIC_STDOUT; sleep 30 & wait'"
-    started = time.monotonic()
 
     with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
         gateway_token.run_token_command(command, timeout_s=3)
@@ -85,7 +85,7 @@ def test_token_command_timeout_fails_with_stderr_verbatim():
     assert "BOOLEY_GATEWAY_TOKEN_COMMAND timed out after 3 s" in message
     assert "claim a token first" in message
     assert "SYNTHETIC_STDOUT" not in message
-    assert time.monotonic() - started < 10
+    assert caught.value.__context__ is None  # TimeoutExpired would carry argv and stdout
 
 
 def test_token_command_empty_output_fails_with_stderr_verbatim(tmp_path):
@@ -109,6 +109,16 @@ def test_token_command_multiline_output_fails_without_echoing_it(tmp_path):
     assert "SYNTHETIC_LINE" not in str(caught.value)
 
 
+def test_token_command_non_ascii_output_fails_without_echoing_it(tmp_path):
+    command, _ = write_token_command(tmp_path, ["SYNTHETIC_T\u00d6KEN"])
+
+    with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
+        gateway_token.run_token_command(command)
+
+    assert "printed an invalid token" in str(caught.value)
+    assert "SYNTHETIC_T" not in str(caught.value)
+
+
 def test_token_command_missing_executable_fails_naming_the_variable():
     with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
         gateway_token.run_token_command("synthetic-no-such-gateway-command --secret SYNTHETIC_ARG")
@@ -117,6 +127,7 @@ def test_token_command_missing_executable_fails_naming_the_variable():
     assert "BOOLEY_GATEWAY_TOKEN_COMMAND" in message
     assert "synthetic-no-such-gateway-command" not in message
     assert "SYNTHETIC_ARG" not in message
+    assert caught.value.__context__ is None  # the OSError would carry the program name
 
 
 def test_token_command_token_absent_from_logs_reprs_and_errors(tmp_path, caplog):

@@ -297,32 +297,18 @@ class CodexBackend:
                     "Codex gateway rejected the token; re-running %s once",
                     GATEWAY_TOKEN_COMMAND_ENV,
                 )
-                refresh_gateway_token()
+                # Off the event loop: the cache lock may be held by a running command.
+                await anyio.to_thread.run_sync(refresh_gateway_token)
             except TransientAPIError as exc:
                 last_exc = exc
                 transient_failures += 1
                 if transient_failures >= MAX_API_RETRIES:
                     break
                 backoff = compute_backoff(transient_failures)
-                logger.warning(
-                    "Codex transient error (attempt %d/%d): %s -- retrying in %.0fs",
-                    transient_failures,
-                    MAX_API_RETRIES,
-                    exc,
-                    backoff,
-                )
+                _log_transient_retry(transient_failures, exc, backoff)
                 await anyio.sleep(backoff)
             else:
-                logger.info(
-                    "%sCodex agent done (%s)",
-                    tag,
-                    format_usage_log(
-                        result.input_tokens,
-                        result.cached_tokens,
-                        result.output_tokens,
-                        result.cost_usd,
-                    ),
-                )
+                _log_agent_done(tag, result)
                 return result
 
         raise last_exc or AgentProviderError("Codex agent exhausted retries", provider="codex")
@@ -595,12 +581,46 @@ def _ensure_nested_codex_home(
     return _NESTED_HOMES[cache_key]
 
 
+def _log_agent_done(tag: str, result: AgentResult) -> None:
+    """Log the usage summary of a finished Codex run."""
+    logger.info(
+        "%sCodex agent done (%s)",
+        tag,
+        format_usage_log(
+            result.input_tokens, result.cached_tokens, result.output_tokens, result.cost_usd
+        ),
+    )
+
+
+def _log_transient_retry(failures: int, exc: Exception, backoff: float) -> None:
+    """Log a transient Codex failure that will be retried after *backoff* seconds."""
+    logger.warning(
+        "Codex transient error (attempt %d/%d): %s -- retrying in %.0fs",
+        failures,
+        MAX_API_RETRIES,
+        exc,
+        backoff,
+    )
+
+
 def _gateway_token_command_active() -> bool:
     """Whether the gateway's token comes from ``BOOLEY_GATEWAY_TOKEN_COMMAND``."""
     try:
         return gateway_settings_from_env().token_command is not None
     except GatewayConfigError:
         return False
+
+
+def _with_command_token(env: dict[str, str] | None, token: str) -> dict[str, str]:
+    """Return the Codex child env carrying the command's *token*.
+
+    Codex's unchanged auth helper reads the token from its inherited env; the
+    command that minted it stays out so the helper sees exactly one source.
+    """
+    child_env = dict(os.environ) if env is None else env
+    child_env[GATEWAY_TOKEN_ENV] = token
+    child_env.pop(GATEWAY_TOKEN_COMMAND_ENV, None)
+    return child_env
 
 
 async def _resolve_gateway_command_token(params: AgentCallParams) -> str | None:
@@ -672,11 +692,7 @@ async def _codex_spawn(
     if auth_mode != "auto" or plan.values:
         env = plan.child_environment(dict(os.environ) if env is None else env)
     if command_token is not None:
-        # Codex's unchanged auth helper reads the token from its inherited env; the
-        # command that minted it stays out so the helper sees exactly one source.
-        env = dict(os.environ) if env is None else env
-        env[GATEWAY_TOKEN_ENV] = command_token
-        env.pop(GATEWAY_TOKEN_COMMAND_ENV, None)
+        env = _with_command_token(env, command_token)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -864,7 +880,7 @@ def _raise_for_codex_detail(detail: str, *, prefix: str) -> None:
         raise UsageLimitError(detail, provider="codex")
     if is_context_exhausted(detail):
         raise ContextExhaustedError(detail, provider="codex")
-    if is_auth_failure(detail):
+    if is_auth_failure(detail) and _gateway_token_command_active():
         raise AgentAuthError(f"{prefix}: {detail}", provider="codex")
     if _is_transient_error(RuntimeError(detail)):
         raise TransientAPIError(f"{prefix}: {detail}", retry_after=10)

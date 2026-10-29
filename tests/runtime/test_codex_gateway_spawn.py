@@ -350,6 +350,23 @@ async def test_gateway_repeated_auth_failure_stops_after_one_refresh(
     assert count_runs(launches) == 2
 
 
+def test_auth_failure_text_is_classified_only_under_a_gateway_token_command(monkeypatch):
+    detail = "unexpected status 401 Unauthorized: invalid token"
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN_COMMAND", raising=False)
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_STATIC_TOKEN")
+
+    with pytest.raises(AgentProviderError) as static:
+        cb._raise_for_codex_detail(detail, prefix="Codex error")
+
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", "synthetic-token-command")
+    with pytest.raises(agent_errors.AgentAuthError):
+        cb._raise_for_codex_detail(detail, prefix="Codex error")
+
+    assert not isinstance(static.value, agent_errors.AgentAuthError)
+
+
 @pytest.mark.asyncio
 async def test_token_command_token_reaches_codex_but_no_file_or_shell_env(
     gateway_sandbox, tmp_path, monkeypatch
