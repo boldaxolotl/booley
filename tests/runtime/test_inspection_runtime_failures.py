@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -143,34 +144,20 @@ def test_mounted_runtime_rejects_external_license_pointer_before_execution(
     assert not calls
 
 
-@pytest.mark.parametrize(
-    "failure", ["identity", "missing-project", "exposed-authority", "exposed-eda-config"]
-)
+@pytest.mark.parametrize("failure", ["exposed-authority", "exposed-eda-config"])
 def test_runtime_rejects_broken_isolation_before_vivado_probe(
     mounted_runtime, monkeypatch, failure
 ):
     request, _, calls = mounted_runtime
-    if failure == "identity":
-        monkeypatch.setenv("BOOLEY_DIR", "/wrong-project")
-    elif failure == "missing-project":
-        original = Path.is_dir
-        monkeypatch.setattr(
-            Path, "is_dir", lambda p: False if p == Path("/booley-project") else original(p)
-        )
-    else:
-        exposed = Path(
-            "/var/run/docker.sock"
-            if failure == "exposed-authority"
-            else "/home/agent/.config/booley/eda"
-        )
-        original = Path.exists
-        monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
-    report = inspection.inspect_runtime(request).issuance
-    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    if failure == "identity":
-        fix = report.findings[0].fix
-        assert "on the host" in fix and "booley doctor" in fix
-        assert "booley session refresh" not in fix
+    exposed = Path(
+        "/var/run/docker.sock"
+        if failure == "exposed-authority"
+        else "/home/agent/.config/booley/eda"
+    )
+    original = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
+    failures = _isolation_failures(inspection.inspect_runtime(request).issuance)
+    assert len(failures) == 1 and "forbidden host-authority surface" in failures[0].message
     assert not calls
 
 
@@ -275,8 +262,8 @@ def test_runtime_ssh_directory_admits_only_inbound_authorized_keys(
         assert [f.message for f in report.findings if f.severity is not Severity.PASS] == []
         assert len(calls) == 1
         return
-    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    assert report.findings[0].message.endswith(f": {offending}")
+    failures = _isolation_failures(report)
+    assert len(failures) == 1 and failures[0].message.endswith(f": {offending}")
     assert not calls
 
 
@@ -294,8 +281,8 @@ def test_unlistable_ssh_directory_stays_exposed(mounted_runtime, monkeypatch, tm
 
     monkeypatch.setattr(Path, "iterdir", iterdir)
     report = inspection.inspect_runtime(request).issuance
-    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    assert report.findings[0].message.endswith(f": {scratch}")
+    failures = _isolation_failures(report)
+    assert len(failures) == 1 and failures[0].message.endswith(f": {scratch}")
     assert not calls
 
 
@@ -322,8 +309,8 @@ def test_ssh_mount_point_is_host_authority(mounted_runtime, monkeypatch, tmp_pat
         assert [f.message for f in report.findings if f.severity is not Severity.PASS] == []
         assert len(calls) == 1
         return
-    assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    assert report.findings[0].message.endswith(f": {offending}")
+    failures = _isolation_failures(report)
+    assert len(failures) == 1 and failures[0].message.endswith(f": {offending}")
     assert not calls
 
 
@@ -365,3 +352,122 @@ def test_host_inspection_reports_unknown_project_inventory(
         report,
     )
     assert any("identity disagrees" in item.message for item in report.report().findings)
+
+
+def _isolation_failures(report):
+    """Return the FAIL findings from one in-Sandbox runtime inspection."""
+    return [f for f in report.findings if f.severity is Severity.FAIL]
+
+
+def _hide_image_alias(monkeypatch):
+    """Make the image's ``/booley-project`` alias dangle, as in a Codespace."""
+    original = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir", lambda p: False if p == Path("/booley-project") else original(p)
+    )
+
+
+def _booley_dir_spelling(project_root: Path, spelling: str) -> str:
+    """Build one ``BOOLEY_DIR`` value for the named layout under ``project_root``."""
+    if spelling == "fixed-alias":
+        return "/booley-project"
+    entry = project_root / ".booley"
+    if spelling == "project-directory":
+        entry.mkdir()
+    elif spelling == "project-symlink":
+        external = project_root.parent / f"{project_root.name}-booley-prj"
+        external.mkdir()
+        entry.symlink_to(external)
+    elif spelling == "project-dangling-symlink":
+        entry.symlink_to(project_root.parent / "missing-booley-prj")
+    elif spelling == "outside-project-root":
+        entry = project_root.parent / f"{project_root.name}-elsewhere"
+        entry.mkdir()
+    elif spelling == "other-directory-dot-booley":
+        entry = project_root / "nested" / ".booley"
+        entry.mkdir(parents=True)
+    elif spelling == "project-relative":
+        (project_root / ".booley").mkdir()
+        return ".booley"
+    elif spelling == "unrelated-path":
+        return "/wrong-project"
+    else:
+        raise AssertionError(f"unknown spelling {spelling}")
+    return str(entry)
+
+
+@pytest.mark.parametrize("codespaces", [None, "true"])
+@pytest.mark.parametrize("spelling", ["fixed-alias", "project-directory", "project-symlink"])
+def test_runtime_accepts_supported_booley_dir_spellings(
+    mounted_runtime, monkeypatch, tmp_path, spelling, codespaces
+):
+    """The fixed alias and the Project Root's ``.booley`` entry both pass identity."""
+    request, _, calls = mounted_runtime
+    project_root = tmp_path / "workspace"
+    project_root.mkdir()
+    request = replace(request, project_root=project_root)
+    monkeypatch.setenv("BOOLEY_DIR", _booley_dir_spelling(project_root, spelling))
+    if spelling != "fixed-alias":
+        _hide_image_alias(monkeypatch)
+    if codespaces is None:
+        monkeypatch.delenv("CODESPACES", raising=False)
+    else:
+        monkeypatch.setenv("CODESPACES", codespaces)
+    report = inspection.inspect_runtime(request).issuance
+    assert _isolation_failures(report) == []
+    messages = [f.message for f in report.findings]
+    assert any("Booley Directory identity verified" in m for m in messages)
+    assert "Sandbox host-authority isolation verified" in messages
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("codespaces", [None, "true"])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "fixed-alias",
+        "outside-project-root",
+        "other-directory-dot-booley",
+        "project-dangling-symlink",
+        "project-relative",
+        "unrelated-path",
+    ],
+)
+def test_runtime_rejects_other_booley_dir_spellings_and_keeps_surface_checks(
+    mounted_runtime, monkeypatch, tmp_path, spelling, codespaces
+):
+    """Unsupported spellings FAIL identity; surface and Vivado checks still run."""
+    request, _, calls = mounted_runtime
+    project_root = tmp_path / "workspace"
+    project_root.mkdir()
+    request = replace(request, project_root=project_root)
+    monkeypatch.chdir(project_root)
+    monkeypatch.setenv("BOOLEY_DIR", _booley_dir_spelling(project_root, spelling))
+    _hide_image_alias(monkeypatch)  # a missing alias must not rescue the fixed spelling
+    if codespaces is None:
+        monkeypatch.delenv("CODESPACES", raising=False)
+    else:
+        monkeypatch.setenv("CODESPACES", codespaces)
+    report = inspection.inspect_runtime(request).issuance
+    failures = _isolation_failures(report)
+    assert len(failures) == 1
+    assert "Booley Directory identity" in failures[0].message
+    fix = failures[0].fix
+    assert f"BOOLEY_DIR to {project_root / '.booley'}" in fix
+    assert "issued Sandbox" in fix
+    assert "on the host" not in fix and "booley doctor" not in fix
+    assert "Sandbox host-authority isolation verified" in [f.message for f in report.findings]
+    assert len(calls) == 1
+
+
+def test_identity_failure_does_not_hide_exposed_authority(mounted_runtime, monkeypatch):
+    """An identity FAIL and a forbidden surface each report their own FAIL."""
+    request, _, calls = mounted_runtime
+    monkeypatch.setenv("BOOLEY_DIR", "/wrong-project")
+    original = Path.exists
+    exposed = Path("/var/run/docker.sock")
+    monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
+    failures = _isolation_failures(inspection.inspect_runtime(request).issuance)
+    assert ["Booley Directory identity" in f.message for f in failures] == [True, False]
+    assert "forbidden host-authority surface" in failures[1].message
+    assert not calls
