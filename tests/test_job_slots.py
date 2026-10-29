@@ -584,7 +584,9 @@ class TestSingleProcess:
 
     def test_undecodable_entry_reads_as_absent(self, root, world):
         spawn(world, 100)
-        store = make_store(root, world)
+        store = make_execution_store(
+            root, world, execution_terminal=lambda _execution_id: False, cancellations=[]
+        )
         execution_id = "b" * 32
         tok = store.submit(CLASS_HEAVY, pid=100, execution_id=execution_id)
         assert store.execution_token_absent(CLASS_HEAVY, execution_id) is False
