@@ -1239,6 +1239,19 @@ class DashboardApp(App[None]):
             row=keys.index(selected) if selected in keys else table.first_selectable_row(),
             animate=False,
         )
+        # Textual scrolls the cursor into view only after its own refresh, and the
+        # restored offset may win that race; check once the list has settled.
+        table.call_after_refresh(DashboardApp._keep_cursor_visible, table)
+
+    @staticmethod
+    def _keep_cursor_visible(table: SessionList) -> None:
+        """Scroll the minimum that puts the cursor row (and its group header) on screen."""
+        visible = table.scrollable_content_region.height - table.header_height
+        row = table.cursor_row
+        top = int(table.scroll_y)
+        if row < top or row >= top + max(visible, 1):
+            first = row - 1 if row - 1 in table.header_rows else row
+            table.scroll_to(y=first if row < top else row - visible + 1, animate=False)
 
     def _refit_overview(self) -> None:
         """Fit the overview again when layout gave the list another width."""
