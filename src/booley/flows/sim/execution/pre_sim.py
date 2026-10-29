@@ -257,8 +257,6 @@ def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer
     supervised_env = dict(env)
     if scope is not None and scope.execution_id is not None:
         supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
-    if observer is not None:
-        observer.begin_command()
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -273,6 +271,9 @@ def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer
     )
     if scope is not None:
         scope.processes.register(process)
+    if observer is not None:
+        # Only a spawned hook counts as started in the progress record.
+        observer.begin_command()
     try:
         stdout, stderr = _communicate_pre_sim(process, command, timeout, observer)
     finally:

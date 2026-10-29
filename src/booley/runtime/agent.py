@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from booley.core.models import AgentCallParams, AgentResult
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def announce_agent_dispatch(params: AgentCallParams) -> None:
-    """Disclose an actual Booley-owned agent call before backend dispatch."""
+    """Disclose a Booley-owned agent call once its backend confirmed the start."""
     role = params.label or "specialist"
     purpose = {
         "doctor-developer-probe": (
@@ -33,6 +34,27 @@ def announce_agent_dispatch(params: AgentCallParams) -> None:
     }.get(role, "perform the requested Specialist analysis")
     actor = "provider probe" if role == "doctor-developer-probe" else "Specialist"
     print(f"Booley is starting the {role} {actor} to {purpose}.", file=sys.stderr)
+
+
+def _once_start_notice(params: AgentCallParams) -> Callable[[], None]:
+    """Return a callback that discloses the call at most once, whatever happens to stderr.
+
+    Backends invoke it each time they see a start (every retried attempt, every
+    message). A broken stderr must not abort or retry an already-running paid call.
+    """
+    announced = False
+
+    def notify() -> None:
+        nonlocal announced
+        if announced:
+            return
+        announced = True
+        try:
+            announce_agent_dispatch(params)
+        except (OSError, ValueError):
+            logger.debug("Agent start notice could not be written", exc_info=True)
+
+    return notify
 
 
 async def call_agent(
@@ -51,8 +73,9 @@ async def call_agent(
     """
     cfg = get_backend_config()
 
-    announce_agent_dispatch(params)
-    return await cfg.active_backend.call(params, on_event=on_event)
+    return await cfg.active_backend.call(
+        params, on_event=on_event, on_start=_once_start_notice(params)
+    )
 
 
 def extract_json(text: str) -> dict[str, Any] | None:
