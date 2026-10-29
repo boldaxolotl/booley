@@ -416,7 +416,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   results or `simulation.json`. (Coverage analysis is refused only through a
   `coverage.json` reference into such a Simulation Campaign; nothing here is
   about Coverage Campaign records.) Goal completion that selected evidence from
-  such a Campaign also stops. Each stops with an error such as `Simulation
+  such a Campaign also stops, and Goal status reports that Campaign as
+  unreadable with the same message. Each stops with an error such as `Simulation
   Campaign manifest booley.simulation-campaign-manifest/v1 was written by Booley
   0.3.0 and is no longer supported; delete the Simulation invocation directory
   <path> by hand`. Delete that directory by hand. `.runtime/campaign-child-executions/`

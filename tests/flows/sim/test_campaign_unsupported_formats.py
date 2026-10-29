@@ -216,6 +216,20 @@ def test_dependents_pruning_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_p
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", reports / "sim/1")
 
 
+def test_pruning_a_0_3_0_coverage_invocation_refuses_as_a_retention_error(
+    tmp_path, monkeypatch
+) -> None:
+    reports, target = _coverage_target(tmp_path, monkeypatch)
+    manifest = target / "campaign/manifest.json"
+    _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
+
+    with pytest.raises(CampaignRetentionError) as excinfo:
+        prune_invocation(reports, 1)
+
+    _assert_refused(str(excinfo.value), _MANIFEST + "v2", reports / "sim/1")
+    assert (reports / "sim/1").is_dir()
+
+
 def test_a_schema_less_projection_cannot_authenticate_a_coverage_campaign() -> None:
     from booley.flows.sim.campaign.projection import decode_simulation_projection
 

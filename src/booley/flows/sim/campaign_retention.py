@@ -224,7 +224,10 @@ def _target(
     public = _read_object(public_path)
     if public.get("$schema") == REFERENCE_SCHEMA:
         resolved = resolve_coverage_campaign_reference(public_path)
-        authenticate_coverage_campaign_owner(resolved)
+        try:
+            authenticate_coverage_campaign_owner(resolved)
+        except UnsupportedSimulationCampaignFormatError as exc:
+            raise CampaignRetentionError(str(exc)) from exc
         loaded = resolved.loaded
         storage = resolved.campaign_path.parent
     else:
