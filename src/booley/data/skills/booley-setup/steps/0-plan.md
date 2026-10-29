@@ -203,6 +203,13 @@ the only branch that short-circuits the rest is the first.
   generated files to the tracked tree; it does not ask you to delete what an
   earlier run or the maintainer dogfood workflow already committed. Removing
   tracked files is the user's call, not a setup step.
+  **Exception: scaffold-authored root cores under a hidden footprint.** In a
+  scaffold-origin Project (`# booley-init-origin: scaffold`) with row 16 hidden,
+  Doctor warns `stealth.scaffold-core-tracked` for each tracked scaffold core.
+  Do not leave those in place: plan their move under `.booley/cores/` with
+  repository-root-relative paths, as the WARN says. Interactive: confirm with
+  the user, since it removes tracked files. Unattended: star `review` and keep
+  the WARN. Booley never moves the files itself.
   **A tracked `SETUP-REPORT.md` is not proof the port is finished.** Check its
   mtime and `git log -1 --format=%cr -- SETUP-REPORT.md`: on a maintainer
   dogfood repo it is usually the **current** port's report, created hours ago, with

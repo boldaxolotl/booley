@@ -55,14 +55,21 @@ only):
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
   `booley init --scaffold <name>` on the host with the flags matching the
   answers (`--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
-  `--synth-mode logical|physical`, `--fpga-part`). Omit `--synth-mode` when
-  ASIC is disabled: an explicit mode with `--no-asic` is rejected.
+  `--synth-mode logical|physical`, `--fpga-part`), plus `--stealth` when the
+  git-history answer is Yes/hidden (it writes `enabled = true` and puts the
+  scaffold cores under `.booley/cores/`). Omit `--synth-mode` when
+  ASIC is disabled: an explicit mode with `--no-asic` is rejected. After a
+  `--stealth` scaffold, commit `.booley/` in its own repository before the
+  Doctor gate, or `project.core-file-untracked` blocks it.
 - **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
   confirm them in the grill message as `pre-set`, and record them in SETUP-PLAN.
   Read `flow_options.synth_mode`; missing mode means the physical default.
   A request that differs from existing choices needs the existing plan/confirmation
   and Target-edit process: record the deviation, never destructively re-scaffold.
+  A hidden answer on an open scaffold is such a deviation: plan the Doctor-WARN
+  move of the scaffold cores under `.booley/cores/` (user-confirmed, because it
+  removes tracked files).
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run
   the normal plan phase instead of guessing.
 
