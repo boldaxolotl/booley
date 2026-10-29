@@ -124,7 +124,7 @@ def _warning_preference(existing_config: str | None) -> bool:
 GATEWAY_PROVIDER_ID = "booley_gateway"
 
 
-SPECIALIST_AUTH_TIMEOUT_MS = 20000  # a cold-container import can exceed the 5 s default
+_SPECIALIST_AUTH_TIMEOUT_MS = 20000  # a cold-container import can exceed the 5 s default
 
 
 def gateway_provider_toml(url: str, token_cwd: str, *, timeout_ms: int) -> str:
@@ -151,7 +151,7 @@ def gateway_provider_toml(url: str, token_cwd: str, *, timeout_ms: int) -> str:
 
 def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
     """Specialist provider tables plus the shell-tool token exclusion."""
-    provider = gateway_provider_toml(url, token_cwd, timeout_ms=SPECIALIST_AUTH_TIMEOUT_MS)
+    provider = gateway_provider_toml(url, token_cwd, timeout_ms=_SPECIALIST_AUTH_TIMEOUT_MS)
     return [
         "",
         *provider.splitlines(),

@@ -43,7 +43,13 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 
 from booley.runtime import auth_token
-from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, _codex_toml_parser, http_port
+from booley.runtime.mcp_config import (
+    GATEWAY_PROVIDER_ID,
+    HTTP_ENDPOINT_PATH,
+    _codex_toml_parser,
+    gateway_provider_toml,
+    http_port,
+)
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -1082,13 +1088,20 @@ def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
 _AUTH_HELPER_MARGIN_S = 15
 
 
+def _desired_provider(provider_toml: str) -> dict:
+    """The parsed ``booley_gateway`` table a registration should leave in the config."""
+    return _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
+
+
 def _gateway_exclude_list(existing: str, current: object) -> str | None:
     """Add the static token to ``shell_environment_policy.exclude``; ``None`` if unchanged."""
     from booley.config.gateway import GATEWAY_TOKEN_ENV
 
-    if isinstance(current, list) and GATEWAY_TOKEN_ENV in current:
+    if current is not None and not isinstance(current, list):
+        return None  # the user's own non-list value wins; the caller reports the skip
+    if current is not None and GATEWAY_TOKEN_ENV in current:
         return None
-    names = [*current, GATEWAY_TOKEN_ENV] if isinstance(current, list) else [GATEWAY_TOKEN_ENV]
+    names = [*(current or []), GATEWAY_TOKEN_ENV]
     value = json.dumps(names)
     table = ("shell_environment_policy",)
     updated = _upsert_existing_codex_table_setting(
@@ -1103,12 +1116,11 @@ def _with_gateway_settings(
     existing: str, data: dict, provider_toml: str, model_pin: str | None
 ) -> str:
     """Add the owned provider table and the set-if-absent root keys to *existing* TOML."""
-    from booley.runtime.mcp_config import GATEWAY_PROVIDER_ID
-
     updated = existing
-    desired = _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
     providers = data.get("model_providers", {})
-    if not isinstance(providers, dict) or providers.get(GATEWAY_PROVIDER_ID) != desired:
+    if not isinstance(providers, dict) or providers.get(GATEWAY_PROVIDER_ID) != _desired_provider(
+        provider_toml
+    ):
         updated = _strip_owned_codex_table(updated, ("model_providers", GATEWAY_PROVIDER_ID))
         if updated and not updated.endswith("\n"):
             updated += "\n"
@@ -1139,8 +1151,6 @@ def _with_gateway_settings(
 
 def _warn_gateway_overrides(data: dict) -> None:
     """Say so when a user's own Codex keys keep the gateway from working."""
-    from booley.runtime.mcp_config import GATEWAY_PROVIDER_ID
-
     if data.get("model_provider") != GATEWAY_PROVIDER_ID:
         print(
             f"warning: Codex gateway provider {GATEWAY_PROVIDER_ID} is configured but not "
@@ -1156,6 +1166,29 @@ def _warn_gateway_overrides(data: dict) -> None:
         )
 
 
+def _gateway_inputs(path: Path) -> tuple[str, str | None] | None:
+    """The provider TOML and model pin from the gateway environment; ``None`` if incomplete."""
+    from booley.config.gateway import (
+        GatewayConfigError,
+        gateway_model_pin_from_env,
+        gateway_settings_from_env,
+    )
+    from booley.runtime.gateway_token import COMMAND_TIMEOUT_S
+
+    try:
+        settings = gateway_settings_from_env()
+        model_pin = gateway_model_pin_from_env().model
+    except GatewayConfigError as exc:
+        print(f"warning: Codex gateway provider skipped: {exc}", file=sys.stderr)
+        return None
+    provider_toml = gateway_provider_toml(
+        settings.url,
+        str(path.parent),
+        timeout_ms=(COMMAND_TIMEOUT_S + _AUTH_HELPER_MARGIN_S) * 1000,
+    )
+    return provider_toml, model_pin
+
+
 def _apply_codex_gateway(home: Path | None = None) -> str:
     """Add and select the ``booley_gateway`` provider in the user's Codex config.
 
@@ -1169,29 +1202,15 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     (a TOML layout that cannot take the entries), ``current`` or ``written``.
     """
     from booley.config.agent import env_auth_handoff
-    from booley.config.gateway import (
-        GATEWAY_AUTH,
-        GatewayConfigError,
-        gateway_model_pin_from_env,
-        gateway_settings_from_env,
-    )
-    from booley.runtime.gateway_token import COMMAND_TIMEOUT_S
-    from booley.runtime.mcp_config import gateway_provider_toml
+    from booley.config.gateway import GATEWAY_AUTH
 
     if env_auth_handoff() != GATEWAY_AUTH:
         return "off"
-    try:
-        settings = gateway_settings_from_env()
-        model_pin = gateway_model_pin_from_env().model
-    except GatewayConfigError as exc:
-        print(f"warning: Codex gateway provider skipped: {exc}", file=sys.stderr)
-        return "invalid"
     path = codex_config_path(home)
-    provider_toml = gateway_provider_toml(
-        settings.url,
-        str(path.parent),
-        timeout_ms=(COMMAND_TIMEOUT_S + _AUTH_HELPER_MARGIN_S) * 1000,
-    )
+    inputs = _gateway_inputs(path)
+    if inputs is None:
+        return "invalid"
+    provider_toml, model_pin = inputs
     existing = _read_codex_config(path)
     data = _codex_data(existing, path=path)
     try:
@@ -1216,14 +1235,16 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
 def _gateway_entries_present(data: dict, provider_toml: str) -> bool:
     """Whether parsed *data* carries the owned provider and the token exclusion."""
     from booley.config.gateway import GATEWAY_TOKEN_ENV
-    from booley.runtime.mcp_config import GATEWAY_PROVIDER_ID
 
-    desired = _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
     providers = data.get("model_providers")
     policy = data.get("shell_environment_policy")
     provider = providers.get(GATEWAY_PROVIDER_ID) if isinstance(providers, dict) else None
     exclude = policy.get("exclude") if isinstance(policy, dict) else None
-    return provider == desired and isinstance(exclude, list) and GATEWAY_TOKEN_ENV in exclude
+    return (
+        provider == _desired_provider(provider_toml)
+        and isinstance(exclude, list)
+        and GATEWAY_TOKEN_ENV in exclude
+    )
 
 
 # ---------------------------------------------------------------------------

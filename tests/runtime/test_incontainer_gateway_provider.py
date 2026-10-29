@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -12,6 +11,7 @@ from pathlib import Path
 import pytest
 from tests.gateway_command_support import count_runs, write_token_command
 
+from booley.runtime import auth_token
 from booley.runtime import incontainer_setup as reg
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
@@ -141,6 +141,9 @@ def test_gateway_registration_repeats_as_a_no_op(tmp_path, gateway_env):
 def test_gateway_registration_writes_no_auth_json(tmp_path, gateway_env, monkeypatch):
     home = _home(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", _NATIVE_KEY)
+    # A stored credential seed (the host sidecar) would normally become auth.json.
+    seed = home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CODEX]
+    seed.write_text(_NATIVE_KEY, encoding="utf-8")
 
     reg.register("codex", home=home)
 
@@ -222,22 +225,38 @@ def test_interactive_auth_command_prints_a_freshly_claimed_token(
     assert count_runs(counter) == 2
 
 
-def test_other_policies_leave_providers_untouched(tmp_path, gateway_env, monkeypatch):
-    seeded = (
-        'model_provider = "mine"\n\n[model_providers.mine]\nbase_url = "https://m.example/v1"\n'
-    )
-    for policy in ("auto", "subscription", "api_key"):
-        home = tmp_path / f"home-{policy}"
-        home.mkdir()
-        path = _seed(home, seeded)
-        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", policy)
-        monkeypatch.setenv("OPENAI_API_KEY", _NATIVE_KEY)
+_SEEDED_OTHER_PROVIDER = (
+    'model_provider = "mine"\n\n[model_providers.mine]\nbase_url = "https://m.example/v1"\n'
+)
 
-        reg.register("codex", home=home)
 
-        config = tomllib.loads(_read(path))
-        assert config["model_provider"] == "mine"
-        assert set(config["model_providers"]) == {"mine"}
-        assert json.dumps(config["model_providers"]["mine"]) == json.dumps(
-            {"base_url": "https://m.example/v1"}
-        )
+@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
+@pytest.mark.parametrize("seeded", [True, False])
+def test_other_policies_leave_providers_untouched(
+    tmp_path, gateway_env, monkeypatch, policy, seeded
+):
+    home = _home(tmp_path)
+    if seeded:
+        _seed(home, _SEEDED_OTHER_PROVIDER)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", policy)
+    monkeypatch.setenv("OPENAI_API_KEY", _NATIVE_KEY)
+
+    reg.register("codex", home=home)
+
+    config = _parsed(home)
+    assert _PROVIDER not in config.get("model_providers", {})
+    assert config.get("model_provider") == ("mine" if seeded else None)
+    if seeded:
+        assert config["model_providers"]["mine"] == {"base_url": "https://m.example/v1"}
+
+
+def test_gateway_registration_skips_a_non_list_exclude(tmp_path, gateway_env, capsys):
+    home = _home(tmp_path)
+    path = _seed(home, 'shell_environment_policy.exclude = "SECRET_*"\n')
+
+    status = reg.register("codex", home=home)
+
+    assert "gateway:skipped" in status
+    assert _parsed(home)["shell_environment_policy"]["exclude"] == "SECRET_*"
+    assert "booley_gateway" not in _read(path)
+    assert "cannot take it" in capsys.readouterr().err

@@ -61,7 +61,7 @@ can run the command can get a token.
 
 On every Sandbox start under `BOOLEY_PRIMARY_AUTH=gateway`, the in-Sandbox
 registrar edits the user's Codex `config.toml` (the same file as the MCP
-entry), keeping comments and unrelated keys:
+entry), keeping unrelated keys:
 
 - It adds `[model_providers.booley_gateway]` with the gateway URL and an
   `auth` command that runs `python -P -m booley.runtime.gateway_token`. Booley
@@ -77,6 +77,12 @@ entry), keeping comments and unrelated keys:
   Codex shell tools do not receive a static token.
 - No token, token command or credential file is written. Under the gateway
   policy no `auth.json` is written either.
+- A layout it cannot extend (such as a non-list `exclude`) is reported as
+  `gateway:skipped` and nothing is written.
+- Under any other policy the registrar neither adds nor removes providers.
+  After leaving `gateway`, remove `model_provider`, `model`,
+  `features.fast_mode` and `[model_providers.booley_gateway]` from the Codex
+  config yourself, or interactive Codex keeps routing to the gateway.
 
 Because Booley does not spawn this Codex, the in-memory cache and the 401 retry
 of Specialist runs do not apply. The `auth` helper runs
