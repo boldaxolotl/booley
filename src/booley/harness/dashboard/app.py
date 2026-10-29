@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any, ClassVar
 
 from rich.cells import cell_len
@@ -36,7 +38,7 @@ from booley.harness.dashboard.results import (
     project_facts,
     proposal_summary,
 )
-from booley.harness.dashboard.topbar import TopBar
+from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
@@ -46,8 +48,8 @@ from booley.runtime.timefmt import format_age, format_clock, format_duration, pa
 
 logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
-# "Recent" lists this many newest results; "All" lists everything the snapshot retains.
-RECENT_JOBS = 50
+# "Finished" lists this many newest Jobs; "All" lists everything the snapshot retains.
+FINISHED_JOBS = 50
 # An orphaned process is known dead even though its Job record never finalized.
 _REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 HELP = (
@@ -55,9 +57,11 @@ HELP = (
     "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
     "←→ Sessions / Jobs · ↑ on the first row: top bar (←→ choose, Enter apply, ↓ or Esc back)\n"
-    "Esc back · j Running Jobs · r Recent results · a All Jobs in the current scope\n"
-    "s Sessions · u Jobs from all sessions / standalone · ? help · q quit\n"
-    "Job shortcuts keep the selected session scope; u clears that scope\n"
+    "Jobs window top bar: Running / Finished / All and the owner (Enter cycles all sessions,\n"
+    "each session, standalone); the Jobs tab counts unfinished Jobs\n"
+    "Esc back · j Running Jobs · r Finished Jobs · a All Jobs\n"
+    "s Sessions · u Jobs from all sessions · ? help · q quit\n"
+    "The Jobs window always opens on all sessions; the Running / Finished / All choice is kept\n"
     "Click a report, artifact or evidence path to open it in the editor\n"
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
@@ -98,14 +102,35 @@ _ABSENT = "—"
 _ELLIPSIS = "…"
 
 
+class Owner(Enum):
+    """Owner filters of the Jobs window that are not a session key."""
+
+    STANDALONE = "standalone"
+
+
+#: Label of the Jobs window's owner filter that lists everything.
+ALL_SESSIONS = "All sessions"
+_HANDLE_NUMBER = re.compile(r"S(\d+)")
+
+
 @dataclass(frozen=True)
 class Navigation:
-    """A reversible view selection; shortcuts never invoke execution machinery."""
+    """A reversible view selection; shortcuts never invoke execution machinery.
+
+    In the Jobs window ``session`` is the owner filter: ``None`` lists every
+    owner, a session key lists that session's Jobs and ``Owner.STANDALONE``
+    lists Jobs that belong to no session.
+    """
 
     view: str = "overview"
-    session: str | None = None
+    session: str | Owner | None = None
     job_filter: str = "running"
     selected: str = ""
+
+
+def _finished(job: JobView) -> bool:
+    """True for Jobs that ended or whose process is known dead; they list under Finished."""
+    return job.state in _REPORT_DETAIL_STATES
 
 
 def _sentence(text: str) -> str:
@@ -495,7 +520,7 @@ class DashboardApp(App[None]):
         ("escape", "back", "Back"),
         ("?", "help", "Help"),
         ("j", "jobs('running')", "Running Jobs"),
-        ("r", "jobs('recent')", "Recent results"),
+        ("r", "jobs('finished')", "Finished Jobs"),
         ("a", "all_jobs", "All Jobs"),
         ("s", "all_sessions", "Sessions"),
         ("u", "all_job_owners", "Jobs: all sessions"),
@@ -540,8 +565,8 @@ class DashboardApp(App[None]):
         # Table width the Jobs columns were fitted to; layout changes it after the first fit.
         self._jobs_fit_width = -1
         # Scroll offsets by (window, view, session, filter, detail selection).
-        self._scrolls: dict[tuple[str, str, str | None, str, str], float] = {}
-        self._detail_shown: tuple[str, str, str | None, str, str] | None = None
+        self._scrolls: dict[tuple[str, str, str | Owner | None, str, str], float] = {}
+        self._detail_shown: tuple[str, str, str | Owner | None, str, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield TopBar(id="topbar")
@@ -627,7 +652,7 @@ class DashboardApp(App[None]):
     def navigation(self, value: Navigation) -> None:
         self.windows[self.window][-1] = value
 
-    def _scroll_key(self, nav: Navigation) -> tuple[str, str, str | None, str, str]:
+    def _scroll_key(self, nav: Navigation) -> tuple[str, str, str | Owner | None, str, str]:
         """Scroll memory is per window; dedicated details are also told apart by subject."""
         subject = nav.selected if nav.view in DEDICATED_VIEWS else ""
         return (self.window, nav.view, nav.session, nav.job_filter, subject)
@@ -668,6 +693,8 @@ class DashboardApp(App[None]):
     def _show_window(self, window: str) -> None:
         """Switch windows; each keeps its own history, selection and scroll."""
         self._remember()
+        if window == "jobs" and self.window != "jobs":
+            self._reset_jobs_owner()
         self.window = window
         self._show()
 
@@ -701,10 +728,14 @@ class DashboardApp(App[None]):
         return self._content_at_top() if action == "focus_top_bar" else True
 
     def on_top_bar_selected(self, message: TopBar.Selected) -> None:
-        if message.window is None:
+        if message.kind == HELP_ITEM:
             self.action_help()
-        else:
-            self._show_window(message.window)
+        elif message.kind == WINDOW and message.value is not None:
+            self._show_window(message.value)
+        elif message.kind == FILTER and message.value is not None:
+            self._set_jobs_filter(job_filter=message.value)
+        elif message.kind == OWNER:
+            self._set_jobs_filter(session=self._next_owner())
 
     def on_top_bar_left(self, _message: TopBar.Left) -> None:
         self._focus_content()
@@ -721,25 +752,41 @@ class DashboardApp(App[None]):
         if self.navigation.view != "help":
             self._push(Navigation("help", self.navigation.session, self.navigation.job_filter))
 
-    def _job_scope(self) -> str | None:
-        """Job shortcuts keep the current session scope; the overview has none."""
-        return self.navigation.session if self.navigation.view != "overview" else None
+    def _jobs_root(self) -> Navigation:
+        """The Jobs window's top level, which holds its owner and status filters."""
+        return self.windows["jobs"][0]
+
+    def _reset_jobs_owner(self) -> None:
+        """Opening the Jobs window starts on All sessions; its status filter is kept."""
+        root = self._jobs_root()
+        if root.session is not None:
+            self.windows["jobs"][0] = replace(root, session=None, selected="")
+
+    def _set_jobs_filter(self, **changes: Any) -> None:
+        """Show the Jobs list with a new status or owner filter and the other one kept.
+
+        A filter chosen while a narrow Job detail is open returns to the list.
+        Reaching the Jobs window from another one starts on All sessions.
+        """
+        if self.window != "jobs":
+            self._reset_jobs_owner()
+        self._navigate("jobs", replace(self._jobs_root(), selected="", **changes))
 
     def action_jobs(self, job_filter: str) -> None:
-        """Session detail shortcuts carry that session's immutable ownership key."""
-        self._navigate("jobs", Navigation("jobs", self._job_scope(), job_filter))
+        """Show Jobs with this status filter; from another window the owner is All sessions."""
+        self._set_jobs_filter(job_filter=job_filter)
 
     def action_all_jobs(self) -> None:
-        """Show retained running Jobs and results in one list."""
-        self._navigate("jobs", Navigation("jobs", self.navigation.session, "all"))
+        """Show retained unfinished and finished Jobs in one list."""
+        self._set_jobs_filter(job_filter="all")
 
     def action_all_sessions(self) -> None:
         """Return to the session overview from any view."""
         self._navigate("sessions")
 
     def action_all_job_owners(self) -> None:
-        """Remove the session filter in the Jobs view."""
-        self._navigate("jobs", Navigation("jobs", None, self.navigation.job_filter))
+        """Remove the owner filter in the Jobs window; its status filter stays."""
+        self._set_jobs_filter(session=None)
 
     def action_open_path(self, path: str) -> None:
         """Open a published path in the editor; a failure is reported, never raised."""
@@ -835,30 +882,119 @@ class DashboardApp(App[None]):
         )
 
     def _jobs(self) -> list[JobView]:
-        rows = [
-            job
-            for job in self.snapshot.jobs.jobs
-            if self.navigation.session is None or self._owned_by(job, self.navigation.session)
-        ]
+        rows = self._owned_jobs(self.navigation.session)
         if self.navigation.job_filter != "all":
-            recent = self.navigation.job_filter == "recent"
+            finished = self.navigation.job_filter == "finished"
             rows = [
                 job
                 for job in rows
-                if (job.state in TERMINAL_JOB_STATES) == recent
-                or (not recent and json.dumps(job.key) == self.navigation.selected)
+                if _finished(job) == finished
+                or (not finished and json.dumps(job.key) == self.navigation.selected)
             ]
         rows = sorted(
             rows, key=lambda job: job.record.ended_at or job.record.started_at, reverse=True
         )
-        if self.navigation.job_filter != "recent":
+        if self.navigation.job_filter != "finished":
             return rows
-        # A newer result must not push the selected one out from under the cursor.
+        # A newer Job must not push the selected one out from under the cursor.
         return [
             job
             for index, job in enumerate(rows)
-            if index < RECENT_JOBS or json.dumps(job.key) == self.navigation.selected
+            if index < FINISHED_JOBS or json.dumps(job.key) == self.navigation.selected
         ]
+
+    def _owned_jobs(self, owner: str | Owner | None) -> list[JobView]:
+        """Every retained Job the owner filter admits, before any status filter."""
+        if owner is None:
+            return list(self.snapshot.jobs.jobs)
+        key = None if owner is Owner.STANDALONE else owner
+        return [job for job in self.snapshot.jobs.jobs if self._owned_by(job, key)]
+
+    def _owner_handle(self, key: str) -> str:
+        """Handle of a session key, also when only a retained Job still knows it."""
+        return self.snapshot.session_handles.get(key) or next(
+            (
+                job.owner_handle
+                for job in self.snapshot.jobs.jobs
+                if job.record.session_key == key and job.owner_handle
+            ),
+            "",
+        )
+
+    def _owner_filter_label(self, owner: str | Owner | None) -> str:
+        """Name an owner filter for the chip, the orientation and empty-state text."""
+        if owner is None:
+            return ALL_SESSIONS
+        if owner is Owner.STANDALONE:
+            return "Standalone"
+        return self._owner_handle(owner) or owner
+
+    def _owner_choices(self) -> list[tuple[str | Owner | None, str]]:
+        """Owner filters in cycling order: all sessions, each handle, standalone.
+
+        Connected sessions and the owners of retained Jobs both count, so a
+        disconnected session is still reachable. One entry per handle, since
+        aliased keys share it; a connected key represents it when there is
+        one. A key without a handle is its own entry, after the handles.
+        """
+        keys = [row.attribution.key for row in self.snapshot.sessions]
+        keys += [
+            job.record.session_key for job in self.snapshot.jobs.jobs if job.record.session_key
+        ]
+        by_label: dict[str, str] = {}
+        for key in keys:
+            by_label.setdefault(self._owner_handle(key) or key, key)
+
+        def order(label: str) -> tuple[int, int, str]:
+            number = _HANDLE_NUMBER.fullmatch(label)
+            return (0, int(number[1]), label) if number else (1, 0, label)
+
+        choices: list[tuple[str | Owner | None, str]] = [(None, ALL_SESSIONS)]
+        choices += [(by_label[label], label) for label in sorted(by_label, key=order)]
+        choices.append((Owner.STANDALONE, "Standalone"))
+        return choices
+
+    def _next_owner(self) -> str | Owner | None:
+        """The owner filter after the current one; an unknown current one wraps to all sessions.
+
+        The current entry is found by label: the key that represents a handle
+        changes when an aliased session connects.
+        """
+        choices = self._owner_choices()
+        labels = [label for _, label in choices]
+        current = self._owner_filter_label(self._jobs_root().session)
+        if current not in labels:
+            return None
+        return choices[(labels.index(current) + 1) % len(choices)][0]
+
+    def _jobs_orientation(self) -> str:
+        """First line of the Jobs window: status filter and owner filter."""
+        job_filter = self.navigation.job_filter
+        status = {
+            "running": "Running",
+            "finished": f"Finished (newest {FINISHED_JOBS})",
+            "all": "All",
+        }.get(job_filter, job_filter)
+        return f"Jobs · {status} · {self._owner_filter_label(self.navigation.session)}"
+
+    def _jobs_empty_text(self) -> str:
+        """Say why the Jobs list is empty and which filter shows something."""
+        owner = self.navigation.session
+        owned = self._owned_jobs(owner)
+        who = self._owner_filter_label(owner)
+        if not owned:
+            if not self.snapshot.jobs.jobs:
+                return "No Jobs yet."
+            return f"No Jobs for {who}. Choose {ALL_SESSIONS} above."
+        finished = sum(_finished(job) for job in owned)
+        running = len(owned) - finished
+        scope = "" if owner is None else f" for {who}"
+        if self.navigation.job_filter == "running":
+            subject = "" if owner is None else f"{who} has "
+            return f"No Jobs running{scope}. {subject}{finished} finished — choose Finished above."
+        # Only Running and Finished can be empty while the owner has Jobs: All lists them.
+        hint = f" {running} running — choose Running above." if running else ""
+        return f"No finished Jobs{scope} yet.{hint}"
 
     def _content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
         nav = self.navigation
@@ -867,8 +1003,7 @@ class DashboardApp(App[None]):
         if nav.view == "jobs":
             jobs = self._jobs()
             return (
-                f"Jobs · {nav.job_filter}{f' (newest {RECENT_JOBS})' if nav.job_filter == 'recent' else ''}"
-                f" · {self._session_handle(nav.session) if nav.session else 'all sessions and standalone'}",
+                self._jobs_orientation(),
                 [json.dumps(job.key) for job in jobs],
                 [
                     _job_cells(job, self.snapshot.observed_at, self.snapshot.session_handles)
@@ -1024,9 +1159,7 @@ class DashboardApp(App[None]):
         self.query_one("#empty", Static).update(
             "No connected sessions"
             if not rows and self.navigation.view == "overview"
-            else (
-                "No Jobs match this filter" if not rows and self.navigation.view == "jobs" else ""
-            )
+            else (self._jobs_empty_text() if not rows and self.navigation.view == "jobs" else "")
         )
         self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
         self.query_one("#health", Static).update(_doctor_text(self.snapshot))
@@ -1034,7 +1167,12 @@ class DashboardApp(App[None]):
         notices_text = _notices_text(self.snapshot)
         notices.update(notices_text)
         notices.display = bool(notices_text)
-        self.query_one(TopBar).active = self.window
+        bar = self.query_one(TopBar)
+        bar.active = self.window
+        jobs_root = self._jobs_root()
+        bar.job_filter = jobs_root.job_filter
+        bar.owner = self._owner_filter_label(jobs_root.session)
+        bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
         table = self.query_one(DataTable)
         selected = self._selected_key()
         scroll = (
