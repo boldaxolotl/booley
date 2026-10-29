@@ -21,7 +21,7 @@ def sharing_error(winerror: int = 32) -> PermissionError:
 
 def no_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink the retry budget to two opens without sleeping for real."""
-    monkeypatch.setattr("booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS", (0.0,))
+    monkeypatch.setattr("booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS", (0.0,))
 
 
 def hold_opens(

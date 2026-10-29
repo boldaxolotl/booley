@@ -731,7 +731,7 @@ def test_unreadable_baseline_job_record_reports_its_cause(baseline, monkeypatch)
     _path, request = _schedule(baseline)
     job_path = Path(request["jobs_root"]) / (request["job_id"] + ".json")
     monkeypatch.setattr(
-        "booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS", (0.0,), raising=False
+        "booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS", (0.0,), raising=False
     )
     _hold_reads(monkeypatch, {job_path: 10**6})
     report = baseline_observations(
