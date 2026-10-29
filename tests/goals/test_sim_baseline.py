@@ -730,9 +730,9 @@ def test_baseline_observation_reads_through_transient_windows_sharing_errors(
 def test_unreadable_baseline_job_record_reports_its_cause(baseline, monkeypatch):
     _path, request = _schedule(baseline)
     job_path = Path(request["jobs_root"]) / (request["job_id"] + ".json")
-    monkeypatch.setattr(
-        "booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS", (0.0,), raising=False
-    )
+    from tests.sharing_error_support import retry_delays_target
+
+    monkeypatch.setattr(retry_delays_target(), (0.0,), raising=False)
     _hold_reads(monkeypatch, {job_path: 10**6})
     report = baseline_observations(
         baseline.control, baseline.record, sim_goals(baseline.record)[0]

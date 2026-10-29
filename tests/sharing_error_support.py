@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from collections import Counter
 from collections.abc import Callable
@@ -20,9 +21,21 @@ def sharing_error(winerror: int = 32) -> PermissionError:
     return error
 
 
+def retry_delays_target() -> str:
+    """Name the retry-delay constant where the retry loops read it.
+
+    It lives in ``booley.core.sharing_retry``; trees that predate that module
+    (the base the regression tests are proven red against) keep it in
+    ``booley.runtime.filesystem_utils``.
+    """
+    if importlib.util.find_spec("booley.core.sharing_retry") is not None:
+        return "booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS"
+    return "booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS"
+
+
 def no_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink the retry budget to two opens without sleeping for real."""
-    monkeypatch.setattr("booley.core.sharing_retry._SHARING_RETRY_DELAYS_SECONDS", (0.0,))
+    monkeypatch.setattr(retry_delays_target(), (0.0,))
 
 
 def hold_opens(
