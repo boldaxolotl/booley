@@ -73,11 +73,11 @@ def _specialist(cls, model=None):
     return specialist
 
 
-def _doctor_findings(root, auth="subscription"):
+def _doctor_findings(root, auth="subscription", provider="codex"):
     audit = doctor.ProjectAudit(
         project_root=root,
         booley_dir=root / ".booley",
-        booley_toml={"agent": {"provider": "codex", "auth": auth}},
+        booley_toml={"agent": {"provider": provider, "auth": auth}},
         configs_toml={},
         first_target="",
     )
@@ -146,6 +146,9 @@ def test_gateway_effort_overrides_every_tier(project, monkeypatch):
     settings = agent_config.get_agent_settings()
     assert {settings.effort_for_tier(tier) for tier in MODEL_TIERS} == {"low"}
     assert _specialist(ReviewerSpecialist)._resolve_effort() == "low"
+    for level in ("none", "persistent"):  # Codex variants beyond the tier names
+        monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", level)
+        assert _lazy().effort_for_tier("light") == level
 
 
 def test_gateway_effort_reaches_mutation_creator_call(project, monkeypatch):
@@ -202,6 +205,16 @@ def test_doctor_notes_gateway_model_vars_ignored_outside_gateway(project, monkey
     assert "BOOLEY_GATEWAY_EFFORT" in findings[0].message
     assert "secret-model-id" not in findings[0].message
     assert "xhigh" not in findings[0].message
+
+    # The gateway policy with the Claude provider ignores the pin too: note, no pin FAIL.
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "turbo")
+    claude = [
+        f
+        for f in _doctor_findings(project, "gateway", "claude")
+        if "BOOLEY_GATEWAY_E" in f.message
+    ]
+    assert [f.severity.value for f in claude] == ["note"]
 
 
 def test_gateway_model_vars_ignored_under_other_policies(project, monkeypatch):

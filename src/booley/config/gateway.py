@@ -73,12 +73,24 @@ def gateway_settings_from_env(environ: Mapping[str, str] = os.environ) -> Gatewa
 
 GATEWAY_MODEL_ENV = "BOOLEY_GATEWAY_MODEL"
 GATEWAY_EFFORT_ENV = "BOOLEY_GATEWAY_EFFORT"
-# Variants of Codex's ``model_reasoning_effort`` config enum. Source: the
-# string table of the ``@openai/codex@0.160.0-linux-x64`` binary (the version
-# the Sandbox pins in ``data/docker/agent-clis-package.json``), checked against
-# 0.164. Booley accepts the CLI vocabulary; whether the gateway's model
-# supports a level is the gateway's to reject.
-CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+# Named variants of Codex's ``ReasoningEffort`` (``model_reasoning_effort``).
+# Source: codex-rs/protocol/src/openai_models.rs at tag rust-v0.160.0, the
+# Codex release the Sandbox pins in ``data/docker/agent-clis-package.json``.
+# Codex also parses any other non-empty string as a model-defined custom
+# effort; Booley accepts only the named variants, because the value reaches a
+# ``-c`` override. Whether the gateway's model supports a level is the
+# gateway's to reject.
+CODEX_EFFORT_LEVELS = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+    "persistent",
+)
 
 
 @dataclass(frozen=True)

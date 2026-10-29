@@ -396,7 +396,8 @@ OpenAI or Anthropic credential and no Codex login reaches them. The gateway
 host must be reachable from the Sandbox. A missing variable, a non-`https` URL,
 or a Claude provider fails `booley doctor` and `booley auth --status` naming the
 problem; a complete configuration passes Doctor and exits 0. Text-only Codex
-Specialists such as `coverage_analyst` do not support this policy yet. To run every Specialist on one gateway model, see
+Specialists such as `coverage_analyst` do not support this policy yet. To run
+every Specialist on one gateway model, see
 [Pinning one model under a gateway](#pinning-one-model-under-a-gateway).
 
 #### Git identity (`[agent.git]`)
@@ -477,17 +478,18 @@ on Claude, whose SDK exposes no per-call effort knob), except under a gateway
 When `BOOLEY_PRIMARY_AUTH=gateway` is honored (see [Routing Codex through a
 gateway](#routing-codex-through-a-gateway-booley_primary_authgateway)) and
 `[agent] provider` is `codex`, two optional environment variables pin the model
-for the whole run:
+for every Codex Specialist:
 
 | Variable | Meaning |
 | --- | --- |
 | `BOOLEY_GATEWAY_MODEL` | One model id, no spaces, passed to Codex as is. It replaces every `[models]` tier, every `[models.roles]` pin, and every Specialist minimum-tier floor, including the model `booley doctor` uses for its developer probe. |
-| `BOOLEY_GATEWAY_EFFORT` | Reasoning effort for every Codex call Booley makes: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` (case-insensitive). Unset, each call keeps its usual effort. Whether the gateway's model supports a level is the gateway's call. |
+| `BOOLEY_GATEWAY_EFFORT` | Reasoning effort for every Codex Specialist call: `none` (no reasoning, not "unset"), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, or `persistent` (case-insensitive). Unset, each call keeps its usual effort. Whether the gateway's model supports a level is the gateway's call. |
 
 An invalid value of either fails `booley doctor` (`agent.credential-policy`),
 `booley chat`, and every Codex Specialist call before it starts; the message
-names the variable, not its value. Under any other policy, or outside a
-Sandbox, both variables are ignored and `booley doctor` prints a NOTE.
+names the variable, not its value. The interactive `booley chat` session itself
+uses neither variable. Under any other policy, outside a Sandbox, or with a
+non-Codex provider, both variables are ignored and `booley doctor` prints a NOTE.
 
 ### Dashboard and quiet Goal presence (`[goals]`)
 

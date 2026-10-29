@@ -2626,12 +2626,13 @@ def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
 
 
 def _check_gateway_model_pin(auth_policy: str, provider: str, reporter: _Reporter) -> None:
-    """FAIL an invalid gateway model/effort pin; NOTE pin variables set outside the gateway.
+    """FAIL an invalid gateway model/effort pin; NOTE pin variables set where they are ignored.
 
-    A valid pin under the gateway prints nothing (the gateway check stays one PASS).
-    Values are never printed.
+    The pin applies only under the gateway policy with the Codex provider, as in
+    ``config.agent._gateway_pin``. A valid pin prints nothing (the gateway check
+    stays one PASS). Values are never printed.
     """
-    if auth_policy == GATEWAY_AUTH:
+    if auth_policy == GATEWAY_AUTH and provider == auth_token.APP_CODEX:
         try:
             gateway_model_pin_from_env()
         except GatewayConfigError as exc:
@@ -2645,7 +2646,7 @@ def _check_gateway_model_pin(auth_policy: str, provider: str, reporter: _Reporte
     if ignored:
         reporter.note_(
             f"{' and '.join(ignored)} ignored: only BOOLEY_PRIMARY_AUTH=gateway "
-            "inside a Sandbox applies them"
+            "with the Codex provider inside a Sandbox applies them"
         )
 
 
