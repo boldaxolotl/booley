@@ -541,11 +541,12 @@ def _toml_entries(existing: str) -> list[_TomlEntry]:
     return entries
 
 
-def _strip_codex_table(existing: str) -> str:
-    """Remove owned statements, preserving unrelated statements verbatim."""
-    owned = ("mcp_servers", MCP_SERVER_NAME)
+def _strip_owned_codex_table(existing: str, owned: tuple[str, ...]) -> str:
+    """Remove statements under the *owned* table path, keeping every other byte."""
     return "".join(
-        statement for statement, path, _header in _toml_entries(existing) if path[:2] != owned
+        statement
+        for statement, path, _header in _toml_entries(existing)
+        if path[: len(owned)] != owned
     )
 
 
@@ -599,7 +600,7 @@ def upsert_codex(path: Path) -> bool:
     servers = parsed.get("mcp_servers", {})
     desired = {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
     if not isinstance(servers, dict) or servers.get(MCP_SERVER_NAME) != desired:
-        updated = _strip_codex_table(updated)
+        updated = _strip_owned_codex_table(updated, ("mcp_servers", MCP_SERVER_NAME))
         sep = "" if not updated or updated.endswith("\n") else "\n"
         updated += sep + codex_section()
     if not _codex_entry_is_current(updated, path=path):
@@ -899,8 +900,9 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
 
     policy = env_auth_handoff() or "auto"
     if policy == GATEWAY_AUTH:  # already inside the container by definition
-        # Gateway registration is a separate concern (#2270); leave any
-        # Booley-managed credential copies untouched and validate nothing.
+        # The gateway login is the provider written by _apply_codex_gateway;
+        # there is no auth.json. Leave any Booley-managed credential copies
+        # untouched and validate nothing.
         return "none"
     plan = auth_token.credential_plan(app, policy, home=home or _agent_home())
     credential = auth_token.credential_for_app(app)
@@ -1072,6 +1074,159 @@ def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gateway provider — interactive Codex under BOOLEY_PRIMARY_AUTH=gateway (#2270)
+# ---------------------------------------------------------------------------
+
+# Codex may wait for the token helper this much longer than the helper waits for
+# the user's token command, so the helper reports the command's stderr first.
+_AUTH_HELPER_MARGIN_S = 15
+
+
+def _gateway_exclude_list(existing: str, current: object) -> str | None:
+    """Add the static token to ``shell_environment_policy.exclude``; ``None`` if unchanged."""
+    from booley.config.gateway import GATEWAY_TOKEN_ENV
+
+    if isinstance(current, list) and GATEWAY_TOKEN_ENV in current:
+        return None
+    names = [*current, GATEWAY_TOKEN_ENV] if isinstance(current, list) else [GATEWAY_TOKEN_ENV]
+    value = json.dumps(names)
+    table = ("shell_environment_policy",)
+    updated = _upsert_existing_codex_table_setting(
+        existing, table=table, key="exclude", value=value
+    )
+    if updated is not None:
+        return updated
+    return _upsert_codex_root_setting(existing, "shell_environment_policy.exclude", value)
+
+
+def _with_gateway_settings(
+    existing: str, data: dict, provider_toml: str, model_pin: str | None
+) -> str:
+    """Add the owned provider table and the set-if-absent root keys to *existing* TOML."""
+    from booley.runtime.mcp_config import GATEWAY_PROVIDER_ID
+
+    updated = existing
+    desired = _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
+    providers = data.get("model_providers", {})
+    if not isinstance(providers, dict) or providers.get(GATEWAY_PROVIDER_ID) != desired:
+        updated = _strip_owned_codex_table(updated, ("model_providers", GATEWAY_PROVIDER_ID))
+        if updated and not updated.endswith("\n"):
+            updated += "\n"
+        updated += ("\n" if updated else "") + provider_toml
+    if "model_provider" not in data:
+        updated = _upsert_codex_root_setting(
+            updated, "model_provider", json.dumps(GATEWAY_PROVIDER_ID)
+        )
+    if model_pin and "model" not in data:
+        updated = _upsert_codex_root_setting(updated, "model", json.dumps(model_pin))
+    features = data.get("features", {})
+    if isinstance(features, dict) and "fast_mode" not in features:
+        # The gateway rejects Codex's default priority tier (spike #2264).
+        edited = _upsert_existing_codex_table_setting(
+            updated, table=("features",), key="fast_mode", value="false"
+        )
+        updated = (
+            edited
+            if edited is not None
+            else _upsert_codex_root_setting(updated, "features.fast_mode", "false")
+        )
+    policy = data.get("shell_environment_policy", {})
+    excluded = _gateway_exclude_list(
+        updated, policy.get("exclude") if isinstance(policy, dict) else None
+    )
+    return updated if excluded is None else excluded
+
+
+def _warn_gateway_overrides(data: dict) -> None:
+    """Say so when a user's own Codex keys keep the gateway from working."""
+    from booley.runtime.mcp_config import GATEWAY_PROVIDER_ID
+
+    if data.get("model_provider") != GATEWAY_PROVIDER_ID:
+        print(
+            f"warning: Codex gateway provider {GATEWAY_PROVIDER_ID} is configured but not "
+            f"selected: model_provider in your Codex config wins; set it to "
+            f"{GATEWAY_PROVIDER_ID} to use the gateway",
+            file=sys.stderr,
+        )
+    if data.get("features", {}).get("fast_mode") is True:
+        print(
+            "warning: features.fast_mode = true in your Codex config; the gateway rejects "
+            "the priority tier, so set features.fast_mode = false",
+            file=sys.stderr,
+        )
+
+
+def _apply_codex_gateway(home: Path | None = None) -> str:
+    """Add and select the ``booley_gateway`` provider in the user's Codex config.
+
+    Only under ``BOOLEY_PRIMARY_AUTH=gateway``. Booley owns the provider table
+    (a stale URL is replaced); ``model_provider``, ``model`` and
+    ``features.fast_mode`` are written only when absent, so the user's keys
+    win. Neither the token nor the token command reaches the file: ``auth``
+    runs the helper, which runs the command on each Codex auth call.
+
+    Returns ``off``, ``invalid`` (incomplete gateway environment), ``skipped``
+    (a TOML layout that cannot take the entries), ``current`` or ``written``.
+    """
+    from booley.config.agent import env_auth_handoff
+    from booley.config.gateway import (
+        GATEWAY_AUTH,
+        GatewayConfigError,
+        gateway_model_pin_from_env,
+        gateway_settings_from_env,
+    )
+    from booley.runtime.gateway_token import COMMAND_TIMEOUT_S
+    from booley.runtime.mcp_config import gateway_provider_toml
+
+    if env_auth_handoff() != GATEWAY_AUTH:
+        return "off"
+    try:
+        settings = gateway_settings_from_env()
+        model_pin = gateway_model_pin_from_env().model
+    except GatewayConfigError as exc:
+        print(f"warning: Codex gateway provider skipped: {exc}", file=sys.stderr)
+        return "invalid"
+    path = codex_config_path(home)
+    provider_toml = gateway_provider_toml(
+        settings.url,
+        str(path.parent),
+        timeout_ms=(COMMAND_TIMEOUT_S + _AUTH_HELPER_MARGIN_S) * 1000,
+    )
+    existing = _read_codex_config(path)
+    data = _codex_data(existing, path=path)
+    try:
+        updated = _with_gateway_settings(existing, data, provider_toml, model_pin)
+        data = _codex_data(updated, path=path)
+    except ValueError:  # an edit left TOML the parser rejects: a layout we cannot extend
+        data = None
+    if data is None or not _gateway_entries_present(data, provider_toml):
+        print(
+            f"warning: Codex gateway provider skipped: the layout in {path} cannot take "
+            "it; add the booley_gateway provider there by hand",
+            file=sys.stderr,
+        )
+        return "skipped"
+    _warn_gateway_overrides(data)
+    if updated == existing:
+        return "current"
+    _publish_codex_config(path, updated)
+    return "written"
+
+
+def _gateway_entries_present(data: dict, provider_toml: str) -> bool:
+    """Whether parsed *data* carries the owned provider and the token exclusion."""
+    from booley.config.gateway import GATEWAY_TOKEN_ENV
+    from booley.runtime.mcp_config import GATEWAY_PROVIDER_ID
+
+    desired = _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
+    providers = data.get("model_providers")
+    policy = data.get("shell_environment_policy")
+    provider = providers.get(GATEWAY_PROVIDER_ID) if isinstance(providers, dict) else None
+    exclude = policy.get("exclude") if isinstance(policy, dict) else None
+    return provider == desired and isinstance(exclude, list) and GATEWAY_TOKEN_ENV in exclude
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -1106,9 +1261,10 @@ def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] =
         cred = apply_stored_credential(app, home)
         perm = _apply_codex_permission_mode(home)
         first = _apply_codex_trust(home, trust_paths)
+        gateway = _apply_codex_gateway(home)
         mcp = "written" if changed else "current"
         return (
             f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} "
-            f"cred:{cred} perm:{perm} first-run:{first}"
+            f"cred:{cred} perm:{perm} first-run:{first} gateway:{gateway}"
         )
     return "none"

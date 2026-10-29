@@ -1,6 +1,6 @@
 # Route Codex Specialists through an env-selected gateway
 
-Status: accepted (amended 2026-10-29: token command, see Amendments)
+Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; see Amendments)
 
 ## Context
 
@@ -47,7 +47,9 @@ verbatim) and `BOOLEY_GATEWAY_TOKEN`.
 - **Fail loud.** A missing or non-`https` URL, userinfo or whitespace in the
   URL, or a missing token fails before any spawn, naming the variable without
   echoing the value. Text-only Codex Specialists (#2269) fail naming the policy.
-- **Registrar.** The in-Sandbox registrar returns early (#2270).
+- **Registrar.** Under the gateway policy the in-Sandbox registrar adds and
+  selects the same provider in the user's Codex config (amended, see
+  Amendments, #2270).
 
 ## Rejected alternatives
 
@@ -80,3 +82,28 @@ source, `BOOLEY_GATEWAY_TOKEN_COMMAND`. Set exactly one of it and
   safe to run repeatedly (Doctor runs it too). Its stderr is shown verbatim on
   failure; its stdout never is. Whoever can run the command in the Sandbox can
   mint a token.
+
+## Amendments (#2270)
+
+[#2270](https://github.com/boldaxolotl/booley/issues/2270) makes interactive
+Codex in the Sandbox (and `booley chat`) use the gateway.
+
+- **Registrar.** The registrar writes the `booley_gateway` provider tables, and
+  `model_provider`, `features.fast_mode = false`, the `BOOLEY_GATEWAY_MODEL`
+  pin and the `BOOLEY_GATEWAY_TOKEN` shell exclusion into the user's
+  `config.toml`. The provider table is Booley's; `model_provider`, `model` and
+  `fast_mode` are written only when absent, so the user's keys win.
+- **The command runs inside the `auth` helper here**, which the #2267 amendment
+  rejected for Specialists. No Booley process spawns this Codex, so there is
+  nobody to run the command or cache its output. Each helper run therefore runs
+  `BOOLEY_GATEWAY_TOKEN_COMMAND` once, with no cache and nothing on disk. A
+  token claimed mid-session is used after Codex's next auth refresh.
+- **Rejected: the MCP HTTP server as a token cache.** It would serve bearer
+  tokens on loopback to any process in the Sandbox without running the command,
+  it runs with the start hook's environment instead of the session's, and it
+  would add a token endpoint for one demo path.
+- **Contract.** The command must be safe to run repeatedly and concurrently.
+- **Consequence.** `BOOLEY_GATEWAY_TOKEN_COMMAND` stays visible to Codex shell
+  tools, so `booley` commands run there still reach the gateway. A static
+  `BOOLEY_GATEWAY_TOKEN` is hidden from them, so such a command fails loud for
+  lack of a token source.
