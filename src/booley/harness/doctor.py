@@ -52,6 +52,12 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_TOKEN_ENV,
+    GatewayConfigError,
+    gateway_settings_from_env,
+)
 from booley.config.jobs import parse_caps
 from booley.config.project_config import (
     TESTS_SECTION_KEYS,
@@ -2562,6 +2568,10 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         return
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
+    _warn_ignored_gateway_handoff(reporter)
+    if auth_policy == GATEWAY_AUTH:
+        _check_gateway_auth(provider, reporter)
+        return
     try:
         plan = auth_token.credential_plan(provider, auth_policy)
     except ValueError as exc:
@@ -2595,6 +2605,37 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
+
+
+def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
+    """Warn that a host-exported ``BOOLEY_PRIMARY_AUTH=gateway`` changes nothing."""
+    from booley.config.agent import env_auth_handoff, gateway_handoff_active
+
+    if env_auth_handoff() == GATEWAY_AUTH and not gateway_handoff_active():
+        reporter.warn_(
+            warning(
+                "agent.credential-policy",
+                "BOOLEY_PRIMARY_AUTH=gateway is honored only inside a Sandbox that sets it "
+                "(for example a Codespace); Booley-issued Sandboxes use booley.toml",
+            )
+        )
+
+
+def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
+    """Grade the env-selected gateway policy: it routes Codex only and needs URL + token."""
+    if provider != auth_token.APP_CODEX:
+        reporter.fail_(
+            f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'",
+            check_id="agent.credential-missing",
+            subject=provider,
+        )
+        return
+    try:
+        settings = gateway_settings_from_env()
+    except GatewayConfigError as exc:
+        reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+        return
+    reporter.pass_(f"Codex auth: the gateway at {settings.url} ({GATEWAY_TOKEN_ENV})")
 
 
 def _check_interactive_logs_tracked(
@@ -2730,9 +2771,13 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
         _VALID_AUTH_MODES,
         BackendConfigError,
         _parse_auth,
+        env_auth_handoff,
+        gateway_handoff_active,
     )
 
-    env_auth = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip()
+    if gateway_handoff_active():
+        return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
+    env_auth = env_auth_handoff() or ""
     if project is None:
         return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
     agent_section = project.booley_toml.get("agent")

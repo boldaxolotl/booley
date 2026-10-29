@@ -410,8 +410,7 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
-it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
-pass agent-specific options.
+it replaces itself with the native CLI. Arguments after `booley chat` are passed to it unchanged, for example `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); `booley chat -- --help` forwards `--help`.
 
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the

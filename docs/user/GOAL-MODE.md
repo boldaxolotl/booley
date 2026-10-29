@@ -449,10 +449,19 @@ shows as a dim `—`. On a narrow terminal Started disappears first, then Work
 dir, then Branch, and values that still do not fit end in `…`. The Sessions
 tab reads `Sessions N◆` while N sessions need you.
 
-Press `s` for the session list, `j` for running Jobs, `r` for recent results,
-or `a` for all Jobs; the Job keys open the Jobs window. From a session detail,
-Job shortcuts show that session's Jobs; press `u` to include all sessions and
-standalone Jobs. `?` shows help.
+While the Jobs window is shown, the top bar also holds its filters: Running
+(queued or running Jobs), Finished (the newest 50) and All, then an owner chip.
+`Enter` on the chip cycles All sessions, each session handle (including
+sessions known only through retained Jobs), Standalone, and back. The Jobs tab
+shows how many Jobs are unfinished, and nothing when there are none. An empty
+list says why and which filter shows something.
+
+Press `s` for the session list, `j` for running Jobs, `r` for finished Jobs,
+or `a` for all Jobs; the Job keys open the Jobs window. The Jobs window opens
+on all sessions, whichever window or detail you came from, and keeps the
+Running, Finished or All choice while you switch windows; press `u` to go back
+to all sessions.
+`?` shows help.
 
 The Jobs list has the columns Job, Target, Session, State, Result, Crit and
 Elapsed. Crit repeats the detail's `Criterion:` line as `✓` (met) or `✗` (not

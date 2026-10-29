@@ -868,7 +868,9 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
         "import pathlib,time; print('second ready',flush=True); "
         f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+5; "
         "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)'); "
-        "print('second still live',flush=True); time.sleep(0.5)"
+        "print('second still live',flush=True); "
+        f"p=pathlib.Path({str(release.with_name('done'))!r}); "
+        "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)')"
     )
     with sink.installed():
         sink.begin_command()
@@ -899,6 +901,7 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
             wait_until(lambda: "second still live" in sink.stream.getvalue())
             assert second.poll() is None
         finally:
+            release.with_name("done").touch()  # let the second command exit
             release.touch()
             thread.join(timeout=7)
             second.stdout.close()

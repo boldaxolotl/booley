@@ -131,7 +131,8 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
         assert "J-SIM1" in str(rows)
         await pilot.press("j")
         orientation, _, rows = app._content()
-        assert orientation.endswith(" · S1")
+        # The Jobs window starts on all sessions, whichever session it was reached from.
+        assert orientation.endswith(" · All sessions")
         assert "J-SIM1" in str(rows) and "S1" in str(rows)
         assert "codex:00" not in orientation + str(rows)
         await pilot.press("enter")
@@ -140,7 +141,7 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
         assert "Session key: codex:00" in detail and "Run ID: one" in detail
         await pilot.press("escape", "escape")
         assert app.navigation.view == "jobs"
-        assert app.navigation.session == "codex:00"
+        assert app.navigation.session is None
 
 
 def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
@@ -177,16 +178,16 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("shortcut", "job_filter", "expected_global", "expected_scoped"),
+    ("shortcut", "job_filter", "expected"),
     [
-        ("r", "recent", ["two"], []),
-        ("j", "running", ["one"], ["one"]),
-        ("a", "all", ["one", "two"], ["one"]),
+        ("r", "finished", ["two"]),
+        ("j", "running", ["one"]),
+        ("a", "all", ["one", "two"]),
     ],
 )
 @pytest.mark.parametrize("scoped", [False, True])
 async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
-    shortcut, job_filter, expected_global, expected_scoped, scoped
+    shortcut, job_filter, expected, scoped
 ):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
@@ -196,8 +197,7 @@ async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
         await pilot.press(shortcut)
         assert app.navigation.view == "jobs"
         assert app.navigation.job_filter == job_filter
-        assert app.navigation.session == ("codex:00" if scoped else None)
-        expected = expected_scoped if scoped else expected_global
+        assert app.navigation.session is None
         assert [json.loads(key)[1] for key in app.row_keys] == expected
         previous = app.navigation
         previous_rows = app.row_keys.copy()
@@ -353,13 +353,13 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
         await _inspect_goals_and_proposal(app, pilot)
         await pilot.press("j")
-        assert app.navigation.session == "codex:00"
+        assert app.navigation.session is None
         assert len(app.row_keys) == 1
         await pilot.press("enter")
         assert app.navigation.view == "job"
         await pilot.press("escape", "escape", "r")
-        assert app.navigation.job_filter == "recent"
-        assert app.row_keys == []
+        assert app.navigation.job_filter == "finished"
+        assert [json.loads(key)[1] for key in app.row_keys] == ["two"]
         await pilot.press("u")
         assert app.navigation.view == "jobs"
         assert app.navigation.session is None
@@ -801,8 +801,8 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
         assert [note.message for note in app._notifications] == [hint[0]]
 
 
-def test_recent_results_are_newest_first_and_bounded(monkeypatch):
-    monkeypatch.setattr(dashboard_app, "RECENT_JOBS", 2)
+def test_finished_jobs_are_newest_first_and_bounded(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "FINISHED_JOBS", 2)
     jobs = tuple(
         JobView(
             Path("/jobs"),
@@ -816,11 +816,11 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
     app = DashboardApp(snapshot)
     app.snapshot = replace(snapshot(1), jobs=JobSnapshot(jobs))
     app.window = "jobs"
-    app.navigation = Navigation("jobs", None, "recent")
+    app.navigation = Navigation("jobs", None, "finished")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2"]
-    assert "recent (newest 2)" in app._content()[0]
-    # The selected result stays listed when newer results push it past the bound.
-    app.navigation = Navigation("jobs", None, "recent", json.dumps(jobs[0].key))
+    assert "Finished (newest 2)" in app._content()[0]
+    # The selected Job stays listed when newer Jobs push it past the bound.
+    app.navigation = Navigation("jobs", None, "finished", json.dumps(jobs[0].key))
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
     app.navigation = Navigation("jobs", None, "all")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]

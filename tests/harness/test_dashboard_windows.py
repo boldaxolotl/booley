@@ -281,10 +281,11 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         await pilot.press("left")
         assert bar.cursor == 0
         assert app.navigation.view == "jobs"  # choosing needs Enter
-        await pilot.press("right", "right", "right")
-        assert bar.cursor == 2  # clamped at Help, no wrap
+        # Jobs window bar: Sessions, Jobs, Running, Finished, All, owner, Help.
+        await pilot.press(*["right"] * 7)
+        assert bar.cursor == 6  # clamped at Help, no wrap
 
-        await pilot.press("left", "left", "enter")
+        await pilot.press(*["left"] * 6, "enter")
         await pilot.pause()
         assert app.navigation.view == "overview"
         assert app.focused is bar
@@ -294,7 +295,7 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         assert app.navigation.view == "jobs"
         assert app.focused is bar
 
-        await pilot.press("right", "enter")
+        await pilot.press(*["right"] * 5, "enter")
         await pilot.pause()
         assert app.navigation.view == "help"
         depth = len(app.windows["jobs"])
@@ -462,7 +463,8 @@ async def test_shortcuts_reach_same_content_in_matching_window():
         await pilot.press("down")  # remember the second overview row
         await pilot.press("1", "j")
         nav = app.navigation
-        assert (nav.view, nav.session, nav.job_filter) == ("jobs", "codex:00", "running")
+        # The Jobs window opens on all sessions, not on the session it came from.
+        assert (nav.view, nav.session, nav.job_filter) == ("jobs", None, "running")
         assert "two" not in job_ids(app)
         await pilot.press("left")
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
@@ -470,9 +472,9 @@ async def test_shortcuts_reach_same_content_in_matching_window():
         assert app.navigation.view == "jobs"
 
         await pilot.press("r")
-        assert (app.navigation.session, app.navigation.job_filter) == ("codex:00", "recent")
+        assert (app.navigation.session, app.navigation.job_filter) == (None, "finished")
         await pilot.press("a")
-        assert (app.navigation.session, app.navigation.job_filter) == ("codex:00", "all")
+        assert (app.navigation.session, app.navigation.job_filter) == (None, "all")
         await pilot.press("u")
         assert (app.navigation.session, app.navigation.job_filter) == (None, "all")
         await pilot.press("r")
