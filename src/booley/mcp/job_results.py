@@ -20,6 +20,7 @@ from booley.goals.paths import record_paths
 from booley.mcp.call_context import CallContext, container_jobs_root, project_goal_store
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
+from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.session_paths import logs_runtime_dir
 
@@ -152,10 +153,18 @@ def _report_for_run_id(
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+    unreadable: jobrec.JobRecordError | None = None
     for path in numbered:
-        report = _read_report_json(path)
+        try:
+            report = _read_report_json(path)
+        except jobrec.JobRecordError as exc:
+            # A held report of another run must not hide this run's report.
+            unreadable = unreadable or exc
+            continue
         if report is not None and report.get("run_id") == run_id:
             return report
+    if unreadable is not None:
+        raise unreadable
     return None
 
 
@@ -170,7 +179,10 @@ def _progress_for_run_id(
     reports = _endpoint_report_dirs(_locate_job(run_id)) if report_dirs is None else report_dirs
     if not reports:
         return None
-    found = read_progress_for_run(reports, endpoint, run_id, booley_dir=booley_dir)
+    try:
+        found = read_progress_for_run(reports, endpoint, run_id, booley_dir=booley_dir)
+    except OSError as exc:
+        raise jobrec.JobRecordError(f"Job progress for {run_id} unreadable: {exc}") from exc
     if found is None:
         return None
     _path, report = found
@@ -266,13 +278,19 @@ def _endpoint_report_dirs(
 
 
 def _read_report_json(path: Path) -> dict[str, Any] | None:
-    """Parse a report.json, logging (not raising) on malformed/unreadable."""
+    """Parse a report.json, logging (not raising) on malformed/unreadable.
+
+    A Windows sharing error that outlasts the retry budget is not "absent":
+    it raises ``JobRecordError`` so callers can report the report as unreadable.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_file_bytes(path).decode("utf-8"))
     except json.JSONDecodeError as e:
         logger.warning("Malformed report.json at %s: %s", path, e)
         return None
     except OSError as e:
+        if is_transient_read_error(e):
+            raise jobrec.JobRecordError(f"Job report {path} unreadable: {e}") from e
         logger.warning("Failed to read report.json at %s: %s", path, e)
         return None
 

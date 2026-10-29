@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
+from booley.runtime.filesystem_utils import (
+    is_transient_read_error,
+    open_with_sharing_retry,
+    replace_file,
+)
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -141,7 +146,8 @@ def read_progress_for_run(
     """Return the newest trusted run-scoped checkpoint and its exact path.
 
     *booley_dir* names the Booley Directory entry, the one path component that may
-    be a symlink; links elsewhere stay refused.
+    be a symlink; links elsewhere stay refused. A checkpoint held by a lasting
+    Windows sharing error raises its ``OSError`` when no other candidate matches.
     """
     candidates: list[tuple[int, Path]] = []
     for root in report_roots:
@@ -160,14 +166,22 @@ def read_progress_for_run(
                 candidates.append((path.lstat().st_mtime_ns, path))
             except OSError:
                 continue
+    unreadable: OSError | None = None
     for _mtime, path in sorted(candidates, key=lambda item: item[0], reverse=True):
-        document = _read_trusted_progress(path, report_roots, booley_dir=booley_dir)
+        try:
+            document = _read_trusted_progress(path, report_roots, booley_dir=booley_dir)
+        except OSError as exc:
+            # A held checkpoint of another run must not hide this run's.
+            unreadable = unreadable or exc
+            continue
         if (
             document is not None
             and document.get("flow") == endpoint
             and document.get("run_id") == run_id
         ):
             return path, document
+    if unreadable is not None:
+        raise unreadable
     return None
 
 
@@ -269,7 +283,12 @@ def _read_trusted_progress(
         document = _read_json_object_nofollow(path, booley_dir=booley_dir)
         validate_progress_shape(document)
         return document
-    except (OSError, ValueError, UnicodeError):
+    except OSError as exc:
+        # A sharing error that outlasted the retry budget is not "absent".
+        if is_transient_read_error(exc):
+            raise
+        return None
+    except (ValueError, UnicodeError):
         return None
 
 
@@ -346,13 +365,15 @@ def _write_progress_json_unlocked(path: Path, document: Mapping[str, object]) ->
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        Path(temporary).replace(path)
+        replace_file(Path(temporary), path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
 def _read_json_object_nofollow(path: Path, *, booley_dir: Path | None = None) -> dict[str, Any]:
-    descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
+    descriptor = open_with_sharing_retry(
+        lambda: open_regular_nofollow(path, booley_dir=booley_dir), path
+    )
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
         if os.fstat(stream.fileno()).st_size > _MAX_PROGRESS_BYTES:
             raise ValueError("progress exceeds the size limit")

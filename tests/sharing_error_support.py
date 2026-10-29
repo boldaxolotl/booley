@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
+
+T = TypeVar("T")
 
 
 def sharing_error(winerror: int = 32) -> PermissionError:
@@ -41,3 +45,41 @@ def hold_opens(
 
     monkeypatch.setattr(Path, "open", open_with_holds)
     return attempts
+
+
+def hold_replaces(monkeypatch: pytest.MonkeyPatch, held: dict[Path, int]) -> Counter[Path]:
+    """Fail ``Path.replace`` onto each target in ``held`` with a sharing violation.
+
+    The first ``held[target]`` replaces onto a target fail, later ones succeed.
+    Returns a counter of every replace attempt per target.
+    """
+    no_retry_delay(monkeypatch)
+    attempts: Counter[Path] = Counter()
+    real_replace = Path.replace
+
+    def replace_with_holds(path: Path, target: object):
+        destination = Path(target)  # type: ignore[arg-type]
+        if destination in held:
+            attempts[destination] += 1
+            if attempts[destination] <= held[destination]:
+                raise sharing_error()
+        return real_replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", replace_with_holds)
+    return attempts
+
+
+def flaky(function: Callable[..., T], failures: int) -> tuple[Callable[..., T], list[int]]:
+    """Wrap ``function`` so its first ``failures`` calls raise a sharing violation.
+
+    Returns the wrapper and a one-item list holding the number of calls so far.
+    """
+    calls = [0]
+
+    def wrapper(*args: object, **kwargs: object) -> T:
+        calls[0] += 1
+        if calls[0] <= failures:
+            raise sharing_error()
+        return function(*args, **kwargs)
+
+    return wrapper, calls

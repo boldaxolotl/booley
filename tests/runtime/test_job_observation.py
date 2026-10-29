@@ -9,7 +9,7 @@ import pytest
 from tests.runtime.test_job_artifacts import progress, spy
 
 from booley.runtime import job_records, job_slots
-from booley.runtime.job_observation import JobObserver, _observer
+from booley.runtime.job_observation import JobObserver, _artifacts, _observer
 from booley.runtime.pid import ProcessIdentity
 
 
@@ -54,7 +54,7 @@ def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
     accepted, rejected = (tmp_path / name / "jobs" for name in ("accepted", "rejected"))
     write_job(accepted, "good")
     forbidden = write_job(rejected, "bad")
-    original = Path.read_bytes
+    original = _artifacts.read_file_bytes
 
     def read_bytes(path):
         assert path != forbidden, "rejected metadata reached artifact observation"
@@ -64,7 +64,7 @@ def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
         if record.run_id == "bad":
             raise ValueError("invalid context metadata")
 
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(_artifacts, "read_file_bytes", read_bytes)
     snapshot = JobObserver(tmp_path, validate_record=validate).read((accepted, rejected))
 
     assert [job.record.run_id for job in snapshot.jobs] == ["good"]
@@ -91,7 +91,9 @@ def test_unexpected_metadata_validator_errors_abort_the_refresh(tmp_path, monkey
 
     failing = False
     monkeypatch.setattr(
-        Path, "read_bytes", lambda _: pytest.fail("failed validator committed an empty generation")
+        _artifacts,
+        "read_file_bytes",
+        lambda _: pytest.fail("failed validator committed an empty generation"),
     )
     restored = observer.read(roots)
     assert len(restored.jobs) == 2
@@ -108,7 +110,7 @@ def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
     failing_report = write_job(later, "later")
     observer = JobObserver(tmp_path)
     assert len(observer.read((root,)).jobs) == 2
-    original_read, original_stat = Path.read_bytes, Path.lstat
+    original_read, original_stat = _artifacts.read_file_bytes, Path.lstat
     before = [
         (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_size) for p in (report_a, report_b)
     ]
@@ -127,7 +129,7 @@ def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
             raise RuntimeError("interrupted refresh")
         return original_read(path)
 
-    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(_artifacts, "read_file_bytes", read)
     with monkeypatch.context() as fault:
         fault.setattr(Path, "lstat", lstat)
         with pytest.raises(RuntimeError, match="interrupted refresh"):
@@ -152,7 +154,7 @@ def test_successful_refresh_retires_absent_history_without_repair_or_deletion(
     observer.read(roots)
     observer.read(roots[:1])
     original = Path.read_bytes
-    reads = spy(monkeypatch, Path, "read_bytes")
+    reads = spy(monkeypatch, _artifacts, "read_file_bytes")
     restored = observer.read(roots)
 
     assert len(restored.jobs) == 2
@@ -264,7 +266,7 @@ def test_snapshot_missing_progress_reuses_unrelated_checkpoint(tmp_path, monkeyp
     path = root.parent / "flow-reports/sim/1/progress.json"
     path.parent.mkdir(parents=True)
     progress(path, "other")
-    reads = spy(monkeypatch, Path, "read_bytes")
+    reads = spy(monkeypatch, _artifacts, "read_file_bytes")
     observer = JobObserver(tmp_path)
     observer.read((root,))
     reads.clear()

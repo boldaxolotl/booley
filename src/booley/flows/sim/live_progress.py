@@ -94,7 +94,12 @@ class LiveProgressSink:
                 value["revision"] = scope.revision
             log = self._logs.get(scope.key)
             if root is not None and log is not None and log.target == scope.target:
-                pointer = log.pointer(root, token, self.project_root)
+                try:
+                    pointer = log.pointer(root, token, self.project_root)
+                except OSError as error:
+                    # Omit the pointer for this update and record why.
+                    pointer = None
+                    self._record_error(error)
                 if pointer is not None:
                     value["log"] = pointer
             self._active[scope.key] = value

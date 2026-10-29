@@ -904,3 +904,78 @@ def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: 
     }
     assert counters["compile"] == 2
     assert produced <= owned
+
+
+def test_retention_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import _read_object
+    from tests.sharing_error_support import hold_opens
+
+    path = tmp_path / "progress.json"
+    path.write_text(json.dumps({"phase": "complete"}), encoding="utf-8")
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert _read_object(path) == {"phase": "complete"}
+    assert attempts[path] == 2
+
+
+def test_retention_read_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import _read_object
+    from tests.sharing_error_support import hold_opens
+
+    path = tmp_path / "progress.json"
+    path.write_text("{}", encoding="utf-8")
+    attempts = hold_opens(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        _read_object(path)
+    assert attempts[path] > 1
+
+
+def test_dependency_scan_fails_closed_on_lasting_sharing_error(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _projection_references_origin,
+        _report_references_campaign,
+        _report_references_origin,
+    )
+    from tests.sharing_error_support import hold_opens
+
+    campaign_id = "01234567-89ab-4def-8123-456789abcdef"
+    report = tmp_path / "report.json"
+    report.write_text("{}", encoding="utf-8")
+    projection = tmp_path / "simulation.json"
+    projection.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    hold_opens(monkeypatch, {report: 100, projection: 100, manifest: 100})
+    for scan in (
+        lambda: _report_references_campaign(report, manifest, campaign_id),
+        lambda: _projection_references_origin(projection, (manifest,)),
+        lambda: _report_references_origin(report, (manifest,)),
+    ):
+        with pytest.raises(CampaignRetentionError, match="cannot read") as refused:
+            scan()
+        assert isinstance(refused.value.__cause__, PermissionError)
+
+
+def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_path, monkeypatch):
+    import errno
+
+    from booley.flows.sim.campaign_retention import (
+        _projection_references_origin,
+        _report_references_campaign,
+        _report_references_origin,
+    )
+
+    campaign_id = "01234567-89ab-4def-8123-456789abcdef"
+    report = tmp_path / "report.json"
+    report.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def deny(path, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", deny)
+    assert not _report_references_campaign(report, manifest, campaign_id)
+    assert not _projection_references_origin(report, (manifest,))
+    assert not _report_references_origin(report, (manifest,))
