@@ -146,7 +146,10 @@ def _apply(result: PruneResult, roots: Callable[[], frozenset[str]]) -> None:
 
 
 def prune_keepers(confirm: str | None = None) -> PruneResult:
-    """Preview only by default; confirm exactly the rebuilt candidate digest to apply."""
+    """Preview only by default; confirm exactly the rebuilt candidate digest to apply.
+
+    A snapshot with no eligible candidate has no digest, so any confirmation is refused.
+    """
     try:
         if confirm is None:
             roots = frozenset(entry.project_root for entry in inventory.project_inventory())

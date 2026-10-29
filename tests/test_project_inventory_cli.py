@@ -484,8 +484,6 @@ def test_prune_digest_ignores_unrelated_observations(
 
 def _nothing_eligible_host(tmp_path: Path, keeper_host: FakeDocker) -> None:
     """Two keepers, both protected: one inventoried, one orphan used by a container."""
-    from booley.runtime.session_issuance import keeper_image
-
     project = _remember(tmp_path)
     in_use = keeper_image(tmp_path / "orphan")
     keeper_host.tags[keeper_image(project)] = "sha256:" + "a" * 64
