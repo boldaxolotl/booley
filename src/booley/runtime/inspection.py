@@ -43,12 +43,14 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import (
     devcontainer_path,
     spec_mounts_token_seed,
     spec_state_is_persisted,
 )
 from booley.runtime.filesystem_utils import read_file_bytes
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 
 @dataclass(frozen=True)
@@ -382,7 +384,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     from booley.config.eda import PROVISIONING_HOST
 
     vivado = request.eda.get("vivado") if request.eda is not None else None
-    if not _check_runtime_isolation(report):
+    if not _check_runtime_isolation(request.project_root, report):
         return
     mounted = Path("/opt/booley-eda/vivado").is_dir()
     if (
@@ -504,22 +506,31 @@ def _check_runtime_booley_version(
         report.pass_("host and issued Sandbox Image use the same Booley code")
 
 
-def _check_runtime_isolation(report: Findings) -> bool:
-    """Enforce authority absence and fixed Booley Directory identity in every runtime."""
-    if os.environ.get("BOOLEY_DIR") != "/booley-project":
+def _check_runtime_isolation(project_root: Path, report: Findings) -> bool:
+    """Report the Booley Directory identity and enforce host-authority absence.
+
+    An identity FAIL never hides the surface checks. The result is True when no
+    host-authority surface is exposed, which is what gates the Vivado probe.
+    """
+    value = os.environ.get("BOOLEY_DIR")
+    identity_ok = _booley_dir_identity_ok(value, project_root)
+    if not identity_ok:
+        expected = project_root / BOOLEY_DIR_NAME
+        # repr() keeps a control character in the environment from forging report lines.
+        shown = repr(value) if value else "(unset)"
         report.fail(
-            "Sandbox Booley Directory identity differs from /booley-project",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            f"Sandbox Booley Directory identity: BOOLEY_DIR={shown} is neither "
+            f"{BOOLEY_DIR_TARGET} nor an existing {expected}",
+            f"set BOOLEY_DIR to {expected} (an existing directory or a link to one), "
+            "or open the Project through a Sandbox that Booley issued",
         )
-        return False
-    required = Path("/booley-project")
     forbidden = (
         Path("/var/run/docker.sock"),
         Path("/run/docker.sock"),
         Path("/root/.config/booley/eda"),
         Path("/home/agent/.config/booley/eda"),
     )
-    if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
+    if any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
             session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
@@ -533,8 +544,37 @@ def _check_runtime_isolation(report: Findings) -> bool:
                 session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
             )
             return False
-    report.pass_("Sandbox Booley Directory and host-authority isolation verified")
+    report.pass_(
+        "Sandbox Booley Directory and host-authority isolation verified"
+        if identity_ok
+        else "Sandbox host-authority isolation verified"
+    )
     return True
+
+
+def _booley_dir_identity_ok(value: str | None, project_root: Path) -> bool:
+    """Accept only the two in-Sandbox Booley Directory spellings (ADR 0073).
+
+    ``/booley-project`` (when it is a directory) or the ``.booley`` entry
+    directly under the Project Root, as spelled: absolute, no ``..`` part, a
+    directory or a link to one. Only paths are read, never platform variables.
+    Any filesystem error fails closed.
+    """
+    if not value:
+        return False
+    selected = Path(value)
+    if not selected.is_absolute() or ".." in selected.parts:
+        return False
+    try:
+        if selected == Path(BOOLEY_DIR_TARGET):
+            return selected.is_dir()
+        return (
+            selected.name == BOOLEY_DIR_NAME
+            and selected.parent.resolve() == project_root.resolve()
+            and selected.is_dir()
+        )
+    except (OSError, RuntimeError):
+        return False
 
 
 def _ssh_authority_entry(ssh_dir: Path) -> Path | None:

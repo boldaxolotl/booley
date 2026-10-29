@@ -143,34 +143,168 @@ def test_mounted_runtime_rejects_external_license_pointer_before_execution(
     assert not calls
 
 
-@pytest.mark.parametrize(
-    "failure", ["identity", "missing-project", "exposed-authority", "exposed-eda-config"]
-)
+@pytest.mark.parametrize("failure", ["exposed-authority", "exposed-eda-config"])
 def test_runtime_rejects_broken_isolation_before_vivado_probe(
     mounted_runtime, monkeypatch, failure
 ):
     request, _, calls = mounted_runtime
-    if failure == "identity":
-        monkeypatch.setenv("BOOLEY_DIR", "/wrong-project")
-    elif failure == "missing-project":
-        original = Path.is_dir
-        monkeypatch.setattr(
-            Path, "is_dir", lambda p: False if p == Path("/booley-project") else original(p)
-        )
-    else:
-        exposed = Path(
-            "/var/run/docker.sock"
-            if failure == "exposed-authority"
-            else "/home/agent/.config/booley/eda"
-        )
-        original = Path.exists
-        monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
+    exposed = Path(
+        "/var/run/docker.sock"
+        if failure == "exposed-authority"
+        else "/home/agent/.config/booley/eda"
+    )
+    original = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
     report = inspection.inspect_runtime(request).issuance
     assert len(report.findings) == 1 and report.findings[0].severity is Severity.FAIL
-    if failure == "identity":
-        fix = report.findings[0].fix
-        assert "on the host" in fix and "booley doctor" in fix
-        assert "booley session refresh" not in fix
+    assert not calls
+
+
+def _set_codespaces(monkeypatch, codespaces):
+    """Set or unset CODESPACES: the identity rule must not depend on it."""
+    if codespaces is None:
+        monkeypatch.delenv("CODESPACES", raising=False)
+    else:
+        monkeypatch.setenv("CODESPACES", codespaces)
+
+
+def _hide_project_alias(monkeypatch):
+    """Model a Sandbox without the `/booley-project` alias (no `/work` in a Codespace)."""
+    original = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir", lambda p: False if p == Path("/booley-project") else original(p)
+    )
+
+
+def _failures(request):
+    return [
+        f
+        for f in inspection.inspect_runtime(request).issuance.findings
+        if f.severity is Severity.FAIL
+    ]
+
+
+@pytest.mark.parametrize("codespaces", ["true", None])
+@pytest.mark.parametrize("layout", ["plain", "symlink"])
+def test_runtime_accepts_project_root_booley_entry(
+    mounted_runtime, monkeypatch, tmp_path, layout, codespaces
+):
+    """`<Project Root>/.booley` (directory or link to one) is a valid in-Sandbox identity."""
+    request, _, calls = mounted_runtime
+    entry = tmp_path / ".booley"
+    if layout == "plain":
+        entry.mkdir()
+    else:
+        (tmp_path / "data").mkdir()
+        entry.symlink_to(tmp_path / "data")
+    monkeypatch.setenv("BOOLEY_DIR", str(entry))
+    _set_codespaces(monkeypatch, codespaces)
+    _hide_project_alias(monkeypatch)
+    report = inspection.inspect_runtime(request).issuance
+    assert [f.message for f in report.findings if f.severity is Severity.FAIL] == []
+    assert any(
+        f.message == "Sandbox Booley Directory and host-authority isolation verified"
+        for f in report.findings
+    )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("codespaces", ["true", None])
+def test_runtime_accepts_fixed_alias(mounted_runtime, monkeypatch, codespaces):
+    """The issued `/booley-project` spelling keeps passing."""
+    request, _, calls = mounted_runtime
+    _set_codespaces(monkeypatch, codespaces)
+    report = inspection.inspect_runtime(request).issuance
+    assert all(f.severity is Severity.PASS for f in report.findings)
+    assert any(
+        f.message == "Sandbox Booley Directory and host-authority isolation verified"
+        for f in report.findings
+    )
+    assert len(calls) == 1
+
+
+def _wrong_booley_dir(monkeypatch, tmp_path, case):
+    """Arrange the named wrong identity; return the BOOLEY_DIR value (None = unset)."""
+    entry = tmp_path / ".booley"
+    values = {
+        "outside-root": str(tmp_path / "data"),
+        "other-parent": str(tmp_path / "other" / ".booley"),
+        "dangling": str(entry),
+        "regular-file": str(entry),
+        "relative": ".booley",
+        "dotdot": str(tmp_path / "sub" / ".." / ".booley"),
+        "alias-missing": "/booley-project",
+        "unset": None,
+    }
+    (tmp_path / "data").mkdir()
+    if case == "other-parent":
+        (tmp_path / "other" / ".booley").mkdir(parents=True)
+    elif case == "dangling":
+        entry.symlink_to(tmp_path / "missing")
+    elif case == "regular-file":
+        entry.write_text("not a directory")
+    elif case in {"relative", "dotdot"}:
+        (tmp_path / "sub").mkdir()
+        entry.mkdir()
+        monkeypatch.chdir(tmp_path)
+    elif case == "alias-missing":
+        _hide_project_alias(monkeypatch)
+    return values[case]
+
+
+@pytest.mark.parametrize("codespaces", ["true", None])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "outside-root",
+        "other-parent",
+        "dangling",
+        "regular-file",
+        "relative",
+        "dotdot",
+        "unset",
+        "alias-missing",
+    ],
+)
+def test_runtime_rejects_wrong_booley_dir_and_keeps_surface_checks(
+    mounted_runtime, monkeypatch, tmp_path, case, codespaces
+):
+    request, _, calls = mounted_runtime
+    value = _wrong_booley_dir(monkeypatch, tmp_path, case)
+    if value is None:
+        monkeypatch.delenv("BOOLEY_DIR")
+    else:
+        monkeypatch.setenv("BOOLEY_DIR", value)
+    _set_codespaces(monkeypatch, codespaces)
+    report = inspection.inspect_runtime(request).issuance
+    failures = [f for f in report.findings if f.severity is Severity.FAIL]
+    assert len(failures) == 1
+    assert failures[0].message.startswith("Sandbox Booley Directory identity")
+    assert str(tmp_path / ".booley") in failures[0].fix
+    assert "on the host" not in failures[0].fix
+    assert any(f.message == "Sandbox host-authority isolation verified" for f in report.findings)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "surface", ["/var/run/docker.sock", "/home/agent/.config/booley/eda", "/home/agent/.ssh"]
+)
+def test_identity_failure_still_reports_exposed_surfaces(
+    mounted_runtime, monkeypatch, tmp_path, surface
+):
+    """A wrong identity does not hide the docker-socket, EDA-credential or SSH checks."""
+    request, _, calls = mounted_runtime
+    monkeypatch.setenv("BOOLEY_DIR", "/wrong-project")
+    if surface == "/home/agent/.ssh":
+        scratch = _redirect_ssh_directory(monkeypatch, tmp_path, surface)
+        _build_ssh_layout(scratch, "id_ed25519")
+    else:
+        exposed, original = Path(surface), Path.exists
+        monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
+    failures = _failures(request)
+    assert len(failures) == 2
+    assert failures[0].message.startswith("Sandbox Booley Directory identity")
+    assert "forbidden host-authority surface" in failures[1].message
     assert not calls
 
 
