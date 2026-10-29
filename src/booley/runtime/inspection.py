@@ -37,12 +37,14 @@ from booley.runtime import (
     auth_token,
     image_identity,
     runtime_context,
+    sandbox_layout,
     session_runtime,
     vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import (
     devcontainer_path,
     spec_mounts_token_seed,
@@ -382,7 +384,10 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     from booley.config.eda import PROVISIONING_HOST
 
     vivado = request.eda.get("vivado") if request.eda is not None else None
-    if not _check_runtime_isolation(report):
+    # Identity and host-authority surfaces are independent: a wrong Booley
+    # Directory must not hide an exposed Docker socket, credential or SSH key.
+    _check_booley_dir_identity(request.project_root, report)
+    if not _check_host_authority_isolation(report):
         return
     mounted = Path("/opt/booley-eda/vivado").is_dir()
     if (
@@ -504,22 +509,54 @@ def _check_runtime_booley_version(
         report.pass_("host and issued Sandbox Image use the same Booley code")
 
 
-def _check_runtime_isolation(report: Findings) -> bool:
-    """Enforce authority absence and fixed Booley Directory identity in every runtime."""
-    if os.environ.get("BOOLEY_DIR") != "/booley-project":
-        report.fail(
-            "Sandbox Booley Directory identity differs from /booley-project",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
-        )
+def _accepted_booley_dir(value: str, project_root: Path) -> bool:
+    """Return whether ``value`` is an accepted in-Sandbox ``BOOLEY_DIR`` spelling (ADR 0073).
+
+    Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
+    entry directly under the inspected Project Root, either one resolving to an
+    existing directory. The entry may be a symlink; only its parent is resolved,
+    so the comparison tolerates aliased Project Root spellings. Paths alone
+    decide: ambient platform variables such as ``CODESPACES`` are spoofable
+    (ADR 0077) and never widen the rule.
+    """
+    selected = Path(value)
+    if value == sandbox_layout.BOOLEY_DIR_TARGET:
+        # Compared as text: a POSIX alias is not "absolute" to a Windows-flavoured Path.
+        return selected.is_dir()
+    if not selected.is_absolute() or not selected.is_dir():
+        return False  # relative spellings depend on cwd; dangling entries are not directories
+    if selected.name != BOOLEY_DIR_NAME:
         return False
-    required = Path("/booley-project")
+    try:
+        return selected.parent.resolve(strict=True) == project_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False  # unresolvable parent or Project Root cannot prove identity
+
+
+def _check_booley_dir_identity(project_root: Path, report: Findings) -> None:
+    """Report whether ``BOOLEY_DIR`` names an accepted Sandbox Booley Directory."""
+    value = os.environ.get("BOOLEY_DIR", "")
+    if _accepted_booley_dir(value, project_root):
+        report.pass_(f"Sandbox Booley Directory identity verified ({value})")
+        return
+    expected = project_root / BOOLEY_DIR_NAME
+    report.fail(
+        f"Sandbox Booley Directory identity is not accepted: BOOLEY_DIR={value or '<unset>'} "
+        f"is neither {sandbox_layout.BOOLEY_DIR_TARGET} nor {expected}",
+        f"set BOOLEY_DIR to {expected} (an existing directory or a symlink to one), "
+        "or open the Project through an issued Sandbox",
+    )
+
+
+def _check_host_authority_isolation(report: Findings) -> bool:
+    """Enforce host-authority absence (Docker socket, EDA config, SSH) in every runtime."""
     forbidden = (
         Path("/var/run/docker.sock"),
         Path("/run/docker.sock"),
         Path("/root/.config/booley/eda"),
         Path("/home/agent/.config/booley/eda"),
     )
-    if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
+    if any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
             session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
@@ -533,7 +570,7 @@ def _check_runtime_isolation(report: Findings) -> bool:
                 session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
             )
             return False
-    report.pass_("Sandbox Booley Directory and host-authority isolation verified")
+    report.pass_("Sandbox host-authority isolation verified")
     return True
 
 
