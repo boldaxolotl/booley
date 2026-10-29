@@ -69,3 +69,42 @@ def gateway_settings_from_env(environ: Mapping[str, str] = os.environ) -> Gatewa
             f"{GATEWAY_AUTH!r} auth (BOOLEY_PRIMARY_AUTH=gateway) needs {GATEWAY_TOKEN_ENV}"
         )
     return GatewaySettings(url=url, token=token)
+
+
+GATEWAY_MODEL_ENV = "BOOLEY_GATEWAY_MODEL"
+GATEWAY_EFFORT_ENV = "BOOLEY_GATEWAY_EFFORT"
+# Variants of Codex's ``model_reasoning_effort`` config enum. Source: the
+# string table of the ``@openai/codex@0.160.0-linux-x64`` binary (the version
+# the Sandbox pins in ``data/docker/agent-clis-package.json``), checked against
+# 0.164. Booley accepts the CLI vocabulary; whether the gateway's model
+# supports a level is the gateway's to reject.
+CODEX_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+@dataclass(frozen=True)
+class GatewayModelPin:
+    """Optional model id and Codex reasoning effort that override every tier and role."""
+
+    model: str | None = None
+    effort: str | None = None
+
+
+def gateway_model_pin_from_env(environ: Mapping[str, str] = os.environ) -> GatewayModelPin:
+    """Validate ``BOOLEY_GATEWAY_MODEL`` and ``BOOLEY_GATEWAY_EFFORT`` (both optional).
+
+    Blank means unset. The effort is lower-cased and must be a Codex level (it
+    reaches a ``-c model_reasoning_effort="..."`` override). The model id must
+    have no whitespace or non-printable character. Raises
+    :class:`GatewayConfigError` naming the variable, never echoing its value.
+    """
+    model = (environ.get(GATEWAY_MODEL_ENV) or "").strip() or None
+    if model and any(c.isspace() or not c.isprintable() for c in model):
+        raise GatewayConfigError(
+            f"{GATEWAY_MODEL_ENV} must be a model id without whitespace or control characters"
+        )
+    effort = (environ.get(GATEWAY_EFFORT_ENV) or "").strip().lower() or None
+    if effort and effort not in CODEX_EFFORT_LEVELS:
+        raise GatewayConfigError(
+            f"{GATEWAY_EFFORT_ENV} must be one of {', '.join(CODEX_EFFORT_LEVELS)}"
+        )
+    return GatewayModelPin(model=model, effort=effort)

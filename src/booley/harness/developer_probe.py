@@ -187,6 +187,7 @@ def measure_developer_rss(
         params = AgentCallParams(
             prompt=_PROBE_PROMPT,
             model=cfg.settings.model_for_tier("light"),
+            reasoning_effort=cfg.settings.effort_pin,
             cwd=str(project_root),
             allowed_agent_capabilities=[],
             max_turns=1,
