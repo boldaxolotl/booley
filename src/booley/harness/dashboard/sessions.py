@@ -33,9 +33,8 @@ HEADER_PREFIX = "group:"
 ABSENT = "—"
 ELLIPSIS = "…"
 
-SHORTCUT, SESSION, MODE, BRANCH, WORK_DIR, STARTED, ACTIVITY = range(7)
-#: The unlabeled first column is the digit shortcut; it vanishes with the digits.
-LABELS = ("", "Session", "Mode", "Branch", "Work dir", "Started", "Activity")
+SESSION, MODE, BRANCH, WORK_DIR, STARTED, ACTIVITY = range(6)
+LABELS = ("Session", "Mode", "Branch", "Work dir", "Started", "Activity")
 GAP = 2
 #: Narrowest a column is squeezed before columns drop; Activity is cut last, below 40 cells.
 _FLOORS = {BRANCH: 8, WORK_DIR: 10, ACTIVITY: 40}
@@ -51,7 +50,6 @@ class SessionFacts:
 
     key: str
     handle: str
-    shortcut: str
     #: ``Interactive``, ``Goal m/n``, or ``Goal`` when Goal status is unavailable.
     mode: str
     branch: str
@@ -196,7 +194,6 @@ def build(
             (
                 facts.key,
                 (
-                    facts.shortcut,
                     facts.handle,
                     facts.mode,
                     facts.branch or ABSENT,
@@ -207,7 +204,7 @@ def build(
             )
         )
     grouped[STANDALONE_GROUP] = [
-        (job.key, ("", job.label, "standalone", "", "", "", job.detail)) for job in standalone
+        (job.key, (job.label, "standalone", "", "", "", job.detail)) for job in standalone
     ]
     widths = fit(width, [cells for rows in grouped.values() for _, cells in rows])
     keys, lines = [], []

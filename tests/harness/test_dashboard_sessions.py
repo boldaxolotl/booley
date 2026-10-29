@@ -52,7 +52,6 @@ def facts(number: int, state: str = WORKING, ago: float | None = 60, **overrides
     values = {
         "key": f"codex:{number:02}",
         "handle": f"S{number}",
-        "shortcut": str(number) if number < 10 else "",
         "mode": "Interactive",
         "branch": "main",
         "work_dir": f"/work/s{number}",
@@ -291,15 +290,15 @@ def test_narrowing_drops_start_age_then_work_dir_then_branch():
         header = sessions.build([wide], [], NOW, width).header.plain
         return [label for label in sessions.LABELS if label and label in header]
 
-    # Natural widths 1+7+8+19+19+7+14 plus six gaps of two make 87 cells. Squeezing
-    # shrinks Branch and Work dir to 8 and 10 first; below 67 the start age goes,
-    # below 58 the work dir, below 46 the branch.
+    # Natural widths 7+8+19+19+7+14 plus five gaps of two make 84 cells. Squeezing
+    # shrinks Branch and Work dir to 8 and 10 first; below 64 the start age goes,
+    # below 55 the work dir, below 43 the branch.
     everything = ["Session", "Mode", "Branch", "Work dir", "Started", "Activity"]
-    assert labels(87) == everything
-    assert labels(66) == [name for name in everything if name != "Started"]
-    assert labels(57) == ["Session", "Mode", "Branch", "Activity"]
-    assert labels(45) == ["Session", "Mode", "Activity"]
-    for width in (87, 66, 57, 45):
+    assert labels(84) == everything
+    assert labels(63) == [name for name in everything if name != "Started"]
+    assert labels(54) == ["Session", "Mode", "Branch", "Activity"]
+    assert labels(42) == ["Session", "Mode", "Activity"]
+    for width in (84, 63, 54, 42):
         for line in sessions.build([wide], [], NOW, width).rows:
             assert line.cell_len <= width
 
@@ -316,8 +315,8 @@ def test_long_values_end_in_ellipsis_and_paths_keep_their_tail():
         branch="feature/very-long-branch-name-here",
         work_dir="/home/user/projects/work/fifo",
     )
-    # 75 cells leave 5 spare cells after the minimum widths: Branch gets 13, Work dir stays 10.
-    line = sessions.build([long_row], [], NOW, 75).rows[1].plain
+    # 72 cells leave 5 spare cells after the minimum widths: Branch gets 13, Work dir stays 10.
+    line = sessions.build([long_row], [], NOW, 72).rows[1].plain
     assert "feature/very…" in line
     assert "…work/fifo" in line and "projects" not in line
 
