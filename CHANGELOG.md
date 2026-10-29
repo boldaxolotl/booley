@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Codex `gpt-6-astra` runs are now costed at Astra's own price instead of
+  `gpt-5.6-sol`'s, so their cost readouts rise. Unknown GPT model ids now fall
+  back to the Astra price.
 - Doctor's attached-window checks (the Viewer Bridge and the installed
   VaporView version) now run when a VS Code window is attached to the Sandbox.
   Before, they always skipped with "no VS Code extension host attached", so
