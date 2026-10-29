@@ -55,9 +55,10 @@ only):
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
   `booley init --scaffold <name>` on the host with the flags matching the
   answers (`--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
-  `--synth-mode logical|physical`, `--fpga-part`), plus `--stealth` when the
-  git-history answer is Yes/hidden (it writes `enabled = true` and puts the
-  scaffold cores under `.booley/cores/`). Omit `--synth-mode` when
+  `--synth-mode logical|physical`, `--fpga-part`), plus `--stealth` when the user
+  confirmed Yes/hidden in the grill (it writes `enabled = true` and puts the
+  scaffold cores under `.booley/cores/`); unattended setup omits it, since
+  row 20 keeps `enabled = false` there. Omit `--synth-mode` when
   ASIC is disabled: an explicit mode with `--no-asic` is rejected. After a
   `--stealth` scaffold, commit `.booley/` in its own repository before the
   Doctor gate, or `project.core-file-untracked` blocks it.

@@ -265,7 +265,7 @@ What lands, wired together and ready to run:
   [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
   exercise Booley and commit messages should stay verbatim. `--stealth`
   writes `[stealth] enabled = true` instead and puts the design and Doctor
-  selftest cores under `.booley/cores/`. Turning stealth on later leaves those
+  selftest cores under `.booley/cores/`. Setting `enabled = true` later leaves those
   cores tracked at the root; Doctor warns and names each one to move
 
 The scaffold refuses to run in a repo that already contains `.core` or RTL

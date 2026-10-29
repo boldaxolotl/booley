@@ -114,7 +114,9 @@ def test_setup_greenfield_passes_stealth_request():
     plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
 
     # The hidden git-history answer reaches the scaffold command.
-    assert "`--stealth` when the git-history answer is Yes/hidden" in greenfield
+    assert "`--stealth` when the user confirmed Yes/hidden" in greenfield
+    # Unattended setup keeps stealth off, so it must not pass the flag.
+    assert "unattended setup omits it" in greenfield
     assert "`.booley/cores/`" in greenfield
     # Step 0 no longer leaves scaffold-authored root cores in place when hidden.
     assert "scaffold-authored root cores" in plan

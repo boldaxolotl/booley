@@ -643,7 +643,7 @@ def _check_scaffold_root_cores(project_root: Path, booley_dir: Path, report: Fin
             ".booley/cores/, rewrite its fileset paths relative to the repository "
             f"root, then `git rm` the tracked copy of {relative}",
             check_id="stealth.scaffold-core-tracked",
-            subject=Path(relative).as_posix(),
+            subject=relative,
         )
     if not flagged:
         report.pass_("no scaffold-authored core tracked outside .booley/cores/")
