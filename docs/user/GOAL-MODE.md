@@ -439,6 +439,16 @@ the top bar with the window tabs and Help: `←` and `→` choose, `Enter` appli
 and `↓` or `Esc` return to the list. `Esc` goes back one level inside a window
 and does nothing at its top level.
 
+The Sessions window groups sessions by what needs you: NEEDS YOU (waiting for
+your input, or holding a pending Goal-change proposal), WORKING, and UNKNOWN
+(no fresh activity report). A STANDALONE JOBS group lists running Jobs that
+belong to no session, and only while one runs. Inside a group the session that
+has been in its state longest comes first. Each row has the columns Session,
+Mode, Branch, Work dir, Started and Activity; a missing branch or work dir
+shows as a dim `—`. On a narrow terminal Started disappears first, then Work
+dir, then Branch, and values that still do not fit end in `…`. The Sessions
+tab reads `Sessions N◆` while N sessions need you.
+
 While the Jobs window is shown, the top bar also holds its filters: Running
 (queued or running Jobs), Finished (the newest 50) and All, then an owner chip.
 `Enter` on the chip cycles All sessions, each session handle (including

@@ -48,6 +48,8 @@ class TopBar(Widget, can_focus=True):
     active = reactive("sessions")
     #: Index into the visible items under the cursor; only drawn while the bar has focus.
     cursor = reactive(0)
+    #: Sessions that need the human; the Sessions tab is marked while it is above zero.
+    needs_you = reactive(0)
     #: Status filter of the Jobs window (a ``JOB_FILTERS`` name).
     job_filter = reactive("running")
     #: Label of the Jobs window's owner filter.
@@ -70,7 +72,11 @@ class TopBar(Widget, can_focus=True):
         """The visible items as (label, kind, value); the Jobs filters only in the Jobs window."""
         items: list[tuple[str, str, str | None]] = []
         for label, window in ITEMS:
-            count = f" {self.unfinished}▶" if window == "jobs" and self.unfinished else ""
+            count = ""
+            if window == "sessions" and self.needs_you:
+                count = f" {self.needs_you}◆"
+            elif window == "jobs" and self.unfinished:
+                count = f" {self.unfinished}▶"
             items.append((label + count, WINDOW, window))
         if self.active == "jobs":
             items.extend((label, FILTER, name) for label, name in JOB_FILTERS)
