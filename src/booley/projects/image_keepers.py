@@ -29,7 +29,7 @@ class Candidate:
 class PruneResult:
     """A preview and explicit partial-apply accounting."""
 
-    digest: str
+    digest: str | None  # None when no candidate is eligible: nothing to confirm
     candidates: tuple[Candidate, ...]
     released: list[str] = field(default_factory=list)
     retained: list[str] = field(default_factory=list)

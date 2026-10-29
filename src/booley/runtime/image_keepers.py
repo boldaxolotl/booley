@@ -112,11 +112,16 @@ def _preview(roots: frozenset[str]) -> PruneResult:
         )
         candidates.append(Candidate(tag, image, reason == "inventory-absent", reason))
     values = tuple(candidates)
-    digest = hashlib.sha256(
-        json.dumps(
-            [asdict(value) for value in values], sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
+    # A snapshot with nothing eligible has nothing to confirm, so it carries no digest.
+    digest = (
+        hashlib.sha256(
+            json.dumps(
+                [asdict(value) for value in values], sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        if any(value.eligible for value in values)
+        else None
+    )
     return PruneResult(
         digest, values, retained=[value.tag for value in values if not value.eligible]
     )
@@ -141,7 +146,10 @@ def _apply(result: PruneResult, roots: Callable[[], frozenset[str]]) -> None:
 
 
 def prune_keepers(confirm: str | None = None) -> PruneResult:
-    """Preview only by default; confirm exactly the rebuilt candidate digest to apply."""
+    """Preview only by default; confirm exactly the rebuilt candidate digest to apply.
+
+    A snapshot with no eligible candidate has no digest, so any confirmation is refused.
+    """
     try:
         if confirm is None:
             roots = frozenset(entry.project_root for entry in inventory.project_inventory())
@@ -150,6 +158,11 @@ def prune_keepers(confirm: str | None = None) -> PruneResult:
             _require_recovered_host()
             with inventory.locked_protected_roots() as roots:
                 result = _preview(roots())
+                if result.digest is None:
+                    result.errors.append(
+                        "nothing to release: no keeper is eligible; nothing changed"
+                    )
+                    return result
                 if confirm != result.digest:
                     result.errors.append(
                         "keeper preview digest changed or confirmation is invalid; preview again"
