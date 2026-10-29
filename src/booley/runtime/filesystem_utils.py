@@ -66,7 +66,9 @@ def safe_rmtree(path: str | Path, *, protect_git_root: bool = True) -> None:
         _strip_windows_reparse_points(root)
 
     def _on_error(func, failed_path, _exc_info):
-        Path(failed_path).chmod(stat.S_IWRITE)
+        # chmod follows links: never alter the target of a symlink we remove.
+        if not Path(failed_path).is_symlink():
+            Path(failed_path).chmod(stat.S_IWRITE)
         func(failed_path)
 
     shutil.rmtree(root, onerror=_on_error)

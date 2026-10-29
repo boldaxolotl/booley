@@ -123,6 +123,7 @@ from booley.runtime.mcp_config import (
     HTTP_PORT_ENV,
     http_port,
 )
+from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 
@@ -2292,6 +2293,9 @@ def main() -> None:
     except runtime_context.EgressModeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+
+    # Reclaim scratch (agent homes, Specialist workspaces) left by killed runs.
+    sweep_stale_scratch()
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

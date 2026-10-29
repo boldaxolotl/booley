@@ -1,6 +1,7 @@
 """Text-only model boundary: no model-visible execution capabilities."""
 
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -48,6 +49,28 @@ def test_text_only_catalog_removes_model_supplied_tools_and_ambient_servers(tmp_
     assert "features.multi_agent_v2=false" in command
     assert Path(env["CODEX_HOME"]) != cache
     assert not (Path(env["CODEX_HOME"]) / "config.toml").exists()
+
+
+def test_text_only_auth_links_real_login(tmp_path):
+    """AC1: the text-only home links the real login instead of copying it."""
+    from tests.conftest import require_symlinks
+
+    require_symlinks(tmp_path)
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
+    native = original / "auth.json"
+    native.write_text('{"tokens":{"access_token":"SYNTHETIC"}}')
+    root = tmp_path / "invocation"
+    root.mkdir()
+    params = AgentCallParams(prompt="Explain", model="chosen", cwd=root, text_only=True)
+    _, child = prepare_codex_text_only(
+        ["codex", "exec", "-"], params, {"CODEX_HOME": str(original)}
+    )
+    auth = Path(child["CODEX_HOME"]) / "auth.json"
+    assert auth.is_symlink()
+    assert auth.resolve() == native.resolve()
+    assert [p for p in root.rglob("auth.json") if not p.is_symlink()] == []
 
 
 def test_text_only_missing_exact_model_fails_closed(tmp_path):
@@ -137,6 +160,9 @@ def test_text_only_regeneration_preserves_destination_preference(
 
 
 def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path):
+    from tests.conftest import require_symlinks
+
+    require_symlinks(tmp_path)
     original = tmp_path / "original"
     original.mkdir()
     (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
@@ -151,11 +177,11 @@ def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path)
     copied = Path(child["CODEX_HOME"]) / "auth.json"
     assert copied.exists()
     prepare_codex_text_only(command, params, environment, auth_mode="api_key")
-    assert not copied.exists()
+    assert not os.path.lexists(copied)
     prepare_codex_text_only(command, params, environment, auth_mode="subscription")
     native.unlink()
     prepare_codex_text_only(command, params, environment, auth_mode="subscription")
-    assert not copied.exists()
+    assert not os.path.lexists(copied)
 
 
 def test_text_only_gateway_seeds_pinned_model_catalog_entry(tmp_path):
