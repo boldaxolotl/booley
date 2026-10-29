@@ -12,6 +12,7 @@ from pathlib import Path
 
 from booley.runtime import devcontainer
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.filesystem_utils import replace_file, unlink_file
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None
         raise OSError(f"recovery path must not be a symlink: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     if content is None:
-        path.unlink(missing_ok=True)
+        unlink_file(path, missing_ok=True)
         _fsync_snapshot_directory(path.parent)
         return
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -70,7 +71,7 @@ def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        temp_path.replace(path)
+        replace_file(temp_path, path)
         if os.name == "nt":
             path.chmod(mode)
         _fsync_snapshot_directory(path.parent)
@@ -91,6 +92,7 @@ def _fsync_snapshot_directory(path: Path) -> None:
 def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> None:
     """Restore the prior host issuance after Session replacement rolled back."""
     errors: list[str] = []
+    first_file_error: OSError | None = None
     if snapshot.image_id is not None:
         try:
             result = subprocess.run(
@@ -115,5 +117,8 @@ def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> N
             _restore_snapshot_file(path, content, mode)
         except OSError as exc:
             errors.append(f"{label}: {exc}")
+            first_file_error = first_file_error or exc
     if errors:
-        raise RuntimeError("could not fully restore prior host issuance: " + "; ".join(errors))
+        raise RuntimeError(
+            "could not fully restore prior host issuance: " + "; ".join(errors)
+        ) from first_file_error

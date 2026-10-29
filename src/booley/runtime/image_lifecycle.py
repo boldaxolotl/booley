@@ -32,6 +32,7 @@ from booley.runtime.build_stamp import (
     resolve_payload_fingerprint,
     resolve_wheel_source_fingerprint,
 )
+from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.image_build_contracts import (
     ImageBuildContractMetadataError,
     ImageBuildContracts,
@@ -446,7 +447,7 @@ class OwnedImages:
         """Persist exact acquisition proof before releasing any candidate reference."""
         self._merge(ids, refs)
         if not self.ids and not self.refs:
-            (self.store.root / self.name).unlink(missing_ok=True)
+            unlink_file(self.store.root / self.name, missing_ok=True)
             return
         self.store.ensure_directory()
         record = {"version": 1, "owned_ids": self.ids, "candidate_refs": self.refs}

@@ -822,3 +822,27 @@ def test_deleted_server_cwd_records_no_default_checkout(monkeypatch):
     facts = session_registry.resolve_attribution(None, metadata={}, client_name="")
     assert facts.default_work_dir == ""
     assert session_registry.canonical_attribution(facts) == facts
+
+
+def test_registry_row_read_survives_transient_sharing_error(registry, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    registry.upsert(facts(), "tool", "completed", now=100)
+    row_path = registry.path(facts().key)
+    attempts = hold_opens(monkeypatch, {row_path: 1})
+    snapshot = registry.snapshot()
+    assert [row.attribution.key for row in snapshot.rows] == [facts().key]
+    assert not snapshot.unavailable
+    assert attempts[row_path] == 2
+
+
+def test_lasting_registry_row_sharing_error_is_diagnosed_not_absent(registry, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    registry.upsert(facts(), "tool", "completed", now=100)
+    row_path = registry.path(facts().key)
+    attempts = hold_opens(monkeypatch, {row_path: 100})
+    snapshot = registry.snapshot()
+    assert snapshot.unavailable
+    assert "partially unavailable" in snapshot.diagnostics[0]
+    assert attempts[row_path] > 1

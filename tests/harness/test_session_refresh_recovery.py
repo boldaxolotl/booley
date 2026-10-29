@@ -871,3 +871,105 @@ def test_read_only_commands_report_pending_recovery(tmp_path: Path) -> None:
     ):
         assert init_cmd.run_init(args, tmp_path) == 2
     run_init.assert_not_called()
+
+
+def _file_snapshot(tmp_path: Path, spec_content: bytes | None) -> tuple[Path, SessionSpecSnapshot]:
+    """A snapshot restoring only the Session spec (no stamp, no keeper tag)."""
+    project = tmp_path / "project"
+    spec = project / ".devcontainer" / "devcontainer.json"
+    spec.parent.mkdir(parents=True)
+    snapshot = SessionSpecSnapshot(
+        spec, spec_content, 0o644, tmp_path / "missing-stamp.json", None, 0o600, None
+    )
+    return project, snapshot
+
+
+def test_snapshot_restore_survives_transient_replace_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    project, snapshot = _file_snapshot(tmp_path, b'{"image":"sha256:prior"}\n')
+    attempts = hold_replaces(monkeypatch, {snapshot.spec_path: 1})
+    session_refresh.restore_session_spec(project, snapshot)
+    assert snapshot.spec_path.read_bytes() == b'{"image":"sha256:prior"}\n'
+    assert attempts[snapshot.spec_path] == 2
+
+
+def test_snapshot_restore_survives_transient_unlink_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, snapshot = _file_snapshot(tmp_path, None)
+    snapshot.spec_path.write_text("new\n", encoding="utf-8")
+    attempts = hold_unlinks(monkeypatch, {snapshot.spec_path: 1})
+    session_refresh.restore_session_spec(project, snapshot)
+    assert not snapshot.spec_path.exists()
+    assert attempts[snapshot.spec_path] == 2
+
+
+def test_snapshot_restore_chains_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    project, snapshot = _file_snapshot(tmp_path, b"{}\n")
+    attempts = hold_replaces(monkeypatch, {snapshot.spec_path: 100})
+    with pytest.raises(RuntimeError, match="could not fully restore") as raised:
+        session_refresh.restore_session_spec(project, snapshot)
+    assert raised.value.__cause__.winerror == 32
+    assert attempts[snapshot.spec_path] > 1
+
+
+def test_lasting_journal_sharing_error_is_a_session_error(tmp_path: Path, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_os_opens
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    attempts = hold_os_opens(monkeypatch, {path: 100})
+    with pytest.raises(sr.SessionError, match="cannot read Session refresh journal") as raised:
+        session_refresh.recover_project_locked(project)
+    assert raised.value.__cause__.winerror == 32
+    assert attempts[path] > 1
+
+
+def _journal_to_delete(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    return project, path
+
+
+def test_journal_delete_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, path = _journal_to_delete(tmp_path, monkeypatch)
+    attempts = hold_unlinks(monkeypatch, {path: 1})
+    session_refresh._delete_journal(project)
+    assert not path.exists()
+    assert attempts[path] == 2
+
+
+def test_journal_delete_retries_before_raising_lasting_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, path = _journal_to_delete(tmp_path, monkeypatch)
+    attempts = hold_unlinks(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError) as raised:
+        session_refresh._delete_journal(project)
+    assert raised.value.winerror == 32
+    assert attempts[path] > 1
+    assert path.is_file()
+
+
+def test_journal_delete_tolerates_missing_journal(tmp_path: Path, monkeypatch) -> None:
+    project, path = _journal_to_delete(tmp_path, monkeypatch)
+    path.unlink()
+    session_refresh._delete_journal(project)
+    assert not path.exists()

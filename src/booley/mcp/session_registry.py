@@ -18,6 +18,7 @@ from booley.goals.model import WorktreeIdentity
 from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
@@ -219,7 +220,7 @@ class SessionRegistry:
         refuse_symlinks(path, booley_dir=self.booley_dir)
         if path.stat().st_size > MAX_ROW_BYTES:
             raise ValueError("oversized session row")
-        row = _parse_row(path.read_bytes())
+        row = _parse_row(read_file_bytes(path))
         if path != self.path(row.attribution.key):
             raise ValueError("session filename does not match its key")
         return row

@@ -381,3 +381,88 @@ def test_newer_observation_interleaved_at_lock_is_not_erased(tmp_path, monkeypat
     with pytest.raises(upgrade_review.AcknowledgmentError, match="pending target changed"):
         upgrade_review.acknowledge(booley_dir, "2.0.0", current_version="2.0.0")
     assert _payload(booley_dir)["pending_target"] == "3.0.0"
+
+
+def _stamp_version(booley_dir: Path, version: str) -> Path:
+    path = booley_dir / "runtime" / "doctor_stamp.json"
+    path.write_text(json.dumps({"booley_version": version}), encoding="utf-8")
+    return path
+
+
+def test_review_state_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir = _project(tmp_path)
+    upgrade_review.observe(booley_dir, current_version="1.2.3", now=_NOW)
+    path = upgrade_review.state_path(booley_dir)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    state = upgrade_review._read_state(path)
+    assert state is not None
+    assert state.reviewed_through == "1.2.3"
+    assert attempts[path] == 2
+
+
+def test_review_state_read_retries_before_reporting_lasting_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir = _project(tmp_path)
+    upgrade_review.observe(booley_dir, current_version="1.2.3", now=_NOW)
+    path = upgrade_review.state_path(booley_dir)
+    attempts = hold_opens(monkeypatch, {path: 1000})
+    with pytest.raises(upgrade_review.ReviewStorageError) as lasting:
+        upgrade_review._read_state(path)
+    assert lasting.value.__cause__.winerror == 32  # type: ignore[union-attr]
+    status = upgrade_review.observe(booley_dir, current_version="1.2.3", now=_NOW)
+    assert status.condition is upgrade_review.ReviewCondition.UNAVAILABLE
+    assert attempts[path] > 2
+
+
+def test_review_state_write_survives_transient_replace_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    booley_dir = _project(tmp_path)
+    path = upgrade_review.state_path(booley_dir)
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    status = upgrade_review.observe(booley_dir, current_version="1.2.3", now=_NOW)
+    assert status.condition is upgrade_review.ReviewCondition.CURRENT
+    assert _payload(booley_dir) == {"schema": 1, "reviewed_through": "1.2.3"}
+    assert attempts[path] == 2
+
+
+def test_review_bootstrap_survives_transient_doctor_stamp_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir = _project(tmp_path)
+    stamp = _stamp_version(booley_dir, "1.2.3")
+    attempts = hold_opens(monkeypatch, {stamp: 1})
+    status = upgrade_review.observe(booley_dir, current_version="1.4.0", now=_NOW)
+    assert status.condition is upgrade_review.ReviewCondition.PENDING
+    assert status.reviewed_through == "1.2.3"
+    assert attempts[stamp] == 2
+
+
+def test_lasting_doctor_stamp_sharing_error_does_not_rebaseline_review(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir = _project(tmp_path)
+    stamp = _stamp_version(booley_dir, "1.2.3")
+    attempts = hold_opens(monkeypatch, {stamp: 1000})
+    status = upgrade_review.observe(booley_dir, current_version="1.4.0", now=_NOW)
+    assert status.condition is upgrade_review.ReviewCondition.UNAVAILABLE
+    assert not upgrade_review.state_path(booley_dir).exists()
+    assert attempts[stamp] > 1
+
+
+def test_missing_doctor_stamp_baselines_at_running_version(tmp_path: Path) -> None:
+    booley_dir = _project(tmp_path)
+    status = upgrade_review.observe(booley_dir, current_version="1.4.0", now=_NOW)
+    assert status.condition is upgrade_review.ReviewCondition.CURRENT
+    assert _payload(booley_dir) == {"schema": 1, "reviewed_through": "1.4.0"}

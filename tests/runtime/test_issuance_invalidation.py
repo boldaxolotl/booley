@@ -316,3 +316,27 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     assert errors == []
     assert events == ["grant-commit", runtime_command]
     assert issuance_invalidation.pending_invalidations() == ()
+
+
+def test_cancel_survives_transient_unlink_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    identity = str((tmp_path / "project").resolve())
+    issuance_invalidation.prepare(identity)
+    journal = issuance_invalidation._path(identity)
+    attempts = hold_unlinks(monkeypatch, {journal: 1})
+    issuance_invalidation.cancel(identity)
+    assert attempts[journal] == 2
+    assert not journal.exists()
+
+
+def test_cancel_retries_before_raising_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    identity = str((tmp_path / "project").resolve())
+    issuance_invalidation.prepare(identity)
+    journal = issuance_invalidation._path(identity)
+    attempts = hold_unlinks(monkeypatch, {journal: 99})
+    with pytest.raises(PermissionError):
+        issuance_invalidation.cancel(identity)
+    assert attempts[journal] > 1
