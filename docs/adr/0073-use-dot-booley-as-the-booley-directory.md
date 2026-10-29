@@ -48,3 +48,25 @@ non-destructive preparation rather than forced deinitialization by init.
 This supersedes path spellings in ADR 0057 and ADR 0067 while preserving their
 source-checkout separation, Goal authority, and immutable-history decisions.
 Sandbox home `~/.booley/`, XDG configuration, and caches keep their names.
+
+## Amendments (2026-10-29)
+
+Recorded while implementing
+[#2287](https://github.com/boldaxolotl/booley/issues/2287).
+
+- **Accepted in-Sandbox `BOOLEY_DIR` spellings.** In-Sandbox Doctor accepts
+  `BOOLEY_DIR` when it is exactly `/booley-project`, or when it is the
+  `.booley` entry directly under the Project Root that Doctor inspects
+  (for example `/workspaces/<project>/.booley` in a Codespace). Either spelling
+  must be absolute and resolve to an existing directory; the `.booley` entry
+  may be a symlink. Any other spelling, a `.booley` under another directory, or
+  a dangling entry fails the Booley Directory identity check. Its remedy is in
+  the Sandbox: set `BOOLEY_DIR` to `<Project Root>/.booley`, or open the
+  Project through an issued Sandbox.
+- **Paths decide, platform variables do not.** The rule ignores `CODESPACES`
+  and other ambient platform variables. They are spoofable, and ADR 0077
+  rejects inferring Sandbox behavior from them for the same reason.
+- **Identity does not gate isolation.** The identity check is reported
+  separately from the host-authority checks (Docker sockets, host EDA
+  configuration, SSH credentials) and the mounted-Vivado checks, which run
+  whatever the identity result.
