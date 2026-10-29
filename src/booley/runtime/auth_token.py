@@ -620,7 +620,8 @@ def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> No
     if not (source.is_file() and allowed):
         destination.unlink(missing_ok=True)
         return
-    target = source.absolute()
+    # Resolve so a link never points at another (removable) link.
+    target = source.resolve()
     if destination.is_symlink() and destination.readlink() == target:
         return
     pending = destination.parent / f".{destination.name}.{os.getpid()}.{os.urandom(4).hex()}"

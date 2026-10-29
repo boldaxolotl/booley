@@ -134,12 +134,11 @@ def test_private_codex_writers_preserve_destination_choice(
 ):
     from booley.runtime import _codex_backend as cb
 
-    real_path = Path
     _isolate_scratch(tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
     create = cb._ensure_nested_codex_home
-    home = real_path(create("test", ["lint"]))
+    home = Path(create("test", ["lint"]))
     config = home / ".codex/config.toml"
     assert tomllib.loads(config.read_text())["suppress_unstable_features_warning"] is True
     if preference is not None or toml11:
@@ -150,10 +149,10 @@ def test_private_codex_writers_preserve_destination_choice(
         )
         config.write_text(choice + ("features={\n mcp_2026_07_28=true,\n}\n" if toml11 else ""))
     before = config.read_bytes()
-    assert real_path(create("test", ["lint"])) == home
+    assert Path(create("test", ["lint"])) == home
     assert config.read_bytes() == before
     cb._NESTED_HOMES.clear()
-    assert real_path(create("test", ["lint"])) == home
+    assert Path(create("test", ["lint"])) == home
     parsed = tomllib.loads(config.read_text())
     assert "malformed" not in caplog.text
     assert parsed["suppress_unstable_features_warning"] is (
@@ -168,12 +167,11 @@ def test_private_codex_writers_preserve_destination_choice(
 def test_private_codex_writer_invalid_destination(tmp_path, monkeypatch, existing, caplog):
     from booley.runtime import _codex_backend as cb
 
-    real_path = Path
     _isolate_scratch(tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
     create = cb._ensure_nested_codex_home
-    config = real_path(create("test", ["lint"])) / ".codex/config.toml"
+    config = Path(create("test", ["lint"])) / ".codex/config.toml"
     config.write_text(existing)
     cb._NESTED_HOMES.clear()
     if existing.startswith("broken"):

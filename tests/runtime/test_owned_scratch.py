@@ -31,7 +31,7 @@ def _entry(root: Path, name: str = "booley-specialist-ro-case") -> Path:
 
 
 @requires_procfs
-def test_sweep_removes_dead_reused_and_zombie_owners(tmp_path, monkeypatch):
+def test_sweep_removes_dead_and_reused_owners(tmp_path, monkeypatch):
     dead = _entry(tmp_path, "booley-specialist-ro-dead")
     write_marker(dead, exited_process_payload())
     reused = _entry(tmp_path, "codex-nested-home-reused")
