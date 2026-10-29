@@ -1,6 +1,6 @@
 # Route Codex Specialists through an env-selected gateway
 
-Status: accepted
+Status: accepted (amended 2026-10-29: token command, see Amendments)
 
 ## Context
 
@@ -34,8 +34,9 @@ verbatim) and `BOOLEY_GATEWAY_TOKEN`.
   generated `[shell_environment_policy]` excludes it from the tools Codex runs
   (Codex 0.160 ignores its default `*TOKEN*` filter); `-P` keeps a Project
   `booley/` directory off the import path. `fast_mode` is off
-  because gateways reject the priority tier. This command is the extension
-  point for #2267.
+  because gateways reject the priority tier. The token may also come from
+  `BOOLEY_GATEWAY_TOKEN_COMMAND` (amended 2026-10-29, see Amendments).
+  Setup is described in [GATEWAY.md](../internals/GATEWAY.md).
 - **No native credential.** No credential variable survives into the Codex
   child, no `auth.json` is copied, and `BOOLEY_GATEWAY_TOKEN` is excluded from
   the generated MCP server environment.
@@ -50,8 +51,32 @@ verbatim) and `BOOLEY_GATEWAY_TOKEN`.
 
 ## Rejected alternatives
 
-**`env_key` provider auth** has no refresh path; the `auth` command lets #2267
-add one.
+**`env_key` provider auth** has no refresh path; the `auth` command keeps the
+token out of the config file and lets a refreshed token reach Codex.
 **A `booley.toml` knob** puts a secret's location in a committed file.
 **`-c` overrides** expose the token in process arguments.
 **Honoring the policy on the host** would silently change what a host run bills.
+
+## Amendments (2026-10-29)
+
+[#2267](https://github.com/boldaxolotl/booley/issues/2267) adds a second token
+source, `BOOLEY_GATEWAY_TOKEN_COMMAND`. Set exactly one of it and
+`BOOLEY_GATEWAY_TOKEN`; both or neither fails loud.
+
+- **The command runs in the Booley process that spawns Codex**, not inside
+  Codex's `auth.command`. A helper process has no memory, so it cannot keep the
+  5-minute in-memory cache or retry a run after a rejected token, and Codex runs
+  its auth command about three times per launch (#2264), which would multiply
+  the runs of a command that may claim a token.
+- **Delivery is unchanged.** Booley puts the result in the Codex child's
+  environment as `BOOLEY_GATEWAY_TOKEN` and removes the command variable, so
+  the unchanged helper prints it, `[shell_environment_policy]` still hides it
+  from Codex tools, and neither variable reaches `config.toml`, the nested MCP
+  server environment or a process argument.
+- **Refresh.** An HTTP 401 from the gateway (`AgentAuthError`) drops the cached
+  token, re-runs the command and retries the run once. A second rejection
+  propagates. A token that expires during a run is out of scope.
+- **Contract and threat model.** The command prints the current token and is
+  safe to run repeatedly (Doctor runs it too). Its stderr is shown verbatim on
+  failure; its stdout never is. Whoever can run the command in the Sandbox can
+  mint a token.

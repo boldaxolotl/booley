@@ -484,3 +484,27 @@ async def test_returning_to_the_overview_refits_it_to_the_list_beside_the_previe
         await pilot.pause()
         assert app._overview_width == app._list_width()
         assert "Started" not in app._overview_header.plain
+
+
+@pytest.mark.asyncio
+async def test_moved_selection_stays_in_view_when_textual_does_not_scroll_it(monkeypatch):
+    # Windows runs lost the race between Textual's deferred scroll-into-view and the
+    # restored offset; take Textual's scroll away so the order cannot matter (wide: the list sits beside the preview).
+    working = {f"codex:{n:02}": Activity(WORKING, stamp(1000 - n)) for n in range(25)}
+    current = {"snapshot": world(working, count=25)}
+    app = DashboardApp(lambda: current["snapshot"])
+    async with app.run_test(size=(140, 14)) as pilot:
+        table = app.query_one(DataTable)
+        await pilot.pause()
+        table.move_cursor(row=app.row_keys.index("codex:24"), animate=False)
+        await pilot.pause()
+        monkeypatch.setattr(type(table), "_scroll_cursor_into_view", lambda *a, **k: None)
+
+        current["snapshot"] = world({**working, "codex:24": Activity(WAITING_USER, stamp(10))}, 25)
+        await app.refresh_snapshot()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.row_keys[table.cursor_row] == "codex:24"
+        visible = table.scrollable_content_region.height - table.header_height
+        assert table.scroll_y <= table.cursor_row < table.scroll_y + visible
