@@ -160,8 +160,11 @@ def _render_prune(result: image_keepers.PruneResult, *, json_output: bool) -> in
     else:
         for candidate in result.candidates:
             print(f"{candidate.tag} {candidate.image_id} [{candidate.reason}]")
-        print(f"Preview digest: {result.digest}")
-        print("Confirm with: booley projects prune-keepers --confirm " + result.digest)
+        if result.digest is None:
+            print("Nothing to release.")
+        else:
+            print(f"Preview digest: {result.digest}")
+            print("Confirm with: booley projects prune-keepers --confirm " + result.digest)
         for tag in result.released:
             print(f"Keeper tag released: {tag}")
         for tag in result.retained:

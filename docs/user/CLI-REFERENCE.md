@@ -51,6 +51,9 @@ booley --version                  # version, plus commit and its UTC commit date
 # Projects on this machine (host)
 booley projects                   # list known projects
 booley projects discover <dir>    # find existing projects under <dir>
+booley projects forget <project>  # forget a Project with no live Grants; release its unused keeper
+booley projects forget --purge <project>  # also remove its unused images and state volumes
+booley projects prune-keepers     # preview orphan image keepers; release with --confirm <digest>
 ```
 
 `booley worktree new <name>` gives a Versioned Booley Directory a
