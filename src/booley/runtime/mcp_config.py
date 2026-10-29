@@ -124,15 +124,17 @@ def _warning_preference(existing_config: str | None) -> bool:
 GATEWAY_PROVIDER_ID = "booley_gateway"
 
 
-def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
-    """Codex custom-provider tables that send the gateway bearer on every request.
+_SPECIALIST_AUTH_TIMEOUT_MS = 20000  # a cold-container import can exceed the 5 s default
+
+
+def gateway_provider_toml(url: str, token_cwd: str, *, timeout_ms: int) -> str:
+    """The ``booley_gateway`` provider tables: URL plus the token helper as ``auth``.
 
     ``auth.command`` prints the token from Codex's environment, so it is never
     written to disk. ``-P`` stops a Project ``booley/`` directory shadowing us.
     """
     table = f"model_providers.{GATEWAY_PROVIDER_ID}"
-    return [
-        "",
+    lines = [
         f"[{table}]",
         'name = "Booley gateway"',
         f"base_url = {json.dumps(url)}",
@@ -142,7 +144,17 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
         f"command = {json.dumps(sys.executable)}",
         'args = ["-P", "-m", "booley.runtime.gateway_token"]',
         f"cwd = {json.dumps(token_cwd)}",
-        "timeout_ms = 20000",  # a cold-container import can exceed the 5 s default
+        f"timeout_ms = {timeout_ms}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
+    """Specialist provider tables plus the shell-tool token exclusion."""
+    provider = gateway_provider_toml(url, token_cwd, timeout_ms=_SPECIALIST_AUTH_TIMEOUT_MS)
+    return [
+        "",
+        *provider.splitlines(),
         "",
         # Codex 0.160 ignores its default *TOKEN* filter, so exclude explicitly.
         "[shell_environment_policy]",
