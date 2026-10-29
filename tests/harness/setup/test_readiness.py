@@ -262,6 +262,40 @@ class TestScaffoldRootCoresTracked:
 
         assert _scaffold_core_findings(tmp_path) == []
 
+    def test_no_findings_outside_a_git_repository(self, tmp_path: Path):
+        _write_scaffold(tmp_path)  # never committed: git cannot say what is tracked
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_no_findings_when_git_cannot_run(self, tmp_path: Path, monkeypatch):
+        _write_scaffold(tmp_path)
+        _commit_all(tmp_path)
+
+        def _missing_git(*args, **kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(readiness.subprocess, "run", _missing_git)
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_unreadable_tracked_core_is_left_to_the_core_audit(self, tmp_path: Path):
+        _write_scaffold(tmp_path)
+        (tmp_path / "my_ip.core").write_text("CAPI=2:\nname: [unclosed\n", encoding="utf-8")
+        (tmp_path / "verif/booley_doctor_selftest.core").unlink()
+        _commit_all(tmp_path)
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_relocated_stealth_core_is_not_flagged(self, tmp_path: Path):
+        _write_scaffold(tmp_path)
+        cores = tmp_path / ".booley/cores"
+        cores.mkdir(parents=True)
+        (tmp_path / "my_ip.core").rename(cores / "my_ip.core")
+        (tmp_path / "verif/booley_doctor_selftest.core").unlink()
+        _commit_all(tmp_path)
+
+        assert _scaffold_core_findings(tmp_path) == []
+
 
 class TestGuidanceVenueNote:
     """Guidance that names Booley Flows must scope them to the Sandbox.
