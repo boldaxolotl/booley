@@ -130,6 +130,7 @@ async def test_footer_on_jobs_list_adds_filters_and_omits_open_when_wide():
         assert footer(app) == "↑↓ move · ←→ Sessions / Jobs · ↑ filters"
         await pilot.resize_terminal(100, 30)
         await pilot.pause()
+        await pilot.pause()
         assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs · ↑ filters"
 
 

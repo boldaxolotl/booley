@@ -89,6 +89,7 @@ async def open_all_jobs(app, pilot):
     await pilot.press("right", "up", "right", "right", "right", "enter", "down")
     await pilot.pause()
     await pilot.pause()
+    assert app.navigation.job_filter == "all"
 
 
 def row_for(app, job):

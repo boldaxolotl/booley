@@ -58,10 +58,10 @@ _REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 HELP = (
     "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
     "←→ switch between the Sessions and Jobs windows; each keeps its place\n"
-    "↑ on the first row (or in an empty list) reaches the top bar: ←→ choose, Enter apply,"
-    " ↓ or Esc back\n"
+    "↑ on the first row (an empty list, or the top of a detail view) reaches the top bar:"
+    " ←→ choose, Enter apply, ↓ or Esc back\n"
     "The top bar holds the window tabs and Help; in the Jobs window also its filters:\n"
-    "Running, Finished (newest 50) and All, and the owner"
+    f"Running, Finished (newest {FINISHED_JOBS}) and All, and the owner"
     " (Enter cycles All sessions, each session, Standalone)\n"
     "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
     "and keeps the Running / Finished / All choice\n"
@@ -1402,6 +1402,7 @@ class DashboardApp(App[None]):
 
     def _update_footer(self) -> None:
         """Show only the keys that apply where the cursor is."""
+        # query, not query_one: focus events can arrive before the footer is mounted.
         for footer in self.query("#footer"):
             assert isinstance(footer, Static)
             footer.update(

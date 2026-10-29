@@ -131,6 +131,7 @@ async def choose_in_bar(app, pilot, label):
     """
     if not isinstance(app.focused, TopBar):
         await pilot.press("up")
+    assert isinstance(app.focused, TopBar), "up did not reach the top bar"
     bar = app.query_one(TopBar)
     labels = [item[0] for item in bar._items()]
     index = next(index for index, text in enumerate(labels) if text.startswith(label))

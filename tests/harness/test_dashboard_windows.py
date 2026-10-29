@@ -559,8 +559,11 @@ async def test_filter_choice_after_scrolling_resets_cursor_into_view():
         # Cursor to the first row without scrolling, so `up` reaches the top bar.
         table.move_cursor(row=0, scroll=False)
         await pilot.pause()
-        # The Finished list is one row, so it fits on one screen at any offset.
-        await choose_in_bar(app, pilot, "Finished")
+        # Re-choosing Running restores its remembered offset; the reset must undo that.
+        await choose_in_bar(app, pilot, "Running")
+        await pilot.press("down")
+        await pilot.pause()
         assert app.navigation.view == "jobs"
-        assert app.navigation.job_filter == "finished"
+        assert app.navigation.job_filter == "running"
+        assert table.cursor_row == 0
         assert table.scroll_y == 0
