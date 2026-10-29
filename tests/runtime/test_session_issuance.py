@@ -3463,3 +3463,102 @@ def test_issuance_requirements_opens_lease_for_prior_stamp_without_marker(tmp_pa
             pass
 
     assert seen == [False, True, True]
+
+
+def test_spec_hash_survives_transient_sharing_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    project, spec, path, _stamp = issued
+    attempts = hold_opens(monkeypatch, {path: 1})
+    runtime_spec.authenticate(project, spec, path)
+    assert attempts[path] >= 2
+
+
+def test_lasting_spec_hash_sharing_error_is_a_runtime_spec_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_opens
+
+    project, spec, path, _stamp = issued
+    attempts = hold_opens(monkeypatch, {path: 100})
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot hash") as raised:
+        runtime_spec.authenticate(project, spec, path)
+    assert raised.value.__cause__.winerror == 32
+    assert attempts[path] > 1
+
+
+def test_stamp_write_survives_transient_replace_sharing_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    project, _spec, _path, stamp = issued
+    target = runtime_spec.stamp_path(project)
+    attempts = hold_replaces(monkeypatch, {target: 1})
+    runtime_spec._write_stamp(target, stamp)
+    assert attempts[target] == 2
+
+
+def test_stamp_write_retries_before_raising_lasting_sharing_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    project, _spec, _path, stamp = issued
+    target = runtime_spec.stamp_path(project)
+    attempts = hold_replaces(monkeypatch, {target: 100})
+    with pytest.raises(PermissionError):
+        runtime_spec._write_stamp(target, stamp)
+    assert attempts[target] > 1
+
+
+def test_rollback_restore_survives_transient_replace_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_replaces
+
+    target = tmp_path / "restored.json"
+    attempts = hold_replaces(monkeypatch, {target: 1})
+    runtime_spec._restore_file(target, b"prior\n", 0o600)
+    assert target.read_bytes() == b"prior\n"
+    assert attempts[target] == 2
+
+
+def test_rollback_removal_survives_transient_unlink_sharing_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    target = tmp_path / "created.json"
+    target.write_bytes(b"new\n")
+    attempts = hold_unlinks(monkeypatch, {target: 1})
+    runtime_spec._restore_file(target, None, 0o600)
+    assert not target.exists()
+    assert attempts[target] == 2
+
+
+def test_stamp_read_survives_transient_sharing_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_os_opens
+
+    project, spec, path, _stamp = issued
+    attempts = hold_os_opens(monkeypatch, {runtime_spec.stamp_path(project): 1})
+    runtime_spec.validate(project, spec, path)
+    assert attempts[runtime_spec.stamp_path(project)] == 2
+
+
+def test_stamp_read_retries_before_reporting_lasting_sharing_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_os_opens
+
+    project, spec, path, _stamp = issued
+    current = runtime_spec.stamp_path(project)
+    attempts = hold_os_opens(monkeypatch, {current: 100})
+    with pytest.raises(runtime_spec.IssuanceUnavailableError) as raised:
+        runtime_spec.validate(project, spec, path)
+    assert "withdrawn" not in str(raised.value)
+    assert raised.value.__cause__.winerror == 32
+    assert attempts[current] > 1
+
+
+def test_invalidation_survives_transient_unlink_sharing_error(issued, monkeypatch) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, _spec, _path, _stamp = issued
+    current = runtime_spec.stamp_path(project)
+    attempts = hold_unlinks(monkeypatch, {current: 1})
+    runtime_spec.invalidate_project(str(project.resolve()))
+    assert not current.exists()
+    assert attempts[current] == 2

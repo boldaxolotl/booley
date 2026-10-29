@@ -361,3 +361,10 @@ def test_open_with_sharing_retry_raises_lasting_error_and_keeps_other_errors(
         with pytest.raises(type(error)):
             open_with_sharing_retry(failing, path, sleep=delays.append)
         assert attempts == [1]
+
+
+def test_unlink_file_missing_ok_ignores_absent_path(tmp_path: Path):
+    absent = tmp_path / "absent"
+    unlink_file(absent, missing_ok=True)
+    with pytest.raises(FileNotFoundError):
+        unlink_file(absent)

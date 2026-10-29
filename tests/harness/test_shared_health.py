@@ -341,3 +341,38 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
         assert texts == (compact,), (
             "Dashboard compact format must preserve the separate verbose brief"
         )
+
+
+def test_report_read_survives_transient_sharing_error(project, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root, directory = project
+    _write(root, directory, _result(Severity.WARN))
+    path = health.report_path(directory)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert health.load_report(root) is not None
+    assert attempts[path] == 2
+
+
+def test_lasting_report_sharing_error_retries_before_reporting_unavailable(project, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root, directory = project
+    _write(root, directory, _result(Severity.WARN))
+    path = health.report_path(directory)
+    attempts = hold_opens(monkeypatch, {path: 1000})
+    assert health.load_report(root) is None
+    assert attempts[path] > 1
+
+
+def test_upgrade_review_fingerprint_survives_transient_sharing_error(project, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root, directory = project
+    review = directory / "runtime" / "upgrade_review.json"
+    review.parent.mkdir(exist_ok=True)
+    review.write_text('{"schema": 1, "reviewed_through": "1.0.0"}', encoding="utf-8")
+    _write(root, directory, _result(Severity.WARN))
+    attempts = hold_opens(monkeypatch, {review: 1})
+    assert health.read_health(root, now=NOW).due is None
+    assert attempts[review] == 2

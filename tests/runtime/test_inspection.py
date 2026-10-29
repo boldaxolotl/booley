@@ -1060,3 +1060,48 @@ def test_host_inspection_reports_current_issuance_drift(
         item.message == "active Sandbox differs from current host issuance"
         for item in report.report().findings
     )
+
+
+def _held_spec_request(tmp_path, monkeypatch):
+    spec = tmp_path / ".devcontainer" / "devcontainer.json"
+    spec.parent.mkdir()
+    spec.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(inspection.runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(inspection, "_devcontainer_tracked", lambda _root: False)
+    return spec, inspection.RuntimeInspectionRequest(tmp_path, "booley-sandbox", None)
+
+
+def test_issuance_check_survives_transient_spec_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    spec, request = _held_spec_request(tmp_path, monkeypatch)
+    attempts = hold_opens(monkeypatch, {spec: 1})
+    report = inspection.Findings()
+    inspection._check_issued_session_runtime(request, report)
+    assert attempts[spec] >= 2
+    assert not any("cannot access" in item.message for item in report.report().findings)
+
+
+def test_spec_parse_check_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    spec, request = _held_spec_request(tmp_path, monkeypatch)
+    attempts = hold_opens(monkeypatch, {spec: 1})
+    report = inspection.Findings()
+    inspection._check_devcontainer_spec(request, report)
+    assert attempts[spec] >= 2
+    assert not any("does not parse" in item.message for item in report.report().findings)
+
+
+def test_lasting_spec_sharing_error_fails_issuance_check(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    spec, request = _held_spec_request(tmp_path, monkeypatch)
+    attempts = hold_opens(monkeypatch, {spec: 99})
+    report = inspection.Findings()
+    inspection._check_issued_session_runtime(request, report)
+    assert attempts[spec] > 1
+    assert any(
+        "host issuance is invalid" in item.message and "cannot access" in item.message
+        for item in report.report().findings
+    )
