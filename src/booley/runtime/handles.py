@@ -3,19 +3,26 @@
 import json
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.core.boundary import require_dict, require_int, require_str_value
 from booley.core.file_lock import acquire_file_lock, release_file_lock, wait_for_file_lock
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
+from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
 MAX_MAP_BYTES = 16 * 1024 * 1024
+# Doctor warns once a map passes this size; MCP server start prunes expired entries.
+MAP_WARN_BYTES = MAX_MAP_BYTES * 3 // 4
+# A finished Job keeps its handle this long after it ended.
+JOB_HANDLE_GRACE_SECONDS = 24 * 3600
+_RUN_ID_STAMP = re.compile(r"-(\d{8}T\d{6}Z)-\d+-[0-9a-f]{8}$")
 
 JOB_TYPES = {
     "sim": "SIM",
@@ -65,6 +72,43 @@ class HandleMap:
             if old not in self.entries:
                 self.aliases.setdefault(old, target)
         return self.entries[target]
+
+    def drop(self, keys: set[str]) -> None:
+        """Remove *keys* and every alias pointing at them; an empty map restarts numbering."""
+        for key in keys:
+            self.entries.pop(key, None)
+        self.aliases = {
+            name: target for name, target in self.aliases.items() if target not in keys
+        }
+        if not self.entries:
+            self.aliases.clear()
+            self.next_number = 1
+
+
+def job_handle_expired(record: JobRecord, now: float) -> bool:
+    """Whether a Job record is terminal for longer than the handle grace period.
+
+    The grace starts at ``ended_at``; startup reconciliation writes terminal
+    records without it, so those age from ``started_at``. An unparseable stamp
+    never expires the handle.
+    """
+    if record.status == STATUS_RUNNING:
+        return False
+    anchor = parse_stamp(record.ended_at)
+    if anchor is None:
+        anchor = parse_stamp(record.started_at)
+    return anchor is not None and now - anchor > JOB_HANDLE_GRACE_SECONDS
+
+
+def run_id_submitted_at(run_id: str) -> float | None:
+    """Epoch seconds from the submit stamp of a ``make_run_id`` ID, else ``None``."""
+    match = _RUN_ID_STAMP.search(run_id)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
+    except ValueError:
+        return None
 
 
 def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
@@ -122,6 +166,21 @@ class HandleStore:
             if asdict(handles) != before:
                 self.save(handles)
             return label
+
+    def prune(self, select: Callable[[HandleMap], set[str]], *, wait_s: float) -> HandleMap:
+        """Drop the entries *select* names from the freshly loaded map, under the writer lock.
+
+        A map that cannot be loaded raises and stays untouched: corrupt maps are
+        refused, never reset.
+        """
+        root = self.root if self.jobs else self.root.parent
+        with _writer(root, wait_s=wait_s, booley_dir=self.booley_dir):
+            handles = self.load()
+            expired = select(handles) & handles.entries.keys()
+            if expired:
+                handles.drop(expired)
+                self.save(handles)
+            return handles
 
     def snapshot(self) -> tuple[dict[str, str], tuple[str, ...]]:
         try:

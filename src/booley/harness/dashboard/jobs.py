@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import islice
@@ -13,7 +14,7 @@ from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.runtime import job_records
-from booley.runtime.handles import HandleStore
+from booley.runtime.handles import HandleStore, job_handle_expired
 from booley.runtime.job_observation import JobObservation, JobObserver
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -147,6 +148,7 @@ class JobReader:
         *,
         interactive_root: Path | None = None,
         session_handles: dict[str, str] | None = None,
+        now: float | None = None,
     ) -> JobSnapshot:
         """Reuse the Goal enumeration that supplied this Dashboard refresh."""
         roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
@@ -158,7 +160,8 @@ class JobReader:
             if session_handles is None
             else (session_handles, ())
         )
-        rows = tuple(_job_view(job, catalogs, handles, owners) for job in observed.jobs)
+        when = time.time() if now is None else now
+        rows = tuple(_job_view(job, catalogs, handles, owners, when) for job in observed.jobs)
         return JobSnapshot(rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics))
 
 
@@ -167,7 +170,15 @@ def _job_view(
     catalogs: dict[str, TargetCatalog | None],
     handles: dict[str, str],
     owners: dict[str, str],
+    now: float,
 ) -> JobView:
+    record = job.record
+    handle = handles.get(record.run_id, "")
+    owner_handle = owners.get(record.session_key or "", "")
+    if not handle and job_handle_expired(record, now):
+        # A pruned Job is history, not an unallocated live one: name it by run ID
+        # and its owner by session key so neither shows the live-only "?".
+        handle, owner_handle = record.run_id, owner_handle or record.session_key or ""
     return JobView(
         root=job.root,
         record=job.record,
@@ -178,8 +189,8 @@ def _job_view(
         diagnostic=job.diagnostic,
         artifacts=job.artifacts,
         eda_tool=_configured_tool(job.record, catalogs),
-        handle=handles.get(job.record.run_id, ""),
-        owner_handle=owners.get(job.record.session_key or "", ""),
+        handle=handle,
+        owner_handle=owner_handle,
     )
 
 

@@ -72,6 +72,7 @@ from booley.mcp import (
     call_context,
     catalog,
     endpoint_process,
+    handle_pruning,
     job_lifecycle,
     job_results,
 )
@@ -2194,6 +2195,7 @@ async def _main() -> None:
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
     server, _ = _build_server(lifetime)
+    handle_pruning.prune_at_start()
     async with stdio_server() as (read_stream, write_stream):
         run_task = asyncio.create_task(
             server.run(
@@ -2242,6 +2244,7 @@ def _run_http(port: int) -> None:
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
+    handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
     app = SessionMaintenanceApp(app, lifetime.sessions)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
