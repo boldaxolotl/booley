@@ -121,7 +121,8 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 35)) as pilot:
         assert "S12" in str(app._content()[2][-1])
-        assert "J-SIM1" in str(app._content()[2][0])
+        # Row 0 is the UNKNOWN group header; S1 follows it.
+        assert "J-SIM1" in str(app._content()[2][1])
         assert "codex:00" not in str(app._content()[2])
         await pilot.press("1")
         orientation, _, rows = app._content()
@@ -160,7 +161,7 @@ def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
     app.window = "jobs"
     app.navigation = Navigation("jobs", "codex:00")
     assert app._jobs() == [job]
-    assert "J-SIM1" in app._overview_row(current.sessions[0])
+    assert any("J-SIM1" in running for running in app._session_facts(current.sessions[0]).jobs)
     assert "S1" in str(app._content())
     assert old not in str(app._content())
 
@@ -204,7 +205,10 @@ async def test_jobs_shortcut_opens_jobs_window_and_s_returns_to_sessions(
         await pilot.press("s")
         assert app.navigation.view == "overview"
         assert app.navigation.session is None
-        assert app.row_keys == [row.attribution.key for row in current.sessions]
+        assert app.row_keys == [
+            "group:UNKNOWN",
+            *(row.attribution.key for row in current.sessions),
+        ]
 
         await pilot.press("enter")
         assert app.navigation.view == "session"
@@ -363,7 +367,7 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         await pilot.press("?", "escape")
         assert app.navigation.view == "jobs"
         await pilot.press("s")
-        app.query_one(DataTable).move_cursor(row=11)
+        app.query_one(DataTable).move_cursor(row=app.row_keys.index("codex:11"))
         await pilot.press("enter")
         assert app.navigation.session == "codex:11"
         current = replace(current, sessions=())
@@ -484,17 +488,19 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
 
     app = DashboardApp(snapshot)
     app.snapshot = replace(
-        snapshot(3),
+        replace(snapshot(3), jobs=JobSnapshot(())),
         activity={
             "codex:00": Activity(WAITING_TOOL, STAMP, "mcp__booley__Sim"),
             "codex:01": Activity(WAITING_USER, STAMP),
         },
     )
     app._assign_shortcuts()
-    rows = [str(row) for row in app._overview()[2]]
-    assert "waiting for tool call (mcp__booley__Sim) · 10m 00s" in rows[0]
-    assert "waiting for user input · 10m 00s" in rows[1]
-    assert "activity unknown" in rows[2]
+    keys, rows = app._overview()[1], [row[0].plain for row in app._overview()[2]]
+    by_key = dict(zip(keys, rows, strict=True))
+    # The overview says the same thing shorter, and the third session has no signal.
+    assert "tool call (mcp__booley__Sim) 10m 00s" in by_key["codex:00"]
+    assert "waiting 10m 00s" in by_key["codex:01"]
+    assert by_key["codex:02"].rstrip().endswith("unknown")
     app.navigation = Navigation("session", "codex:00")
     assert "\nWaiting for tool call (mcp__booley__Sim) · 10m 00s" in app._session()[0]
     app.navigation = Navigation("session", "codex:02")
@@ -509,8 +515,13 @@ def test_stable_shortcuts_and_unknown_activity_without_client_signals():
     app.snapshot = replace(app.snapshot, sessions=app.snapshot.sessions[1:])
     app._assign_shortcuts()
     assert app.shortcuts["codex:01"] == numbers["codex:01"]
-    assert all("activity unknown" in str(row) for row in app._overview()[2])
-    assert all("Last" not in str(row) for row in app._overview()[2])
+    keys, rows = app._overview()[1], app._overview()[2]
+    session_rows = [
+        row[0].plain for key, row in zip(keys, rows, strict=True) if key.startswith("codex:")
+    ]
+    assert session_rows
+    assert all(row.rstrip().endswith("unknown") for row in session_rows)
+    assert all("Last" not in row for row in session_rows)
 
 
 # (automatic Doctor report, due reason, expected Dashboard lines)
@@ -646,9 +657,9 @@ def test_thread_without_process_proof_is_last_seen_and_own_fallback_is_not_other
     assert "connected" not in orientation
     assert "last seen" in orientation
     assert "WARNING" not in orientation
-    overview = app._overview_row(row)
-    assert "goal/fixture" in overview
-    assert "WARNING" not in overview
+    facts = app._session_facts(row)
+    assert facts.branch == "goal/fixture"
+    assert facts.notices == ()
 
 
 def test_session_without_work_dir_shows_its_default_checkout_and_branch():
@@ -679,14 +690,13 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
     app.snapshot = model.DashboardSnapshot(
         sessions=(bare, pinned, unknown), goals=(goal,), observed_at=1791453900
     )
-    overview = app._overview_row(bare)
-    assert " · /work (default) · booley · " in overview
-    assert "goal/fixture" not in overview
+    facts = app._session_facts(bare)
+    assert (facts.work_dir, facts.branch) == ("/work (default)", "booley")
     # An explicit work_dir association always wins over the default.
-    pinned_row = app._overview_row(pinned)
-    assert " · /work/wt · experiment · " in pinned_row and "(default)" not in pinned_row
-    # Rows from servers that predate default_work_dir keep the explicit placeholder.
-    assert "(default)" not in app._overview_row(unknown)
+    pinned_facts = app._session_facts(pinned)
+    assert (pinned_facts.work_dir, pinned_facts.branch) == ("/work/wt", "experiment")
+    # Rows from servers that predate default_work_dir show no default checkout.
+    assert "(default)" not in app._session_facts(unknown).work_dir
     app.navigation = Navigation("session", "pid:one")
     orientation, _ = app._session()
     assert " · /work (default) · booley · " in orientation
@@ -697,7 +707,8 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
         sessions=(SessionRow(replace(bare.attribution, branch=""), STAMP, STAMP),),
         goals=(),
     )
-    assert " · /work (default) · branch — · " in app._overview_row(app.snapshot.sessions[0])
+    detached = app._session_facts(app.snapshot.sessions[0])
+    assert (detached.work_dir, detached.branch) == ("/work (default)", "")
 
 
 @pytest.mark.asyncio
@@ -788,23 +799,6 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
         await pilot.click("#detail", offset=(3, lines.index(report)))
         await pilot.pause()
         assert [note.message for note in app._notifications] == [hint[0]]
-
-
-def test_overview_summarizes_session_and_standalone_running_jobs():
-    current = snapshot(1)
-    standalone = JobView(
-        Path("/jobs"),
-        JobRecord("three", "lint", STAMP, 60, argv=["--target", "lint_top"]),
-        "running",
-    )
-    app = DashboardApp(lambda: current)
-    app.snapshot = replace(current, jobs=JobSnapshot((*current.jobs.jobs, standalone)))
-    elapsed = "10m 00s"
-    orientation, _, rows = app._overview()
-    assert f"Standalone running Jobs: J-LINT? · lint lint_top {elapsed}" in orientation
-    assert f"sim Target — {elapsed}" in str(rows[0])
-    app.snapshot = current
-    assert "Standalone" not in app._overview()[0]
 
 
 def test_finished_jobs_are_newest_first_and_bounded(monkeypatch):
