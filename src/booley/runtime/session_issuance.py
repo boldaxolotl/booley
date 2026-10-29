@@ -46,6 +46,12 @@ from booley.runtime.devcontainer import (
     devcontainer_path,
     render_devcontainer_json,
 )
+from booley.runtime.filesystem_utils import (
+    open_with_sharing_retry,
+    read_file_bytes,
+    replace_file,
+    unlink_file,
+)
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
     GitIdentityError,
@@ -323,8 +329,8 @@ def stamp_path_for_identity(project_root: str) -> Path:
 
 def invalidate_project(project_root: str) -> None:
     """Remove the host-issued stamp for an already-canonical Project identity."""
-    stamp_path_for_identity(project_root).unlink(missing_ok=True)
-    _legacy_stamp_path(project_root).unlink(missing_ok=True)
+    unlink_file(stamp_path_for_identity(project_root), missing_ok=True)
+    unlink_file(_legacy_stamp_path(project_root), missing_ok=True)
 
 
 def _stamp_store() -> PrivateStore:
@@ -855,7 +861,7 @@ def _file_snapshot(path: Path, *, default_mode: int) -> tuple[bytes | None, int]
 
 def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
     if content is None:
-        path.unlink(missing_ok=True)
+        unlink_file(path, missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -867,7 +873,7 @@ def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        temp_path.replace(path)
+        replace_file(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -930,7 +936,7 @@ def _issue_document_with_requirements(
         _validate_image_contract(image_id)
     _retain_issued_image(issuance)
     _write_stamp(stamp_path(project), issuance)
-    _legacy_stamp_path(str(project)).unlink(missing_ok=True)
+    unlink_file(_legacy_stamp_path(str(project)), missing_ok=True)
     return issuance
 
 
@@ -2096,7 +2102,7 @@ def _require_string(spec: dict[str, Any], key: str) -> str:
 
 def _file_sha256(path: Path) -> str:
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashlib.sha256(read_file_bytes(path)).hexdigest()
     except OSError as exc:
         raise RuntimeSpecError(f"cannot hash generated Sandbox spec: {exc}") from exc
 
@@ -2113,7 +2119,7 @@ def _load_stamp(path: Path) -> Issuance:
             flags |= os.O_CLOEXEC
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        descriptor = os.open(path, flags)
+        descriptor = open_with_sharing_retry(lambda: os.open(path, flags), path)
         try:
             info = os.fstat(descriptor)
             with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
@@ -2163,7 +2169,7 @@ def _write_stamp(path: Path, issuance: Issuance) -> None:
             handle.write(json.dumps(asdict(issuance), indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        temp_path.replace(path)
+        replace_file(temp_path, path)
         # Windows does not permit opening a directory as a regular file
         # handle. The file itself was flushed above; the extra directory
         # durability barrier is available only on POSIX hosts.

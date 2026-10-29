@@ -11,6 +11,7 @@ from pathlib import Path
 from booley.core.boundary import require_dict, require_int, require_str_value
 from booley.core.file_lock import acquire_file_lock, release_file_lock, wait_for_file_lock
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ class HandleStore:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
         if not self.path.exists():
             return HandleMap()
-        with self.path.open("rb") as stream:
+        with open_with_sharing_retry(lambda: self.path.open("rb"), self.path) as stream:
             raw = stream.read(MAX_MAP_BYTES + 1)
         if len(raw) > MAX_MAP_BYTES:
             raise ValueError("handle map exceeds 16 MiB")
