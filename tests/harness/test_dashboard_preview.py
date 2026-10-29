@@ -1,13 +1,12 @@
 """Sessions window preview pane on wide terminals (#2246).
 
 At 120 columns or wider the overview shows a preview of the highlighted row beside
-the list: a session's orientation facts, or a standalone Job's detail. Every test
-reads observable state only (widget display, widths, rendered text), so each one
-fails in its body on a Dashboard without the preview.
+the list: a session's orientation facts, or a standalone Job's detail.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,6 +105,7 @@ async def test_preview_shows_at_120_columns_and_hides_below_across_resize():
     current = {"snapshot": world(activity, count=3)}
     app = DashboardApp(lambda: current["snapshot"])
     async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
         await pilot.pause()
         aside, table = app.query_one("#aside"), app.query_one("#list")
         assert aside.display
@@ -282,7 +282,7 @@ async def test_enter_from_preview_opens_unchanged_session_detail():
         assert app.navigation.view == "session"
         assert not app.query_one("#aside").display
         assert str(app.query_one("#orientation", Static).render()) == ORIENTATION
-        assert app.row_keys == ROW_KEYS
+        assert app.row_keys == [*GOAL_NAMES, "job:" + json.dumps(job.key), "call:0"]
 
 
 # Captured from the unmodified session detail of the fixture above.
@@ -292,4 +292,3 @@ ORIENTATION = (
     "Last Booley call: sim · 5m ago\n"
     "Session key: codex:00"
 )
-ROW_KEYS = ["Lint top clean", "Sim fifo passes", 'job:["/jobs", "one"]', "call:0"]

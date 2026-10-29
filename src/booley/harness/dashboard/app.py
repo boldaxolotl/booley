@@ -92,7 +92,7 @@ SEMANTIC_STYLE = {
 
 
 UNMOUNTED_LIST_WIDTH = 160
-# From this terminal width the detail (Jobs window) or preview (Sessions window) sits beside the list.
+# Width from which a detail (Jobs) or preview (Sessions) sits beside the list.
 WIDE_TERMINAL = 120
 NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client calls Booley."
 # Views that replace the list with one full-width detail.
