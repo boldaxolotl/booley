@@ -1453,10 +1453,14 @@ replacement must differ, and every proposal must remain a single source edit.
         attempt: int,
     ) -> tuple[list[MutationSpec], float]:
         """Invoke the Mutation Tester Specialist.  Returns (parsed_specs, elapsed_s)."""
+        from booley.config.settings import get_agent_settings
+
         start = time.monotonic()
         params = AgentCallParams(
             prompt=prompt,
             model=self._resolve_model(),
+            # Only the gateway pin sets an effort here; otherwise Codex's own default.
+            reasoning_effort=get_agent_settings().effort_pin,
             cwd=self.args.work_dir,
             allowed_agent_capabilities=_CREATOR_TOOLS,
             system_prompt=None,

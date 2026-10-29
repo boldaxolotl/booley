@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 
+from booley.config.gateway import GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.harness import codex_chat
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
@@ -49,6 +50,9 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         booley_dir = resolve_checkout_booley_dir(project_root)
         load_agent_settings(project_root, booley_dir=booley_dir)
         provider = get_agent_settings().provider
+    except GatewayConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     except (BackendConfigError, FileNotFoundError) as exc:
         print(f"ERROR: could not resolve the Project's agent provider: {exc}", file=sys.stderr)
         return 2

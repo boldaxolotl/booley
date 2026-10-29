@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from booley.config.gateway import GATEWAY_AUTH
+from booley.config.gateway import GATEWAY_AUTH, GatewayModelPin, gateway_model_pin_from_env
 from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.config_paths import resolve_toml
@@ -161,6 +161,10 @@ class AgentSettings:
     provider: str = _DEFAULT_PROVIDER
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     jobs: SlotCaps = field(default_factory=SlotCaps)
+    # Gateway-only pins (BOOLEY_GATEWAY_MODEL / _EFFORT): override every tier,
+    # role pin and floor / every tier effort. None = no pin.
+    model_pin: str | None = None
+    effort_pin: str | None = None
 
     def __post_init__(self) -> None:
         """Freeze caller-owned mappings as part of the validated value object."""
@@ -168,6 +172,8 @@ class AgentSettings:
         object.__setattr__(self, "role_models", MappingProxyType(dict(self.role_models)))
 
     def model_for_tier(self, tier: str) -> str:
+        if self.model_pin:
+            return self.model_pin
         return self.tier_models.get(tier, self.tier_models["standard"])
 
     def model_for_role(self, role: str, tier: str) -> str:
@@ -182,6 +188,8 @@ class AgentSettings:
         floor: the floor guards Booley's own tier defaults, not a choice the
         user wrote down.
         """
+        if self.model_pin:
+            return self.model_pin
         pinned = self.role_models.get(role)
         if pinned is None:
             return self.model_for_tier(tier)
@@ -189,6 +197,8 @@ class AgentSettings:
 
     def effort_for_tier(self, tier: str) -> str | None:
         """Resolve reasoning effort for a tier. None = use provider default."""
+        if self.effort_pin:
+            return self.effort_pin
         provider_effort = _PROVIDER_TIER_EFFORT.get(self.provider, {})
         return provider_effort.get(tier)
 
@@ -210,6 +220,13 @@ def _resolve_tier_models(provider: str, overrides: dict[str, str] | None) -> dic
     return tiers
 
 
+def _gateway_pin(auth: str, provider: str) -> GatewayModelPin:
+    """The env model/effort pin; empty unless the gateway policy drives Codex."""
+    if auth == GATEWAY_AUTH and provider == "codex":
+        return gateway_model_pin_from_env()
+    return GatewayModelPin()
+
+
 def _build_agent_settings(
     provider: str,
     auth: str,
@@ -217,11 +234,14 @@ def _build_agent_settings(
     role_models: dict[str, str] | None = None,
 ) -> AgentSettings:
     """Assemble validated settings for a resolved provider and auth mode."""
+    pin = _gateway_pin(auth, provider)
     return AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
         role_models=dict(role_models or {}),
         provider=provider,
         auth=auth,
+        model_pin=pin.model,
+        effort_pin=pin.effort,
     )
 
 
@@ -456,6 +476,7 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
         # Env-only policy: it has no toml home, so it overrides the toml value.
         auth = GATEWAY_AUTH
 
+    pin = _gateway_pin(auth, provider)
     _agent_settings = AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
         role_models=role_models,
@@ -463,6 +484,8 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
         provider=provider,
         sandbox=sandbox_cfg,
         jobs=jobs_cfg,
+        model_pin=pin.model,
+        effort_pin=pin.effort,
     )
 
     return _agent_settings

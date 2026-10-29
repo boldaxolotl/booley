@@ -54,7 +54,10 @@ from booley.audit.doctor_waivers import (
 )
 from booley.config.gateway import (
     GATEWAY_AUTH,
+    GATEWAY_EFFORT_ENV,
+    GATEWAY_MODEL_ENV,
     GatewayConfigError,
+    gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
 from booley.config.jobs import parse_caps
@@ -2569,6 +2572,7 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
     _warn_ignored_gateway_handoff(reporter)
+    _check_gateway_model_pin(auth_policy, provider, reporter)
     if auth_policy == GATEWAY_AUTH:
         _check_gateway_auth(provider, reporter)
         return
@@ -2618,6 +2622,31 @@ def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
                 "BOOLEY_PRIMARY_AUTH=gateway is honored only inside a Sandbox that sets it "
                 "(for example a Codespace); Booley-issued Sandboxes use booley.toml",
             )
+        )
+
+
+def _check_gateway_model_pin(auth_policy: str, provider: str, reporter: _Reporter) -> None:
+    """FAIL an invalid gateway model/effort pin; NOTE pin variables set where they are ignored.
+
+    The pin applies only under the gateway policy with the Codex provider, as in
+    ``config.agent._gateway_pin``. A valid pin prints nothing (the gateway check
+    stays one PASS). Values are never printed.
+    """
+    if auth_policy == GATEWAY_AUTH and provider == auth_token.APP_CODEX:
+        try:
+            gateway_model_pin_from_env()
+        except GatewayConfigError as exc:
+            reporter.fail_(str(exc), check_id="agent.credential-policy", subject=provider)
+        return
+    ignored = [
+        name
+        for name in (GATEWAY_MODEL_ENV, GATEWAY_EFFORT_ENV)
+        if (os.environ.get(name) or "").strip()
+    ]
+    if ignored:
+        reporter.note_(
+            f"{' and '.join(ignored)} ignored: only BOOLEY_PRIMARY_AUTH=gateway "
+            "with the Codex provider inside a Sandbox applies them"
         )
 
 
