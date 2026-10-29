@@ -649,15 +649,31 @@ class SlotStore:
 
     def _rename_entry(self, source: Path, target: Path) -> bool:
         """Promote an entry through transient Windows sharing violations."""
+        return self._retry_entry_io(lambda: source.rename(target))
+
+    def _retry_entry_io(
+        self,
+        operation: Callable[[], object],
+        *,
+        on_exhausted: Callable[[], None] | None = None,
+    ) -> bool:
+        """Run *operation*, retrying any ``PermissionError`` within the entry-I/O bound.
+
+        True on success; False on any other ``OSError``, or when every attempt
+        was denied (then *on_exhausted* runs, e.g. to log).
+        """
         for attempt in range(_ENTRY_IO_ATTEMPTS):
             try:
-                source.rename(target)
-                return True
+                operation()
             except PermissionError:
                 if attempt + 1 < _ENTRY_IO_ATTEMPTS:
                     self._sleep(_ENTRY_IO_RETRY_SECONDS)
             except OSError:
                 return False
+            else:
+                return True
+        if on_exhausted is not None:
+            on_exhausted()
         return False
 
     def _token_payload(self, token: SlotToken) -> dict:
@@ -915,17 +931,12 @@ class SlotStore:
 
     def _unlink_entry(self, path: Path) -> bool:
         """Remove an entry, retrying transient Windows sharing violations."""
-        for attempt in range(_ENTRY_IO_ATTEMPTS):
-            try:
-                path.unlink(missing_ok=True)
-                return True
-            except PermissionError:
-                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
-                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
-            except OSError:
-                return False
-        logger.warning("Could not remove slot entry after retries: %s", path.name)
-        return False
+        return self._retry_entry_io(
+            lambda: path.unlink(missing_ok=True),
+            on_exhausted=lambda: logger.warning(
+                "Could not remove slot entry after retries: %s", path.name
+            ),
+        )
 
     def _rank(self, token: SlotToken) -> int:
         """Position of *token* in the total scheduling order of live entries."""

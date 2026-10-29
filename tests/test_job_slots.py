@@ -492,6 +492,107 @@ class TestSingleProcess:
         assert attempts == 3
         assert not tok.path.exists()
 
+    @staticmethod
+    def _spy_on_entry_io_retry(store, monkeypatch) -> list[dict]:
+        """Wrap the shared retry helper; record each invocation's callback, how
+        often that callback ran, the ``Path.rename``/``Path.unlink`` calls made
+        inside it, and its result."""
+        real_retry = store._retry_entry_io
+        invocations: list[dict] = []
+        current: list[dict] = []
+
+        def spy(operation, *, on_exhausted=None):
+            record = {
+                "on_exhausted": on_exhausted,
+                "exhausted_runs": 0,
+                "calls": [],
+                "result": None,
+            }
+
+            def counted_on_exhausted():
+                record["exhausted_runs"] += 1
+                on_exhausted()
+
+            invocations.append(record)
+            current.append(record)
+            try:
+                record["result"] = real_retry(
+                    operation,
+                    on_exhausted=None if on_exhausted is None else counted_on_exhausted,
+                )
+            finally:
+                current.pop()
+            return record["result"]
+
+        def recording(name):
+            original = getattr(Path, name)
+
+            def wrapper(path, *args, **kwargs):
+                if current:
+                    current[-1]["calls"].append((name, path))
+                return original(path, *args, **kwargs)
+
+            return wrapper
+
+        monkeypatch.setattr(store, "_retry_entry_io", spy)
+        monkeypatch.setattr(Path, "rename", recording("rename"))
+        monkeypatch.setattr(Path, "unlink", recording("unlink"))
+        return invocations
+
+    def test_rename_and_unlink_share_entry_io_retry(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        invocations = self._spy_on_entry_io_retry(store, monkeypatch)
+        tok = store.submit(CLASS_HEAVY, pid=100)
+        waiter_path = tok.path
+        assert store.refresh(tok).state == HOLDING
+        holder_path = tok.path
+        store.release(tok)
+
+        renames = [i for i in invocations if ("rename", waiter_path) in i["calls"]]
+        unlinks = [i for i in invocations if ("unlink", holder_path) in i["calls"]]
+        assert len(renames) == 1
+        assert renames[0]["on_exhausted"] is None
+        assert len(unlinks) == 1
+        assert unlinks[0]["on_exhausted"] is not None
+
+    def test_unlink_warns_once_when_permission_error_outlasts_retries(
+        self, root, world, monkeypatch, caplog
+    ):
+        spawn(world, 100)
+        store = make_store(root, world)
+        tok = store.submit(CLASS_HEAVY, pid=100)
+        original_unlink = Path.unlink
+
+        def denied_unlink(path, *args, **kwargs):
+            if path == tok.path:
+                raise PermissionError("file is permanently in use")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", denied_unlink)
+        invocations = self._spy_on_entry_io_retry(store, monkeypatch)
+        with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
+            store.release(tok)
+
+        entry_unlinks = [i for i in invocations if ("unlink", tok.path) in i["calls"]]
+        assert tok.path.exists()
+        assert [i["result"] for i in entry_unlinks] == [False]
+        assert [i["exhausted_runs"] for i in entry_unlinks] == [1]
+        assert [r.getMessage() for r in caplog.records] == [
+            f"Could not remove slot entry after retries: {tok.path.name}"
+        ]
+
+    def test_undecodable_entry_reads_as_absent(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        execution_id = "b" * 32
+        tok = store.submit(CLASS_HEAVY, pid=100, execution_id=execution_id)
+        assert store.execution_token_absent(CLASS_HEAVY, execution_id) is False
+        tok.path.write_bytes(b"\xff")
+
+        assert store.snapshot(CLASS_HEAVY) == ([], [])
+        assert store.execution_token_absent(CLASS_HEAVY, execution_id) is True
+
     def test_cap_bounds_holders(self, root, world):
         spawn(world, 100)
         store = make_store(root, world, SlotCaps(max_light=3))
