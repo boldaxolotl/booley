@@ -22,7 +22,13 @@ from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import RecentCall
 from booley.runtime.job_records import JobRecord
-from tests.harness.test_dashboard import STAMP, _header_health, snapshot
+from tests.harness.test_dashboard import (
+    STAMP,
+    _header_health,
+    choose_in_bar,
+    open_session,
+    snapshot,
+)
 
 # Goal keys in the order the session list must show them (failing first).
 GOAL_ORDER = ["g-failing", "g-recheck", "g-notrun", "g-checking", "g-passing"]
@@ -132,14 +138,14 @@ async def open_row(app, pilot, row):
 # name -> (starts in the Jobs window, how to reach the depth, view expected there)
 DEPTHS = {
     "sessions-overview": (False, (), "overview"),
-    "session": (False, ("1",), "session"),
-    "goal": (False, ("1", "enter"), "goal"),
-    "proposal": (False, ("1", ("open", PROPOSAL_ROW)), "proposal"),
-    "job-from-session": (False, ("1", ("open", JOB_ROW)), "job"),
-    "sessions-help": (False, ("?",), "help"),
+    "session": (False, (("session", "codex:00"),), "session"),
+    "goal": (False, (("session", "codex:00"), "enter"), "goal"),
+    "proposal": (False, (("session", "codex:00"), ("open", PROPOSAL_ROW)), "proposal"),
+    "job-from-session": (False, (("session", "codex:00"), ("open", JOB_ROW)), "job"),
+    "sessions-help": (False, (("help",),), "help"),
     "jobs-list": (True, (), "jobs"),
     "jobs-job": (True, ("enter",), "job"),
-    "jobs-help": (True, ("?",), "help"),
+    "jobs-help": (True, (("help",),), "help"),
 }
 
 
@@ -153,7 +159,12 @@ async def _switch_from_depth(depth):
             await pilot.press("right")
             assert app.navigation.view == "jobs", depth
         for step in steps:
-            if isinstance(step, tuple):
+            if isinstance(step, tuple) and step[0] == "session":
+                await open_session(app, pilot, step[1])
+            elif isinstance(step, tuple) and step[0] == "help":
+                await choose_in_bar(app, pilot, "Help")
+                await pilot.press("down")
+            elif isinstance(step, tuple):
                 await open_row(app, pilot, step[1])
             else:
                 await pilot.press(step)
@@ -193,7 +204,8 @@ async def test_switching_back_restores_detail_selection_and_scroll():
         assert scroll > 0
 
         await pilot.press("left")
-        await pilot.press("1", "enter")
+        await open_session(app, pilot, "codex:00")
+        await pilot.press("enter")
         await pilot.pause()
         assert app.navigation.view == "goal"
         goal = app.navigation
@@ -230,7 +242,8 @@ async def test_escape_goes_back_within_window_and_stops_at_top():
     current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 24)) as pilot:
-        await pilot.press("1", "enter")
+        await open_session(app, pilot, "codex:00")
+        await pilot.press("enter")
         assert app.navigation.view == "goal"
         await pilot.press("escape")
         assert app.navigation.view == "session"
@@ -330,7 +343,8 @@ async def test_up_in_detail_scrolls_then_focuses_top_bar():
     current = world(artifacts=40)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 14)) as pilot:
-        await pilot.press("1", "enter")
+        await open_session(app, pilot, "codex:00")
+        await pilot.press("enter")
         await pilot.pause()
         assert app.navigation.view == "goal"
         aside = app.query_one("#aside")
@@ -408,8 +422,7 @@ async def test_session_goals_single_column_status_order_and_enter_opens_evidence
     current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(180, 30)) as pilot:
-        await pilot.press("1")
-        await pilot.pause()
+        await open_session(app, pilot, "codex:00")
         assert len(table_of(app).columns) == 1
         assert app.row_keys[: len(GOAL_ORDER)] == GOAL_ORDER
         table_of(app).move_cursor(row=0, animate=False)
@@ -433,13 +446,12 @@ async def test_list_header_is_set_per_view():
         # The overview header is the aligned column line.
         assert overview.split()[:3] == ["Session", "Mode", "Branch"]
         assert overview.split()[-1] == "Activity"
-        await pilot.press("1")
-        await pilot.pause()
+        await open_session(app, pilot, "codex:00")
         assert column_label(app) == "Goals and activity"
         await pilot.press("escape")
         await pilot.pause()
         assert column_label(app) == overview
-        await pilot.press("j")
+        await pilot.press("right")
         await pilot.pause()
         assert [str(c.label) for c in table_of(app).ordered_columns] == [
             "Job",
@@ -455,49 +467,58 @@ async def test_list_header_is_set_per_view():
 # --- AC8 ---------------------------------------------------------------------
 
 
+async def _choose_filters_and_cycle_owner(app, pilot):
+    await choose_in_bar(app, pilot, "Finished")
+    assert (app.navigation.session, app.navigation.job_filter) == (None, "finished")
+    await choose_in_bar(app, pilot, "All")
+    assert (app.navigation.session, app.navigation.job_filter) == (None, "all")
+    # The owner chip cycles All sessions, S1, S2, Standalone and back to All sessions.
+    for _ in range(4):
+        await choose_in_bar(app, pilot, "Owner")
+    assert (app.navigation.session, app.navigation.job_filter) == (None, "all")
+
+
 @pytest.mark.asyncio
-async def test_shortcuts_reach_same_content_in_matching_window():
+async def test_arrows_and_top_bar_reach_same_content_in_matching_window():
     current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 24)) as pilot:
-        await pilot.press("down")  # remember the second overview row
-        await pilot.press("1", "j")
+        # Opening a session moves the overview cursor onto it; the overview remembers it.
+        await open_session(app, pilot, "codex:01")
+        await pilot.press("right")
         nav = app.navigation
         # The Jobs window opens on all sessions, not on the session it came from.
         assert (nav.view, nav.session, nav.job_filter) == ("jobs", None, "running")
         assert "two" not in job_ids(app)
         await pilot.press("left")
-        assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
+        assert (app.navigation.view, app.navigation.session) == ("session", "codex:01")
         await pilot.press("right")
         assert app.navigation.view == "jobs"
 
-        await pilot.press("r")
-        assert (app.navigation.session, app.navigation.job_filter) == (None, "finished")
-        await pilot.press("a")
-        assert (app.navigation.session, app.navigation.job_filter) == (None, "all")
-        await pilot.press("u")
-        assert (app.navigation.session, app.navigation.job_filter) == (None, "all")
-        await pilot.press("r")
+        await _choose_filters_and_cycle_owner(app, pilot)
+        await choose_in_bar(app, pilot, "Finished")
         assert job_ids(app) == ["two"]
-        await pilot.press("j")
+        await choose_in_bar(app, pilot, "Running")
         assert app.navigation.job_filter == "running"
         assert "two" not in job_ids(app)  # the finished Job does not stay pinned
 
-        await pilot.press("s")
+        await pilot.press("down", "left", "escape")
         await pilot.pause()
         assert app.navigation.view == "overview"
         assert app._selected_key() == "codex:01"
         await pilot.press("right")
         assert app.navigation.view == "jobs"
 
-        await pilot.press("?")
+        await choose_in_bar(app, pilot, "Help")
+        await pilot.press("down")
         assert app.navigation.view == "help"
         await pilot.press("left", "right")
         assert app.navigation.view == "help"
         await pilot.press("escape")
         assert app.navigation.view == "jobs"
 
-        await pilot.press("1")
+        await pilot.press("left")
+        await open_session(app, pilot, "codex:00")
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
         await pilot.press("right")
         assert app.navigation.view == "jobs"
@@ -525,8 +546,8 @@ async def test_refresh_tick_keeps_focus_where_the_user_put_it():
 
 
 @pytest.mark.asyncio
-async def test_job_shortcut_after_scrolling_resets_cursor_into_view():
-    """j after scrolling the Jobs list starts at the top, not at the old offset."""
+async def test_filter_choice_after_scrolling_resets_cursor_into_view():
+    """Choosing another filter after scrolling the Jobs list starts at the top."""
     current = world()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 12)) as pilot:
@@ -535,9 +556,11 @@ async def test_job_shortcut_after_scrolling_resets_cursor_into_view():
         table.move_cursor(row=35, animate=False)
         await pilot.pause()
         assert table.scroll_y > 0
-        await pilot.press("left")
-        await pilot.press("j")
+        # Cursor to the first row without scrolling, so `up` reaches the top bar.
+        table.move_cursor(row=0, scroll=False)
         await pilot.pause()
+        # The Finished list is one row, so it fits on one screen at any offset.
+        await choose_in_bar(app, pilot, "Finished")
         assert app.navigation.view == "jobs"
-        assert table.cursor_row == 0
+        assert app.navigation.job_filter == "finished"
         assert table.scroll_y == 0

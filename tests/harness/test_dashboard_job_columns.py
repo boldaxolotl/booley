@@ -82,8 +82,11 @@ def headers(app):
 
 
 async def open_all_jobs(app, pilot):
-    """Press `a`, then pause twice so the refit pass after layout has run."""
-    await pilot.press("a")
+    """Show the Jobs window's All list, then pause twice so the refit pass has run.
+
+    Bar items from the Jobs tab: Running, Finished, All are one, two and three steps right.
+    """
+    await pilot.press("right", "up", "right", "right", "right", "enter", "down")
     await pilot.pause()
     await pilot.pause()
 
@@ -164,7 +167,7 @@ async def test_headers_follow_overview_jobs_overview():
         await open_all_jobs(app, pilot)
         assert headers(app) == HEADERS
         assert not any("Sessions" in label for label in headers(app))
-        await pilot.press("s")
+        await pilot.press("left")  # the overview is the Sessions window's top level here
         await pilot.pause()
         assert [str(c.label) for c in app.query_one(DataTable).ordered_columns] == overview
         await pilot.press("right")
@@ -241,8 +244,7 @@ async def test_jobs_selection_and_scroll_survive_wide_window_round_trip():
     current = world(*running_filler(45))
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
-        await pilot.press("a")
-        await pilot.pause()
+        await open_all_jobs(app, pilot)
         table = app.query_one(DataTable)
         table.move_cursor(row=35, animate=False)
         await pilot.pause()

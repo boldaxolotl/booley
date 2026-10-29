@@ -20,13 +20,14 @@ from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import DataTable, Static
 
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard import sessions
+from booley.harness.dashboard.footer import footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
@@ -55,19 +56,22 @@ FINISHED_JOBS = 50
 # An orphaned process is known dead even though its Job record never finalized.
 _REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 HELP = (
-    "1-9 stable session shortcuts · arrows select rows\n"
-    "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
+    "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
+    "←→ switch between the Sessions and Jobs windows; each keeps its place\n"
+    "↑ on the first row (or in an empty list) reaches the top bar: ←→ choose, Enter apply,"
+    " ↓ or Esc back\n"
+    "The top bar holds the window tabs and Help; in the Jobs window also its filters:\n"
+    "Running, Finished (newest 50) and All, and the owner"
+    " (Enter cycles All sessions, each session, Standalone)\n"
+    "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
+    "and keeps the Running / Finished / All choice\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
-    "←→ Sessions / Jobs · ↑ on the first row: top bar (←→ choose, Enter apply, ↓ or Esc back)\n"
-    "Jobs window top bar: Running / Finished / All and the owner (Enter cycles all sessions,\n"
-    "each session, standalone); the Jobs tab counts unfinished Jobs\n"
-    "Esc back · j Running Jobs · r Finished Jobs · a All Jobs\n"
-    "s Sessions · u Jobs from all sessions · ? help · q quit\n"
-    "The Jobs window always opens on all sessions; the Running / Finished / All choice is kept\n"
+    "Booley call rows are informational; Enter does not open them\n"
+    "The footer shows the keys that apply where the cursor is\n"
     "Click a report, artifact or evidence path to open it in the editor\n"
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
-    "Navigation is read-only; approvals remain in chat."
+    "The Dashboard is read-only; approvals remain in chat."
 )
 
 _ACCENT = f"color({PALETTE_DODGER_BLUE})"
@@ -95,6 +99,8 @@ UNMOUNTED_LIST_WIDTH = 160
 NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client calls Booley."
 # Views that replace the list with one full-width detail.
 DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal"})
+# Terminal columns from which the Jobs list shows its selected Job's detail beside it.
+WIDE_COLUMNS = 120
 # Jobs list columns, left to right. Crit repeats the detail's Criterion line as a mark.
 JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Crit", "Elapsed")
 _TARGET, _RESULT = JOB_COLUMNS.index("Target"), JOB_COLUMNS.index("Result")
@@ -118,7 +124,7 @@ _HANDLE_NUMBER = re.compile(r"S(\d+)")
 
 @dataclass(frozen=True)
 class Navigation:
-    """A reversible view selection; shortcuts never invoke execution machinery.
+    """A reversible view selection; navigation never invokes execution machinery.
 
     In the Jobs window ``session`` is the owner filter: ``None`` lists every
     owner, a session key lists that session's Jobs and ``Owner.STANDALONE``
@@ -554,14 +560,9 @@ class DashboardApp(App[None]):
 
     TITLE = "Booley Dashboard"
     BINDINGS: ClassVar = [
-        ("q", "quit", "Quit"),
-        ("escape", "back", "Back"),
-        ("?", "help", "Help"),
-        ("j", "jobs('running')", "Running Jobs"),
-        ("r", "jobs('finished')", "Finished Jobs"),
-        ("a", "all_jobs", "All Jobs"),
-        ("s", "all_sessions", "Sessions"),
-        ("u", "all_job_owners", "Jobs: all sessions"),
+        # Hidden: the footer lists only arrows, Enter and Esc.
+        Binding("q", "quit", show=False),
+        Binding("escape", "back", show=False),
         # Priority: the focused DataTable binds left/right/up itself.
         Binding("left", "switch_window('sessions')", show=False, priority=True),
         Binding("right", "switch_window('jobs')", show=False, priority=True),
@@ -577,6 +578,7 @@ class DashboardApp(App[None]):
     #list { width: 1fr; }
     #aside { width: 1fr; display: none; padding: 1; }
     #empty { height: auto; }
+    #footer { dock: bottom; height: 1; color: $text-muted; }
     """
 
     def __init__(
@@ -594,7 +596,6 @@ class DashboardApp(App[None]):
             "jobs": [Navigation("jobs", None, "running")],
         }
         self.window = "sessions"
-        self.shortcuts: dict[str, int] = {}
         self._known_sessions: dict[str, SessionRow] = {}
         self.row_keys: list[str] = []
         self._read_task: asyncio.Task[DashboardSnapshot] | None = None
@@ -621,7 +622,7 @@ class DashboardApp(App[None]):
             yield SessionList(id="list", cursor_type="row")
             with VerticalScroll(id="aside"):
                 yield Static(id="detail", markup=False)
-        yield Footer()
+        yield Static(id="footer", markup=False)
 
     async def on_mount(self) -> None:
         await self.refresh_snapshot()
@@ -635,7 +636,7 @@ class DashboardApp(App[None]):
         try:
             self.snapshot = await asyncio.wait_for(asyncio.shield(self._read_task), READ_BUDGET)
             self._read_task = None
-            self._assign_shortcuts()
+            self._remember_sessions()
             if self._notices() is not None:
                 self.render_snapshot()
         except TimeoutError:
@@ -667,22 +668,11 @@ class DashboardApp(App[None]):
             )
             notices.display = True
 
-    def _assign_shortcuts(self) -> None:
-        connected = {row.attribution.key for row in self.snapshot.sessions}
+    def _remember_sessions(self) -> None:
+        """Cache connected sessions, so one that disconnects can still be described."""
         if len(self._known_sessions) > 4096:
             self._known_sessions.clear()
         self._known_sessions.update({row.attribution.key: row for row in self.snapshot.sessions})
-        self.shortcuts = {
-            key: number for key, number in self.shortcuts.items() if key in connected
-        }
-        for key in sorted(connected):
-            if key not in self.shortcuts:
-                free = next(
-                    (number for number in range(1, 10) if number not in self.shortcuts.values()),
-                    None,
-                )
-                if free is not None:
-                    self.shortcuts[key] = free
 
     @property
     def navigation(self) -> Navigation:
@@ -724,10 +714,9 @@ class DashboardApp(App[None]):
         self._show()
 
     def _navigate(self, window: str, *entries: Navigation) -> None:
-        """Show a window with a fresh history; Sessions keeps its overview as the root."""
+        """Show a window with a fresh history."""
         self._remember()
-        root = self.windows[window][:1] if window == "sessions" else []
-        self.windows[window] = [*root, *entries]
+        self.windows[window] = [*entries]
         self.window = window
         self._show()
 
@@ -791,7 +780,7 @@ class DashboardApp(App[None]):
             self._show()
 
     def action_help(self) -> None:
-        """Display the available read-only shortcuts."""
+        """Display the Dashboard's keys and views; reached from the top bar's Help item."""
         if self.navigation.view != "help":
             self._push(Navigation("help", self.navigation.session, self.navigation.job_filter))
 
@@ -809,41 +798,13 @@ class DashboardApp(App[None]):
         """Show the Jobs list with a new status or owner filter and the other one kept.
 
         A filter chosen while a narrow Job detail is open returns to the list.
-        Reaching the Jobs window from another one starts on All sessions.
         """
-        if self.window != "jobs":
-            self._reset_jobs_owner()
         self._navigate("jobs", replace(self._jobs_root(), selected="", **changes))
-
-    def action_jobs(self, job_filter: str) -> None:
-        """Show Jobs with this status filter; from another window the owner is All sessions."""
-        self._set_jobs_filter(job_filter=job_filter)
-
-    def action_all_jobs(self) -> None:
-        """Show retained unfinished and finished Jobs in one list."""
-        self._set_jobs_filter(job_filter="all")
-
-    def action_all_sessions(self) -> None:
-        """Return to the session overview from any view."""
-        self._navigate("sessions")
-
-    def action_all_job_owners(self) -> None:
-        """Remove the owner filter in the Jobs window; its status filter stays."""
-        self._set_jobs_filter(session=None)
 
     def action_open_path(self, path: str) -> None:
         """Open a published path in the editor; a failure is reported, never raised."""
         if hint := self.opener(path):
             self.notify(hint, severity="warning")
-
-    def on_key(self, event: events.Key) -> None:
-        if event.key in "123456789" and len(event.key) == 1:
-            key = next(
-                (key for key, number in self.shortcuts.items() if number == int(event.key)), None
-            )
-            if key is not None:
-                self._navigate("sessions", Navigation("session", key))
-                event.stop()
 
     def on_resize(self, _event: events.Resize) -> None:
         if self.is_mounted and self.query("#list"):
@@ -1170,7 +1131,6 @@ class DashboardApp(App[None]):
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
-            shortcut=str(self.shortcuts.get(facts.key, "")),
             mode=mode,
             branch=branch,
             work_dir=checkout,
@@ -1257,6 +1217,7 @@ class DashboardApp(App[None]):
             self._rows = rows
         self.row_keys = keys
         self._render_detail()
+        self._update_footer()
         # The list's width settles only after layout (a window switch, a scrollbar).
         self.call_after_refresh(self._refit_overview)
         if job_widths:
@@ -1390,7 +1351,7 @@ class DashboardApp(App[None]):
         aside = self.query_one("#aside", VerticalScroll)
         detail, paths = self._detail_content()
         dedicated = nav.view in DEDICATED_VIEWS
-        aside.display = dedicated or (nav.view == "jobs" and self.size.width >= 120)
+        aside.display = dedicated or (nav.view == "jobs" and self.size.width >= WIDE_COLUMNS)
         self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
         self.query_one("#detail", Static).update(linked_text(detail, paths))
@@ -1433,30 +1394,66 @@ class DashboardApp(App[None]):
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         self.navigation = replace(self.navigation, selected=self._selected_key())
         self._render_detail()
+        self._update_footer()
+
+    def on_descendant_focus(self, _event: events.DescendantFocus) -> None:
+        """The footer differs while the top bar holds the keyboard."""
+        self._update_footer()
+
+    def _update_footer(self) -> None:
+        """Show only the keys that apply where the cursor is."""
+        for footer in self.query("#footer"):
+            assert isinstance(footer, Static)
+            footer.update(
+                footer_hints(
+                    top_bar=isinstance(self.focused, TopBar),
+                    enter_opens=self._enter_target() is not None,
+                    jobs_list=self.navigation.view == "jobs",
+                    nested=len(self.windows[self.window]) > 1,
+                )
+            )
 
     def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
         self._open_selected()
 
-    def _open_selected(self) -> None:
+    def _enter_target(self) -> Navigation | None:
+        """The view Enter opens on the selected row, or None when Enter does nothing.
+
+        The footer's open hint and Enter itself both read this. It checks the
+        row list rather than ``_selected_key()``, which falls back to the stale
+        saved selection when the list is empty or the cursor is past its end.
+        """
+        if self.query_one(DataTable).cursor_row >= len(self.row_keys):
+            return None
         key = self._selected_key()
         if not key:
-            return
+            return None
         nav = self.navigation
+        target = None
         if nav.view == "overview":
-            if key.startswith("job:"):
-                self._push(Navigation("job", None, nav.job_filter, key.removeprefix("job:")))
-            else:
-                self._push(Navigation("session", key))
+            target = (
+                Navigation("job", None, nav.job_filter, key.removeprefix("job:"))
+                if key.startswith("job:")
+                else Navigation("session", key)
+            )
         elif nav.view == "session":
-            if key.startswith("job:"):
-                self._push(
-                    Navigation("job", nav.session, nav.job_filter, key.removeprefix("job:"))
-                )
-            elif key.startswith("proposal:"):
-                self._push(
-                    Navigation("proposal", nav.session, selected=key.removeprefix("proposal:"))
-                )
-            elif not key.startswith("call:"):
-                self._push(Navigation("goal", nav.session, selected=key))
-        elif nav.view == "jobs" and self.size.width < 120:
-            self._push(Navigation("job", nav.session, nav.job_filter, key))
+            target = self._session_row_target(nav, key)
+        elif nav.view == "jobs" and self.size.width < WIDE_COLUMNS:
+            target = Navigation("job", nav.session, nav.job_filter, key)
+        return target
+
+    @staticmethod
+    def _session_row_target(nav: Navigation, key: str) -> Navigation | None:
+        """What Enter opens on a row of a session detail; Booley call rows open nothing."""
+        if key.startswith("job:"):
+            return Navigation("job", nav.session, nav.job_filter, key.removeprefix("job:"))
+        if key.startswith("proposal:"):
+            return Navigation("proposal", nav.session, selected=key.removeprefix("proposal:"))
+        if key.startswith("call:"):
+            return None
+        return Navigation("goal", nav.session, selected=key)
+
+    def _open_selected(self) -> None:
+        target = self._enter_target()
+        if target is not None:
+            self._push(target)
