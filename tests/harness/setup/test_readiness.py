@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.harness.setup import readiness
+from booley.harness.setup.project_origin import record_scaffold_origin
+from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from tests.diagnostic_helpers import (
     _Rec,
@@ -181,6 +184,117 @@ class TestStealthCoresCheck:
 
         assert rec.fails() == []
         assert (root / ".booley-projected-s.core").is_file()
+
+
+_SCAFFOLD_CHECK = "stealth.scaffold-core-tracked"
+
+
+def _commit_all(root: Path) -> None:
+    for args in (["init", "-q"], ["add", "-f", "."], ["commit", "-qm", "scaffold"]):
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+
+def _scaffold_core_findings(root: Path):
+    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": True}}, {}, "")
+    report = readiness.check_stealth_cores(audit, mode=readiness.ReadinessMode.INSPECT)
+    return [f for f in report.findings if f.check_id == _SCAFFOLD_CHECK]
+
+
+def _write_scaffold(root: Path) -> None:
+    choices = ScaffoldChoices("my_ip", "verilator", "sv", "verilator", False, None)
+    for rel, content in scaffold_files(choices).items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    record_scaffold_origin(root / ".booley/booley.toml")
+
+
+class TestScaffoldRootCoresTracked:
+    """A scaffold Project switched to Stealth Mode with root cores still tracked."""
+
+    def test_tracked_scaffold_cores_warn_in_stealth(self, tmp_path: Path, monkeypatch):
+        _write_scaffold(tmp_path)
+        _commit_all(tmp_path)
+        # "Switched to Stealth Mode" after the cores were committed.
+        toml = tmp_path / ".booley/booley.toml"
+        toml.write_text(
+            toml.read_text(encoding="utf-8").replace("enabled = false", "enabled = true"),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path.parent)  # relative git paths must not read from cwd
+
+        findings = _scaffold_core_findings(tmp_path)
+
+        assert {f.subject for f in findings} == {"my_ip.core", "verif/booley_doctor_selftest.core"}
+        assert all(".booley/cores/" in f.fix for f in findings)
+        assert all(f.subject in f.message for f in findings)
+
+    @pytest.mark.parametrize("case", ["native-core", "port-origin", "projection"])
+    def test_native_root_core_not_flagged(self, tmp_path: Path, case: str):
+        _write_scaffold(tmp_path)
+        for rel in ("my_ip.core", "verif/booley_doctor_selftest.core"):
+            (tmp_path / rel).unlink()
+        scaffold_text = "CAPI=2:\nname: ::my_ip:0\ndescription: {}\n"
+        if case == "native-core":
+            (tmp_path / "ip.core").write_text(scaffold_text.format("A hand-written IP"))
+        elif case == "port-origin":
+            toml = tmp_path / ".booley/booley.toml"
+            toml.write_text(
+                toml.read_text(encoding="utf-8").replace(
+                    "# booley-init-origin: scaffold", "# booley-init-origin: port"
+                ),
+                encoding="utf-8",
+            )
+            (tmp_path / "my_ip.core").write_text(
+                scaffold_text.format("my_ip starter IP (scaffolded by booley init --scaffold)")
+            )
+        else:
+            (tmp_path / ".booley-projected-my_ip.core").write_text(
+                scaffold_text.format("my_ip starter IP (scaffolded by booley init --scaffold)")
+            )
+        _commit_all(tmp_path)
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_no_findings_outside_a_git_repository(self, tmp_path: Path):
+        _write_scaffold(tmp_path)  # never committed: git cannot say what is tracked
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_no_findings_when_git_cannot_run(self, tmp_path: Path, monkeypatch):
+        _write_scaffold(tmp_path)
+        _commit_all(tmp_path)
+
+        def _missing_git(*args, **kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(readiness.subprocess, "run", _missing_git)
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_unreadable_tracked_core_is_left_to_the_core_audit(self, tmp_path: Path):
+        _write_scaffold(tmp_path)
+        (tmp_path / "my_ip.core").write_text("CAPI=2:\nname: [unclosed\n", encoding="utf-8")
+        (tmp_path / "verif/booley_doctor_selftest.core").unlink()
+        _commit_all(tmp_path)
+
+        assert _scaffold_core_findings(tmp_path) == []
+
+    def test_relocated_stealth_core_is_not_flagged(self, tmp_path: Path):
+        _write_scaffold(tmp_path)
+        cores = tmp_path / ".booley/cores"
+        cores.mkdir(parents=True)
+        (tmp_path / "my_ip.core").rename(cores / "my_ip.core")
+        (tmp_path / "verif/booley_doctor_selftest.core").unlink()
+        _commit_all(tmp_path)
+
+        assert _scaffold_core_findings(tmp_path) == []
 
 
 class TestGuidanceVenueNote:

@@ -116,6 +116,13 @@ def test_init_parser_accepts_explicit_agent_selection():
     assert args.auth == "api_key"
 
 
+def test_init_scaffold_stealth_flag():
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["init", "--scaffold", "demo", "--stealth"]).stealth is True
+    assert parser.parse_args(["init", "--scaffold", "demo"]).stealth is False
+
+
 def test_init_parser_accepts_skip_credentials():
     args = tlr._build_parser().parse_args(["init", "--skip-credentials"])
 

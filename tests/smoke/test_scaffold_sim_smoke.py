@@ -46,14 +46,21 @@ def scaffold_native_binary(monkeypatch):
     return binary
 
 
-def _write_project(root: Path) -> None:
-    choices = ScaffoldChoices("wave_counter", "verilator", "sv", "verilator", False, None)
+def _write_project(root: Path, *, stealth: bool = False) -> None:
+    choices = ScaffoldChoices(
+        "wave_counter", "verilator", "sv", "verilator", False, None, stealth=stealth
+    )
     for name, content in scaffold_files(choices).items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+    subprocess.run(["git", "init", "-q"], cwd=root, timeout=10, capture_output=True, check=True)
+    if stealth:
+        # The layout `booley init` leaves behind: the Booley Directory is hidden
+        # from the host repository and FuseSoC skips worktree copies.
+        (root / ".booley/FUSESOC_IGNORE").touch()
+        (root / ".git/info/exclude").write_text("/.booley\n/.booley-projected-*.core\n")
     for args in (
-        ["init", "-q"],
         ["add", "."],
         [
             "-c",
@@ -137,3 +144,28 @@ def _assert_trace(tmp_path, reports, scaffold_native_binary):
             check=True,
         )
         assert json.loads(query.stdout)["data"]["signal_count"] > 0
+
+
+def test_real_stealth_scaffold_simulation(tmp_path, monkeypatch, scaffold_native_binary):
+    """The relocated cores under .booley/cores/ are found and simulated."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    _write_project(tmp_path, stealth=True)
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=tmp_path, capture_output=True, text=True, check=True, timeout=10
+    ).stdout.split()
+    assert not [path for path in tracked if path.endswith(".core")]
+    reports = tmp_path / "reports"
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=tmp_path,
+            trace=True,
+            timeout_ms=60_000,
+            report_dir=reports,
+        )
+    )
+    assert result.exit_code == 0, result.outcome
+    logs = "\n".join(path.read_text() for path in reports.rglob("*run.log"))
+    for index in (0, 1):
+        assert f"tb_wave_counter: test_id={index} finished with 0 error(s)" in logs

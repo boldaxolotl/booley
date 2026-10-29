@@ -56,6 +56,27 @@ LINT_EDA_TOOLS = ("verilator", "verible")
 
 _NAME_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
 
+# The ``description:`` texts only the scaffold authors. Doctor recognises a
+# scaffold-authored core by these (shared, so renderer and recognizer cannot
+# drift), never by path or name.
+_DESIGN_DESCRIPTION = "{name} starter IP (scaffolded by booley init --scaffold)"
+_SELFTEST_DESCRIPTION = "Doctor-only fail-path fixture for {name}"
+_SCAFFOLD_DESCRIPTIONS = tuple(
+    re.compile(re.escape(template).replace(re.escape("{name}"), "[a-z][a-z0-9_]*") + r"\Z")
+    for template in (_DESIGN_DESCRIPTION, _SELFTEST_DESCRIPTION)
+)
+
+# Where a Stealth scaffold puts Booley-authored cores (ADR 0036): the one
+# scanned subtree of the Booley Directory, spelled repository-root-relative.
+_STEALTH_CORE_DIR = ".booley/cores/"
+
+
+def is_scaffold_core_description(description: object) -> bool:
+    """True when *description* is exactly one of the texts the scaffold renders."""
+    return isinstance(description, str) and any(
+        pattern.match(description) for pattern in _SCAFFOLD_DESCRIPTIONS
+    )
+
 
 @dataclass(frozen=True)
 class ScaffoldChoices:
@@ -68,6 +89,7 @@ class ScaffoldChoices:
     asic: bool  # emit asic_synthesize Target
     fpga_part: str | None  # Vivado part → emit fpga Target + XDC; None = skip
     synth_mode: str = "physical"
+    stealth: bool = False  # --stealth: hidden footprint, cores under .booley/cores/
 
 
 class _ScaffoldHostProbe:
@@ -310,6 +332,7 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
         asic=asic,
         fpga_part=fpga_part or None,
         synth_mode=synth_mode,
+        stealth=bool(getattr(args, "stealth", False)),
     )
 
 
@@ -815,7 +838,7 @@ def _core_file(c: ScaffoldChoices) -> str:
     return f"""\
 CAPI=2:
 name: ::{c.name}:0
-description: {c.name} starter IP (scaffolded by booley init --scaffold)
+description: {_DESIGN_DESCRIPTION.format(name=c.name)}
 
 filesets:
   rtl:
@@ -832,15 +855,16 @@ targets:
 def _lint_selftest_core(c: ScaffoldChoices) -> str:
     """Render Doctor's tracked, non-public lint fail-path Target."""
     language_option = _lint_language_option(c)
+    fixture_dir = _STEALTH_CORE_DIR if c.stealth else ""  # root-relative under Stealth
     return f"""\
 CAPI=2:
 name: ::{c.name}_booley_doctor_selftest:0
-description: Doctor-only fail-path fixture for {c.name}
+description: {_SELFTEST_DESCRIPTION.format(name=c.name)}
 
 filesets:
   lint_selftest_bad:
     files:
-      - booley_doctor_selftest/lint_bad.sv: {{file_type: systemVerilogSource}}
+      - {fixture_dir}booley_doctor_selftest/lint_bad.sv: {{file_type: systemVerilogSource}}
 
 targets:
   lint_selftest_bad:
@@ -849,6 +873,24 @@ targets:
     filesets: [lint_selftest_bad]
     toplevel: {c.name}_lint_selftest_bad
 """
+
+
+def _stealth_toml_lines(c: ScaffoldChoices) -> list[str]:
+    """The ``[stealth]`` comment and switch: off by default, on for ``--stealth``."""
+    if c.stealth:
+        return [
+            "# Requested with `--stealth`: Booley-authored cores live under .booley/cores/",
+            "# (outside the RTL repository) and commit messages are scrubbed.",
+            "enabled = true",
+        ]
+    return [
+        "# Off for a scaffolded project: this repo exists to exercise Booley, so the",
+        "# commit-message policy (which redacts protected names and rejects",
+        "# machine-attribution footers) would only mangle honest history. Delete this",
+        "# section (stealth defaults to on) if the repo grows into IP whose commit",
+        "# log must not reveal agent involvement.",
+        "enabled = false",
+    ]
 
 
 def _booley_toml(c: ScaffoldChoices) -> str:
@@ -862,12 +904,7 @@ def _booley_toml(c: ScaffoldChoices) -> str:
         f'name = "{c.name}"',
         "",
         "[stealth]",
-        "# Off for a scaffolded project: this repo exists to exercise Booley, so the",
-        "# commit-message policy (which redacts protected names and rejects",
-        "# machine-attribution footers) would only mangle honest history. Delete this",
-        "# section (stealth defaults to on) if the repo grows into IP whose commit",
-        "# log must not reveal agent involvement.",
-        "enabled = false",
+        *_stealth_toml_lines(c),
         "",
         "[flows]",
         "",
@@ -960,11 +997,14 @@ create_clock -name clk -period 10.000 [get_ports clk]
 
 def scaffold_files(c: ScaffoldChoices) -> dict[str, str]:
     """All scaffolded files as {repo-relative POSIX path: content}."""
+    # Open layout: cores sit in the repository. Stealth: under .booley/cores/.
+    core_dir = _STEALTH_CORE_DIR if c.stealth else ""
+    selftest_dir = _STEALTH_CORE_DIR if c.stealth else "verif/"
     files = {
         f"rtl/{c.name}.sv": _rtl_source(c),
-        f"{c.name}.core": _core_file(c),
-        "verif/booley_doctor_selftest.core": _lint_selftest_core(c),
-        "verif/booley_doctor_selftest/lint_bad.sv": _lint_bad_source(c),
+        f"{core_dir}{c.name}.core": _core_file(c),
+        f"{selftest_dir}booley_doctor_selftest.core": _lint_selftest_core(c),
+        f"{selftest_dir}booley_doctor_selftest/lint_bad.sv": _lint_bad_source(c),
         ".booley/booley.toml": _booley_toml(c),
         ".booley/tests.toml": _tests_toml(c),
         f".booley/selftest/sim/bad-overlay/{c.name}.sv": _sim_bad_overlay(c),
@@ -1040,6 +1080,8 @@ def step_scaffold(ctx: InitContext, args) -> bool:
             "the scaffolded XDC has no board pins"
         )
     info("commit the scaffolded files — doctor flags .core-referenced files a clone would lack")
+    if choices.stealth:
+        info("  commit .booley/ (incl. cores/) in its own git repository, not the RTL repo")
     info("after init finishes: `booley doctor --deep` should be green, then try")
     info(f"  a sim run of test 'reset' on target 'sim' — then replace {choices.name}.")
     ctx.record("scaffold", "ok", summary)
