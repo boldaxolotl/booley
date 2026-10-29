@@ -124,14 +124,15 @@ When the work does not fit, split it before it becomes `ready-for-agent`:
 
 - Create one GitHub sub-issue per piece, each with its own brief. Order them
   with `Blocked by: #<n>` lines.
-- The parent issue tracks the sub-issues. It gets no brief and is never
-  `ready-for-agent`.
+- The parent issue tracks the sub-issues. It carries the `tracker` label,
+  gets no brief, and is never `ready-for-agent`.
 - Draw each sub-issue's acceptance criteria from the parent's. Together, the
   sub-issues cover all of them.
 
 The pipeline skips an issue that has open sub-issues. When its planner finds
 the work too large for one PR, it posts a proposed split, moves the issue back
-to `needs-triage`, and releases it.
+to `needs-triage`, and releases it. Once the maintainer accepts the split,
+triage files the sub-issues and relabels the parent `tracker`.
 
 ## Legacy format
 
