@@ -47,6 +47,7 @@ from booley.runtime.exception_diagnostics import (
     write_exception_diagnostic,
 )
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
+from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
 
 from .specialist_workspace import (
@@ -339,6 +340,8 @@ class Specialist(McpTool):
                 params,
                 nested_mcp_tools=nested_mcp_tools_for(self.name),
             )
+        # Reclaim scratch left by runs that were killed before they could clean up.
+        sweep_stale_scratch()
         with isolated_agent_workspace(
             params,
             self.workspace_access,

@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -101,16 +102,6 @@ def gateway_sandbox(tmp_path, monkeypatch):
     """A container-like process with every native credential set and a fake ``codex``."""
     if sys.platform == "win32":
         pytest.skip("the fake codex is a POSIX shebang script")
-    real_path = Path
-
-    def isolated_path(value):
-        value = str(value)
-        return (
-            tmp_path / real_path(value).name
-            if value.startswith("/tmp/codex-")
-            else real_path(value)
-        )
-
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
     (home / ".codex" / "auth.json").write_text(
@@ -123,7 +114,8 @@ def gateway_sandbox(tmp_path, monkeypatch):
     fake.write_text(f"#!{sys.executable}\n{_FAKE_CODEX}", encoding="utf-8")
     fake.chmod(0o755)
 
-    monkeypatch.setattr(cb, "Path", isolated_path)
+    # Nested homes are created under the system temp directory.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
     monkeypatch.setattr(cb, "_inside_container", lambda: True)
     monkeypatch.setattr(agent_config, "_inside_container", lambda: True)

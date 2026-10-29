@@ -59,6 +59,7 @@ def _args(**overrides) -> argparse.Namespace:
         "lint_eda_tool": None,
         "asic": None,
         "fpga_part": None,
+        "stealth": False,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -941,3 +942,110 @@ def test_scaffold_interactive_synthesis_mode(tmp_path, monkeypatch):
     args.asic, args.synth_mode = False, None
     assert gather_scaffold_choices(args, ctx).asic is False
     assert not any("synthesis mode" in q for q in questions)
+
+
+# ---------------------------------------------------------------------------
+# --stealth: Booley-authored cores live under .booley/cores/ (issue #2332)
+# ---------------------------------------------------------------------------
+
+
+def _git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.stdout
+
+
+def _stealth_scaffold(root: Path, monkeypatch) -> InitContext:
+    """Scaffold with ``--stealth`` and run the init steps that own stealth state.
+
+    Deliberately no Interactive step: the hidden footprint must not depend on
+    it succeeding (an offline init returns before excluding anything).
+    """
+    from booley.harness import init_cmd
+
+    _git(root, "init", "-q")
+    ctx = _ctx(root, monkeypatch)
+    assert step_scaffold(ctx, _args(stealth=True)) is True
+    init_cmd._step_booley_dir(ctx)
+    init_cmd._step_core_projections(ctx)
+    reset_cache()
+    return ctx
+
+
+def test_stealth_scaffold_tracks_no_booley_cores(tmp_path: Path, monkeypatch, capsys) -> None:
+    _stealth_scaffold(tmp_path, monkeypatch)
+
+    cfg = tomllib.loads((tmp_path / ".booley/booley.toml").read_text(encoding="utf-8"))
+    assert cfg["stealth"]["enabled"] is True
+    assert (tmp_path / ".booley/cores/my_ip.core").is_file()
+    assert (tmp_path / ".booley/cores/booley_doctor_selftest.core").is_file()
+    assert (tmp_path / ".booley/cores/booley_doctor_selftest/lint_bad.sv").is_file()
+    assert not (tmp_path / "my_ip.core").exists()
+    assert not (tmp_path / "verif").exists()
+    assert (tmp_path / ".booley/.git").exists()
+
+    _git(tmp_path, "add", "-A")
+    tracked = _git(tmp_path, "ls-files").splitlines()
+    assert not [path for path in tracked if path.endswith(".core")], tracked
+    assert not [path for path in tracked if path.split("/")[0] == ".booley"], tracked
+    assert "rtl/my_ip.sv" in tracked
+    capsys.readouterr()
+
+
+def test_stealth_scaffold_targets_resolve_and_audit_clean(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    pytest.importorskip("fusesoc")
+    from booley.harness.setup import readiness
+
+    _stealth_scaffold(tmp_path, monkeypatch)
+    booley_dir = tmp_path / ".booley"
+    _git(tmp_path, "add", "-A")
+    _git(booley_dir, "add", "-A")
+    _git(booley_dir, "commit", "-qm", "stealth files")
+    project = doctor.ProjectAudit(
+        tmp_path,
+        booley_dir,
+        tomllib.loads((booley_dir / "booley.toml").read_text()),
+        tomllib.loads((booley_dir / "tests.toml").read_text()),
+        "sim",
+    )
+
+    for target in ("sim", "lint"):
+        _resolve_target(target, project_root=tmp_path, build_root=tmp_path / "build" / target)
+    bad = _resolve_target(
+        "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build" / "bad"
+    )
+    assert bad.vlnv == "::my_ip_booley_doctor_selftest:0"
+    assert bad.rtl_source_files[0].absolute(bad.build_root).is_file()
+
+    warnings: list[str] = []
+    assert doctor._selftest_plan(project, "sim", warnings.append) is not None
+    assert doctor._selftest_plan(project, "lint", warnings.append) is not None
+    assert warnings == []
+    sim = _resolve_target("sim", project_root=tmp_path, build_root=tmp_path / "build" / "sim2")
+    assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", sim.build_root) == 1
+
+    reporter = doctor._Reporter.create()
+    doctor._run_core_audit(
+        project,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _note=reporter.note_,
+    )
+    findings = list(reporter.result(0).findings)
+    findings += readiness.check_stealth_cores(
+        project, mode=readiness.ReadinessMode.RECONCILE
+    ).findings
+    assert not [
+        (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
+    ]
+    capsys.readouterr()

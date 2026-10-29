@@ -33,6 +33,8 @@ from booley.harness.setup.guidance_links import (
     ensure_guidance_links,
     guidance_links_current,
 )
+from booley.harness.setup.project_origin import read_project_origin
+from booley.harness.setup.scaffold import is_scaffold_core_description
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git import _git_common_dir
 from booley.runtime.worktree_paths import worktree_state_dir
@@ -559,6 +561,7 @@ def _check_stealth_cores(
         )
     elif stealth_enabled is True:
         _check_core_projections(project_root, report, repair=repair)
+        _check_scaffold_root_cores(project_root, booley_dir, report)
 
     stranded = [
         p
@@ -586,6 +589,64 @@ def _check_stealth_cores(
         return
     else:
         report.pass_("no VLNV collision between repo-tree and .booley/cores/ cores")
+
+
+def _tracked_core_paths(project_root: Path) -> list[str] | None:
+    """Repository-relative tracked ``.core`` paths, or ``None`` when git cannot say."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.core"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def _check_scaffold_root_cores(project_root: Path, booley_dir: Path, report: Findings) -> None:
+    """Warn about scaffold-authored cores still tracked outside ``.booley/cores/``.
+
+    A scaffold Project committed with root cores and then switched to Stealth Mode
+    keeps Booley-authored files in the RTL repository. Authorship is the scaffold
+    origin marker plus the scaffold's own ``description:`` text; repository-native
+    cores never match. Booley never moves the files itself.
+    """
+    if read_project_origin(booley_dir / "booley.toml") != "scaffold":
+        return
+    tracked = _tracked_core_paths(project_root)
+    if tracked is None:
+        return  # not a repository: tracking is unknowable
+    flagged = False
+    for relative in tracked:
+        core = project_root / relative
+        if Path(relative).name.startswith(core_projection.PROJECTED_CORE_PREFIX):
+            continue  # a projection copy: _check_projection_exclude owns it
+        if core_projection.stealth_core_relative(project_root, core) is not None:
+            continue
+        try:
+            description = fusesoc_registry.read_core(core).get("description")
+        except (fusesoc_registry.FuseSocError, OSError):
+            continue  # unreadable cores are the core audit's beat
+        if not is_scaffold_core_description(description):
+            continue
+        flagged = True
+        report.warn(
+            f"Booley-authored scaffold core {relative} is tracked in the repository "
+            "while stealth mode is enabled",
+            f"move {relative} and the Booley-authored files it references under "
+            ".booley/cores/, rewrite its fileset paths relative to the repository "
+            f"root, then `git rm` the tracked copy of {relative}",
+            check_id="stealth.scaffold-core-tracked",
+            subject=relative,
+        )
+    if not flagged:
+        report.pass_("no scaffold-authored core tracked outside .booley/cores/")
 
 
 def _check_core_projections(project_root: Path, report: Findings, *, repair: bool) -> None:

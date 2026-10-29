@@ -381,7 +381,8 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
             assert (
                 "mounted Vivado 2025.2 wrapper, read-only release, and identity verified" in output
             ), output
-            assert "Sandbox Booley Directory and host-authority isolation verified" in output
+            assert "Sandbox Booley Directory identity verified" in output
+            assert "Sandbox host-authority isolation verified" in output
         version = _exec(docker, container, "vivado", "-version")
         assert version.returncode == 0, version.stdout + version.stderr
         assert "vivado v2025.2" in version.stdout.lower()

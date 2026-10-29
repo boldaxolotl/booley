@@ -66,6 +66,29 @@ class TestSafeRmtree:
         safe_rmtree(d)
         assert not d.exists()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX symlinks")
+    def test_error_handler_never_chmods_a_symlink_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A failed unlink of a link must not change the mode of what it points at."""
+        real = tmp_path / "real-login"
+        real.write_text("secret")
+        real.chmod(0o600)
+        d = tmp_path / "target"
+        d.mkdir()
+        link = d / "auth.json"
+        link.symlink_to(real)
+
+        def failing_rmtree(path, onerror):
+            onerror(Path.unlink, str(link), None)
+
+        monkeypatch.setattr("booley.runtime.filesystem_utils.shutil.rmtree", failing_rmtree)
+        # The handler retries ``func`` (unlink), which removes the link itself.
+        safe_rmtree(d)
+
+        assert stat.S_IMODE(real.stat().st_mode) == 0o600
+        assert real.exists()
+
     def test_accepts_string_path(self, tmp_path: Path):
         d = tmp_path / "strpath"
         d.mkdir()

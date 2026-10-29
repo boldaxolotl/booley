@@ -75,6 +75,9 @@ async def test_terminal_naming_failure_keeps_selectable_evidence_and_artifacts(t
         table.focus()
         await pilot.pause()
         await pilot.press("enter")
+        # Let the goal view lay out before clicking into it; a slow Windows
+        # runner otherwise clicks the pre-layout widget and opens nothing.
+        await pilot.pause()
         assert app.navigation.view == "goal"
         text = str(app.query_one("#detail", Static).render())
         assert diagnostic in text and "warnings" in text

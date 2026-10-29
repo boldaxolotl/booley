@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 from typing import overload
 
+from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+
 RUNTIME_DIR = ".runtime"
 JOBS_DIR = "jobs"
 
@@ -48,3 +50,17 @@ def session_jobs_dir(root: Path | None = None) -> Path | None:
     runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
     runtime = Path(runtime_env) if runtime_env else logs_runtime_dir(logs_dir)
     return runtime / JOBS_DIR
+
+
+def project_job_roots(booley_dir: Path) -> tuple[Path, ...]:
+    """Every directory that may hold a Project's Job records, across all layouts."""
+    roots = {booley_dir / ".runtime/jobs"}
+    for pattern in (
+        "goals/*/.runtime/jobs",
+        "logs/*/.runtime/jobs",
+        "logs/.runtime/jobs",
+        f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs",
+        "runtime/sessions/*/.runtime/jobs",
+    ):
+        roots.update(booley_dir.glob(pattern))
+    return tuple(sorted(roots))
