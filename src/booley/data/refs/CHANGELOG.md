@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Codex `gpt-6-astra` runs are now costed at Astra's own price instead of
+  `gpt-5.6-sol`'s, so their cost readouts rise. Unknown GPT model ids now fall
+  back to the Astra price.
 - `booley init --scaffold <name> --stealth` now scaffolds a hidden-footprint
   Project: `[stealth] enabled = true` and the design and Doctor selftest cores
   under `.booley/cores/`, so nothing Booley-authored reaches the RTL repository.

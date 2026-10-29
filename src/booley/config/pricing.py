@@ -52,9 +52,9 @@ def _anthropic(inp: float, out: float, context_window: int | None) -> ModelPrici
 # the $3/$15 sticker price, so cost readouts for Sonnet 5 runs made before that
 # date are an over-estimate rather than a surprise.
 #
-# NOTE: claude-haiku-5-5 (above 100K input) and gpt-6-luna (above 272K input)
-# carry long-context surcharges that this table does not model, so readouts for
-# very long prompts under-estimate.
+# NOTE: claude-haiku-5-5 (above 100K input), gpt-6-astra (above 272K input) and
+# gpt-6-luna (above 272K input) carry long-context surcharges that this table
+# does not model, so readouts for very long prompts under-estimate.
 MODEL_PRICING: dict[str, ModelPricing] = {
     # --- Anthropic ---
     "claude-fable-5": _anthropic(10.00, 50.00, _CTX_1M),
@@ -69,6 +69,7 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "claude-haiku-4-5": _anthropic(1.00, 5.00, _CTX_200K),
     # --- OpenAI (Codex backend). Context windows are not tracked here, so the
     # Console renders their context usage without a denominator. ---
+    "gpt-6-astra": ModelPricing(10.00, 50.00, 1.00, 12.50),
     "gpt-6-luna": ModelPricing(0.10, 0.50, 0.01, 0.125),
     "gpt-5.6-sol": ModelPricing(5.00, 30.00, 0.50, 6.25),
     "gpt-5.6-terra": ModelPricing(2.50, 15.00, 0.25, 3.125),
@@ -90,7 +91,7 @@ _FAMILY_FALLBACK: tuple[tuple[str, str], ...] = (
     ("opus", "claude-fable-5"),
     ("sonnet", "claude-sonnet-5"),
     ("haiku", "claude-haiku-4-5"),
-    ("gpt-", "gpt-5.6-sol"),
+    ("gpt-", "gpt-6-astra"),
 )
 
 # Substring candidates, longest first: a bare "o3" must not shadow a longer,
