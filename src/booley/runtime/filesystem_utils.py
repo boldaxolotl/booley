@@ -11,8 +11,11 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 # Windows refuses to rename onto a file that another handle holds open without
@@ -125,6 +128,32 @@ def read_file_bytes(
             logger.debug("Retrying read of %s after %s", path, exc)
             sleep(delay)
     return _read_all(path)
+
+
+def open_with_sharing_retry(
+    open_once: Callable[[], _T],
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> _T:
+    """Call ``open_once`` and retry it while Windows reports a sharing error.
+
+    The ``os.open``-level counterpart of :func:`read_file_bytes` for readers
+    that cannot use it: no-follow opens and bounded head reads. Retries only
+    the transient errors :func:`is_transient_read_error` matches, with the same
+    bounded backoff (about 1.1 s in total). The last transient error and every
+    other error, including ``FileNotFoundError`` and a POSIX ``EACCES``,
+    propagate unchanged. ``path`` only names the file in the debug log.
+    """
+    for delay in _SHARING_RETRY_DELAYS_SECONDS:
+        try:
+            return open_once()
+        except PermissionError as exc:
+            if not is_transient_read_error(exc):
+                raise
+            logger.debug("Retrying open of %s after %s", path, exc)
+            sleep(delay)
+    return open_once()
 
 
 def _read_all(path: Path) -> bytes:

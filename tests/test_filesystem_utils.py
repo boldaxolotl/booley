@@ -319,3 +319,45 @@ class TestReadFileBytes:
             with pytest.raises(PermissionError):
                 read_file_bytes(path, sleep=delays.append)
         assert persistent.calls == len(delays) + 1
+
+
+def test_open_with_sharing_retry_retries_transient_errors():
+    from booley.runtime.filesystem_utils import open_with_sharing_retry
+    from tests.sharing_error_support import flaky
+
+    opener, calls = flaky(lambda: "handle", 3)
+    delays: list[float] = []
+    assert open_with_sharing_retry(opener, Path("held.json"), sleep=delays.append) == "handle"
+    assert calls == [4]
+    assert len(delays) == 3
+
+
+def test_open_with_sharing_retry_raises_lasting_error_and_keeps_other_errors(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from booley.runtime.filesystem_utils import open_with_sharing_retry
+    from tests.sharing_error_support import flaky
+
+    path = Path("held.json")
+    opener, calls = flaky(lambda: "handle", 1000)
+    delays: list[float] = []
+    with pytest.raises(PermissionError) as lasting:
+        open_with_sharing_retry(opener, path, sleep=delays.append)
+    assert lasting.value.winerror == 32  # type: ignore[attr-defined]
+    assert calls[0] == len(delays) + 1 > 1
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    for error in (
+        FileNotFoundError(errno.ENOENT, "missing"),
+        OSError(errno.ELOOP, "symlink"),
+        PermissionError(errno.EACCES, "Permission denied"),
+    ):
+        attempts: list[int] = []
+
+        def failing(error: OSError = error, attempts: list[int] = attempts):
+            attempts.append(1)
+            raise error
+
+        with pytest.raises(type(error)):
+            open_with_sharing_retry(failing, path, sleep=delays.append)
+        assert attempts == [1]

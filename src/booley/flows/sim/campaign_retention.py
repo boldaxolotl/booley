@@ -26,6 +26,7 @@ from booley.core.boundary import (
 )
 from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import RUNTIME_DIR
 
@@ -72,6 +73,10 @@ from .coverage_reference import (
 
 class CampaignRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
+
+
+class _UnreadableDependencyError(CampaignRetentionError):
+    """A dependency scan hit a lasting sharing error and must not guess."""
 
 
 # Windows file locks are mandatory byte-range locks: while any handle (including
@@ -184,10 +189,20 @@ def _invocation(reports_root: Path, invocation: int) -> Path:
 
 
 def _read_object(path: Path) -> dict[str, object]:
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = json.loads(read_file_bytes(path).decode("utf-8"))
     if not isinstance(document, dict):
         raise CampaignRetentionError(f"Expected an object: {path}")
     return document
+
+
+def _fail_closed_on_sharing_error(error: OSError, path: Path) -> None:
+    """Refuse a destructive decision resting on a file a sharing error kept unreadable.
+
+    Dependency scans answer "not a dependent" for an unreadable file; a Windows
+    sharing error that outlasted the retry budget is not evidence of absence.
+    """
+    if is_transient_read_error(error):
+        raise _UnreadableDependencyError(f"cannot read {path}: {error}") from error
 
 
 def _target(
@@ -536,7 +551,11 @@ def _report_references_origin(report: Path, manifests: tuple[Path, ...]) -> bool
             campaign_id = require_uuid4(document.get("campaign_id"), field="campaign_id")
             if _report_references_campaign(report, manifest, campaign_id):
                 return True
-        except (OSError, ValueError, json.JSONDecodeError):
+        except _UnreadableDependencyError:
+            raise
+        except OSError as error:
+            _fail_closed_on_sharing_error(error, manifest)
+        except (ValueError, json.JSONDecodeError):
             continue
     return False
 
@@ -547,7 +566,10 @@ def _projection_references_origin(projection: Path, manifests: tuple[Path, ...])
         decode_simulation_projection(
             document, coverage_expected=(projection.parent / "coverage.json").is_file()
         )
-    except (OSError, ValueError, json.JSONDecodeError):
+    except OSError as error:
+        _fail_closed_on_sharing_error(error, projection)
+        return False
+    except (ValueError, json.JSONDecodeError):
         return False
     try:
         reference = require_str_value(document.get("campaign_manifest"), field="campaign_manifest")
@@ -604,7 +626,10 @@ def _report_references_campaign(
         report = _read_object(report_path)
         detail = require_dict(report.get("detail"), field="report detail")
         campaigns = require_dict(detail.get("campaigns"), field="report campaigns")
-    except (BoundaryError, OSError, ValueError, json.JSONDecodeError):
+    except OSError as error:
+        _fail_closed_on_sharing_error(error, report_path)
+        return False
+    except (BoundaryError, ValueError, json.JSONDecodeError):
         return False
     for value in campaigns.values():
         try:

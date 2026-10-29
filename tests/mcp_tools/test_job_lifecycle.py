@@ -591,6 +591,31 @@ async def test_poll_exposes_only_current_nonterminal_checkpoint(context):
     assert state.record.run_id == rec.run_id
 
 
+def test_poll_view_keeps_running_state_when_progress_is_held():
+    from booley.mcp.job_lifecycle import _poll_view
+
+    def held(_run_id):
+        raise job_records.JobRecordError("Job progress for run-1 unreadable: held")
+
+    repository = SimpleNamespace(
+        record=lambda _id: None, phase=lambda _id: "RUNNING", progress=held
+    )
+    state = _poll_view("run-1", "running", True, repository)  # type: ignore[arg-type]
+    assert state.status == "running" and state.progress is None
+
+
+def test_finished_poll_names_the_job_when_its_report_is_held(monkeypatch):
+    from booley.mcp.job_lifecycle import JobPoll
+
+    def held(_self, _run_id):
+        raise job_records.JobRecordError("Job report is unreadable: held")
+
+    monkeypatch.setattr(JobLifecycle, "terminal_result", held)
+    with pytest.raises(job_records.JobRecordError, match="Job run-9 finished") as raised:
+        JobLifecycle()._complete_poll(JobPoll("run-9", "finished", True))
+    assert isinstance(raised.value.__cause__, job_records.JobRecordError)
+
+
 @pytest.mark.asyncio
 async def test_synchronous_execution_uses_same_supervisor_and_forgets_finished_record(context):
     jobs = JobLifecycle()
@@ -632,3 +657,36 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
     assert attempts == [5, 5, 5, 5, 2]
     assert active == [20]
     assert clock.elapsed == 22
+
+
+def _orphan_with_report(context):
+    """An orphaned RUNNING record whose finished report is on disk."""
+    rec = job_records.JobRecord("orphan", "lint", utc_now_rfc3339(), 5)
+    job_records.write_record(rec, context.jobs_root)
+    write_report(context, rec.run_id, {"exit_code": 0, "passed": True})
+    return rec, context.runtime_dir / "flow-reports/lint/1/report.json"
+
+
+def test_reconcile_adopts_report_after_transient_sharing_error(context, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    rec, report = _orphan_with_report(context)
+    # Hold longer than the report lookup's fallback reads, so only the retry can adopt it.
+    attempts = hold_opens(monkeypatch, {report: 3})
+    monkeypatch.setattr(
+        "booley.runtime.filesystem_utils._SHARING_RETRY_DELAYS_SECONDS", (0.0,) * 4
+    )
+    JobLifecycle().reconcile_orphaned()
+    final = job_records.read_record(rec.run_id, context.jobs_root)
+    assert (final.status, final.exit_code) == ("done", 0)
+    assert attempts[report] == 4
+
+
+def test_reconcile_leaves_job_running_on_lasting_report_sharing_error(context, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    rec, report = _orphan_with_report(context)
+    attempts = hold_opens(monkeypatch, {report: 100})
+    JobLifecycle().reconcile_orphaned()
+    assert job_records.read_record(rec.run_id, context.jobs_root).status == "running"
+    assert attempts[report] > 1

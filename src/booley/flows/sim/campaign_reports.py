@@ -14,6 +14,7 @@ from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.runtime.file_lock import nonblocking_file_lock
+from booley.runtime.filesystem_utils import replace_file
 
 
 def target_report_directory(invocation: Path, selector: str) -> Path:
@@ -31,7 +32,7 @@ def write_campaign_json(path: Path, document: dict[str, object]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        Path(temporary).replace(path)
+        replace_file(Path(temporary), path)
         _fsync_directory(path.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
