@@ -17,6 +17,7 @@ import anyio
 
 from booley.config.gateway import (
     GATEWAY_AUTH,
+    GATEWAY_TOKEN_COMMAND_ENV,
     GATEWAY_TOKEN_ENV,
     GatewayConfigError,
     gateway_settings_from_env,
@@ -44,14 +45,17 @@ from ._retry import (
     transcript_path_for_label,
 )
 from .agent_errors import (
+    AgentAuthError,
     AgentProviderError,
     AgentTimeoutError,
     ContextExhaustedError,
     TransientAPIError,
     UsageLimitError,
+    is_auth_failure,
     is_context_exhausted,
     is_usage_limit,
 )
+from .gateway_token import gateway_token_for, refresh_gateway_token
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
@@ -271,17 +275,44 @@ class CodexBackend:
         )
 
         last_exc: Exception | None = None
-        for attempt in range(1, MAX_API_RETRIES + 1):
+        transient_failures = 0
+        refresh_available = self._auth_mode == GATEWAY_AUTH and _gateway_token_command_active()
+        # One launch slot beyond MAX_API_RETRIES is reserved for the token refresh.
+        for launch in range(1, MAX_API_RETRIES + 2):
             try:
                 result = await self._call_once(
                     params,
                     full_prompt=full_prompt,
-                    transcript_path=_transcript_path_for_attempt(
-                        params.transcript_path,
-                        attempt,
-                    ),
+                    transcript_path=_transcript_path_for_attempt(params.transcript_path, launch),
                     on_event=on_event,
                 )
+            except (UsageLimitError, ContextExhaustedError):
+                raise
+            except AgentAuthError as exc:
+                if not refresh_available:
+                    raise
+                refresh_available = False
+                last_exc = exc
+                logger.warning(
+                    "Codex gateway rejected the token; re-running %s once",
+                    GATEWAY_TOKEN_COMMAND_ENV,
+                )
+                refresh_gateway_token()
+            except TransientAPIError as exc:
+                last_exc = exc
+                transient_failures += 1
+                if transient_failures >= MAX_API_RETRIES:
+                    break
+                backoff = compute_backoff(transient_failures)
+                logger.warning(
+                    "Codex transient error (attempt %d/%d): %s -- retrying in %.0fs",
+                    transient_failures,
+                    MAX_API_RETRIES,
+                    exc,
+                    backoff,
+                )
+                await anyio.sleep(backoff)
+            else:
                 logger.info(
                     "%sCodex agent done (%s)",
                     tag,
@@ -293,21 +324,6 @@ class CodexBackend:
                     ),
                 )
                 return result
-            except (UsageLimitError, ContextExhaustedError):
-                raise
-            except TransientAPIError as exc:
-                last_exc = exc
-                if attempt >= MAX_API_RETRIES:
-                    break
-                backoff = compute_backoff(attempt)
-                logger.warning(
-                    "Codex transient error (attempt %d/%d): %s -- retrying in %.0fs",
-                    attempt,
-                    MAX_API_RETRIES,
-                    exc,
-                    backoff,
-                )
-                await anyio.sleep(backoff)
 
         raise last_exc or AgentProviderError("Codex agent exhausted retries", provider="codex")
 
@@ -562,10 +578,12 @@ def _ensure_nested_codex_home(
     # bwave, etc.) can locate the project, logs dir, and ticket slug. Codex
     # *replaces* the MCP process env when [env] is present, so we have to
     # enumerate everything the child needs.
-    # The gateway token reaches Codex only through its inherited environment;
-    # it must never be written into the generated config.toml.
+    # The gateway token (and the command that mints it) reaches Codex only
+    # through its inherited environment; neither may be written into the
+    # generated config.toml.
+    secret_names = {GATEWAY_TOKEN_ENV, GATEWAY_TOKEN_COMMAND_ENV}
     booley_env = {
-        k: v for k, v in os.environ.items() if k.startswith("BOOLEY_") and k != GATEWAY_TOKEN_ENV
+        k: v for k, v in os.environ.items() if k.startswith("BOOLEY_") and k not in secret_names
     }
     booley_env.update(extra_env or {})
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
@@ -575,6 +593,33 @@ def _ensure_nested_codex_home(
 
     _NESTED_HOMES[cache_key] = str(nested)
     return _NESTED_HOMES[cache_key]
+
+
+def _gateway_token_command_active() -> bool:
+    """Whether the gateway's token comes from ``BOOLEY_GATEWAY_TOKEN_COMMAND``."""
+    try:
+        return gateway_settings_from_env().token_command is not None
+    except GatewayConfigError:
+        return False
+
+
+async def _resolve_gateway_command_token(params: AgentCallParams) -> str | None:
+    """Validate the gateway config before spawning; return the command's token if any.
+
+    Raises :class:`GatewayConfigError` naming the missing variable, or the token
+    command's failure. The command runs in a worker thread so a slow one never
+    blocks the event loop.
+    """
+    settings = gateway_settings_from_env()
+    if params.text_only:
+        raise AgentProviderError(
+            "text-only Codex Specialists (e.g. coverage_analyst) are not yet "
+            f"supported under auth '{GATEWAY_AUTH}'",
+            provider="codex",
+        )
+    if settings.token_command is None:
+        return None
+    return await anyio.to_thread.run_sync(gateway_token_for, settings)
 
 
 async def _codex_spawn(
@@ -588,15 +633,9 @@ async def _codex_spawn(
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
-    if auth_mode == GATEWAY_AUTH:
-        # Fail before spawning, naming the missing variable.
-        gateway_settings_from_env()
-        if params.text_only:
-            raise AgentProviderError(
-                "text-only Codex Specialists (e.g. coverage_analyst) are not yet "
-                f"supported under auth '{GATEWAY_AUTH}'",
-                provider="codex",
-            )
+    command_token = (
+        await _resolve_gateway_command_token(params) if auth_mode == GATEWAY_AUTH else None
+    )
     env = None
     if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
         from .auth_token import subscription_creds_path
@@ -632,6 +671,12 @@ async def _codex_spawn(
     plan.require_credential()
     if auth_mode != "auto" or plan.values:
         env = plan.child_environment(dict(os.environ) if env is None else env)
+    if command_token is not None:
+        # Codex's unchanged auth helper reads the token from its inherited env; the
+        # command that minted it stays out so the helper sees exactly one source.
+        env = dict(os.environ) if env is None else env
+        env[GATEWAY_TOKEN_ENV] = command_token
+        env.pop(GATEWAY_TOKEN_COMMAND_ENV, None)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -819,6 +864,8 @@ def _raise_for_codex_detail(detail: str, *, prefix: str) -> None:
         raise UsageLimitError(detail, provider="codex")
     if is_context_exhausted(detail):
         raise ContextExhaustedError(detail, provider="codex")
+    if is_auth_failure(detail):
+        raise AgentAuthError(f"{prefix}: {detail}", provider="codex")
     if _is_transient_error(RuntimeError(detail)):
         raise TransientAPIError(f"{prefix}: {detail}", retry_after=10)
     raise AgentProviderError(f"{prefix}: {detail}", provider="codex")
