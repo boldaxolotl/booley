@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 
 import pytest
 
@@ -12,6 +13,7 @@ from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.harness import auth_cmd, doctor
 from booley.runtime import _claude_backend, _codex_backend, auth_token
+from tests.gateway_command_support import write_token_command
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -92,6 +94,38 @@ def test_doctor_gateway_missing_token_fails(gateway_env, monkeypatch):
         ("fail", "agent.credential-missing")
     ]
     assert "BOOLEY_GATEWAY_TOKEN" in findings[0].message
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")
+def test_doctor_gateway_failing_token_command_fails_quoting_stderr(gateway_env, monkeypatch):
+    instruction = "your gateway login expired: run `gateway-login --device`"
+    command, _ = write_token_command(
+        gateway_env, ["SYNTHETIC_LEAKED_STDOUT"], stderr=instruction + "\n", exit_code=2
+    )
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", command)
+
+    findings = _doctor_findings(gateway_env)
+
+    assert [(f.severity.value, f.check_id) for f in findings] == [
+        ("fail", "agent.credential-missing")
+    ]
+    assert "BOOLEY_GATEWAY_TOKEN_COMMAND exited 2" in findings[0].message
+    assert instruction in findings[0].message
+    assert "SYNTHETIC_LEAKED_STDOUT" not in findings[0].message
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")
+def test_doctor_gateway_working_token_command_passes(gateway_env, monkeypatch):
+    command, _ = write_token_command(gateway_env, [_TOKEN])
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", command)
+
+    findings = _doctor_findings(gateway_env)
+
+    assert [f.severity.value for f in findings] == ["pass"]
+    assert "BOOLEY_GATEWAY_TOKEN_COMMAND" in findings[0].message
+    assert _TOKEN not in findings[0].message
 
 
 def test_gateway_handoff_ignored_on_host_with_doctor_warning(gateway_env, monkeypatch):
