@@ -1247,9 +1247,11 @@ class DashboardApp(App[None]):
     def _keep_cursor_visible(table: SessionList) -> None:
         """Scroll the minimum that puts the cursor row (and its group header) on screen."""
         visible = table.scrollable_content_region.height - table.header_height
+        if visible <= 0:  # A hidden list has no viewport to place the cursor in.
+            return
         row = table.cursor_row
         top = int(table.scroll_y)
-        if row < top or row >= top + max(visible, 1):
+        if row < top or row >= top + visible:
             first = row - 1 if row - 1 in table.header_rows else row
             table.scroll_to(y=first if row < top else row - visible + 1, animate=False)
 
