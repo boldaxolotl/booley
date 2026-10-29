@@ -36,6 +36,7 @@ verbatim) and `BOOLEY_GATEWAY_TOKEN`.
   `booley/` directory off the import path. `fast_mode` is off
   because gateways reject the priority tier. The token may also come from
   `BOOLEY_GATEWAY_TOKEN_COMMAND` (amended 2026-10-29, see Amendments).
+  Setup is described in [GATEWAY.md](../internals/GATEWAY.md).
 - **No native credential.** No credential variable survives into the Codex
   child, no `auth.json` is copied, and `BOOLEY_GATEWAY_TOKEN` is excluded from
   the generated MCP server environment.
