@@ -367,12 +367,36 @@ auth = "subscription"   # "subscription" | "api_key" | "auto" (default)
 - **`auto`** (default): the CLI's own precedence decides (an API key outbids a
   subscription); Booley reports the winner but changes nothing.
 - **`subscription`**: bill the subscription. Booley scrubs the API-key env vars
-  from Developer Agent and Specialist environments; a `booley auth` OAuth token still rides along.
+  from Developer Agent and Specialist environments, along with
+  `ANTHROPIC_AUTH_TOKEN`; a `booley auth` OAuth token still rides along.
 - **`api_key`**: bill the API key.
 
 Either non-`auto` value fails loud (`booley doctor`) when its credential is
 absent, rather than silently falling back. See [USAGE.md: Auth &
 billing](USAGE.md#auth--billing).
+
+#### Routing Codex through a gateway (`BOOLEY_PRIMARY_AUTH=gateway`)
+
+An operator-run gateway can bill Codex Specialist runs instead of a native
+OpenAI credential. This policy is selected by the environment, not by
+`booley.toml` (`[agent] auth = "gateway"` is rejected). Set these in the
+environment of a Sandbox that does not come from `booley init`, such as a
+Codespace or a hand-written devcontainer; Booley-issued Sandboxes take their
+policy from `booley.toml`, and a host export is ignored (`booley doctor`
+warns about it).
+
+| Variable | Meaning |
+| --- | --- |
+| `BOOLEY_PRIMARY_AUTH=gateway` | Select the gateway policy. |
+| `BOOLEY_GATEWAY_URL` | The gateway's `https://` base URL, passed to Codex as is (for example `https://gw.example/v1`). No credentials in the URL. |
+| `BOOLEY_GATEWAY_TOKEN` | The bearer token. It is never written to a config file, and Codex shell tools do not receive it. |
+
+`[agent] provider` must be `codex`. Codex Specialists use the gateway; no
+OpenAI or Anthropic credential and no Codex login reaches them. The gateway
+host must be reachable from the Sandbox. A missing variable, a non-`https` URL,
+or a Claude provider fails `booley doctor` and `booley auth --status` naming the
+problem; a complete configuration passes Doctor and exits 0. Text-only Codex
+Specialists such as `coverage_analyst` do not support this policy yet.
 
 #### Git identity (`[agent.git]`)
 
