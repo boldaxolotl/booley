@@ -111,8 +111,15 @@ worked. Flag semantics (native groups, clock row, markers, `--append`,
 
 - `ERROR: no signals match pattern(s) ...` (exit 2): every pattern matched
   nothing. Bare-name patterns use suffix-match — `dmem_addr` matches
-  `tb.dut.dmem_addr` but NOT `tb.dut.dmem_addr_next`. Use `*dmem_addr*` for
-  substring, and `bwave list` to see what exists. JSON-mode `find`/`value`/
+  `tb.dut.dmem_addr` but NOT `tb.dut.dmem_addr_next`. A glob (`*`, `?`, `[`)
+  matches the full path or the path relative to the store's common scope: the
+  `# scope:` line an unfiltered `bwave list` prints, so with `# scope: TOP.tb`
+  `dut.*` finds `TOP.tb.dut.*` at any depth. It is anchored at that scope: it
+  never reaches `TOP.tb.other.dut.x` or anything outside it. (A narrowed
+  `list -s` prints a deeper scope, which is not the anchor.) When a glob
+  matches only below some other scope, the error ends with
+  `did you mean 'TOP.tb.dut.u_core.*'?`; paste that form. Use `*dmem_addr*`
+  for substring, and `bwave list` to see what exists. JSON-mode `find`/`value`/
   `stats` still print an empty envelope on stdout alongside the error.
 - `# WARNING: no signals match '<pat>' — filter dropped`: one `-s` of several
   matched nothing, so your result is missing that row (exit stays 0 because a

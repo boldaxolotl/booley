@@ -86,8 +86,9 @@ vectors.
 
 ## Top-level rows: `--signals`
 
-Repeatable, and takes the same globs as `-s`, plus the presentation suffixes
-described below. Combined
+Repeatable, and takes the same globs as `-s`, including globs relative to the
+common scope that an unfiltered `bwave list` prints (`dut.*` finds
+`TOP.tb.dut.*`), plus the presentation suffixes described below. Combined
 `--signals` and `--group` expansion is capped at 64 signals (`--max-signals`)
 and **errors** past the cap — narrow the glob, don't raise the cap. Use this for
 the few signals that intentionally belong at the top level; prefer named groups
@@ -119,7 +120,9 @@ screen instead of claiming the full view. The trace itself is fine;
 
 A `--signals` glob that matches nothing in the trace is named in a `WARNING`
 too, while the other globs still show. When every `--signals` glob misses, or a
-`--group` glob matches nothing, the command fails before the view changes.
+`--group` glob matches nothing, the command fails before the view changes; the
+`--signals` error carries `did you mean '<full-path glob>'?` when the glob
+matches below another scope.
 
 ## Transport
 
