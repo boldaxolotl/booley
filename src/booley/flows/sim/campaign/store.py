@@ -46,6 +46,7 @@ from .codec import (
     RECORD_MAX_BYTES,
     SUMMARY_MAX_BYTES,
     SimulationCampaignIntegrityError,
+    UnsupportedSimulationCampaignFormatError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
@@ -131,6 +132,14 @@ class SharedBuildRecovery:
 class _PreSimReadSnapshot:
     attempt: SimulationAttempt
     firings: tuple[PreSimFiring, ...]
+
+
+def _invocation_of(campaign_root: Path) -> Path | None:
+    """The invocation directory holding ``<invocation>/targets/<target>/campaign``, if laid out so."""
+    parents = campaign_root.parents
+    if len(parents) > 2 and parents[1].name == "targets":
+        return parents[2]
+    return None
 
 
 def _is_link(path: Path) -> bool:
@@ -250,6 +259,15 @@ class CampaignStore:
         self._authenticated_files.add(path.absolute())
         return identity
 
+    def _decode_located(self, decode: Callable[[bytes], _T], path: Path, limit: int) -> _T:
+        """Read and decode one record; a Booley 0.3.0 refusal names its invocation."""
+        raw = self._read(path, limit=limit)
+        try:
+            return decode(raw)
+        except UnsupportedSimulationCampaignFormatError as exc:
+            invocation = _invocation_of(self.root)
+            raise (exc if invocation is None else exc.located(invocation)) from None
+
     @property
     def manifest_path(self) -> Path:
         return self.root / "manifest.json"
@@ -266,8 +284,8 @@ class CampaignStore:
 
     def load_manifest(self) -> SimulationCampaignManifest:
         _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
-        return decode_simulation_campaign_manifest(
-            self._read(self.manifest_path, limit=MANIFEST_MAX_BYTES)
+        return self._decode_located(
+            decode_simulation_campaign_manifest, self.manifest_path, MANIFEST_MAX_BYTES
         )
 
     def load_summary(self) -> Mapping[str, object]:
@@ -598,8 +616,8 @@ class CampaignStore:
             terminal = None
             result_path = work_root / "result.json"
             if result_path.exists() or result_path.is_symlink():
-                terminal = decode_simulation_result(
-                    self._read(result_path, limit=RECORD_MAX_BYTES)
+                terminal = self._decode_located(
+                    decode_simulation_result, result_path, RECORD_MAX_BYTES
                 )
             for directory in self._attempt_directories(work_root / "attempts"):
                 snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, terminal)
@@ -737,7 +755,7 @@ class CampaignStore:
         attempts: tuple[Path, ...],
         decoded_attempts: list[SimulationAttempt],
     ) -> SimulationResult:
-        result = decode_simulation_result(self._read(path, limit=RECORD_MAX_BYTES))
+        result = self._decode_located(decode_simulation_result, path, RECORD_MAX_BYTES)
         document = result.document
         if (
             document["work_item_id"] != work_item_id

@@ -824,8 +824,8 @@ their leases protect live EDA process trees, and normal recovery releases them
 only after terminal proof.
 
 An authenticated abandoned Simulation Campaign can be discarded with exact
-`--full` pruning after its producer exits. Full pruning performs bounded orphan-child
-cancellation/recovery and marker-checked cleanup of owned templated run directories.
+`--full` pruning after its producer exits. Full pruning cancels interrupted lane
+executions and does marker-checked cleanup of owned templated run directories.
 The Booley Directory is needed only when one of those authenticated external resources
 survives. An empty reservation abandoned before its first `progress.json` can also
 be discarded with `--full` when its external invocation lock remains intact.

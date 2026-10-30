@@ -82,7 +82,7 @@ def _run_two_lanes(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
 

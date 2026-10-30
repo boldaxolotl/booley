@@ -575,8 +575,7 @@ class SimulationCampaign:
             else None
         )
         project_root = binding.project_root if binding is not None else request.project_root
-        registry = ChildExecutionRegistry(store, manifest, project_root)
-        registry.recover_unretired(request.admission.slot_store)
+        registry = ChildExecutionRegistry(manifest, project_root)
         self._cleanup_interrupted_runs(store, recovery, project_root, registry)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
@@ -1077,8 +1076,7 @@ def _observation_facts(
             "result_sha256": result_sha256,
             **dict(observation),
         }
-        if bound is not None:
-            fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
+        fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
         facts.append(fact)
     return facts
 
@@ -1155,15 +1153,8 @@ def _prerequisite_facts(
     return facts
 
 
-def _baseline_test_run_facts(run: Mapping[str, object] | None) -> dict[str, object]:
-    """Name the Test Run a baseline observed, so facts show both revisions ran it.
-
-    A baseline campaign that recorded none cannot be compared and is refused.
-    """
-    if run is None:
-        raise SimulationCampaignIntegrityError(
-            "Cycle Count prerequisite records no Test Run to compare"
-        )
+def _baseline_test_run_facts(run: Mapping[str, object]) -> dict[str, object]:
+    """Name the Test Run a baseline observed, so facts show both revisions ran it."""
     return {"test_run": run["name"], "test_run_fingerprint": run["fingerprint"]}
 
 
@@ -1171,7 +1162,7 @@ def _authenticate_prerequisite_manifest(
     store: CampaignStore,
     entry: Mapping[str, object],
     reference: Mapping[str, object],
-) -> tuple[SimulationCampaignManifest, str, Mapping[str, object] | None]:
+) -> tuple[SimulationCampaignManifest, str, Mapping[str, object]]:
     linked = store.load_manifest()
     if manifest_digest(linked) != reference["sha256"]:
         raise SimulationCampaignIntegrityError(
@@ -1196,12 +1187,12 @@ def _authenticate_prerequisite_manifest(
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite must select exactly one test"
         )
-    runs = cast("tuple[Mapping[str, object], ...] | None", selected.get("test_runs"))
-    if runs is not None and len(runs) != 1:
+    runs = cast("tuple[Mapping[str, object], ...]", selected["test_runs"])
+    if len(runs) != 1:
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite must run exactly one Test Run"
         )
-    return linked, names[0], runs[0] if runs else None
+    return linked, names[0], runs[0]
 
 
 def _selected_prerequisite_result(recovery: CampaignRecovery, entry: Mapping[str, object]):

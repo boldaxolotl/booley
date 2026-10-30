@@ -781,15 +781,6 @@ def test_copied_complete_invocation_remains_analyzable_and_independently_prunabl
     copied_coverage = copied / "targets/sim_0/coverage.json"
 
     assert read_coverage_campaign(copied_coverage).campaign.campaign_id
-    copied_projection = copied_coverage.with_name("simulation.json")
-    legacy = json.loads(copied_projection.read_text())
-    legacy.pop("$schema")
-    legacy.pop("campaign_id")
-    legacy["campaign_manifest"] = str(original / "targets/sim_0/campaign/manifest.json")
-    legacy["campaign_summary"] = str(original / "targets/sim_0/campaign/summary.json")
-    legacy["coverage_campaign"] = "coverage.json"
-    legacy["coverage_campaign_base"] = "origin_target"
-    copied_projection.write_text(json.dumps(legacy))
     hidden_original = original.with_name(".origin-hidden")
     original.rename(hidden_original)
     try:

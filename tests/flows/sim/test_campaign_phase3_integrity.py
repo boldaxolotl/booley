@@ -826,7 +826,7 @@ def _aggregate_result_bound_fixture(tmp_path):
     from booley.flows.sim.campaign.codec import RESULT_SCHEMA
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
-    from tests.flows.sim.test_campaign_codec_golden import _legacy_simulation_result
+    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
 
     names = tuple(f"test{index:04d}" for index in range(4000))
     plan, _ = _maximum_hook_selection_plan(names)
@@ -842,7 +842,7 @@ def _aggregate_result_bound_fixture(tmp_path):
             PreSimEvidence(("true",), (name,), "passed", 0.0, returncode=0),
             ordinal=ordinal,
         )
-    document = json.loads(_legacy_simulation_result("completed"))
+    document = json.loads(_simulation_result("completed"))
     document["$schema"] = RESULT_SCHEMA
     document.update(serial_execution._common(request))
     document["attempt_id"] = request.attempt_id

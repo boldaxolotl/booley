@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
@@ -16,7 +15,6 @@ from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
-    campaign_child_entry_manifests,
     child_context_matches,
     execution_paths,
     gc_terminal_executions,
@@ -35,41 +33,6 @@ from booley.runtime.pid import (
     ProcessIdentity,
     ProcessObservation,
 )
-
-
-def test_campaign_child_entry_manifest_rejects_display_form_parent_identity(
-    tmp_path: Path,
-) -> None:
-    child_id = "e" * 32
-    entries = tmp_path / "entries"
-    entries.mkdir()
-    entry = {
-        "$schema": "booley.simulation-campaign-child-entry/v1",
-        "child_execution_id": child_id,
-        "parent_execution_id": "sim-20260925T153819Z-1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "manifest_path": str((tmp_path / "manifest.json").resolve()),
-        "manifest_sha256": "sha256:" + "1" * 64,
-        "work_item_id": "item:0000:0123456789abcdef",
-        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
-        "attempt_ordinal": 1,
-        "attempt_relative_path": "items/item/attempts/0001-attempt",
-        "runtime_context_sha256": "sha256:" + "2" * 64,
-    }
-    (entries / f"{child_id}.json").write_text(
-        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="invalid schema"):
-        campaign_child_entry_manifests(tmp_path)
-
-    entry["parent_execution_id"] = "a" * 32
-    (entries / f"{child_id}.json").write_text(
-        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    assert campaign_child_entry_manifests(tmp_path) == (Path(entry["manifest_path"]),)
 
 
 def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
@@ -350,18 +313,6 @@ def test_gc_keeps_records_pinned_by_unreadable_slot_entry(tmp_path: Path, monkey
     assert execution_paths(pinned, booley_dir=tmp_path).root.exists()
 
 
-def test_child_release_refuses_unreadable_slot_entry(tmp_path: Path, monkeypatch) -> None:
-    from booley.runtime.execution_records import _require_child_token_absent
-
-    child = ExecutionId("b" * 32)
-    slot = _unreadable_slot(tmp_path, monkeypatch, child)
-    with pytest.raises(ValueError, match=r"cannot prove .* unreadable"):
-        _require_child_token_absent(tmp_path, child)
-    monkeypatch.undo()
-    slot.unlink()  # missing is absent
-    _require_child_token_absent(tmp_path, child)
-
-
 # --- Windows sharing errors on protocol reads (#2187) -------------------------------
 
 _EXEC_ID = "d" * 32
@@ -374,7 +325,7 @@ def _protocol_paths(tmp_path: Path):
 
 
 def _child_context(tmp_path: Path):
-    """A valid child context plus the Project entry that binds its digest."""
+    """A valid child context sidecar."""
     paths = _protocol_paths(tmp_path)
     context = {
         "$schema": "booley.supervised-child-context/v1",
@@ -386,18 +337,35 @@ def _child_context(tmp_path: Path):
         "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
         "attempt_ordinal": 1,
     }
-    raw = json.dumps(context).encode()
-    paths.context.write_bytes(raw)
-    entry = {
-        "$schema": "booley.simulation-campaign-child-entry/v1",
-        "child_execution_id": _EXEC_ID,
-        "runtime_context_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        **{k: v for k, v in context.items() if k not in {"$schema", "child_execution_id"}},
-    }
-    entries = paths.root.parents[2] / ".runtime" / "campaign-child-executions" / "entries"
-    entries.mkdir(parents=True)
-    (entries / f"{_EXEC_ID}.json").write_text(json.dumps(entry), encoding="utf-8")
+    paths.context.write_bytes(json.dumps(context).encode())
     return paths
+
+
+def _leftover_child_entry(booley_dir: Path, execution_id: str) -> Path:
+    """The Project-local child entry Booley 0.3.0 left behind; nothing reads it any more."""
+    entries = booley_dir / ".runtime" / "campaign-child-executions" / "entries"
+    entries.mkdir(parents=True, exist_ok=True)
+    entry = entries / f"{execution_id}.json"
+    entry.write_text(
+        json.dumps({"runtime_context_sha256": "sha256:" + "0" * 64}), encoding="utf-8"
+    )
+    return entry
+
+
+def test_context_check_ignores_a_leftover_project_child_entry(tmp_path: Path) -> None:
+    paths = _child_context(tmp_path)
+    _leftover_child_entry(tmp_path, _EXEC_ID)
+    assert child_context_matches(paths, _EXEC_ID) is True  # the entry does not bind the digest
+    paths.context.unlink()
+    assert child_context_matches(paths, _EXEC_ID) is True  # no sidecar: nothing to refuse
+
+
+def test_terminal_gc_ignores_a_leftover_unretired_child_entry(tmp_path: Path) -> None:
+    stale = "a" * 32
+    _old_terminal(tmp_path, stale)
+    _leftover_child_entry(tmp_path, stale)
+
+    assert gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10) == [stale]
 
 
 def _heartbeat(tmp_path: Path):
@@ -424,12 +392,6 @@ def test_context_read_survives_transient_sharing_error(tmp_path: Path, monkeypat
     assert child_context_matches(paths, _EXEC_ID) is True
 
 
-def test_context_bytes_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
-    paths = _child_context(tmp_path)
-    hold_opens(monkeypatch, {paths.context: 1}, skip=1)  # hold the digest read, not the parse
-    assert child_context_matches(paths, _EXEC_ID) is True
-
-
 def test_heartbeat_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
     paths = _heartbeat(tmp_path)
     hold_opens(monkeypatch, {paths.heartbeat: 1})
@@ -447,13 +409,6 @@ def test_record_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -
 def test_context_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
     paths = _child_context(tmp_path)
     hold_opens(monkeypatch, {paths.context: 5})
-    with pytest.raises(PermissionError):
-        child_context_matches(paths, _EXEC_ID)
-
-
-def test_context_bytes_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
-    paths = _child_context(tmp_path)
-    hold_opens(monkeypatch, {paths.context: 5}, skip=1)
     with pytest.raises(PermissionError):
         child_context_matches(paths, _EXEC_ID)
 

@@ -8,7 +8,11 @@ from uuid import uuid4
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, encode_simulation_campaign_manifest
+from booley.flows.sim.campaign.codec import (
+    MANIFEST_SCHEMA,
+    canonical_json_bytes,
+    encode_simulation_campaign_manifest,
+)
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import finish_goal
@@ -16,7 +20,6 @@ from booley.goals.lifecycle import LifecycleError
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.mcp.goal_completion import complete_goal, completion_environment
-from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
 from tests.flows.sim.test_campaign_manifest_codec import _manifest_components, _manifest_work
 from tests.goals.conftest import LINT_KEY, bind, campaign_facts, enter_goals, git
 from tests.goals.test_finish import Crash, request
@@ -25,6 +28,16 @@ from tests.goals.test_finish import Crash, request
 # The measured Windows Reviewer baseline is 27.768s (windows-test-timings.json);
 # its 3x/30s-rounded minimum is 90s, above CI's unannotated 60s default.
 pytestmark = pytest.mark.timeout(120)
+
+
+def _as_0_3_0_manifest(raw: bytes) -> tuple[bytes, str]:
+    """What Booley 0.3.0 wrote: manifest v1 with no recorded Test Runs, and its digest."""
+    document = json.loads(raw)
+    document["$schema"] = "booley.simulation-campaign-manifest/v1"
+    for item in document["work_items"]:
+        del item["test_runs"]
+    raw = canonical_json_bytes(document)
+    return raw, "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
 
 
 def classified(
@@ -47,6 +60,7 @@ def classified(
     goals=None,
     criterion=LINT_KEY,
     criterion_detail=None,
+    retired_manifest=False,
 ):
     layout.record = enter_goals(layout, goals or [{"family": "LINT", "target": "top"}])
     relative = (
@@ -115,14 +129,9 @@ def classified(
         disclosure = _real_disclosure(layout)
     if disclosure_override is not None:
         disclosure = disclosure_override
-    source_metadata = source_metadata or disclosure["tool_provenance"]["contract_version"] == "2"
-    if not source_metadata:
-        items = _legacy_manifest(target=target)["work_items"]
     manifest = finalize_manifest(
         {
-            "$schema": MANIFEST_SCHEMA
-            if source_metadata
-            else "booley.simulation-campaign-manifest/v1",
+            "$schema": MANIFEST_SCHEMA,
             "campaign_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": ("c" if foreign_origin else "b") * 32, "invocation_id": 7},
@@ -138,11 +147,13 @@ def classified(
     paths = record_paths(layout.control, layout.record.id)
     path = paths.runtime_dir / "flow-reports/sim/7/targets/top/campaign/manifest.json"
     path.parent.mkdir(parents=True)
-    path.write_bytes(encode_simulation_campaign_manifest(manifest))
+    raw = encode_simulation_campaign_manifest(manifest)
+    digest = manifest_digest(manifest)
+    if retired_manifest:
+        raw, digest = _as_0_3_0_manifest(raw)
+    path.write_bytes(raw)
     facts = campaign_facts()
-    facts.update(
-        campaign_id=manifest.document["campaign_id"], manifest_sha256=manifest_digest(manifest)
-    )
+    facts.update(campaign_id=manifest.document["campaign_id"], manifest_sha256=digest)
     recorder = GoalEvidenceRecorder(bind(layout))
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())
@@ -474,6 +485,17 @@ def test_new_producer_contract_never_uses_legacy_staged_fallback(layout):
     producer["planning_disclosures"][0]["tool_provenance"]["contract_version"] = "2"
     row = {"detail": {"_source_fingerprint": {"target": "top"}}}
     assert _disclosed_inputs(layout.worktree, producer, row, {}) == []
+
+
+def test_finish_refuses_a_0_3_0_producer_manifest_naming_its_invocation(layout):
+    classified(layout, copyto="dhrystone/dhry.hex", retired_manifest=True)
+    with pytest.raises(LifecycleError) as excinfo:
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+    message = str(excinfo.value)
+    assert "written by Booley 0.3.0 and is no longer supported" in message
+    assert "booley.simulation-campaign-manifest/v1" in message
+    assert "delete the Simulation invocation directory" in message
+    assert "/flow-reports/sim/7 by hand" in message.replace("\\", "/")
 
 
 def _prepare_target_less_generated_record(
