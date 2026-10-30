@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 from booley.config.gateway import GATEWAY_AUTH, gateway_settings_from_env
-from booley.harness.setup.common import banner, err, info, ok, warn
+from booley.harness.setup.common import banner, err, hint, info, note, ok, warn
 from booley.runtime import auth_token
 from booley.runtime.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
 
@@ -57,13 +57,15 @@ _MODE_DESC = {
 }
 
 
+def _policy_note(policy: str) -> None:
+    """State the auth policy and where its credentials come from, in words."""
+    note(f"auth policy '{policy}'; credentials come from the environment this command inherited")
+
+
 def _report_gateway_status(app: str | None) -> int:
     """Report the env-selected gateway policy: Codex only, URL + token required."""
     app = app or APP_CODEX
-    info(
-        f"configured auth = '{GATEWAY_AUTH}'; "
-        "inherited environment is that of this launching process"
-    )
+    _policy_note(GATEWAY_AUTH)
     if app != APP_CODEX:
         err(f"{app}: auth '{GATEWAY_AUTH}' routes Codex only")
         return 1
@@ -96,13 +98,13 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     if gateway_handoff_active():
         return _report_gateway_status(app)
     if env_auth_handoff() == GATEWAY_AUTH:
-        info(
+        note(
             "BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it; "
             "showing the booley.toml policy"
         )
     apps = [app] if app else list(auth_token.CREDENTIALS)
     usable = 0
-    info(f"configured auth = '{policy}'; inherited environment is that of this launching process")
+    _policy_note(policy)
     for selected in apps:
         plan = auth_token.credential_plan(selected, policy)
         for message in auth_token.credential_warnings(plan):
@@ -113,9 +115,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
                 f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
             )
             if policy == "auto":
-                info(
-                    f"       fix: run the app's login, export an API key, or booley auth --app {selected}"
-                )
+                hint(f"run the app's login, export an API key, or booley auth --app {selected}")
             continue
         usable += 1
         line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
@@ -123,11 +123,11 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
             ok(line)
         else:
             warn(line)
-            info("       a host-side login can revoke a running container's copy mid-run")
+            hint("a host-side login can revoke a running container's copy mid-run")
             if policy == "auto":
-                info(f"       fix: booley auth --app {selected}")
+                hint(f"booley auth --app {selected}")
         for loser in effective.overridden:
-            info(f"       {loser} is present but NOT used — the line above wins")
+            hint(f"{loser} is present but not used; the line above wins")
         if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(
             selected
         ):

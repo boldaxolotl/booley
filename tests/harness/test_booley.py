@@ -349,8 +349,10 @@ def test_projects_dispatch_precedes_active_project_discovery(
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
     from booley.runtime import image_keepers as runtime_image_keepers
 
-    def run(_args: Namespace, *, keeper_operations: project_inventory_cli.KeeperOperations) -> int:
-        assert keeper_operations is runtime_image_keepers
+    seen: dict[str, object] = {}
+
+    def run(_args: Namespace, **kwargs: object) -> int:
+        seen.update(kwargs)
         return 19
 
     monkeypatch.setattr(project_inventory_cli, "run", run)
@@ -361,6 +363,13 @@ def test_projects_dispatch_precedes_active_project_discovery(
     )
 
     assert tlr.main() == 19
+    assert seen["keeper_operations"] is runtime_image_keepers
+    view = seen.get("leftovers_view")
+    assert view is not None
+    assert (view.__module__, view.__name__) == (
+        "booley.harness.projects_view",
+        "render_leftovers",
+    )
 
 
 def test_noncanonical_host_command_stops_before_dispatch(monkeypatch, capsys):
@@ -1105,6 +1114,14 @@ class _FakeFlow:
         return type(self).rc
 
 
+def _unknown_flow_error(name: str) -> str:
+    """The stderr text for an unknown Flow: plain heading and table, never styled."""
+    from booley.harness.terminal_table import render_table
+
+    table = "\n".join(render_table(["Name", "Description"], [["fakeflow", "A fake Flow"]]))
+    return f"ERROR: {name!r} is not a flow for booley flow.\n\nAvailable Flows\n{table}\n"
+
+
 class TestCmdFlow:
     @pytest.fixture(autouse=True)
     def _fake_registry(self, monkeypatch):
@@ -1161,21 +1178,40 @@ class TestCmdFlow:
         _FakeFlow.rc = rc
         assert tlr._cmd_flow(self._args(["flow", "fakeflow"]), Path("/work")) == rc
 
+    @pytest.mark.parametrize("kind", ["flow", "specialist"])
+    def test_bare_listing_is_a_header_table(self, kind, monkeypatch, capsys):
+        from booley.harness import colors
+        from booley.harness.terminal_table import render_table
+        from booley.mcp.registry import McpToolInfo
+
+        monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+        infos = [
+            McpToolInfo(name=name, path=f"{kind}s/{name}.py", description=text, kind=kind)
+            for name, text in (("zeta", "Last one. Hidden."), ("alpha", "First\n   one"))
+        ]
+        args = Namespace(command=kind, endpoint_name=None, endpoint_args=[])
+
+        assert tlr._select_endpoint(args, infos, kind) == 0
+
+        heading = "Available Flows" if kind == "flow" else "Available Specialists"
+        table = render_table(
+            ["Name", "Description"], [["alpha", "First one"], ["zeta", "Last one"]]
+        )
+        assert capsys.readouterr().out.splitlines() == [heading, *table]
+
     def test_unknown_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow", "nosuchtool"]), Path("/work"))
         assert rc == 2
         streams = capsys.readouterr()
         assert streams.out == ""
-        assert streams.err == (
-            "ERROR: 'nosuchtool' is not a flow for booley flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
-        )
+        assert streams.err == (_unknown_flow_error("nosuchtool"))
         assert not _FakeFlow.calls
 
     def test_missing_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow"]), Path("/work"))
         assert rc == 0
         streams = capsys.readouterr()
-        assert "Available Flows:" in streams.out
+        assert "Available Flows" in streams.out
         assert "fakeflow" in streams.out
         assert streams.err == ""
 
@@ -1190,7 +1226,7 @@ class TestCmdFlow:
 
         assert tlr.main() == 0
         streams = capsys.readouterr()
-        assert "Available Flows:" in streams.out
+        assert "Available Flows" in streams.out
         assert "fakeflow" in streams.out
         assert streams.err == ""
 
@@ -1199,9 +1235,7 @@ class TestCmdFlow:
         assert rc == 2
         streams = capsys.readouterr()
         assert streams.out == ""
-        assert streams.err == (
-            "ERROR: '' is not a flow for booley flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
-        )
+        assert streams.err == (_unknown_flow_error(""))
 
     def test_listing_trims_the_llm_facing_description(self, capsys):
         tlr._cmd_flow(self._args(["flow"]), Path("/work"))
@@ -1421,7 +1455,7 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     assert tlr._cmd_session(args, tmp_path) == 2
     captured = capsys.readouterr()
     assert captured.err == (
-        "[XX] image-capacity: Project overlay needs 10 GiB; only 1 GiB available\n"
+        "ERROR: image-capacity: Project overlay needs 10 GiB; only 1 GiB available\n"
     )
     assert "Refreshed Sandbox" not in captured.out
     assert preparations == [tmp_path.resolve()]
@@ -1829,7 +1863,7 @@ def test_auth_status_cli_refuses_corrupt_owned_project(
     assert tlr.main() == 1
     captured = capsys.readouterr()
     assert "agents run on" not in captured.out
-    assert "[XX]" in captured.out
+    assert "✗" in captured.out
 
 
 def _auth_cli_environment(tmp_path, monkeypatch, argv):

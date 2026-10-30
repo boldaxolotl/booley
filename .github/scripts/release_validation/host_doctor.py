@@ -14,8 +14,8 @@ _MCP_TOOLS = re.compile(r"MCP server exposes [0-9]+ MCP tool\(s\)")
 _FAILED_COUNT = re.compile(r"^\s*\S*\s*failed\s+(\d+)$", re.MULTILINE)
 # Color codes a FORCE_COLOR environment adds around Doctor's rows.
 _COLOR_CODES = re.compile(r"\x1b\[[0-9;]*m")
-# Status markers Project Initialization prints for a warning or a failure.
-_PROBLEM_MARKERS = ("[!!]", "[XX]")
+# A Project Initialization status row led by the warning (!) or failure (✗) glyph.
+_PROBLEM_ROW = re.compile(r"^\s*[!\u2717]\s{2}")
 # Executables stubbed into the isolated home's bin for the duration of a run.
 _EDITOR_PROBE = "code"
 _AGENT_CLI_PROBE = "codex"
@@ -118,8 +118,9 @@ def _prepare_agent_cli_probe(home: Path) -> Path:
 
 
 def _problem_lines(output: str) -> list[str]:
-    """Return the output lines that carry a warning or failure marker."""
-    return [line for line in output.splitlines() if any(m in line for m in _PROBLEM_MARKERS)]
+    """Return the color-stripped output lines that are warning or failure rows."""
+    lines = _COLOR_CODES.sub("", output).splitlines()
+    return [line for line in lines if _PROBLEM_ROW.match(line)]
 
 
 def _editor_marker(home: Path) -> Path:

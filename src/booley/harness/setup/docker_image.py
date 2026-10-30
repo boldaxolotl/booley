@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.harness.setup.common import InitContext, err, info, ok, skip, warn
+from booley.harness.setup.common import InitContext, current, err, hint, info, ok, skip, warn
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
     iter_payload_files,
@@ -527,9 +527,9 @@ def _prepare_existing_base_image(
     if fingerprint is None and allow_pull and _refresh_installed_base_image(ctx, expected_version):
         return True
     if fingerprint is None or not _image_is_stale(fingerprint, expected_version=expected_version):
-        skip(f"{DOCKER_IMAGE} image already present")
+        current(f"{DOCKER_IMAGE} image already present")
         _report_build_cache()
-        ctx.record("docker_image", "skip", "already present")
+        ctx.record("docker_image", "current", "already present")
         return True
     warn(f"{DOCKER_IMAGE} image is stale (source changed since build) — rebuilding")
     warn("a dev-install source/fingerprint change rebuilds the Sandbox Image locally")
@@ -621,8 +621,8 @@ def _docker_cli_ready(ctx: InitContext) -> bool:
 def _docker_check_only(ctx: InitContext, exists: bool) -> None:
     """Handle --check-only mode for Docker image step."""
     if exists:
-        skip(f"{DOCKER_IMAGE} image already present")
-        ctx.record("docker_image", "skip", "already present")
+        current(f"{DOCKER_IMAGE} image already present")
+        ctx.record("docker_image", "current", "already present")
     else:
         warn(f"{DOCKER_IMAGE} image missing (would build)")
         ctx.record("docker_image", "warn", "would build")
@@ -1044,14 +1044,14 @@ def _report_wheel_failure(ctx: InitContext, exc: Exception) -> bool:
     for line in combined.splitlines()[-12:]:
         info(f"  {line}")
     if "No module named build" in combined or isinstance(exc, FileNotFoundError):
-        info("  fix: pip install build   (or: pip install -e '.[dev]')")
+        hint("pip install build   (or: pip install -e '.[dev]')")
     elif "ensurepip is not available" in combined:
         # Debian/Ubuntu split venv out of the interpreter package; ``build``
         # needs it to make its isolated environment. The version must match the
         # interpreter running init, not the distro default (docs/user/TROUBLESHOOTING.md).
         pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
-        info(f"  fix: sudo apt install python{pyver}-venv   (matches this interpreter)")
-        info("       or: pip install build && python -m build --wheel --no-isolation")
+        hint(f"sudo apt install python{pyver}-venv   (matches this interpreter)")
+        hint("or: pip install build && python -m build --wheel --no-isolation")
     ctx.record("docker_image", "err", "wheel build failed")
     return False
 
@@ -1229,8 +1229,8 @@ def _prepare_flavor_without_build(
         and _image_is_stale(fingerprint, image, expected_version)
     )
     if inspect_existing and not installed_release_mismatch and not source_stale:
-        skip(f"{image} is a Booley-shipped sandbox flavor and is up to date")
-        ctx.record("project_image", "skip", f"flavor {image} current")
+        current(f"{image} is a Booley-shipped sandbox flavor and is up to date")
+        ctx.record("project_image", "current", f"flavor {image} current")
         return False
     if ctx.check_only:
         if installed_release_mismatch and allow_pull:

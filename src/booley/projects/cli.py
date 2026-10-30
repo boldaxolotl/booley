@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +23,10 @@ class KeeperOperations(Protocol):
     def project_leftovers(self, project: Path) -> tuple[image_keepers.Leftover, ...]: ...
 
     def prune_keepers(self, confirm: str | None = None) -> image_keepers.PruneResult: ...
+
+
+#: Renders the Docker resources a forgotten Project leaves behind; the harness supplies it.
+LeftoversView = Callable[[tuple[image_keepers.Leftover, ...]], str]
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -62,7 +67,12 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     prune.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
 
 
-def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None = None) -> int:
+def run(
+    args: argparse.Namespace,
+    *,
+    leftovers_view: LeftoversView,
+    keeper_operations: KeeperOperations | None = None,
+) -> int:
     """Execute one Project Inventory operation."""
     try:
         action = getattr(args, "projects_action", None)
@@ -85,7 +95,12 @@ def run(args: argparse.Namespace, *, keeper_operations: KeeperOperations | None 
                     f"{exc} (keeper {keeper.status}: {keeper.tag})"
                 ) from exc
             return _render_forgotten(
-                forgotten, keeper, purged, left, json_output=getattr(args, "json", False)
+                forgotten,
+                keeper,
+                purged,
+                left,
+                json_output=getattr(args, "json", False),
+                leftovers_view=leftovers_view,
             )
         if action == "prune-keepers":
             assert keeper_operations is not None
@@ -123,6 +138,7 @@ def _render_forgotten(
     left: tuple[image_keepers.Leftover, ...],
     *,
     json_output: bool,
+    leftovers_view: LeftoversView,
 ) -> int:
     if json_output:
         document = {
@@ -145,10 +161,7 @@ def _render_forgotten(
         print("No Docker resources left behind for this Project.")
         return 0
     print("Left behind for this Project:")
-    for item in left:
-        size = f" {item.size}" if item.size else ""
-        tags = f" tags: {', '.join(item.tags)}" if item.tags else ""
-        print(f"  {item.kind} {item.name}{size} [{item.reason}]{tags}")
+    print(leftovers_view(left))
     if purged is None and any(item.reason == "unused" for item in left):
         print(f"Remove the unused ones with: booley projects forget --purge {forgotten}")
     return 0

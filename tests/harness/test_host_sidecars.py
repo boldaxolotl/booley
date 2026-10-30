@@ -830,7 +830,7 @@ def test_check_only_missing_sidecar_images_and_containers_are_pending(
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper"):
-        assert f"[!!] {resource}:" in output, f"sidecar {resource} must be pending"
+        assert f"+  {resource}:" in output, f"sidecar {resource} must be pending"
     assert status == 1
     assert _tree_snapshot(tmp_path) == before
 
@@ -848,7 +848,7 @@ def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys,
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
-    assert f"[XX] {resource}:" in output
+    assert f"✗  {resource}:" in output
     assert "access" in output
 
 
@@ -872,8 +872,8 @@ def test_complete_inspection_foreign_container_with_missing_image_remains_error(
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
-    assert "[XX] proxy:" in output and "foreign name collision" in output
-    assert "[!!] reaper:" in output
+    assert "✗  proxy:" in output and "foreign name collision" in output
+    assert "+  reaper:" in output
 
 
 @pytest.mark.parametrize("error_type", [sidecars.SidecarError, PermissionError])
@@ -921,7 +921,7 @@ def test_check_only_stale_network_blockers_are_errors(monkeypatch, tmp_path, cap
         )
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
-    assert "[XX] network:" in output, "blocked network must be ERROR"
+    assert "✗  network:" in output, "blocked network must be ERROR"
     assert status == 2
     _assert_complete(output)
     assert ("foreign" if blocker != "active-session" else "shut down") in output
@@ -954,7 +954,7 @@ def test_check_only_stale_container_with_active_session_is_error(monkeypatch, tm
         sidecars, "_active_sessions", lambda _docker: (_active_session("session-a"),)
     )
     status, output = _run_inspection(capsys)
-    assert "[XX] proxy:" in output, "blocked container must be ERROR"
+    assert "✗  proxy:" in output, "blocked container must be ERROR"
     assert status == 2
     _assert_complete(output)
     assert "shut down" in output
@@ -1311,7 +1311,7 @@ def test_check_only_unproxied_absent_proxy_and_network_are_current(monkeypatch, 
 
     _assert_complete(output)
     for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper"):
-        assert f"[--] {resource}:" in output, f"{resource} must be current"
+        assert f"=  {resource}:" in output, f"{resource} must be current"
     assert not any(sidecars.legacy.PROXY_IMAGE in call for call in docker.calls)
     assert status == 1, "only the helper's stale base image stays pending"
     assert docker.mutations() == []
@@ -1331,7 +1331,7 @@ def test_check_only_unproxied_reports_leftover_proxy_and_network(
     status, output = _run_inspection(capsys)
 
     _assert_complete(output)
-    glyph = "[!!]" if blocker == "idle" else "[XX]"
+    glyph = "+" if blocker == "idle" else "✗"
     for resource in ("network", "proxy"):
         line = next(line for line in output.splitlines() if f" {resource}:" in line)
         assert glyph in line, f"leftover {resource} must be {blocker}-reported"

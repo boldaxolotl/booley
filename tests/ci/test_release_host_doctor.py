@@ -178,14 +178,16 @@ def test_host_doctor_names_the_initialization_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A warning fails the gate, and the error carries the offending line itself."""
-    booley, log = _fake_booley(tmp_path, init_output="[!!] host-agent-cli: something drifted")
+    booley, log = _fake_booley(
+        tmp_path, init_output="  \x1b[33m!\x1b[0m  host-agent-cli: something drifted"
+    )
     project = tmp_path / "project"
     home = tmp_path / "home"
     project.mkdir()
     home.mkdir()
     monkeypatch.setenv("COMMAND_LOG", str(log))
 
-    with pytest.raises(RuntimeError, match=r"\[!!\] host-agent-cli: something drifted"):
+    with pytest.raises(RuntimeError, match=r"!  host-agent-cli: something drifted"):
         host_doctor.validate(
             allowed_root=tmp_path,
             project=project,

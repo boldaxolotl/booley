@@ -288,15 +288,26 @@ class TestAuthStatusReport:
         assert rc == 0  # a refreshing login is usable despite its rotation warning
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
-    def test_overridden_subscription_is_named(self, isolated_home, monkeypatch):
+    def test_overridden_source_is_a_hint_under_its_line(self, isolated_home, monkeypatch, capsys):
+        from booley.harness import auth_cmd, colors
+
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
+        monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
-        _rc, sink = self._run(monkeypatch)
+        auth_cmd._report_status()
 
-        assert any(".credentials.json" in m and "NOT used" in m for m in sink["info"])
+        lines = capsys.readouterr().out.splitlines()
+        row = next(
+            (i for i, line in enumerate(lines) if line.startswith("  \u2713  claude:")), None
+        )
+        assert row is not None
+        assert lines[row + 1].startswith("     \u2192 ")
+        assert lines[row + 1].endswith(
+            ".credentials.json is present but not used; the line above wins"
+        )
 
 
 class TestInjection:

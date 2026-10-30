@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import io
 import os
+import pathlib
 import sys
 
 import pytest
@@ -20,6 +22,8 @@ _GLYPHS = {
     "note": "·",
     "waived": "~",
     "running": "▸",
+    "current": "=",
+    "pending": "+",
 }
 
 
@@ -98,3 +102,29 @@ def test_ids_end_at_the_terminal_width_capped_on_a_tty(columns, expected_width, 
     ts = _status_module()
 
     assert len(ts.status_line(ts.LineStatus.WARN, "msg", check_id="a.b")) == expected_width
+
+
+#: Status markers commands used to draw for themselves before the shared glyphs.
+_RETIRED_MARKERS = ("[OK]", "[!!]", "[XX]", "[ii]")
+
+
+def _string_literals(source: str):
+    """Yield every string constant (f-string pieces included) in *source*."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.value
+
+
+def test_no_command_keeps_its_own_status_markers():
+    root = pathlib.Path(colors.__file__).resolve().parents[1]
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        for text in _string_literals(path.read_text(encoding="utf-8")):
+            own_marker = (
+                any(marker in text for marker in _RETIRED_MARKERS)
+                or text == "[--]"
+                or text.startswith(("[--] ", "=== "))
+            )
+            if own_marker:
+                offenders.append(f"{path.relative_to(root)}: {text[:40]!r}")
+    assert offenders == []

@@ -736,8 +736,8 @@ def test_init_tracked_task_notice_is_one_informational_line(
     init_cmd._step_interactive(ctx)
     output = capsys.readouterr().out
     assert output.count(notice) == 1
-    assert "[!!]" not in output
-    assert ctx.results[-1].status == "skip"
+    assert "  !  " not in output
+    assert ctx.results[-1].status == "current"
 
 
 @pytest.mark.parametrize(

@@ -11,7 +11,8 @@ from booley.harness.bootstrap import (
     inspect_bootstrap,
     reconcile_bootstrap,
 )
-from booley.harness.colors import accent, bold_chrome, green, red, yellow
+from booley.harness.colors import green, red, yellow
+from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -156,19 +157,20 @@ def _qa_prune_succeeded(result: BootstrapResult) -> bool:
     )
 
 
+_ROW_STATUS = {
+    BootstrapState.CURRENT: LineStatus.CURRENT,
+    BootstrapState.PENDING: LineStatus.PENDING,
+    BootstrapState.CHANGED: LineStatus.PASS,
+    BootstrapState.WARNING: LineStatus.WARN,
+    BootstrapState.ERROR: LineStatus.FAIL,
+}
+
+
 def _render_result(result: BootstrapResult) -> int:
-    print(bold_chrome("Host Bootstrap"))
-    glyphs = {
-        BootstrapState.CURRENT: (accent, "[--]"),
-        BootstrapState.PENDING: (yellow, "[!!]"),
-        BootstrapState.CHANGED: (green, "[OK]"),
-        BootstrapState.WARNING: (yellow, "[!!]"),
-        BootstrapState.ERROR: (red, "[XX]"),
-    }
+    print(section_header("Host Bootstrap"))
     for finding in result.findings:
-        color, glyph = glyphs[finding.state]
         detail = _inspection_detail(finding) if result.intent is Intent.CHECK else finding.detail
-        print(f"  {color(glyph)} {finding.resource}: {detail}")
+        print(status_line(_ROW_STATUS[finding.state], f"{finding.resource}: {detail}"))
     if result.exit_status == 0:
         print(green("Host Bootstrap is current."))
     elif result.exit_status == 1:

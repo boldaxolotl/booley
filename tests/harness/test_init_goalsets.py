@@ -238,7 +238,7 @@ def test_goalset_step_selects_init_destination_not_parent_project(
         assert {p.name for p in (child / ".booley/goalsets").iterdir()} == EXPECTED_FILES
         assert ctx.results[-1].status == "ok"
     init_cmd._step_goalsets(ctx)
-    assert ctx.results[-1].status == ("warn" if check_only else "skip")
+    assert ctx.results[-1].status == ("warn" if check_only else "current")
 
 
 def test_goalset_with_a_sim_goal_shows_valid_test_run_goal_examples() -> None:

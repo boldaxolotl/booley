@@ -14,6 +14,7 @@ from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.harness.setup.common import (
     InitContext,
     WriteOutcome,
+    current,
     err,
     guarded_write,
     ok,
@@ -409,8 +410,8 @@ def step_project_git_hooks(ctx: InitContext) -> None:
         bundle = build_project_git_hook_bundle().content
         actions = _plan(ctx, locations, bundle)
         if not actions:
-            skip("project Git-hook bundle and adapters are current")
-            ctx.record("project_git_hooks", "skip", "current")
+            current("project Git-hook bundle and adapters are current")
+            ctx.record("project_git_hooks", "current", "current")
             return
         if ctx.check_only:
             detail = "; ".join(action.detail for action in actions)

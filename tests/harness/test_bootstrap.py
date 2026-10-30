@@ -656,7 +656,7 @@ def test_public_adapter_check_only_reports_unsafe_private_store(
 
     captured = capsys.readouterr()
     assert status == 2
-    assert "[XX]" in captured.out
+    assert "✗  " in captured.out
     assert str(booley_config) in captured.out
     assert "0755" in captured.out
     assert f"chmod 700 {booley_config}" in captured.out
@@ -722,7 +722,7 @@ def test_public_adapter_mutation_reports_unsafe_private_store_before_registratio
 
     captured = capsys.readouterr()
     assert status == 2
-    assert "[XX]" in captured.out
+    assert "✗  " in captured.out
     assert str(booley_config) in captured.out
     assert "0755" in captured.out
     assert f"chmod 700 {booley_config}" in captured.out
@@ -1855,7 +1855,7 @@ def test_check_only_fresh_config_reports_all_pending_without_writes(monkeypatch,
     assert status == 1, "fresh eligible wheel must be pending"
     _assert_complete(output)
     for line in output.splitlines():
-        if "[!!]" in line and "qa-skills:" not in line:
+        if "  +  " in line:
             assert "booley bootstrap" in line
     assert _tree_snapshot(tmp_path) == before
 
@@ -1910,7 +1910,7 @@ def test_check_only_continues_after_resource_error(monkeypatch, tmp_path, capsys
     status, output = _run_inspection(capsys)
     assert _tree_snapshot(tmp_path) == before
     if resource == "nangate45":
-        assert "[XX] nangate45:" in output, "cache access failure must be ERROR"
+        assert "✗  nangate45:" in output, "cache access failure must be ERROR"
     _assert_complete(output)
     assert status == 2
     line = next(line for line in output.splitlines() if f" {resource}:" in line)
@@ -1946,7 +1946,7 @@ def test_check_only_prerequisite_error_lists_pending_with_remedies(monkeypatch, 
     _assert_complete(output)
     assert status == 2
     for line in output.splitlines():
-        if "[!!]" in line:
+        if "  +  " in line:
             assert "booley bootstrap" in line
     assert "daemon" in output and "access" in output
     assert not environment.docker.calls
@@ -1958,7 +1958,7 @@ def test_check_only_cache_permission_error_is_not_pending(monkeypatch, tmp_path,
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     assert _tree_snapshot(tmp_path) == before
-    assert "[XX] nangate45:" in output, "cache access failure must be ERROR"
+    assert "✗  nangate45:" in output, "cache access failure must be ERROR"
     assert status == 2
     _assert_complete(output)
     assert str(environment.cache / "member") in output
@@ -2043,7 +2043,7 @@ def test_complete_inspection_invalid_candidate_preserves_qa_warning(monkeypatch,
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
-    assert "[!!] qa-skills: checkout is gone" in output
+    assert "!  qa-skills: checkout is gone" in output
     assert "--without-qa-skills" in output
 
 
@@ -2080,7 +2080,7 @@ def test_check_only_cache_directory_collision_is_error(monkeypatch, tmp_path, ca
     (environment.cache / "member").mkdir()
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
-    assert "[XX] nangate45:" in output, "cache directory collision must be ERROR"
+    assert "✗  nangate45:" in output, "cache directory collision must be ERROR"
     assert status == 2
     _assert_complete(output)
     assert str(environment.cache / "member") in output
@@ -2104,7 +2104,7 @@ def test_check_only_invalid_utf8_policy_preserves_independent_findings(
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     _assert_complete(output)
-    assert "[XX] host-config:" in output
+    assert "✗  host-config:" in output
     assert status == 2
     assert str(path) in output
     assert "UTF-8" in output
@@ -2128,7 +2128,7 @@ def test_check_only_ineligible_install_names_canonical_command(monkeypatch, tmp_
     assert "run the canonical host `booley bootstrap`" in line, "use the canonical host remedy"
     assert "reinstall" not in line
     assert status == 2
-    assert "[XX] skills:" in output
+    assert "✗  skills:" in output
 
 
 def test_check_only_policy_blocker_has_only_its_applicable_remedy(monkeypatch, tmp_path, capsys):
@@ -2167,3 +2167,67 @@ def test_check_only_unsearchable_policy_preserves_independent_findings(
     assert status == 2
     assert str(path) in output
     assert "policy directory is not searchable" in output
+
+
+def _render_one_per_state(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    states = bootstrap.BootstrapState
+    findings = tuple(
+        bootstrap.BootstrapFinding(name, state, f"{name} detail")
+        for name, state in (
+            ("a", states.CHANGED),
+            ("b", states.WARNING),
+            ("c", states.ERROR),
+            ("d", states.CURRENT),
+            ("e", states.PENDING),
+        )
+    )
+    bootstrap_cli._render_result(bootstrap.BootstrapResult(Intent.ENSURE, findings))
+    return capsys.readouterr().out.splitlines()
+
+
+def test_bootstrap_rows_use_the_shared_header_and_glyphs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    lines = _render_one_per_state(capsys)
+    assert lines[0] == "Host Bootstrap"
+    assert lines[1:6] == [
+        "  \u2713  a: a detail",
+        "  !  b: b detail",
+        "  \u2717  c: c detail",
+        "  =  d: d detail",
+        "  +  e: e detail",
+    ]
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    assert _render_one_per_state(capsys)[0] == colors.bold_accent("Host Bootstrap")
+
+
+def test_current_and_skipped_render_differently(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import colors
+    from booley.harness.setup import common
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    bootstrap_cli._render_result(bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),)))
+    common.skip("proxy: current")
+    bootstrap_row, skipped_row = capsys.readouterr().out.splitlines()[1:3]
+    assert bootstrap_row[:5] != skipped_row[:5]
+
+    current = getattr(common, "current", None)
+    assert current is not None
+    current("proxy: current")
+    assert capsys.readouterr().out.splitlines()[0][:5] == bootstrap_row[:5]
+
+
+def test_verbose_init_records_current_bootstrap_findings(tmp_path, capsys):
+    ctx = init_cmd.InitContext(project_root=tmp_path, verbose=True)
+    result = bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),))
+
+    init_cmd._record_bootstrap(ctx, result)
+
+    assert ctx.results[-1] == init_cmd.StepResult("bootstrap.proxy", "current", "current")
+    assert "proxy: current" in capsys.readouterr().out

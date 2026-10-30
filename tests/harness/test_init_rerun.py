@@ -392,7 +392,7 @@ class TestFullInitRerun:
         apart from a step that silently failed."""
         assert _run_full_init(repo) in (0, 2)
 
-        numbers = re.findall(r"=== Step (\S+) —", capsys.readouterr().out)
+        numbers = re.findall(r"^Step (\S+) —", capsys.readouterr().out, re.MULTILINE)
 
         assert numbers, "init emitted no step banners"
         assert numbers == [str(n) for n in range(1, len(numbers) + 1)]
@@ -970,7 +970,7 @@ def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
     ctx = InitContext(project_root=repo, check_only=True)
     init_cmd._step_booley_dir(ctx)
     assert "would" not in capsys.readouterr().out
-    assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
+    assert [(r.status, r.detail) for r in ctx.results] == [("current", "already present")]
 
 
 def test_booley_dir_check_correct_permissions_keeps_skip(repo, capsys):
@@ -1159,7 +1159,9 @@ def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, 
     for force, check in ((False, False), (True, False), (False, True), (True, True)):
         ctx = InitContext(project_root=repo, force=force, check_only=check)
         init_cmd._run_seed(ctx, init_cmd.AgentSelection("claude", "subscription"))
-        numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
+        numbers = [
+            int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
+        ]
         assert numbers == list(range(1, len(numbers) + 1)), "seed headings must be sequential"
 
 
@@ -1332,7 +1334,9 @@ def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys):
         args.force = force
         args.check_only = check
         assert init_cmd.run_init(args, repo) == 0
-        numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
+        numbers = [
+            int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
+        ]
         assert numbers == list(range(1, len(numbers) + 1))
 
 
