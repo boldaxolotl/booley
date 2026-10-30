@@ -338,19 +338,21 @@ def test_committed_mode_on_builtin_overlap_is_detected_with_working_mode_restore
     )
 
 
-# Current-layout digests; historical recorded digests are never rewritten.
+# Current-layout digests; the digest has one format with or without declarations.
 @pytest.mark.parametrize(
     "declaration_line,working,head",
     [
-        (
+        pytest.param(
             "",
-            "677060e19bf9a366063ccc4ee4fd8bc02b060ab051f174be5bd7fdcafa2290ea",
-            "c052731edc29e589fc1e2aac7c1de654a32741466d180f8536094919629465bf",
+            "ef3e41f3280da22549800e4a8037a875f5e011817209113dc090c10b67965498",
+            "0d69559c510f9deaa680dc2a65816de7429694169f13da2897a608e6b60acc17",
+            id="no-key",
         ),
-        (
+        pytest.param(
             "protected_inputs=[]\n",
-            "3a5941b320e9794c0c7b0d4a2fa28cea8b9f6463b03bb6b6141392b4b1cc5299",
-            "b4414298727c9945c744f640e1f03e7f50f92ced443de936ad2c6dc0b58d8ee9",
+            "85c55fecf34e8c1793d2af6afcb56881d9d29ba354e7ca8c388cab0f6ca947a0",
+            "db56eee68f5778ca2328e85f9fe3e2a726efbd6c2b31ef85cb05b6ac4e36e501",
+            id="empty-list",
         ),
     ],
 )

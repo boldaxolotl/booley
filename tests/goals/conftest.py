@@ -39,6 +39,12 @@ GIT_TIMEOUT_S = 30
 KNOWN_TARGETS = frozenset({"top", "base"})
 DATE = "20261006"
 
+# A valid, never-resolved set of entry input roots for hand-built Goal Records.
+INPUT_PATHS: dict[str, Any] = {
+    "rtl": {"path": "/work", "identity": [1, 2]},
+    "project": {"path": "/work/.booley", "identity": [1, 3]},
+}
+
 
 def git(cwd: Path, *args: str) -> str:
     """Run git with a fixed identity and return its stripped output.

@@ -16,6 +16,7 @@ from booley.goals.store import GoalStore
 from booley.harness.dashboard import doctor, model
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime.worktrees import WorktreeEntry
+from tests.goals.conftest import INPUT_PATHS
 
 SCOPE = "pid:[17]"
 WT = WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main")
@@ -31,6 +32,8 @@ def record(path):
         "refs/heads/main",
         "a" * 40,
         "2026-10-08T10:00:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
         revision=1,
     )
 
@@ -359,10 +362,14 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     missing_record = replace(
         record(work), input_paths=root_bindings({"rtl": work, "project": control})
     )
+    # The healthy directory is not a Git checkout, so its roots are stubbed to the entry roots.
+    healthy_roots = root_bindings({"rtl": healthy, "project": control})
+    monkeypatch.setattr("booley.goals.protected_inputs.capture_roots", lambda *_: healthy_roots)
     healthy_record = replace(
         record(healthy),
         id="healthy-20261008T100000Z",
         worktree=replace(WT, checkout="worktrees/other"),
+        input_paths=healthy_roots,
     )
     _persist_record(control, missing_record)
     _persist_record(control, healthy_record)

@@ -679,6 +679,7 @@ def _revalidate_before_activation(
             raise GoalEntryError("the Paired Checkout moved while entering Goal Mode")
         _require_clean(paired, "the Paired Checkout")
     assert record.protected_digest is not None  # saved at step 6
+    assert record.protected_head_digest is not None  # saved together with it
     try:
         violations = protected_input_violations(
             record.protected_paths,

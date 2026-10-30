@@ -16,6 +16,7 @@ from booley.mcp import (
 )
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
+from tests.goals.conftest import INPUT_PATHS
 
 
 def snapshot_jobs(
@@ -168,6 +169,8 @@ def test_retained_goal_roots_are_discovered_without_current_sessions(tmp_path):
             "refs/heads/main",
             "a" * 40,
             "2026-10-08T10:00:00Z",
+            input_topology_digest="sha256:" + "e" * 64,
+            input_paths=INPUT_PATHS,
             revision=1,
         )
         paths = record_paths(tmp_path, record.id)
@@ -533,6 +536,8 @@ def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, mon
         "refs/heads/main",
         "a" * 40,
         "2026-10-08T10:00:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
         revision=1,
     )
     paths = record_paths(tmp_path, record.id)

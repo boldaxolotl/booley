@@ -382,7 +382,6 @@ def _validate_state_transition(
     stable = set(archived) - {
         "acceptance_transactions",
         "criteria",
-        "all_mandatory_met",
         "last_updated",
     }
     _need(all(recovered.get(key) == archived[key] for key in stable), "unrelated state changed")

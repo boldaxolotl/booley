@@ -166,10 +166,6 @@ def read_sealed_artifact(
             raise ValueError("immutable authority differs from the operation")
         _record_directory(authority, directory.parent.parent, record)
         path = directory / (name + ".json")
-        from booley.runtime.booley_dir_migration import is_archived_record
-
-        if is_archived_record(directory.parents[3], record.id) and not path.is_file():
-            raise ValueError("archived sealed artifact is missing")
         if path.exists() and _read_json(path) != value:
             raise ValueError("persisted artifact differs from durable authority")
         return value
@@ -336,12 +332,7 @@ def _record_directory(authority: dict[str, Any], current: Path, record: GoalReco
     ):
         raise LifecycleError("immutable operation directory identity was substituted")
     identity = binding["identity"]
-    if isinstance(identity, list):
-        identity = require_list(identity, field="legacy directory identity")
-        # Legacy storage inode IDs never supersede the bound logical record/request.
-        if len(identity) != 2 or any(type(item) is not int or item < 0 for item in identity):
-            raise LifecycleError("invalid legacy operation directory identity")
-    elif identity != {"record_id": record.id, "worktree": record.worktree.to_json()}:
+    if identity != {"record_id": record.id, "worktree": record.worktree.to_json()}:
         raise LifecycleError("operation directory belongs to a different logical record")
     return original
 
@@ -401,23 +392,3 @@ def _validate_finished_artifacts(result: dict[str, Any], operation: LifecycleOpe
     }
     if any(result[key] != value for key, value in expected.items()):
         raise LifecycleError("saved finished result differs from its frozen completion")
-
-
-def archived_result(store: GoalStore, request: LifecycleRequest) -> dict[str, Any] | None:
-    """Replay only a proven migrated terminal operation; no live checkout is required."""
-    from booley.runtime.booley_dir_migration import is_archived_record
-
-    validate_goal_id(request.record_id)
-    require_uuid4(request.operation_id, field="operation_id")
-    if not is_archived_record(store.booley_dir, request.record_id):
-        return None
-    record = store.load(request.record_id)
-    if record.state.value not in {"finished", "abandoned", "failed"}:
-        raise LifecycleError("archival replay requires a terminal Goal Record")
-    # Observational locking never creates storage, recovers operations or publishes state.
-    with store.record_lock(record.id, existing_only=True) as lock:
-        operation = LifecycleOperation(store, lock, request, Path(record.worktree_path))
-        saved = operation.saved_result()
-        if saved is None:
-            raise LifecycleError("archived operation has no sealed result")
-        return saved

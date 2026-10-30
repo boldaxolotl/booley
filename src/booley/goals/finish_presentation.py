@@ -15,7 +15,6 @@ from booley.goals.model import GoalRecord
 from booley.goals.presentation import present_spec
 from booley.goals.proposals import encode
 from booley.review.goal_package import GoalCompletionPackage, observation_facts, proposal_facts
-from booley.review.goal_presentation_v1 import render_goal_html as legacy_html
 
 
 def response(operation: LifecycleOperation, frozen: dict[str, Any]) -> dict[str, Any]:
@@ -55,15 +54,11 @@ def freeze_presentation(operation: LifecycleOperation, frozen: dict[str, Any]) -
 
 
 def html_bytes(frozen: dict[str, Any]) -> bytes:
-    """Legacy attempts use their frozen recipe, never the current renderer."""
-    if frozen["schema"] == "booley.goal-finish-attempt/v1":
-        return legacy_html(GoalCompletionPackage.from_json(frozen["package"])).encode("utf-8")
+    """The frozen presentation bytes, never a fresh render."""
     return bytes.fromhex(frozen["presentation"]["html_hex"])
 
 
 def frozen_response(operation: LifecycleOperation, frozen: dict[str, Any]) -> dict[str, Any]:
-    if frozen["schema"] == "booley.goal-finish-attempt/v1":
-        return response(operation, frozen)
     return require_dict(
         json.loads(bytes.fromhex(frozen["presentation"]["response_hex"])), field="frozen response"
     )
