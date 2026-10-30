@@ -38,13 +38,9 @@ from .coverage_campaign import (
 )
 
 CAMPAIGN_SCHEMA_V1 = "booley.coverage-campaign/v1"
-CAMPAIGN_SCHEMA_V4 = "booley.coverage-campaign/v4"
 #: v5: every run names its Test Run and declared-inputs fingerprint (ADR 0072),
-#: and one selected Test may have several runs. Booley writes only v5.
+#: and one selected Test may have several runs. Booley reads and writes only v5.
 CAMPAIGN_SCHEMA_V5 = "booley.coverage-campaign/v5"
-#: Every manifest version Booley reads. v4 (written by v0.3.0) stays readable;
-#: its runs name a bare Test.
-POINT_STORE_CAMPAIGN_SCHEMAS = frozenset({CAMPAIGN_SCHEMA_V4, CAMPAIGN_SCHEMA_V5})
 POINT_STORE_SCHEMA_V1 = "booley.coverage-points/v1"
 POINT_STORE_NAME = "coverage-points.jsonl.gz"
 #: The one resource ceiling on a point store: its decompressed size, on write and read.
@@ -332,7 +328,7 @@ def _point_documents(path: Path) -> list[dict[str, object]]:
 def _load_manifest(
     path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V4/V5 Campaign; the codec validates manifest and points once."""
+    """Deep-load one V5 Campaign; the codec validates manifest and points once."""
     try:
         if len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
@@ -340,11 +336,11 @@ def _load_manifest(
             )
         document = dict(require_dict(json.loads(raw)))
         schema = document.get("$schema")
-        # A tampered non-string schema (a list or object) is unhashable: reject it as unsupported.
-        if not isinstance(schema, str) or schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
+        if schema != CAMPAIGN_SCHEMA_V5:
             raise CoverageCampaignStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
-                "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
+                "Unsupported Coverage Campaign schema; delete the Coverage Campaign "
+                f"directory {path.parent} or recollect coverage with this Booley version",
             )
         if set(document) != _MANIFEST_FIELDS:
             raise CoverageCampaignStoreError(
@@ -377,7 +373,7 @@ def _load_manifest(
 def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V4/V5 Campaign; the codec validates it once, after the points are read."""
+    """Deep-load one V5 Campaign; the codec validates it once, after the points are read."""
     path = _canonical_campaign_path(path)
     try:
         return _load_manifest(path, _read_manifest_bytes(path), expected_target)
@@ -392,5 +388,5 @@ def load_coverage_campaign_bytes(
     raw: bytes,
     expected_target: DurableTargetIdentity | None = None,
 ) -> LoadedCoverageCampaign:
-    """Deep-load a V4/V5 Campaign from exact manifest bytes already authenticated."""
+    """Deep-load a V5 Campaign from exact manifest bytes already authenticated."""
     return _load_manifest(_canonical_campaign_path(path), raw, expected_target)

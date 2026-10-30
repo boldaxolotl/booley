@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 def rewrite_manifest_as_v4(manifest: dict) -> None:
-    """Turn a freshly published manifest into what Booley wrote at v4.
+    """Turn a freshly published manifest into what Booley 0.3.0 wrote (v4).
 
-    Runs named a bare Test before v5.
+    Runs named a bare Test, with no Test Run identity.
     """
     manifest["$schema"] = "booley.coverage-campaign/v4"
     for run in manifest["tests"]["runs"]:
