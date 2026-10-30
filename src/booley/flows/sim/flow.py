@@ -3098,6 +3098,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self._resolved_build_timeout_ms = cached
         return cast(int, cached)
 
+    def _resource_flags(self) -> tuple[str, ...]:
+        """Coverage and tracing change a simulation's footprint; key history by them."""
+        return tuple(
+            flag
+            for flag, enabled in (("coverage", self.args.coverage), ("trace", self.args.trace))
+            if enabled
+        )
+
     def _get_timeout(self) -> int:
         """Wrapper timeout in seconds, derived from the effective timeout (ms).
 

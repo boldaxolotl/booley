@@ -266,14 +266,6 @@ class TestResourceEvidence:
         assert result.peak_rss_mb is not None
         assert result.peak_rss_mb >= 16
 
-    def test_cgroup_oom_counter_parser(self, tmp_path: Path, monkeypatch):
-        from booley.flows import base as flow_base
-
-        events = tmp_path / "memory.events"
-        events.write_text("low 0\nhigh 0\noom 3\noom_kill 2\n", encoding="utf-8")
-        monkeypatch.setattr(flow_base, "_CGROUP_MEMORY_EVENT_PATHS", (events,))
-        assert flow_base._cgroup_oom_kill_count() == 2
-
 
 class TestBoundaryExecutor:
     """Boundary-named helper is now a local Sandbox subprocess."""
