@@ -997,61 +997,6 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
     assert not any(f.code == GAP_CODE for f in campaign.findings)
 
 
-def test_v030_campaign_with_declaration_evidence_loads_without_gap_claim(tmp_path):
-    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from booley.flows.sim.coverage_provenance import content_digest
-    from booley.flows.sim.coverage_source_gaps import source_gap_overview, source_gap_report_lines
-    from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
-
-    outcome = run_coverage_target(gap_plan(tmp_path, {}), NativeExecution(), Progress())
-    root = outcome.campaign_path.parent
-    manifest = json.loads(outcome.campaign_path.read_text())
-    rewrite_manifest_as_v4(manifest)
-    manifest["artifacts"] = [
-        a for a in manifest["artifacts"] if not a["kind"].startswith("declaration_")
-    ]
-    for kind, name in (
-        ("declaration_inventory", "declarations/inventory.json"),
-        ("declaration_raw", "build-evidence/cells.tree.json"),
-    ):
-        (root / name).parent.mkdir(exist_ok=True)
-        (root / name).write_text("{}")
-        manifest["artifacts"].append(
-            {
-                "id": f"artifact:{kind}",
-                "kind": kind,
-                "path": name,
-                "sha256": content_digest(b"{}"),
-                "bytes": 2,
-                "state": "fresh_queryable",
-                "contract_version": 1,
-                "discovery_status": "incomplete",
-            }
-        )
-    manifest["findings"].append(
-        {
-            "severity": "warning",
-            "code": "COV_RTL_SOURCE_DISCOVERY_INCOMPLETE",
-            "pointer": "/artifacts",
-            "message": "RTL source discovery is incomplete.",
-        }
-    )
-    outcome.campaign_path.write_text(json.dumps(manifest))
-    campaign = load_coverage_campaign(outcome.campaign_path).campaign
-    assert {a.kind for a in campaign.artifacts} >= {"declaration_inventory", "declaration_raw"}
-    assert any(f.code == "COV_RTL_SOURCE_DISCOVERY_INCOMPLETE" for f in campaign.findings)
-    assert source_gap_report_lines(campaign) == []
-    assert source_gap_overview(campaign)["total_sources"] == 0
-    assert (
-        CoverageEvidenceSession(campaign, None).query({"view": "zero_point_sources"})["paths"]
-        == []
-    )
-    flow = SimulateFlow()
-    flow._args = SimRequest(work_dir=tmp_path)
-    assert "RTL source" not in flow._coverage_result([outcome]).report_text
-
-
 def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
     from booley.flows.sim.coverage_acceptance import CoverageAcceptance
     from booley.runtime.endpoint_execution import EndpointOutcome

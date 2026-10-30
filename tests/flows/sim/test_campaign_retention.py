@@ -979,3 +979,31 @@ def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_pat
     assert not _report_references_campaign(report, manifest, campaign_id)
     assert not _projection_references_origin(report, (manifest,))
     assert not _report_references_origin(report, (manifest,))
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        pytest.param(("--native-target", "sim_0"), id="native"),
+        pytest.param(("--full",), id="full"),
+    ],
+)
+def test_pruning_a_coverage_campaign_written_by_booley_0_3_0_names_its_directory(
+    tmp_path, selection
+):
+    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
+
+    outcome = campaign(tmp_path)
+    manifest = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    rewrite_manifest_as_v4(manifest)
+    outcome.campaign_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    pruned = _run_retention_cli(
+        "--reports-root", str(tmp_path / "reports"), "--invocation", "1", *selection
+    )
+
+    assert pruned.returncode == 2
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED" in pruned.stderr
+    assert str(outcome.campaign_path.parent) in pruned.stderr
+    assert "Traceback" not in pruned.stderr
+    assert outcome.campaign_path.is_file()
