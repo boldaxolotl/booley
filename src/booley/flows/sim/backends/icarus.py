@@ -47,6 +47,7 @@ import subprocess
 import time
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from booley.flows.run_log import write_run_log
@@ -358,6 +359,7 @@ def _execute_icarus_run(
     max_rundir_bytes: int,
     runtime_inputs: tuple[str, ...],
 ):
+    from booley.harness.colors import dim
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
@@ -366,7 +368,7 @@ def _execute_icarus_run(
     print(f"{'=' * 60}")
     print(f"CWD: {run.run_cwd}")
     print(f"CMD: {' '.join(run.command)}\n")
-    heartbeat = Heartbeat("iverilog sim", render=render_heartbeat, interval=60)
+    heartbeat = Heartbeat("iverilog sim", render=partial(render_heartbeat, style=dim), interval=60)
     heartbeat.start()
     try:
         return _stream_output(

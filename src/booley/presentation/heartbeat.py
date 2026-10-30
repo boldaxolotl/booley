@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import sys
-
-from booley.harness.colors import dim
+from collections.abc import Callable
 
 
 def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
@@ -13,11 +12,18 @@ def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
     return f"  * [{description}] elapsed: {elapsed}{suffix}"
 
 
-def render_heartbeat(description: str, elapsed: str, extra: str = "") -> None:
+def render_heartbeat(
+    description: str,
+    elapsed: str,
+    extra: str = "",
+    *,
+    style: Callable[[str], str] | None = None,
+) -> None:
     """Render one standalone progress line without Harness presentation state.
 
-    Dimmed through the shared color helpers, and only on a terminal so captured
-    flow stdout stays free of escape codes even when colors are forced on.
+    ``style`` (a shared color helper chosen by the caller) applies only on a
+    terminal, so captured flow stdout stays free of escape codes even when
+    colors are forced on.
     """
     line = format_heartbeat(description, elapsed, extra)
-    print(dim(line) if sys.stdout.isatty() else line, flush=True)
+    print(style(line) if style and sys.stdout.isatty() else line, flush=True)
