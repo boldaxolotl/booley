@@ -1,7 +1,6 @@
 """Shared status-line presentation: one glyph per row, section headers, hints.
 
-Doctor uses these helpers today; init, bootstrap, and auth adopt them next so
-every Booley command reads the same way. A status row is::
+Doctor prints its rows with these helpers. A status row is::
 
       ✓  message text                                         dimmed.check.id
 
@@ -73,10 +72,8 @@ def _line_width() -> int:
     return min(shutil.get_terminal_size((MAX_WIDTH, 24)).columns, MAX_WIDTH)
 
 
-def status_line(
-    status: LineStatus, message: str, *, check_id: str = "", width: int | None = None
-) -> str:
-    """One status row; a *check_id* is dimmed and ends at *width* columns.
+def status_line(status: LineStatus, message: str, *, check_id: str = "") -> str:
+    """One status row; a *check_id* is dimmed and ends at the line width.
 
     A message too long for the width keeps a gap of two spaces before its ID
     rather than being cut.
@@ -84,8 +81,7 @@ def status_line(
     line = f"{_INDENT}{glyph(status)}{_GLYPH_GAP}{message}"
     if not check_id:
         return line
-    target = _line_width() if width is None else width
-    gap = max(_MIN_ID_GAP, target - len_visible(line) - len(check_id))
+    gap = max(_MIN_ID_GAP, _line_width() - len_visible(line) - len(check_id))
     return f"{line}{' ' * gap}{dim(check_id)}"
 
 

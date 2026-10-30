@@ -35,7 +35,7 @@ over that severity bug with a project waiver.
    with an explicit `--sandbox` flag; the Codex CLI treats those modes as
    mutually exclusive.
 2. Read the output **unabridged** — never pipe doctor through `tail`/`head`:
-   the closing tables sit where truncation eats them, and a `·` SKIP
+   the closing tables sit at the end, where `head` eats them, and a `·` SKIP
    next to a `✓` PASS can be the whole story (an enabled Flow whose Target can
    never resolve reads as PASS+SKIP, i.e. it will never actually run).
 3. Fix every `✗` FAIL and `!` WARN, using its `→` hint when present,
@@ -253,7 +253,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
     history and local-summary policy, and use `permanent = true` for that stable
     project decision. Commit the waiver in the independent Booley repository so
     future Paired Checkouts receive it and their inner checkout stays clean.
-    Rerun the warning's original command and verify `WARN` becomes `WAIVED`.
+    Rerun the warning's original command and verify the `!` row becomes a `~` row.
   - An unexcluded authenticated Paired Checkout reports **PASS**:
     `Goal summaries remain local; Paired Checkout preserves independent Booley history`.
     That result needs no preservation waiver. A standalone current checkout's

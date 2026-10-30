@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import re
+from datetime import date
 
 import pytest
 
 from booley.audit.diagnostic_results import Severity
+from booley.audit.doctor_waivers import DoctorWaiver, DoctorWaivers
 from booley.harness import colors, doctor
 
 
@@ -169,3 +171,21 @@ def test_waived_findings_are_counted_but_not_listed_as_problems(capsys, monkeypa
     lines = capsys.readouterr().out.splitlines()
     assert "  ✓  no failures or warnings" in lines
     assert "  ~ waived     1" in lines
+
+
+def test_expired_waiver_note_sits_under_its_own_section(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    reporter = doctor._Reporter.create()
+    reporter.waivers = DoctorWaivers(
+        path=tmp_path / "doctor-waivers.toml",
+        expired=(DoctorWaiver("sim.old", None, "stale", date(2026, 1, 1), False),),
+    )
+    reporter.pass_("docker found")
+    capsys.readouterr()
+
+    reporter.finish()
+
+    lines = capsys.readouterr().out.splitlines()
+    header = lines.index("Waivers")
+    assert lines[header + 1].startswith("  ·  expired Doctor waiver ignored: sim.old")
+    assert header < lines.index("Summary")

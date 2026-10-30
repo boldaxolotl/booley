@@ -615,15 +615,18 @@ class _Reporter:
         self.counts["fail"] += 1
 
     def finish(self) -> int:
+        unused = self.waivers.unused() if self.verbose else ()
+        if self.waivers.expired or unused:
+            # Own header, so these notes do not land under the last check section.
+            _section("Waivers")
         for item in self.waivers.expired:
             subject = f" subject={item.subject!r}" if item.subject is not None else ""
             self.note_(
                 f"expired Doctor waiver ignored: {item.check}{subject} (expired {item.expires})"
             )
-        if self.verbose:
-            for item in self.waivers.unused():
-                subject = f" subject={item.subject!r}" if item.subject is not None else ""
-                self.note_(f"Doctor waiver did not match an active warning: {item.check}{subject}")
+        for item in unused:
+            subject = f" subject={item.subject!r}" if item.subject is not None else ""
+            self.note_(f"Doctor waiver did not match an active warning: {item.check}{subject}")
         self._print_summary()
         if self.profile.deep:
             assert self.agent_calls is not None
@@ -676,7 +679,7 @@ class _Reporter:
         )
 
 
-#: Severity name -> the glyph status that marks it.
+#: Severity -> the glyph status that marks it.
 _LINE_STATUS = {
     Severity.PASS: ts.LineStatus.PASS,
     Severity.WARN: ts.LineStatus.WARN,

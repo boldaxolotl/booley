@@ -227,3 +227,10 @@ def test_host_doctor_keeps_a_preexisting_agent_cli(
         )
     assert existing.read_text(encoding="utf-8") == "not ours"
     assert not (home / "bin" / "code").exists()
+
+
+def test_no_failure_check_uses_the_closing_counts_row() -> None:
+    echoed = "  ✗ failed     3\ntool log\n  ✗ failed     0\n"
+
+    assert host_doctor.doctor_reports_no_failures(echoed) is True
+    assert host_doctor.doctor_reports_no_failures("  ✗ failed     0\n  ✗ failed     2\n") is False

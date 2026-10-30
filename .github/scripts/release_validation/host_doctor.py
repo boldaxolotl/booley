@@ -23,8 +23,9 @@ _AGENT_CLI_PROBE = "codex"
 
 def doctor_reports_no_failures(output: str) -> bool:
     """True when Doctor's counts table says ``failed`` is 0 (color codes ignored)."""
-    match = _FAILED_COUNT.search(_COLOR_CODES.sub("", output))
-    return match is not None and match.group(1) == "0"
+    # The counts table closes the run, so the last matching row is the verdict.
+    counts = _FAILED_COUNT.findall(_COLOR_CODES.sub("", output))
+    return bool(counts) and counts[-1] == "0"
 
 
 def _inside(root: Path, path: Path, label: str) -> Path:
@@ -42,6 +43,9 @@ def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:
         env=env,
         capture_output=True,
         text=True,
+        # Doctor prints UTF-8 glyphs whatever the runner's locale is.
+        encoding="utf-8",
+        errors="replace",
         check=False,
         timeout=600,
     )

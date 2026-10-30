@@ -22,6 +22,9 @@ def _doctor(project: Path, booley: Path) -> str:
         cwd=project,
         capture_output=True,
         text=True,
+        # Doctor prints UTF-8 glyphs whatever the runner's locale is.
+        encoding="utf-8",
+        errors="replace",
         check=False,
         timeout=900,
     )

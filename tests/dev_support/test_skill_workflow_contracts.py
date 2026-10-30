@@ -289,17 +289,20 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
 
 def test_doctor_readers_use_glyph_vocabulary():
     root = Path(__file__).resolve().parents[2]
-    readers = (
+    skills = (
         root / "src/booley/data/skills/booley-setup/steps/4-doctor.md",
         root / "src/booley/data/skills/booley-heal/SKILL.md",
-        root / "docs/user/DOCTOR.md",
     )
+    user_docs = (root / "docs/user/DOCTOR.md", root / "docs/user/SETUP.md")
     stale = ("[XX]", "[!!]", "[ii]", "[--]", "`fix:`", "`[sim.trace-unavailable:")
-    for reader in readers:
+    for reader in (*skills, *user_docs):
         text = reader.read_text(encoding="utf-8")
         assert not [marker for marker in stale if marker in text], reader.name
+    for reader in skills:
+        text = reader.read_text(encoding="utf-8")
         assert "`→`" in text, reader.name
         assert "`✗`" in text, reader.name
+        assert "`WARN` becomes `WAIVED`" not in text, reader.name
 
 
 def test_setup_reserves_deep_doctor_for_one_final_gate():
