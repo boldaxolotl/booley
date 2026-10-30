@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
-from booley.harness import cheatsheet, upgrade_cli, upgrade_review
+from booley.harness import cheatsheet, resources_cli, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
@@ -86,6 +86,7 @@ COMMAND_LOCATIONS = {
     "projects": CommandLocation.HOST,
     "upgrade": CommandLocation.EITHER,
     "targets": CommandLocation.EITHER,
+    "resources": CommandLocation.EITHER,
     "flow": CommandLocation.SESSION_RUNTIME,
     "specialist": CommandLocation.SESSION_RUNTIME,
     "feedback": CommandLocation.EITHER,
@@ -125,6 +126,7 @@ COMMAND_PROJECT_BINDINGS = {
     "projects": ProjectBinding.INDEPENDENT,
     "upgrade": ProjectBinding.REQUIRED,
     "targets": ProjectBinding.REQUIRED,
+    "resources": ProjectBinding.REQUIRED,
     "flow": ProjectBinding.REQUIRED,
     "specialist": ProjectBinding.REQUIRED,
     "feedback": ProjectBinding.FEEDBACK,
@@ -848,6 +850,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_flow_subparser(sub)
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
+    resources_cli.add_subparser(sub)
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
@@ -1737,6 +1740,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     import json as _json
 
     from booley.fusesoc import fusesoc_registry
+    from booley.harness import targets_view
     from booley.targets import target_surface
 
     selector: str | None = getattr(args, "selector", None)
@@ -1762,7 +1766,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
         except fusesoc_registry.FuseSocError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
-        print(_json.dumps(payload, indent=2) if as_json else target_surface.render_detail(payload))
+        print(_json.dumps(payload, indent=2) if as_json else targets_view.render_detail(payload))
         return 0
 
     try:
@@ -1781,7 +1785,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     elif nothing_authored:
         print("no .core Targets authored yet")
     else:
-        print(target_surface.render_listing(surface, project_root))
+        print(targets_view.render_listing(target_surface.surface_payload(surface, project_root)))
     return 0
 
 
@@ -1802,6 +1806,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "shell": _cmd_shell,
     "session": _cmd_session,
     "targets": _cmd_targets,
+    "resources": resources_cli.run,
     "worktree": run_worktree,
     "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,

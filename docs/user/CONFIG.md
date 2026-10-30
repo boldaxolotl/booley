@@ -297,6 +297,12 @@ misses each process's last interval; a command shorter than one interval
 shows only its first sample. Files a tool writes outside `TMPDIR`, for example
 to a hardcoded `/tmp` path, are not counted.
 
+`booley resources` prints, for each key, the run count, the minimum, median
+and maximum peak memory and wall-clock time, each max/median ratio, and for
+solo runs the minimum, median and maximum of container peak divided by RSS plus
+`TMPDIR`, taken run by run.
+`--json` prints the same statistics.
+
 ### Feedback (`[feedback]`)
 
 Booley keeps an append-only log of what went wrong, what was merely annoying, and
