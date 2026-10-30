@@ -59,7 +59,6 @@ _ALLOWED_LITERALS: dict[str, tuple[str, ...]] = {
 _ALLOWED_TEXT_FILES = frozenset(
     {
         "data/refs/CHANGELOG.md",  # release history
-        "data/refs/TROUBLESHOOTING.md",  # Doctor legacy migration findings
         "data/skills/booley-heal/SKILL.md",  # Doctor legacy migration remedies
         "feedback/GLOSSARY.md",  # Avoid list
         "runtime/worktree_create.sh",  # legacy tickets/ exclude patterns, --ticket flag

@@ -46,39 +46,18 @@ Follow the [Setup guide](https://booley.dev/docs/setup/) to integrate Booley wit
 
 ## Installation
 
-Booley supports Windows and Linux (Ubuntu 26.04 tested); macOS is not
-supported. Designs must be SystemVerilog or Verilog: VHDL and UVM are not
-supported. You need:
+Booley runs on Windows and Linux (macOS is not supported) for SystemVerilog
+or Verilog designs. It needs Python 3.11+, Git, Docker, VS Code, and a Claude
+Code or Codex CLI. With
+[pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html):
 
-- Python 3.11+
-- [Git 2.37.2+](https://git-scm.com/downloads)
-- [Docker](https://www.docker.com/), with about **4 GB** free for the image
-  (**6 GB** with the RISC-V toolchain) plus room for build artifacts
-- [VS Code](https://code.visualstudio.com/)
-- An agent CLI on the host PATH with credentials configured for Project Setup:
-  [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
-  or [Codex](https://developers.openai.com/codex/cli) (`codex`)
-
-With [pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html), install Booley and prepare the host:
-
-<!-- booley-smoke:install -->
 ```bash
 pipx install booley-rtl
 booley bootstrap
 ```
-<!-- /booley-smoke:install -->
 
-To upgrade an existing install:
-
-<!-- booley-smoke:upgrade -->
-```bash
-pipx upgrade booley-rtl
-booley bootstrap --update
-```
-<!-- /booley-smoke:upgrade -->
-
-Seeing `externally-managed-environment`, PATH, or other install errors? See
-[Troubleshooting](https://booley.dev/docs/troubleshooting/#installation-fails-with-externally-managed-environment).
+The [Install guide](https://booley.dev/docs/install/) has the full
+requirements, upgrade steps, and what `booley bootstrap` does.
 
 **Next:** [try the demo](#level-2-try-the-demo-yourself) or [set up your own project](#level-3-use-it-on-your-own-project).
 

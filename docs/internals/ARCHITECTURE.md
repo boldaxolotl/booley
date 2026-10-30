@@ -64,6 +64,49 @@ and licensing policy.
 
 All sessions share the runtime's resources. Admission control treats each Flow or Specialist run as a Job in a separately capped Job Class (`heavy` for EDA work, `light` for model-bound Specialist work). Excess work queues without preempting running Jobs. Queue priority comes from requester role, independently of Job Class: `interactive` sorts ahead of other requester roles. Goal Mode uses the session's agent. Configuration belongs under [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs).
 
+### Job slot leases and recovery
+
+A Simulation Campaign borrows the already-admitted Simulation Job's heavy slot
+as its first lane; it does not acquire a second slot for the same work. With a
+`max_heavy` above 1, ready independent work items may acquire child heavy slots
+up to that same Project-wide cap. Literal `run_cwd` collisions still serialize
+locally, while distinct templated attempt directories may overlap. Cancellation
+withdraws queued child claims. Losing the lease on one of the additional child
+slots stops only the test using it; the other tests finish, and the run then
+reports the lost lease. Losing the Simulation Job's own slot still cancels the
+whole run. Each occupied slot stays held until the matching supervised process
+tree is terminal, so stale capacity is never treated as free while an EDA child
+is still alive.
+
+Each admitted holder has a renewable recovery lease that is separate from its
+optional work timeout. A Job launched through an explicit Sandbox Attachment
+command inherits that execution's opaque ID; zero or many Job leases may link
+to the same execution. When an owner disappears or a lease expires, recovery
+atomically changes the lease from `active` to `cancelling` and requests scoped
+execution cancellation. The slot remains occupied until the supervisor has
+reaped the complete execution tree and published a terminal record. If that
+supervisor or its record is lost, a later reaper recovers only processes that
+carry the same opaque execution identity, checks their durable PID identities
+before signaling, and publishes terminality only after no running process with
+that identity remains. A dead root PID therefore cannot free capacity while
+EDA descendants still run, and a failed supervisor cannot leave the holder
+permanently cancelling.
+
+Callers without an execution identity are process-owned. Their
+entries use the same renewable lease plus PID namespace, process start time,
+zombie state, and the existing argv/work-timeout guards where available. A
+missing work timeout or promotion stamp falls back to the finite recovery lease;
+records without a promotion stamp anchor that lease at their creation stamp.
+An expired live owner is identity-checked and its current descendant tree is
+cancelled before the slot is released. Process-owned leases cannot recover
+descendants that escaped after the owner died, so the stronger durable identity
+guarantee still applies only to execution-owned leases.
+Unknown future slot schemas and indeterminate same-user process observations
+fail closed rather than freeing capacity.
+Complete execution records are retained for seven days; an active Job lease
+pins its referenced record, and nonterminal or unfamiliar records are never
+garbage-collected automatically.
+
 The runtime is network-restricted by default. Deterministic compile and simulation work receives no egress; LLM-backed work receives only provider access. Approved host EDA installations may be mounted read-only, but their tools still execute inside the runtime. This keeps dispatch, configuration, execution, and result interpretation on the container side of the trust boundary.
 
 ## Interactive Mode
@@ -72,7 +115,7 @@ Interactive Mode is both the hands-on workflow and the front door to the Sandbox
 
 ## Goal Mode
 
-Goal Mode uses the existing agent session rather than launching a separate Ticket loop. Entry requires a clean linked worktree and creates a Goal Branch from HEAD. The worktree owns one Goal Record; any session in that worktree may continue it. While any Goal Record occupies the Project, a Booley Flow, Specialist or custom-tool call, a report fetch, or a Goal tool call without explicit `work_dir` is refused (so is any such call while a Goal Record is unreadable). This Project-wide rule also applies to calls intended to run outside the Goal worktree, so a Project-defined endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/GOAL-MODE.md#working-with-evidence) lists the tools that accept none. Calls into an occupied Goal worktree capture an immutable Run Binding to the record, its Goal specifications, and Protected Inputs.
+Goal Mode uses the existing agent session rather than launching a separate Ticket loop. Entry requires a clean linked worktree and creates a Goal Branch from HEAD. The worktree owns one Goal Record; any session in that worktree may continue it. While any Goal Record occupies the Project, a Booley Flow, Specialist or custom-tool call, a report fetch, or a Goal tool call without explicit `work_dir` is refused (so is any such call while a Goal Record is unreadable). This Project-wide rule also applies to calls intended to run outside the Goal worktree, so a Project-defined endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](MCP-TOOLS.md#work_dir-routing) lists the tools that accept none. Calls into an occupied Goal worktree capture an immutable Run Binding to the record, its Goal specifications, and Protected Inputs.
 
 Ordinary CLI Flow calls remain diagnostic; evidence that should count toward a Goal runs through MCP with its Run Binding.
 

@@ -36,6 +36,7 @@ class UserDoc(NamedTuple):
 # sidebar groups consecutive docs that share a section.
 USER_DOCS = (
     UserDoc("FEATURES.md", "features", "Features", "Get started"),
+    UserDoc("INSTALL.md", "install", "Install", "Get started"),
     UserDoc("SETUP.md", "setup", "Setup", "Get started"),
     UserDoc("USAGE.md", "usage", "Usage", "Get started"),
     UserDoc("GOAL-MODE.md", "goal-mode", "Goal Mode", "Get started"),

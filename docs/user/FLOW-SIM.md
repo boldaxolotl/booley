@@ -34,10 +34,9 @@ booley flow sim --target sim_soc --seed random            # a drawn seed for eve
 
 Test selection rules:
 
-- Coverage selections use deterministic sorted test-name order, regardless of
-  the `--test` or `--tests-file` input order. This stabilizes Campaign identity
-  and run numbering: `--test gap --test full --coverage` assigns
-  `run:001:full@1`, then `run:002:gap@1`. A run id ends in its Test Run name.
+- Coverage runs sort tests by name, whatever order you gave them:
+  `--test gap --test full --coverage` assigns `run:001:full@1`, then
+  `run:002:gap@1`. A run id ends in its Test Run name.
   Several Test Runs of one Test (two Test Variants, or `test@xN`) stay
   together in the order you named them, each in its own simulator process;
   the merged coverage is the union over all of them.
@@ -133,8 +132,7 @@ once:
 A row is `PASS`, `FAIL`, `ERROR` (an infrastructure problem stopped the run)
 or `INCONCLUSIVE`. Each failed Test Run gets a rerun command that selects
 exactly it. The machine-readable rows are `test_runs[]` in the Target's
-`simulation.json`, each with `name`, `test`, `variant`, `seed`, `args`, `env`,
-`fingerprint` and `grade`.
+`simulation.json`; see [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md#simulationjson).
 
 **Directories and file names.** Per-run evidence is named by Test Run. An
 HDL-testbench Target writes each run log to
@@ -159,7 +157,10 @@ Each test gets one verdict:
   pass. So is a `--trace` run that produced no fresh waveform. An inconclusive
   run exits `1` and skips the `SIM:{target}` Criterion.
 - A simulation run that exceeds its run budget gets a **timeout** verdict,
-  exits `1`, and fails `SIM:{target}`.
+  exits `1`, and fails `SIM:{target}`. Look for an RTL or testbench deadlock,
+  or raise `--timeout` or `[flows.sim].timeout_ms` if the test needs longer.
+  Build, Elaboration Check and Pre-Sim Command timeouts are infrastructure
+  errors and exit `2`.
 - A test stopped by a Booley guard stays **aborted** even if the simulator
   exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
   is missing and not declared in the Target is a design failure
@@ -171,7 +172,7 @@ report verdicts without a Goal Record. In an active Goal worktree, pass its
 absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 `booley_targets`, and `booley_report` so calls select that worktree.
 `booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`. See
-[worktree routing](GOAL-MODE.md#working-with-evidence) for the full inventory and
+[worktree routing](../internals/MCP-TOOLS.md#work_dir-routing) for the full inventory and
 when `work_dir` is required.
 
 - `SIM:{target}` requires the default Test Variant of every Test of the
@@ -199,31 +200,31 @@ For example, entry can include:
 Goal Mode resolves each of these Goals to exact Test Runs at entry and
 **freezes** them, including the 20 seeds it draws for `stress+soak@x20`. A
 Test Run is evidence for a Goal only when it is one of the Goal's frozen Test
-Runs with the same declared arguments and environment. Inside the Goal
-worktree:
+Runs with the same declared arguments and environment, run by a Goal-bound
+`sim` MCP call (one that passes the Goal worktree as `work_dir`). CLI runs
+(`booley flow sim`) never record Goal evidence. In a Goal-bound call:
 
-- `booley flow sim --target sim_core` takes its Test Runs from the Target's
+- `sim` with `target="sim_core"` takes its Test Runs from the Target's
   Goal that covers every Test (a simulation Goal without `test`, or a
   coverage Goal with `tests = "all"`): its frozen Test Runs, and the default
   Test Run of any Test added to the Target since. With no such Goal it runs
   the default Test Run of each Test. A Goal that names a Test Run gets
   evidence from this run only when that Test Run is among them.
-- `--test` with the name of a frozen Test Run, as `goal_status` lists it,
+- `test` set to the name of a frozen Test Run, as `goal_status` lists it,
   runs that Test Run.
-- `--test stress+soak@x20` runs the 20 frozen seeds of the Goal with the same
+- `test="stress+soak@x20"` runs the 20 frozen seeds of the Goal with the same
   Target, Test Variant and N. With no such Goal, Booley draws 20 new seeds and
   the report says that these Test Runs are diagnostic.
 - Every other Test Run is **diagnostic**: it is reported, it records no Goal
   evidence, and its failure blocks no Goal. The report lists diagnostic
   failures under their own heading.
-- `--diagnostic` records nothing, even when the run executes a Goal's frozen
+- `diagnostic=true` records nothing, even when the run executes a Goal's frozen
   Test Runs: a pass does not count for the Goal and a failure does not make
   the frozen Test Run `failed`. The report names each Goal whose frozen Test
-  Runs ran and the ones that failed. Run again without `--diagnostic` to
+  Runs ran and the ones that failed. Call again without `diagnostic` to
   record them.
 
-A simulation Goal is met when every one of its frozen Test Runs has passed at
-the current file contents. The Test Runs can pass in separate invocations. See
+When a simulation Goal is met: see
 [Goals that name Test Runs](GOAL-MODE.md#goals-that-name-test-runs).
 
 ## Elaboration checks
@@ -302,6 +303,22 @@ the tests themselves are declared in [`tests.toml`](TESTS.md).
 
 ### Simulation build, Pre-Sim, and run timeouts
 
+`[flows.sim].build_timeout_ms` is a positive-integer budget for each
+simulator-image build. It defaults to `3600000` (one hour) and applies to
+ordinary Simulation, native Coverage, and Elaboration Check builds.
+`[flows.sim].timeout_ms` and the per-call `--timeout` override instead bound
+simulator execution, or the standalone module sweep in
+`elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
+budget.
+
+```toml
+[flows.sim]
+build_timeout_ms = 3600000
+timeout_ms = 600000
+```
+
+### Compiler cache (`[flows.sim.compiler_cache]`)
+
 Verilator C++ compilation uses a persistent, Project-scoped ccache by default:
 
 ```toml
@@ -313,103 +330,34 @@ max_size = "5G"
 `enabled` must be a boolean. `max_size` accepts a positive integer followed by
 `M`, `G` (decimal megabytes/gigabytes), or `Mi`, `Gi` (binary units). Zero,
 fractional values, and suffixes outside this grammar are configuration errors.
-These settings are read like the other `[flows.sim]` settings; an invalid
-`enabled` or `max_size` value fails preparation.
+`max_size` is a soft eviction target applied after each build, not a disk quota.
 
-The cache lives at `.runtime/compiler-cache/ccache` in the issued Booley Directory
-mount. Goal worktrees share it while retaining their own configuration and
-fresh build generations. Sandbox recreation, generation cleanup, and disabling
-caching preserve its entries. The cache root is
-`BOOLEY_COMPILER_CACHE_ROOT`, which Session Issuance sets in every Sandbox. When it
-is unset (for example in a Sandbox issued before the cache existed, or any process
-outside a Sandbox), builds compile uncached and the warning tells you to run
-`booley session refresh` on the host. Deliberate cache eviction may remove this
-subtree when compilation is idle; it is recreated on the next available enabled
-build. To inspect or empty it, run ccache inside a Sandbox:
+The cache lives in the Booley Directory runtime, survives Sandbox recreation,
+and is shared by Goal worktrees and Mutation Tester builds. To inspect or empty
+it, run ccache inside a Sandbox:
 
 ```sh
 CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --show-stats
 CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
 ```
 
-The size is a **per-build automatic eviction target**, not an instantaneous disk
-quota. Concurrent writers and partial cleanup may temporarily exceed it. A build
-configured for `1G` can evict entries useful to a sibling configured for `5G`; the
-shared cache is not promised to remain below the smallest worktree's setting.
-Booley does not rewrite a shared `ccache.conf` or force cleanup after each build.
+Booley sets `OBJCACHE`, `CCACHE_DIR`, `CCACHE_MAXSIZE`, `CCACHE_COMPILERCHECK`
+and `CCACHE_BASEDIR` for the build; they override ambient and `tests.toml`
+values. Make overrides of those names bypass Booley's settings and cost cache
+hits. Add compiler flags through the Target environment or Verilator `-CFLAGS`,
+not a Make assignment to `USER_CPPFLAGS`.
 
-Managed `OBJCACHE`, `CCACHE_DIR`, `CCACHE_MAXSIZE`,
-`CCACHE_COMPILERCHECK=content`, and `CCACHE_BASEDIR` for the generated build
-take precedence over ambient and `tests.toml` environment values; conflicting
-explicit Target settings produce a warning. User Make options and environment
-variables pass through without compiler-cache inspection, including
-Flow-API/EDA-tool-API `make_options`, `MAKEFLAGS`, `GNUMAKEFLAGS`, `MFLAGS`, and
-`MAKEOVERRIDES`. Make overrides of managed names take precedence under normal
-Make rules and may reduce cache hits or relocate the cache. Unrelated Make
-options and job settings retain their behavior. Overriding `USER_CPPFLAGS` in Make
-can replace the appended debug-prefix-map and reduce debug-build cache hits.
-Native ccache diagnostic
-and disable settings remain available; user-supplied correctness-affecting
-ccache settings are outside the guarantees of the tested default policy.
+If ccache is missing or the cache location is unavailable, the build prints one
+warning and compiles uncached.
 
-For every cached build, Booley appends a `-fdebug-prefix-map` for the current
-generated build directory to `USER_CPPFLAGS`, preserving existing flags from the
-environment. It only affects debug-enabled (`-g`) compilation, where it lets
-objects hit across build generations. Debug metadata uses `.` for that directory; debuggers can
-use the current generation as their source search directory. Semantic `__FILE__`
-paths, directory hashing, and compiler correctness checks remain enabled.
-Declare additional compiler flags in the Target environment or Verilator
-`-CFLAGS` options rather than a Make assignment to `USER_CPPFLAGS`.
-
-Disabled caching explicitly clears `OBJCACHE` and exports no cache location.
-Mutation Tester builds use the same cache. Missing ccache on the build
-`PATH` or a cache directory that cannot be created produces one warning and an
-uncached build, without a home-cache fallback. Preview/import operations neither
-create cache storage nor run ccache.
-The cache optimizes compilation within the Project trust domain; fresh simulator
-image authorization still applies independently.
-
-`[flows.sim].build_timeout_ms` is a positive-integer budget for each
-simulator-image build. It defaults to `3600000` (one hour) and applies to
-ordinary Simulation, native Coverage, and Elaboration Check builds.
-`[flows.sim].timeout_ms` and the per-call `--timeout` override instead bound
-simulator execution, or the standalone module sweep in
-`elab-only-standalone`. Pre-Sim Commands have an independent fixed 600-second
-budget.
-
-A simulation run that exceeds its run budget gets a `timeout` verdict, exits
-`1`, and fails `SIM:{target}`. Investigate a possible RTL/testbench deadlock;
-raise `--timeout` or `[flows.sim].timeout_ms` if the test legitimately needs
-longer. Build, Elaboration Check, and Pre-Sim Command timeouts are infrastructure
-errors and exit `2`.
-
-```toml
-[flows.sim]
-build_timeout_ms = 3600000
-timeout_ms = 600000
-```
-
-Elaboration Check uses `build_timeout_ms`, consistently with every other
-simulator-image build.
-
-**Build reuse.** Ordinary Simulation and native Coverage skip the build when a
-retained simulator image of the same Target variant (plain, traced, or a
-coverage variant) was built from identical inputs. Each Simulation result's
-build entry records the `cache_decision` (`hit`, `changed source, recipe, or tool`,
-`reuse unsupported`, and so on). A Verilator image qualifies when the Target uses the stock Edalize
-recipe and every Verilog and C++ include or library directory, and every library
-or object file it links, lies in the staged build tree. Its key covers the staged
-sources and FuseSoC cores, the Verilator installation, the C++ toolchain and its
-system headers, the system libraries named by `-l` options, and the
-build-relevant environment. Before reuse, Booley re-hashes every file
-Verilator and the C++ compiler reported reading, so a changed RTL file, include,
-flag, or DPI source always rebuilds. A build is not retained when a file outside
-the build tree that it read changed within about two seconds of the build
-starting, or when the makefiles Verilator generates read an environment
-variable the key did not cover; the next unaffected build is retained again.
-For both simulators, Pre-Sim Commands that only write run-time inputs, such as
-firmware in `$BOOLEY_RUN_CWD`, keep reuse; anything they write into the build
-tree forces a fresh build. Cocotb Targets always build fresh.
+**Build reuse.** Repeat runs skip the build when a retained simulator image of
+the same Target variant (plain, traced, or coverage) was built from identical
+inputs: sources, cores, toolchain, flags and environment. Each Simulation
+result's build entry records the `cache_decision` (`hit`, `changed source,
+recipe, or tool`, `reuse unsupported`, and so on), which says why a rebuild
+happened. A Pre-Sim Command that only writes run-time inputs, such as firmware
+in `$BOOLEY_RUN_CWD`, keeps reuse; anything it writes into the build tree forces
+a rebuild. Cocotb Targets always rebuild.
 
 ### Simulation & pass/fail sentinels (`[flows.sim]`)
 
@@ -444,7 +392,8 @@ test name and a decimal integer as the line's final field, such as
 test it invoked. Counts show up as `cycles=N` on the verdict card (up to 32
 tests, space permitting), in `report.json` under `cycle_counts`, and in each
 Target's `simulation.json` as `tests[].cycles`; see
-[Flow Reference](COVERAGE.md#where-the-evidence-lives) for where to find them.
+[FLOW_REPORTS.md](../internals/FLOW_REPORTS.md#report-schemas-and-references)
+for the field layout.
 Native Coverage runs report null counts. Configuring `cycle_sentinels` replaces the
 built-in cycle prefix; it does not affect the pass/fail verdict. A count-only record is readable when it is the only
 cycle record in the log. That count-only form and all named records remain observational
@@ -482,9 +431,6 @@ edge. The usual real fix is re-pinning the cocotb ↔ simulator pair; see
 
 ### Sim working directory (`[flows.sim].run_cwd`)
 
-The [working-directory decision](../adr/0075-keep-project-root-as-default-simulation-cwd.md)
-records why Project Root remains the default and how `copyto:` inputs fit it.
-
 Some testbenches `$readmemh` vectors or firmware via paths relative to the
 process working directory (`data/…`, `../fw/…`). Booley runs the sim from the
 Project Root by default, so those reads miss. Point the run at the directory
@@ -495,44 +441,19 @@ those relative paths are authored against — usually the testbench dir:
 run_cwd = "tests/work"   # relative to the Project Root; unset = run from Project Root
 ```
 
-Durable ordinary-HDL Simulation Campaigns also accept `{campaign}`, `{target}`,
-`{test}`, and `{attempt}` placeholders. Each expands to one path component from
-the immutable Campaign/attempt identity. A templated directory is Booley-owned,
-carries an exact attempt ownership marker, and is removed after terminal
-evidence is committed. Resume removes a surviving interrupted directory only
-when that marker still matches; it refuses an unmarked, linked, or foreign
-directory. Booley also removes the empty parent directories it created to reach
-the attempt directory (each carries a `.booley-simulation-parent.json` marker),
-innermost first, on terminal and resume cleanup. It stops at the template root
-(the path before the first placeholder), at any directory it did not create, and
-at any directory still holding other content, such as a sibling attempt's. The
-template root and its missing ancestors are created without a marker and kept,
-and any directory without a marker stays. A literal directory requires a
-pre-existing directory and is protected by a collision lock, so Campaign work
-sharing it runs one at a time. Unknown placeholders, formatting conversions/specifiers, and unmatched
-braces are rejected.
-
-`[flows.sim].pre_sim_build_access` selects the Pre-Sim Commands contract:
-`"immutable"` (default) runs hooks after authenticating the bundle and exposes
-no build path, while `"legacy-per-test"` preserves pre-compile hooks against a
-fresh private generation. The selected value is part of Simulation Campaign workload
-identity and cannot change on resume.
-
-Every Simulation adapter honors the resolved path as its literal cwd. That path
-is exported to Pre-Sim Commands as `BOOLEY_RUN_CWD`.
-
 **A literal directory must already exist.** Booley does not create a literal
-`run_cwd`; a missing one fails before simulator launch. A path containing at
-least one Campaign placeholder is different: Booley creates and owns that
-attempt directory, then cleans it, and the empty parents it created, using
-their ownership markers. Pre-Sim Commands
-may create children inside the resolved `BOOLEY_RUN_CWD`, but must not replace
-the directory or its marker.
+`run_cwd`; a missing one fails before the simulator starts. Runs that share a
+literal `run_cwd` run one at a time.
+
+For HDL-testbench Targets, `run_cwd` may also use the `{campaign}`, `{target}`,
+`{test}` and `{attempt}` placeholders. Booley then creates a private directory
+for each attempt and removes it, along with the empty parents it created, after
+the run.
+
+The resolved path is exported to Pre-Sim Commands as `BOOLEY_RUN_CWD`. They may
+create files inside it but must not replace the directory.
 
 ### Pre-Sim Commands (`[flows.sim].pre_run_commands`)
-
-The `pre_run_commands` key is retained for configuration compatibility;
-**Pre-Sim Commands** is the canonical product term.
 
 Some tests need a non-RTL build step before the sim can run. The classic case
 is a CPU core whose testbench loads a firmware image cross-compiled *per test
@@ -584,12 +505,8 @@ pre_run_commands = [
 ]
 ```
 
-`BOOLEY_DIR` deserves a note: **inside the Sandbox it is
-`/booley-project`**, not `/work/.booley`. For the default in-checkout
-Project, both paths reach the same Booley Directory through the issued layout;
-compatible images provide the short path as a symlink. Only the short path is
-exported. An external Booley Directory uses its issued short-path mount,
-without a `/work/.booley` counterpart. Prefer the variable.
+Inside the Sandbox, `BOOLEY_DIR` is **`/booley-project`**, not
+`/work/.booley`. Use the variable rather than hardcoding a path.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
@@ -603,18 +520,21 @@ Target/test, the number of command lines, the exit status and the duration
 (`pre_run_commands (2 line(s)) for div_test: rc=0 in 4.7s`) — so a hook doing
 the wrong thing quietly is visible without breaking it on purpose.
 
+`[flows.sim].pre_sim_build_access` selects the Pre-Sim Commands contract:
+`"immutable"` (default) runs hooks after authenticating the bundle and exposes
+no build path, while `"legacy-per-test"` preserves pre-compile hooks against a
+fresh private generation. The selected value is part of Simulation Campaign workload
+identity and cannot change on resume.
+
 In the default `immutable` mode the shared Simulator Bundle is authenticated
 before the hook runs, but the hook receives no authoritative build path and
-cannot mutate the image used for execution. Declared `file_type: user` /
-`copyto` runtime inputs are copied or reflinked into the attempt directory and
-authenticated there. Choose `legacy-per-test` only for a hook that truly must
+cannot mutate the image used for execution. Choose `legacy-per-test` only for a hook that truly must
 write into the compile surface: it disables shared-build reuse for that work
 item and records a private build in the Campaign. Changing either build-access
 mode, hook commands, runtime inputs, or `run_cwd` changes workload identity and
 prevents a prior manifest from resuming.
 
-Simulate-only by design: no ported project has ever needed a non-sim prebuild.
-For a *once-per-worktree* setup step (not per-run), use the [post-setup
+Pre-Sim Commands run only for `sim`. For a *once-per-worktree* setup step (not per-run), use the [post-setup
 hook](CONFIG.md#worktree-setup-hooks) (defined under [Advanced setups](CONFIG.md#advanced-setups))
 instead.
 
@@ -677,7 +597,7 @@ An oversized VCD is retained for incident diagnostics, but never reported as
 ### Per-run disk budget (`[flows.sim].max_rundir_bytes`)
 
 A testbench with a default-on tracer, `$dumpfile` or `$fwrite` sink can fill the
-disk (one runaway left 27 GB and killed an in-flight synthesis). A watchdog
+disk. A watchdog
 polls the run directory and kills the run when it crosses the budget:
 
 ```toml
@@ -685,35 +605,19 @@ polls the run directory and kills the run when it crosses the budget:
 max_rundir_bytes = 5368709120   # 5 GiB, the default; 0 disables the guard
 ```
 
-The budget is on **growth during the run**, measured from a baseline taken the
-moment the simulator starts — not on the directory's total size. That matters
-because `run_cwd` is routinely shared with the testbench's own inputs: charging
-staged vectors or firmware images to the *output* budget makes the guard fire on
-runs that wrote nothing at all. The kill message reports what it measured (the
-baseline, the current size, the growth, the budget) and names the largest files
-written during the run, then lists the plausible causes rather than asserting
-one.
+The budget counts **growth since the simulator started**, so inputs already
+staged in `run_cwd` don't count. The kill message names the largest files
+written during the run.
 
 ### Elaboration Check (`[flows.sim]`)
 
-`booley flow sim --target <sim-target> --mode elab-only` compiles, elaborates, and
-links the same ordinary untraced simulator image as a full Simulation run,
-without running Pre-Sim Commands, simulator tests, Cocotb Python, or tracing.
-Its Target build uses the shared
-[`build_timeout_ms`](#simulation-build-pre-sim-and-run-timeouts) budget.
-Use `--mode elab-only-standalone` to perform that ordinary Target elaboration
-and then sweep every RTL module from its declaring file. Only simulation
-Targets are eligible; synthesis Targets belong to
-`synth`.
+This setting tunes the `--mode elab-only-standalone` sweep described in
+[Elaboration checks](#elaboration-checks).
 
 ```toml
 [flows.sim]
 # standalone_frontend = "auto"   # auto | iverilog | verilator
 ```
-
-The untraced Simulation build cache is always retained, on pass and failure, so
-a later full Simulation can reuse it. Complete invocation-scoped build logs are
-archived outside that mutable cache.
 
 **`standalone_frontend`** picks which frontend proves the
 `elaborate_standalone` criterion. `auto` (default) uses Verilator when

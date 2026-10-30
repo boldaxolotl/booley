@@ -51,43 +51,31 @@ egress_allowlist = []
 egress = "proxy"
 ```
 
-`idle_timeout_seconds` applies when no client Docker exec is running and the later of the last valid Booley heartbeat and container start time is older than the timeout (start time alone when the heartbeat is absent). Booley MCP calls and supervised commands update the heartbeat. Running execs used by Sandbox Attachments, such as VS Code and terminal shells, or other clients prevent reaping for their entire lifetime; the reaper's heartbeat reads do not. An inspection failure keeps the Sandbox for that pass. Closing an attachment does not reset the heartbeat timestamp.
+A Sandbox is stopped after `idle_timeout_seconds` with no Booley activity and
+no attached editor or terminal.
 
-The file is user-owned: Booley reads it but never rewrites it. Parsing is
-strict. Unknown tables or keys, malformed TOML, wrong types, non-positive
-limits, and invalid egress entries stop Host Bootstrap before mutation. Egress
-entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
-are rejected.
+Booley never rewrites this file. Bootstrap rejects unknown keys and invalid
+values. Egress entries are bare hostnames: no schemes, paths, ports, IPs, or
+wildcards.
 
-`egress` chooses how issued Sandboxes reach the network: `"proxy"` (the
-default when absent) or `"unproxied"`. Any other value, or `"unproxied"` with a
-non-empty `egress_allowlist`, stops Host Bootstrap before mutation. Under
-`"unproxied"`, Booley issues **Unproxied Sandboxes**: no proxy variables,
-`BOOLEY_EGRESS=unproxied` in the spec's `containerEnv`, and the Booley-managed
-routed network `booley-unproxied-v1` instead of the egress network. The first
-session start creates that network; a licensed Sandbox joins it next to its
-private license network. After you switch modes, the next session start
-refuses the Sandbox spec issued for the other mode and asks you to run
-`booley init --seed` (then reopen the folder in the container, or use Dev
-Containers: Rebuild Container if VS Code is running it). A running Sandbox
-keeps its mode until it is recreated; until then, headless `booley session
-enter` and `booley auth` refuse it with the same remedy. Host `booley doctor`
-prints the host egress mode and warns about each running Sandbox still in the
-other mode; see
+`egress` chooses how Sandboxes reach the network. `"proxy"` (the default)
+routes network access through Booley's egress proxy. `"unproxied"` gives Sandboxes
+direct network access with no proxy; it cannot be combined with a non-empty
+`egress_allowlist`. Unproxied Sandboxes can also reach services listening on
+the host's Docker gateway address.
+
+After switching modes, run `booley init --seed`, then recreate the Sandbox
+(reopen the folder in the container, or **Dev Containers: Rebuild Container**
+if VS Code is running it). A running Sandbox keeps its previous mode until then;
+Doctor warns about it, see
 [Doctor reports a Sandbox whose egress mode differs from the host](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
-Like Docker's default `bridge`, `booley-unproxied-v1` also lets Sandboxes reach
-services listening on the host's Docker gateway address.
+If a stopped Sandbox won't start after switching to `"unproxied"`, recreate it
+with `booley session down`, then `booley session up`.
 
-Host `config.toml [sandbox]` and Project `booley.toml [sandbox]` have different
-keys: host limits and egress belong only in the host file; Project image and
-memory settings belong only in the Project file. Init and Doctor reject
-host-only keys placed in Project `[sandbox]`.
-
-This Sandbox Policy applies to the whole Docker daemon, across all Projects
-and both Goal Mode and Interactive Mode. The
-timeout and admission cap cover all Booley Sandboxes, every extra
-egress hostname becomes reachable from every Project, and `egress` applies to
-every Project's issued Sandboxes.
+This policy is daemon-wide: it applies to every Project's Sandboxes on the
+Docker daemon, in Goal Mode and Interactive Mode. The timeout and session cap
+count all Booley Sandboxes, every allowlisted hostname is reachable from every
+Project, and switching `egress` affects every Project.
 
 `max_sessions` is checked before a start would add a live Sandbox. At the limit,
 the command refuses, lists live Projects and ages, and explains how to free capacity
@@ -101,7 +89,8 @@ canceling the editor operation.
 
 This is the Project table in `booley.toml`. Host-wide `idle_timeout_seconds`,
 `max_sessions`, `egress_allowlist`, and `egress` belong in
-[`config.toml [sandbox]`](#host-configuration-configtoml).
+[`config.toml [sandbox]`](#host-configuration-configtoml); Init and Doctor
+reject them here.
 
 One container, one memory limit:
 
@@ -204,8 +193,8 @@ the choice is about whether the pins should survive a fresh clone:
   Do not name `.booley/docker/requirements.txt`: that path is the
   *generated* output of this knob.
 
-Either way the file is an **image-build input**, consumed only by `booley init`
-(Step 9b). It must exist on disk before the build, and changing it does nothing
+Either way the file is an **image-build input**, consumed only by `booley init`.
+It must exist on disk before the build, and changing it does nothing
 until you re-run `booley init` and recreate the container.
 
 This is also the supported way to pin a **cocotb 1.x** stack, or to add BFM
@@ -235,22 +224,8 @@ drops `remoteEnv`, and the Sandbox would silently fall back to `proxy`. The
 variable is read only inside a Sandbox (`BOOLEY_CONTAINER=1`) and is never
 inferred from platform signals such as `CODESPACES`.
 
-It is a declaration, not a security boundary. Any process in a Sandbox can set
-it for itself; in a Sandbox Booley issued under host `egress = "proxy"` the
-internal network still denies direct egress, and Booley never removes a proxy
-variable the Sandbox delivered, so doing so only stops Booley adding its own
-proxy variables in that process and turns Doctor's unresolved-proxy FAIL into
-the waivable WARN for that run.
-
-Doctor reports the mode in the Sandbox checks:
-
-- `proxy` and the proxy host resolves: PASS.
-- `proxy` and the proxy host does not resolve: FAIL. Start the Sandbox from a
-  Booley-issued devcontainer spec, or declare `BOOLEY_EGRESS=unproxied`.
-- `unproxied`: WARN `sandbox.unproxied`, because Booley does not mediate
-  egress. Accept it by waiving that check ID in
-  [`doctor-waivers.toml`](DOCTOR.md#doctor-waivers-doctor-waiverstoml).
-- Any other value: FAIL naming the two valid values.
+In an Unproxied Sandbox Doctor WARNs `sandbox.unproxied`; to accept it, waive
+that check ID in [`doctor-waivers.toml`](DOCTOR.md#doctor-waivers-doctor-waiverstoml).
 
 ## Agent app in a hand-written spec (`BOOLEY_AGENT_APP`)
 
@@ -271,18 +246,16 @@ in a hand-written spec, such as a Codespace.
    Codex credential is also present.
 2. A Codex credential (`OPENAI_API_KEY`, a stored token, or the Codex login
    file).
-3. A complete [gateway](../internals/GATEWAY.md) configuration, when
-   `BOOLEY_PRIMARY_AUTH` is unset or `auto`: Codex through the gateway. A
-   user's own credential always wins over the gateway.
+3. A complete gateway configuration, when `BOOLEY_PRIMARY_AUTH` is unset or
+   `auto`: Codex through the gateway. A user's own credential always wins over
+   the gateway.
 4. Otherwise Claude, with its login offered.
 
 The spec's `postStartCommand` (and `postCreateCommand`, when the spec has one)
 must run Booley's registrar, the `booley.harness.incontainer_register` module.
 It makes the choice at every start, so a changed credential changes the app at
-the next start, and Booley's agents, `booley chat` and `booley doctor` all
-follow it. In a Sandbox `booley doctor` shows the app and why it was chosen,
-and WARNs when `[agent] provider` pins an app that `auto` might not pick;
-remove the pin or set `BOOLEY_AGENT_APP` to it.
+the next start. If `[agent] provider` pins an app, set `BOOLEY_AGENT_APP` to
+that app (or remove the pin) so `auto` cannot pick a different one.
 
 `auto` outside a Sandbox is refused, and the message names the variable.
 
@@ -314,24 +287,18 @@ $ booley init
 ```
 
 That is one pass, not a recipe: init builds the image **from your file
-verbatim** and re-seeds the devcontainer spec later in the same run. The image
-name is derived automatically from the Project slug and canonical-root digest.
-A matching manual `.booley/docker/Dockerfile` is built above the selected
-Booley wheel overlay, so no matching `[sandbox].image` entry is written or needed. Set `[sandbox].image` only to select a genuinely
-custom name or a Booley flavor image.
+verbatim** and re-seeds the devcontainer spec later in the same run. Booley
+names the image for you; you don't need `[sandbox].image` for this. Set it only
+for a genuinely custom name or a Booley flavor image.
 
 What init decides, and how to steer it:
-
-| Configured selection and recipe | Initialization behavior |
-|---|---|
-| Standard or Booley flavor with matching manual `FROM` | Build the selected wheel overlay, then the exact manual recipe under this Project's private image name. |
-| Manual `FROM` mismatches the selection or is ambiguous | Report the selection and parsed parent, preserve the recipe, and leave it unused. |
 
 | Your `.booley/docker/` state | What `booley init` does |
 |---|---|
 | No Dockerfile, `[sandbox].pip_requirements` set | Generates `Dockerfile` + `requirements.txt` and builds the derived image |
 | Hand-authored Dockerfile, image **not** built | Builds the derived image from your file untouched |
 | Hand-authored Dockerfile, image already built | Leaves it alone while current; rebuilds it verbatim when inherited Booley provenance is stale |
+| Hand-authored `FROM` doesn't match the selected image | Leaves the file unused and reports it |
 | `[sandbox].image` naming an image Booley doesn't recognise | Skips the step entirely — you manage that image |
 
 "Hand-authored" means: the file does not carry init's generated header, *or* it
@@ -346,11 +313,8 @@ FROM booley-sandbox-riscv
 RUN pip install --no-cache-dir -r /tmp/reqs.txt
 ```
 
-Hand-authored recipes remain conservative: Booley preserves their bytes and
-exact ancestry and cannot move their Project dependencies below its final wheel
-overlay. The same inherited-provenance check rebuilds a Project image left
-behind by a parent update. Manual ownership prevents file rewriting; it does
-not freeze stale parent layers into the Sandbox.
+Booley never rewrites a hand-authored Dockerfile, but it rebuilds the image
+when its Booley parent changes.
 
 Booley infers ancestry only from a Dockerfile with one unambiguous `FROM`. For
 a multi-stage or variable-based recipe, declare the managed direct parent
@@ -362,33 +326,15 @@ FROM booley-sandbox-riscv AS tools
 FROM tools AS runtime
 ```
 
-The directive is lifecycle metadata. Booley verifies the resulting image label
-against that parent's current immutable Docker image ID; it never treats a tag
-or matching Booley version as proof of ancestry.
-
-Published Booley flavors use the registry equivalent of that rule: their label
-records the base's digest-qualified GHCR reference, and init verifies it against
-the pulled base's repository digests. It does not compare Docker image IDs from
-the publisher and consumer, because those local identities are not registry
-provenance.
-
 Use the [post-setup hook](CONFIG.md#worktree-setup-hooks) for per-worktree
 preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
 
-**Changing an already-built image is a lifecycle operation, not a config
-edit.** For a headless Booley-managed Sandbox, `booley session refresh` plans
-the minimal invalid image closure, builds and verifies transaction candidates
-while the prior Sandbox remains available, then pins the new immutable image ID,
-recreates the Sandbox, and probes its installed Booley wheel before discarding
-the predecessor. For generated recipes, a Python-only change rebuilds only the
-final wheel overlay; compatible EDA, RISC-V, and Project-dependency substrates
-retain their exact immutable IDs. A matching manual recipe remains above the
-wheel overlay and its descendants rebuild when that wheel changes. A failed recreation or probe restores the prior Sandbox. If VS
-Code owns the running Sandbox, refresh the image with
-`booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
-external images remain your responsibility: rebuild or pull them, run
-`booley init --seed`, then recreate and probe the Sandbox.
+**After changing an image:** in a headless Sandbox, run `booley session
+refresh`; it rebuilds only what changed and restores the previous Sandbox on
+failure. If VS Code owns the Sandbox, run `booley init --force`, then **Dev
+Containers: Rebuild Container**. For an external image, rebuild or pull it
+yourself, run `booley init --seed`, then recreate the Sandbox.
 
 ### RISC-V toolchain image (`booley-sandbox-riscv`)
 
@@ -408,15 +354,10 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): the unprivileged and privileged ISA
   manuals (`riscv-isa-unprivileged.{pdf,html}` and
   `riscv-isa-privileged.{pdf,html}`), the external debug spec, and the ELF psABI;
-  the ISA manuals follow the newest date-named upstream release, checked at
-  each Booley release currency audit
-  ([ADR 0071](../adr/0071-follow-date-named-riscv-isa-manual-releases.md));
   **`pdftotext`** is included for shell and Developer Agent text extraction.
 
 Reserve about 6 GB of Docker storage for the complete RISC-V demo stack, plus
-Project artifacts and temporary upgrade/build data. The current Linux/AMD64
-image occupies 2.02 GB on the measured containerd store and exposes a 4.48 GB
-filesystem; its standard-image layers are shared rather than additive.
+Project artifacts and temporary upgrade/build data.
 
 Point a project at it with the normal image selector:
 
@@ -437,30 +378,8 @@ make -C sw/... RV_ISA=rv32im_zicsr    # CoreMark's variable name
 The right variable name is the project's own; grep its makefiles for `rv32i`.
 Keep the override at the call site (the `post-setup` hook).
 
-Project Initialization owns its private selected image; shared flavor and runtime-base
-artifacts remain immutable inputs. Internally, both user-facing
-images are assembled from reusable substrates in
-`ghcr.io/boldaxolotl/booley-sandbox-base`; those substrate tags are an
-implementation detail, not additional `[sandbox].image` choices.
-
-When Booley is running from a source checkout, it reuses compatible local
-standard and RISC-V substrates and installs the requested checkout's wheel in a
-final overlay. An installed official distribution pulls and verifies only the
-selected complete standard or RISC-V image.
-
-To build or refresh the host flavor by hand (Bootstrap acquires or reuses the
-contract-compatible runtime base; add `--refresh-base` to rebuild it explicitly):
-
-```bash
-./src/booley/data/docker/build-riscv.sh
-```
-
-Or pull the pre-built image from the GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/boldaxolotl/booley-sandbox-riscv:latest
-docker tag  ghcr.io/boldaxolotl/booley-sandbox-riscv:latest booley-sandbox-riscv
-```
+`booley init` pulls the image that matches your Booley version, or builds it
+locally when the pull fails; you don't fetch it yourself.
 
 When the Project also declares Python dependencies, keep the RISC-V selector
 and declare the requirements normally:
@@ -473,8 +392,7 @@ pip_requirements = ["requirements.txt"]
 
 Booley automatically selects the generated Project image, installs those
 dependencies on the RISC-V substrate, then applies the same final wheel
-overlay. All selection surfaces—Project Initialization, Session start,
-refresh, and Doctor—resolve that generated image name consistently.
+overlay.
 
 ## Baking the cocotb stack into the image
 
@@ -529,37 +447,7 @@ the installation name and host path; Project configuration cannot select
 either. The host administrator manages registrations and grants using
 `booley eda installation register` and `booley eda grant add`.
 
-Successful ordinary `booley init` runs remember their canonical Project Root
-in the host-owned Project Inventory. `booley projects` joins those roots with
-their Grants and reports each root as `present`, `missing`, or `uninitialized`.
-Use `booley projects discover <root>...` to import existing initialized
-Projects; discovery scans only the roots named on the command line and does not
-follow directory symlinks. Discovery stops descending at each initialized
-Project to avoid scanning its RTL, vendor, and build trees, so nested Projects
-are not imported by that scan. To import a nested Project, run
-`booley projects discover <nested path>` on it directly.
-`booley projects forget <project>` removes an
-obsolete remembered root only after its live Grants have been revoked.
-Forget then releases that root's issued-image keeper tag when no container uses
-its immutable image; an in-use keeper is retained while the root is forgotten.
-Docker inspection or removal failure preserves the inventory entry for retry.
-If a present root's keeper was released, run `booley init` before using it again.
-Forget then lists what the Project still holds in Docker, with sizes: images
-named by its own tags or recorded as built for it, its agent state volumes, and
-containers or networks labelled for it. Each entry says whether a container
-uses it or another tag shares it. Forget removes none of the listed resources. A state volume
-holds a copy of the agent's login and the agent's history.
-`booley projects forget --purge <project>` also removes the unused ones; it
-accepts a root that is already forgotten or deleted, unless a live Grant holds it.
-For keepers left by earlier forgotten Projects, preview with
-`booley projects prune-keepers`, then apply that exact preview with
-`booley projects prune-keepers --confirm <digest>`.
+`booley projects` lists Projects on this machine; see
+[CLI-REFERENCE.md](CLI-REFERENCE.md#commands).
 
-EDA administration prints human-readable confirmations by default. Add
-`--json` to a public leaf operation when a script needs the stable structured
-record.
-
-License Profiles are host-owned and never appear in Project configuration. A
-licensed Sandbox receives only a fixed FlexNet relay pointer; it cannot choose
-an upstream server or arbitrary license environment. Invalid, missing, drifted,
-or revoked authority fails closed before Flow execution.
+Invalid, missing, or revoked licenses fail before the Flow runs.

@@ -62,7 +62,7 @@ def _assert_guidance_names(text, available, source):
 
 
 def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
-    usage = (REPO_ROOT / "docs/user/GOAL-MODE.md").read_text(encoding="utf-8")
+    usage = (REPO_ROOT / "docs/internals/MCP-TOOLS.md").read_text(encoding="utf-8")
     table = usage.split("Built-in MCP worktree routing:\n\n", 1)[1].split("\n\n")[0]
     documented = {}
     for row in table.splitlines()[2:]:

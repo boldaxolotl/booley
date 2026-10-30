@@ -2,9 +2,7 @@
 
 Keeps your AI-assisted workflow out of the git history (see
 [FEATURES.md: Stealth Mode](FEATURES.md#stealth-mode)).
-The `[stealth]` table in `booley.toml` belongs only to an initialized Project. Booley's own Source Checkout
-is never a Project, does not read this policy, and must not own
-`.booley/` or Project Git hooks.
+The `[stealth]` table in `booley.toml` belongs to an initialized Project.
 
 ```toml
 [stealth]
@@ -25,10 +23,9 @@ enabled = false              # open setup; hidden answer sets true
 Setup asks whether to keep Booley out of your git history. Yes keeps
 `.booley/` hidden and writes `[stealth] enabled = true`, enabling the
 commit-message scrub and hidden-core projection when Booley authors cores.
-No uses open config and native cores with `enabled = false`. Unattended setup
-leaves stealth off unless hidden authored cores require it; existing hand-set
-values are preserved. A missing `enabled` key still means **on**; write the
-key rather than omitting it when you want stealth disabled.
+No uses open config and native cores with `enabled = false`. A missing
+`enabled` key means **on**; write the key rather than omitting it when you want
+stealth disabled.
 
 Stealth also makes `.booley/` a self-contained home for authored
 FuseSoC cores. Cores under `.booley/cores/` use repository-root-relative
@@ -56,7 +53,8 @@ The built-in list is `claude`, `anthropic`, `copilot`, `codex`, `openai`,
 `co-authored-by`. `banned_words` replaces (not extends) it; `banned_substrings`
 adds literal substring terms. Both lists are combined case-insensitively without
 duplicates. An absent `banned_words` keeps the built-in vocabulary, while an
-explicit empty list never restores defaults.
+explicit empty list never restores defaults. Override `banned_words` when your
+Project uses `cursor`, `ticket`, `gpt`, or `llm` in ordinary engineering text.
 
 Matching is case-insensitive. The built-in identity names `booley`, `claude`,
 `anthropic`, `codex`, `openai`, `chatgpt`, `copilot`, and `gemini` match as
@@ -73,31 +71,18 @@ original spans, preserving surrounding identifier text.
 redaction placeholders (`redacted`, `<author>`, `<author-email>`, `<repo>`,
 `<home>`, `<remote>`, `<org>`, `<email>`, `<redacted>`, or `<module-N>` for
 any positive integer N)
-are rejected before publication. After upgrading or configuring this tier,
-run Project Setup or Doctor to reconcile installed Git-hook bundles.
+are rejected before publication.
 
-Project Initialization keeps `.booley/hooks/` for Project-authored
-`post-setup` lifecycle hooks. Booley-managed commit and
-push policy lives in the deterministic
-`.booley/.managed/project-git-hooks.pyz` bundle, reached by the small
-`commit-msg` and `pre-push` adapters under `.git/hooks/`.
+`.booley/hooks/` is for your own `post-setup` hooks.
 
 **Your message is redacted, not truncated.** Subject *and* body are kept, with
 banned phrases substituted in place; the hook prints what it rewrote. Recognized
 attribution is different: `Co-Authored-By:` and robot-prefixed footer lines are
-always rejected, while a plain "Generated with …" footer is rejected only when
-it is the final nonblank body line and its entire visible payload matches one
-entry in the active banned-word vocabulary. Markdown-linked payloads are
-compared by their visible label. The hook leaves the raw message unchanged and
-tells you to remove the footer and retry. This avoids both silent deletion and
-recognizable redaction debris while preserving ordinary prose such as
-"Generated with care by the whole team" or "Generated with Docker for
-reproducibility." These lines are not rejected; banned words inside them are
-still redacted. With the built-in vocabulary, both examples are stored verbatim:
-`generated`, `docker`, and `agent` are ordinary prose, not default banned words.
-The audit retains `cursor`, `ticket`, `gpt`, and `llm` in the token-matched tier;
-they never gain the identity tier's substring matching. Override `banned_words`
-when a Project uses these terms in its ordinary engineering vocabulary.
+always rejected. A plain "Generated with …" footer is rejected only when it is
+the final nonblank body line and its whole payload is exactly one banned word,
+such as "Generated with Codex". Ordinary prose like "Generated with Docker for
+reproducibility" passes. On rejection the hook leaves your message unchanged and
+tells you to remove the footer and retry.
 
 An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
 vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
@@ -197,19 +182,12 @@ upstream commit you imported, not your local merge commit. Until then, newer
 upstream commits receive ordinary checks. The new local merge commit and its
 changed paths remain checked in either case.
 
-Supported source locations are canonical HTTPS or SSH URLs (including SSH
-`host:path` syntax), or an absolute local repository path or `file://` URL.
-A local source must have complete independent object storage: the pushing
-repository itself, shared object directories, alternates, shallow sources, and
-promisor sources are refused. Transport authentication, canonical location,
-and Git policy checks apply to source discovery as they do to the destination.
-Missing, malformed, or unverifiable import settings block an active push;
-remove both keys to return to scanning imported history. No-update and deletion
-pushes need no import discovery.
+Use a canonical HTTPS or SSH URL, or a standalone local repository path, for
+`upstream_repository`. The hook names any problem with the import settings and
+blocks the push; remove both keys to go back to scanning imported history.
 
 Malformed or unreadable `booley.toml`, missing inspected history, and shallow
-boundaries in the selected scan range block the push. Run Project Setup or
-Doctor after upgrading to refresh installed Git-hook bundles.
+boundaries in the selected scan range block the push.
 `BOOLEY_SKIP_PUSH_GUARD=1` skips every guard check for one push.
 
 ## What survives a fresh clone
@@ -255,19 +233,5 @@ in the **tracked tree**, not in `.booley/`. A `tb/fixtures/` or
 `verif/lint_bad.sv` next to the sources reads as ordinary test material and
 gives nothing away — which is what stealth mode is actually asking of you.
 
-Simulation has one narrow exception because its fail-path fixture may replace
-an already-staged firmware or vector rather than belong to a `.core`: mirror
-the replacement beneath
-`.booley/selftest/sim/bad-overlay/` (for example,
-`bad-overlay/firmware/firmware.hex`). During `doctor --deep`, Booley overlays
-that tree on an isolated simulation build variant of the default Target's
-first runnable test. Ordinary simulation never applies or reuses it, and no
-Doctor-only shell command belongs in `[flows.sim].pre_run_commands`.
-
-Lint's corresponding convention is a Target named `lint_selftest_bad` in its
-own tracked `.core`, with `flow_options.booley.doctor_selftest: true`. Keep the
-known-bad source beside that dedicated core under ordinary tracked verification
-material. Booley omits Doctor self-test Targets from `booley targets`, its MCP
-equivalent, and ordinary Flow selection; Doctor can still resolve them for the
-bad case. Doctor uses the first lint Doctor Target as the good case and that
-conventional Target as the bad case.
+For where Doctor's known-bad self-test fixtures live, see
+[DOCTOR.md: Self-test fixtures](DOCTOR.md#self-test-fixtures).

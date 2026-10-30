@@ -200,9 +200,7 @@ later. The Review Package lists every such Test Run under the heading
 **Evidence.** A Test Run counts for a Goal only when its name and its declared
 arguments and environment equal one of the Goal's frozen Test Runs. Each
 frozen Test Run is `passed`, `failed` or `missing`, computed from applicable
-evidence history at the same Goal revision and dependent file contents.
-Observations retain their own Test Run rows; older stored outcome copies are
-ignored. Evidence without Test Run rows supplies no outcome:
+evidence history at the same Goal revision and dependent file contents:
 
 - It becomes `passed` when it passes at the current contents of the files the
   Goal depends on.
@@ -255,25 +253,10 @@ contributing observations, so later runs do not change a saved package.
 
 ## Working with evidence
 
-The Developer Agent passes the absolute worktree root as `work_dir` to every tool that
-accepts it.
-
-Built-in MCP worktree routing:
-
-| Accepts `work_dir` | Does not accept `work_dir` |
-| --- | --- |
-| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
-| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
-| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
-| `booley_targets`, `booley_report` | `bwave` |
-
-`booley_sleep` appears only when diagnostic tools are enabled, and
-`coverage_evidence` only in the Coverage Analyst's nested server.
-
-While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
-tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
-call outside that worktree; `booley_targets` may omit it. Project-defined
-endpoints must declare `work_dir` to run.
+The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
+every tool that accepts it; while a Goal is active, Flows, Specialists, and
+Goal tools refuse a call without it. Full list:
+[MCP-TOOLS](../internals/MCP-TOOLS.md#work_dir-routing).
 
 Only Booley Flows and Specialists meet Goals. Shell output or the Developer Agent saying
 "done" does not. `goal_status` shows each Goal's current evidence and freshness;
@@ -291,9 +274,7 @@ Review Package flags `.core`, `tests.toml`, and `.sdc`/`.xdc` edits.
 Entering Goal Mode starts a background Job for each SIM Goal's frozen Test Runs
 at the Goal Branch's base contents. Adding a SIM Goal through an approved Goal
 Change schedules its baseline too. Entry returns while the Job runs; status
-shows the baseline as pending. Booley reuses a result for the same Target,
-resolved Test Run and dependent file contents across sessions and worktrees.
-Protected execution inputs are part of the cache identity too.
+shows the baseline as pending.
 
 `goal_status`, `booley goal status`, the Dashboard's Goal details and the Review
 Package show a summary for each SIM Goal. Every Test Run other than
@@ -324,23 +305,12 @@ infrastructure error does not. Earlier evidence without that classification
 cannot prove a functional failure. Finish freezes the report as it is, so its
 Review Package may still show a pending baseline.
 
-Booley verifies versioned baseline dependencies against the base commit and
-uses captured entry configuration for an unversioned Booley Directory. Dependencies
-outside those pinned or captured inputs make the report unavailable. The Project
-must ignore Booley's baseline scratch directory, as Project Initialization
-configures it; otherwise Booley reports an unavailable baseline without leaving
-scratch files that would affect entry or Finish. The advice to reproduce a bug
-before editing remains unconditional.
-
 ## Synthesis baseline Jobs
 
 Entering Goal Mode, or approving a Goal Change that adds one, starts a
 background synthesis Job for each baseline-relative SYNTH Goal. It synthesises
 the Goal's baseline Target at the Goal Branch's base contents, with the
 synthesis recipe frozen at that entry or change. Absolute SYNTH Goals get none.
-Booley reuses a result for the same Target identity, frozen recipe, dependent
-file contents and Protected Inputs across sessions and worktrees. Candidate
-runs still synthesise the baseline themselves.
 
 At most one baseline Job per Flow runs at a time, SIM included; others wait,
 and the wait does not count against a Job's time budget. `goal_status` and
@@ -373,11 +343,6 @@ is refused.
 
 After any of these changes the Goal's Test Run outcomes start again.
 
-Goal Mode clients must expose MCP `structuredContent` to the Developer Agent.
-Entry and status return the internal `goal_key` change addresses there, separately
-from human Goal names. A client that forwards only text can read status but cannot
-address an existing Goal for a change.
-
 ## Finish and review
 
 Finish requires all Goals met with fresh evidence at a clean, committed HEAD
@@ -398,17 +363,10 @@ path is Git-trackable and owned by the RTL repository. Stealth, excluded, or
 Paired Checkout summaries stay local.
 
 Booley deletes a finished, abandoned, or failed Goal Record, with its Session
-Summary and Review Package, once both its worktree and its Goal Branch are gone.
-A worktree is gone when it is absent from Git’s worktree registry: after
-`git worktree remove`, or
-after `git worktree prune` for a worktree directory you deleted by hand.
-Booley starts a background cleanup after every Goal entry, Finish, and abandonment;
-the command returns without waiting for Git checks or deletion. If the worker
-cannot start or is interrupted, the next lifecycle command retries cleanup. A record is kept
-whenever Git cannot confirm that the worktree or branch is gone, the record is
-unreadable, or another command is using it. Committed summaries under `goals/history/`
-are never deleted. Copy anything you want to keep before you remove both the
-worktree and the branch.
+Summary and Review Package, once both its worktree (`git worktree remove`, or
+`git worktree prune` after deleting the directory by hand) and its Goal Branch
+are gone. Committed summaries under `goals/history/` are kept. Copy anything
+you want to keep before you remove both the worktree and the branch.
 
 ## Recovery, unattended work, and parallel sessions
 
@@ -426,66 +384,6 @@ being stuck never abandons a Goal automatically. The branch and worktree remain.
 For parallel work, use one linked worktree and Goal Branch per session. Start
 another Developer Agent in another container terminal and invoke `/booley-goal` there.
 Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
-`booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox; it opens
-on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false`.
-Each session shows what its agent client last reported: working, waiting for
-tool call, or waiting for user input. Click a report, artifact, or evidence
-path in a detail view to open it in the editor.
-
-The Dashboard has two windows, Sessions and Jobs. Press `←` or `→` to switch
-between them; each window keeps its place, so switching back returns to the
-same detail and row. Press `↑` on the first row (or in an empty list) to reach
-the top bar with the window tabs and Help: `←` and `→` choose, `Enter` applies,
-and `↓` or `Esc` return to the list. `Esc` goes back one level inside a window
-and does nothing at its top level.
-
-The Sessions window groups sessions by what needs you: NEEDS YOU (waiting for
-your input, or holding a pending Goal-change proposal), WORKING, and UNKNOWN
-(no fresh activity report). A STANDALONE JOBS group lists running Jobs that
-belong to no session, and only while one runs. Inside a group the session that
-has been in its state longest comes first. Each row has the columns Session,
-Mode, Branch, Work dir, Started and Activity; a missing branch or work dir
-shows as a dim `—`. The Sessions tab reads `Sessions N◆` while N sessions
-need you.
-
-While the Jobs window is shown, the top bar also holds its filters: Running
-(queued or running Jobs), Finished (the newest 50) and All, then an owner chip.
-`Enter` on the chip cycles All sessions, each session handle (including
-sessions known only through retained Jobs), Standalone, and back. The Jobs tab
-shows how many Jobs are unfinished, and nothing when there are none. An empty
-list says why and which filter shows something.
-
-The Jobs window opens on all sessions, whichever window or detail you came
-from, and keeps the Running, Finished or All choice while you switch windows.
-
-The footer shows only the keys that apply where the cursor is, for example
-`↑↓ move · ⏎ open · ←→ Sessions / Jobs`; Help in the top bar summarizes them.
-
-The Jobs list has the columns Job, Target, Session, State, Result, Crit and
-Elapsed. Crit repeats the detail's `Criterion:` line as `✓` (met) or `✗` (not
-met) and is blank when the Job has none. When the list is too narrow, long
-Targets are cut with `…` first (down to six characters), then long Result
-words. The Job detail (beside the list on wide windows, or open with Enter) shows the
-full values, plus the exit code, the stage and the session's connection.
-
-Sessions have short Project handles such as `S17`. Jobs include
-their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
-Jobs use `SIM`, synthesis baseline Jobs use `SYN`, and other endpoints use `J-JOB<n>`. One Job counter covers every
-kind, so numbers may skip within a kind. Handles survive Dashboard restarts.
-Full session keys and Job run IDs are secondary text in details;
-MCP polling continues to use the full run ID.
-
-Sessions receive handles when registered; Jobs receive them when created. A Job
-keeps its handle while it runs and for 24 hours after it ends. A session keeps
-its handle while its presence is current (presence expires after about two idle
-hours), while it owns such a Job, or, for a tab started with `booley chat`,
-while that tab's process is still running, so a session resumed after a long
-pause may get a new handle. When the Booley MCP server starts, it removes the
-other handles and restarts numbering at 1 once none are left. An expired Job
-shows its run ID in place of a handle. `S?` or `J-SIM?` (and the equivalent for
-other kinds) marks a live session or Job without a handle. Handle-storage
-failures show a diagnostic. The Dashboard itself only reads handles and never
-allocates or removes them.
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none. In a
@@ -493,6 +391,26 @@ worktree without an active Goal Mode, `booley goal status` and `goal_status`
 also show its most recently ended Goal Record: Goal id, state, end time, the
 failure reason of a failed record, and the Session Summary and Review Package
 paths when those files exist.
+
+## Dashboard
+
+`booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox. It opens
+when VS Code attaches to the folder; opt out with `[sandbox].dashboard=false`.
+Each session shows what its agent client last reported: working, waiting for
+tool call, or waiting for user input. Click a report, artifact, or evidence
+path in a detail view to open it in the editor.
+
+The Dashboard has two windows, Sessions and Jobs. Press `←` or `→` to switch
+between them. The Sessions window groups sessions by state; NEEDS YOU holds the
+ones waiting for your input or a Goal-change decision, and the tab reads
+`Sessions N◆` while N sessions need you. The Jobs window filters Running,
+Finished (the newest 50) or All Jobs, and by owning session. Press `↑` on the
+first row to reach the top bar with the tabs, filters, and Help. The footer
+shows the keys that apply where the cursor is.
+
+Sessions have short Project handles such as `S17`; Jobs carry their kind, as in
+`J-SIM25`, `J-SYN34`, `J-LINT45`, `J-FPGA33` or `J-JOB<n>`. A session resumed
+after a long pause may get a new handle.
 
 ## Goal catalog
 

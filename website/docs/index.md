@@ -23,7 +23,7 @@ document: Booley product datasheet
       <div class="order__h" id="order-h">Quick start</div>
 <pre><code style="all:unset"><span class="p">$ </span>pipx install booley-rtl
 <span class="p">$ </span>booley bootstrap</code></pre>
-      <div class="order__f">Requirements, upgrades, and troubleshooting: <a href="https://github.com/boldaxolotl/booley#installation">installation guide</a>.</div>
+      <div class="order__f">Requirements, upgrades, and troubleshooting: <a href="docs/install/">installation guide</a>.</div>
     </div>
   </div>
 

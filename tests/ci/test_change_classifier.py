@@ -478,6 +478,10 @@ _SITE_JOBS = _BASE_JOBS | {"site-build", "lint"}
         # Python under website/ must still reach Ruff through ``lint``.
         pytest.param(["website/hooks/user_docs.py"], _SITE_JOBS, id="website-python"),
         pytest.param(["docs/user/USAGE.md"], _SITE_JOBS, id="user-docs"),
+        # The install smoke runs the Install guide's commands.
+        pytest.param(
+            ["docs/user/INSTALL.md"], _SITE_JOBS | {"package-artifacts"}, id="install-guide"
+        ),
         pytest.param(["docs/architecture.md"], _BASE_JOBS, id="internal-docs"),
         pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
         pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),

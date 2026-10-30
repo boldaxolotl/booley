@@ -156,6 +156,28 @@ enabled = false                 # remove one discovered Specialist MCP tool
 Agent-facing MCP tools and the subprocesses they launch run inside the Sandbox. A custom endpoint that needs additional software adds it to a Project
 image or uses a supported built-in EDA provisioning policy.
 
+### `work_dir` routing
+
+The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
+every tool that accepts it.
+
+Built-in MCP worktree routing:
+
+| Accepts `work_dir` | Does not accept `work_dir` |
+| --- | --- |
+| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
+| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
+| `booley_targets`, `booley_report` | `bwave` |
+
+`booley_sleep` appears only when diagnostic tools are enabled, and
+`coverage_evidence` only in the Coverage Analyst's nested server.
+
+While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
+tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
+call outside that worktree; `booley_targets` may omit it. Project-defined
+endpoints must declare `work_dir` to run.
+
 ### Configuration Boundary
 
 The framework reads Flow settings from `[flows.<name>]` and Specialist
@@ -247,6 +269,12 @@ Every MCP tool inherits a base argument set. A concrete implementation adds only
 | `--target` | Which project Target to operate on (comma-separated). This is what `self.args.target` reads in the examples below |
 
 The Target value is also what the `per_target` Criterion convention keys on.
+
+Unknown endpoint arguments stop selector extraction, so custom endpoints take
+the selector before the endpoint name (`booley flow -C ../other custom`);
+inherited common parsers support it. Overrides that bypass the common
+entrypoint reject explicit outer selection. Plugin-owned options, including a
+custom `--timeout short|long`, keep their own contracts.
 
 ### Execution Hooks
 
@@ -590,7 +618,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/GOAL-MODE.md#working-with-evidence) lists the tools that accept none.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](#work_dir-routing) lists the tools that accept none.
 
 #### Diagnose a Flow Through the Direct CLI
 

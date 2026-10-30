@@ -66,14 +66,11 @@ must contain `{index}` (0-based) or `{name}`, and these are the only
 substitutions. It cannot start with `++` or `+-`, which a simulator reads as a
 different option. A Target without `select` uses `+test_id={index}`.
 
-`skip` drops known-hanging / known-failing tests from a plain
-`booley flow sim --target <target>`
-run so each doesn't burn the full per-test wall-clock budget. Naming a skipped
-test explicitly with repeatable exact `--test <name>` still runs it (an explicit override), and an
-all-skip target fails preflight rather than passing with zero tests or silently
-running configured-skipped work. For a
-different explicit suite, use repeated `--test` options or `--tests-file`; there
-is no per-invocation `--skip` option.
+`skip` drops known-hanging or known-failing tests from a plain
+`booley flow sim --target <target>` run. Naming a skipped test with
+`--test <name>` still runs it, and an all-skip target fails preflight rather
+than passing with zero tests. There is no per-invocation `--skip` option; pick
+a different suite with repeated `--test` options or `--tests-file`.
 
 ## Test Variants (`variants`)
 
@@ -188,13 +185,10 @@ tests = ["run_test_001"]
 env   = { FLAVOR = "small", NOC_DEBUG = "1" }
 ```
 
-Per Target because that is where the variance lives: the same testbench module
-run under two RTL flavours is two Targets, each with its own value. The exports
-happen in the shell that owns the build **and** the run, inside the Sandbox — no testbench edit needed. [Pre-run
-commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands) see the same
-variables (so a flavour-aware firmware build works), but they can't *provide*
-them: their own exports die with their shell. The test filter selects tests
-rather than configuring them. Values must be quoted
+The variables are exported in the shell that runs the build **and** the
+simulation, inside the Sandbox. [Pre-Sim
+Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands) see them but
+can't set them: their own exports die with their shell. Values must be quoted
 strings, and names must be
 shell-exportable identifiers (`[A-Za-z_][A-Za-z0-9_]*`). `--dry-run` previews
 the exact `export` lines.
@@ -204,18 +198,3 @@ that Booley or the simulator integration owns. These names fail to load:
 `MODULE`, `TESTCASE`, `TOPLEVEL`, `TOPLEVEL_LANG`, `RANDOM_SEED`,
 `LIBPYTHON_LOC`, `PYTHONPATH`, `LD_LIBRARY_PATH`, and every name that starts
 with `BOOLEY_`, `COCOTB_`, `PYGPI_` or `GPI_`.
-
-Booley also sets `PYTHONPYCACHEPREFIX` and pytest's `cache_dir` itself,
-overriding Target values so Python artifacts stay under the Project runtime
-directory instead of the source checkout. Pytest cache features remain enabled.
-
-Design fields never appear in `booley.toml`, and neither do the source-category
-directory listings: RTL vs testbench source dirs are derived from the `.core`
-filesets (the `tags:[tb]` partition marks the TB sources). What lives
-in `booley.toml` is the per-Flow execution knobs (`enabled`) plus a few
-unrelated flags — never the source-dir listing itself. One such flag is
-`[sources.testbench].preflight_checks` (bool, default `true`): set it `false`
-to skip the check that a Target's testbench files already exist on disk, which
-is what you want when the TB is authored during the run. (The broader
-`[project].preflight_checks` toggles *all* such file-existence checks — scope
-files and TB alike; the per-section flag narrows the relaxation to just the TB.)

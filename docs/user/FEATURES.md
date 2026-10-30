@@ -28,7 +28,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 A Booley Flow (`sim`, `lint`, `synth`, `fpga`) looks the same no matter which Developer Agent calls it or which EDA tool runs underneath.
 
 - **Claude Code or Codex.** Booley exposes its Flows as MCP tools, which both Claude Code and Codex call natively. Switch Developer Agents and the Flows, Targets, and results stay the same ([details](#llm-backend-selection)).
-- **Same call, same verdict, whichever EDA tool.** `sim` takes the same call and returns the same normalized verdict whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The tool can come from the standard Sandbox image or an authorized read-only host installation, and the Developer Agent drives it the same way.
+- **Same call, same verdict, whichever EDA tool.** `sim` takes the same call and returns the same normalized verdict whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The tool can come from the Sandbox Image or from a licensed install on the host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
 - **Clear results instead of raw logs.** Every Flow returns a definite verdict, keeping failures, timeouts, inconclusive runs, and setup errors distinct, along with structured lint findings or synthesis metrics. Logs, waveforms, and reports land in predictable places. The Developer Agent acts on a clear result instead of guessing from noisy EDA output, and Goal Mode can trust that result as evidence.
 
 The [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md) lists which EDA tools each Flow supports.
@@ -75,7 +75,7 @@ A Developer Agent could spawn its own subagent, but then it writes the brief, de
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. A Cocotb Target always traces through a VCD file that Booley converts to FST after the run; see [Tracing a Cocotb Target](TARGETS.md#tracing-a-cocotb-target). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST as the simulation runs; Cocotb Targets convert after the run ([details](TARGETS.md#tracing-a-cocotb-target)). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
 
 ## Multi-Category Code Review
 
@@ -113,7 +113,7 @@ Both backends support **subscription-based auth** alongside API billing: a Claud
 
 ## Guided Project Setup
 
-Making a project Booley-ready is a guided, mostly hands-off process. Booley ships a `booley-setup` skill, deployed into Claude Code or Codex by `booley init`, that drives the bulk of setup for you, plan-first: a Claude Code or Codex session on the host inspects the repository, gathers every decision into a setup plan for a single approval, then continues as the Developer Agent in the Sandbox to draft `booley.toml`, the FuseSoC `.core` targets, and `tests.toml`, running Booley Flows to validate its work as it goes. Your job is to support that session: answer its planning questions about your build system and design, approve the plan, and it handles the mechanical config authoring gate-free from there. See [SETUP.md](SETUP.md).
+Making a project Booley-ready is a guided, mostly hands-off process. Booley ships a `booley-setup` skill, installed into Claude Code or Codex by Host Bootstrap, that drives the bulk of setup for you, plan-first: a Claude Code or Codex session on the host inspects the repository, gathers every decision into a setup plan for a single approval, then continues as the Developer Agent in the Sandbox to draft `booley.toml`, the FuseSoC `.core` targets, and `tests.toml`, running Booley Flows to validate its work as it goes. Your job is to support that session: answer its planning questions about your build system and design, approve the plan, and it handles the mechanical config authoring gate-free from there. See [SETUP.md](SETUP.md).
 
 ## Extensible Toolkit
 

@@ -180,8 +180,9 @@ def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
     config = " ".join(_flow_section("sim").split())
 
     assert "[flows.sim].build_timeout_ms" in shared
-    assert "recipe `build_timeout_ms`" in shared
-    assert "Standalone units" in shared and "have no build field" in shared
+    dry_run = " ".join(_reference_text(REPORTS).split())
+    assert "recipe `build_timeout_ms`" in dry_run
+    assert "Standalone units" in dry_run and "have no build field" in dry_run
     assert "defaults to `3600000` (one hour)" in config
     assert "independent fixed 600-second budget" in config
 
