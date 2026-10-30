@@ -5742,6 +5742,7 @@ class TestSummaryTable:
         endpoint = SimpleNamespace(
             _console_publication_requested=True,
             _stdout_witness=witness,
+            _human_report=None,
             endpoint_kind="flow",
             announce_success_report=False,
         )
