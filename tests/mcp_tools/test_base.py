@@ -1116,6 +1116,19 @@ class TestStdoutWitness:
         witness.write("preamble\nBLOCKED\n")
         assert witness.saw("BLOCKED")
 
+    def test_block_starting_with_an_indented_line_counts(self):
+        sink = self._Sink()
+        witness = _StdoutWitness(sink)
+        witness.write("noise\n  Target   Area\n  top      1.0 kGE\n\nRESULT: PASS\n")
+        assert witness.saw("  Target   Area\n  top      1.0 kGE\n\nRESULT: PASS")
+
+    def test_indented_echo_of_a_one_line_verdict_does_not_count(self):
+        """Subprocess output indents lines; that echo is not the printed verdict."""
+        sink = self._Sink()
+        witness = _StdoutWitness(sink)
+        witness.write("subprocess output:\n    RESULT: FAIL\n")
+        assert not witness.saw("RESULT: FAIL")
+
     def test_multi_line_block_counts(self):
         sink = self._Sink()
         witness = _StdoutWitness(sink)

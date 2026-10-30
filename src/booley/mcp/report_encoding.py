@@ -498,7 +498,7 @@ def _append_report_section(
         if field not in report:
             continue
         if field == "report_text":
-            report_text = str(report[field]).strip()
+            report_text = str(report[field])
             shown_in_stdout = _contains_whole_line_block(
                 shown_stdout,
                 report_text,

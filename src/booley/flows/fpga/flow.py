@@ -63,8 +63,8 @@ from booley.flows.plan import (
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
+    compose_result,
     note_line,
-    result_text,
     status_cell,
 )
 from booley.flows.target_parameters import vlogparam_specs
@@ -1419,18 +1419,18 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             implementation_reports,
             baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
         )
-        notes, failures = self._aggregate_head(baseline_results, implementation_reports)
+        notes, failures = self._baseline_error_lines(baseline_results, implementation_reports)
         self._append_target_notes(notes, failures, configs, current_results)
         verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[implementation_aggregate.exit_code]
         suffix = f" ({'; '.join(failures)})" if failures else ""
-        header = [f"baseline: {short_sha}"] if self.args.baseline and short_sha else []
-        table = self._summary_table_lines(configs, current_results, baseline_results)
-        result = result_text(
-            [*header, *table, *([""] if notes else []), *notes, "", f"RESULT: {verdict}{suffix}"]
+        result = compose_result(
+            short_sha if self.args.baseline else None,
+            self._summary_table_lines(configs, current_results, baseline_results),
+            notes,
+            f"RESULT: {verdict}{suffix}",
         )
         if sys.stdout.isatty():
-            # The terminal gets the coloured copy; anything else is handed the
-            # plain record by the console publisher (stdout on pass, stderr on fail).
+            # Elsewhere the console publisher prints the plain record.
             print(result.console, flush=True)
         return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
@@ -1438,14 +1438,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             display_lines=_first_valid_display(configs, current_results),
             detail=self._aggregate_detail(configs, current_results, implementation_aggregate),
         )
-
-    def _aggregate_head(
-        self,
-        baseline_results: dict[str, FpgaMetrics],
-        reports: dict[str, ImplementationReport],
-    ) -> tuple[list[str], list[str]]:
-        """Return the run-level notes (baseline and comparison errors) and failures."""
-        return self._baseline_error_lines(baseline_results, reports)
 
     def _append_target_notes(
         self,
@@ -1486,9 +1478,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     @staticmethod
     def _summary_row(cfg: str, cur: FpgaMetrics) -> list[str]:
         """Cells of one Target's table row (``—`` for a metric the run lacks)."""
-        # One representative Fmax = the timing-worst clock (lowest Fmax), tagged
-        # with its name only for multi-clock designs. The authoritative per-clock
-        # breakdown is in the report.
+        # Timing-worst clock, named only for multi-clock designs.
         worst = worst_clock(cur.per_clock)
         fmax = MISSING
         if worst is not None and worst.fmax_mhz is not None:
@@ -1518,20 +1508,13 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """Dimmed ``Δ +1.0%`` cells under LUT/FF/BRAM/DSP; empty without a baseline delta."""
         if base is None:
             return []
-        cells = ["", *([""] * 4)]
-        for index, (cur_val, base_val) in enumerate(
-            (
-                (cur.lut_count, base.lut_count),
-                (cur.ff_count, base.ff_count),
-                (cur.bram_count, base.bram_count),
-                (cur.dsp_count, base.dsp_count),
-            ),
-            start=1,
-        ):
-            pct = _delta_pct(cur_val, base_val)
-            if pct is not None:
-                cells[index] = colors.dim(f"Δ {pct:+.1f}%")
-        return cells if any(cells) else []
+        deltas = [
+            _delta_pct(getattr(cur, field), getattr(base, field))
+            for field in ("lut_count", "ff_count", "bram_count", "dsp_count")
+        ]
+        if all(pct is None for pct in deltas):
+            return []
+        return ["", *(colors.dim(f"Δ {pct:+.1f}%") if pct is not None else "" for pct in deltas)]
 
     @staticmethod
     def _aggregate_detail(

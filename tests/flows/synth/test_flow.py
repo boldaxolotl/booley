@@ -5701,6 +5701,7 @@ class TestSummaryTable:
         name_cell = rows[1][:area_col].strip()
         assert len(name_cell) <= 40 and name_cell.endswith("…")
         assert "Time" in header and "Status" in header
+        assert "Δ" not in header, "no baseline, no delta columns"
 
     def test_missing_metrics_show_dash_and_failure_status(self, flow_and_state, monkeypatch):
         flow, _ = flow_and_state
@@ -5778,6 +5779,10 @@ class TestSummaryTable:
         for column in ("Target", "Area", "Crit path", "Fmax", "Setup slack", "Time", "Status"):
             assert column in header
         assert header.count("Δ") == 2
+        area_delta_col = header.index("Δ")
+        crit_delta_col = header.index("Δ", area_delta_col + 1)
+        assert rows[0][area_delta_col:].startswith("+2.7%")
+        assert rows[0][crit_delta_col:].startswith("+1.6%")
         for token in (
             "baseline: abc1234",
             "45.2 kGE",
@@ -5796,6 +5801,20 @@ class TestSummaryTable:
             "reports/synth/1/artifacts/synth_lite/run.log",
         ):
             assert token in text, token
+
+    def test_fatal_timing_violation_fails_the_status_cell(self, flow_and_state):
+        flow, _ = flow_and_state
+        flow._timing_violation_is_fatal = True
+        result = flow._aggregate_results(
+            ["lite", "ok"],
+            {"lite": self._passing(wns_ns=-0.2), "ok": self._passing()},
+            {},
+            None,
+        )
+        _, rows = self._table(result.report_text)
+        assert rows[0].rstrip().endswith("FAIL (timing)")
+        assert rows[1].rstrip().endswith("PASS")
+        assert "RESULT: FAIL" in result.report_text
 
     def test_area_unit_is_kge_everywhere(self, flow_and_state):
         flow, _ = flow_and_state

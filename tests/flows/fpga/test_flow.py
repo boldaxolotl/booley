@@ -2008,6 +2008,7 @@ def test_summary_table_aligns_targets_and_cuts_long_names(
     assert len(name_cell) <= 40 and name_cell.endswith("…")
     for column in ("FF", "BRAM", "DSP", "WNS", "WHS", "Fmax", "Time", "Status"):
         assert column in header
+    assert "Δ" not in result.report_text, "no baseline, no delta row"
 
 
 def test_summary_table_tty_colors_only_the_console_copy(
@@ -2074,7 +2075,14 @@ def test_summary_record_keeps_every_metric_with_delta_sub_row(
             "slow": make_clock_timing("slow", 6.0, 0.123, 0.01),
         },
     )
-    baseline = _passing_fpga(lut_count=1000, ff_count=200)
+    baseline = _passing_fpga(lut_count=1000, ff_count=160, bram_count=2, dsp_count=4)
+    current = _passing_fpga(
+        lut_count=1010,
+        ff_count=200,
+        per_clock=current.per_clock,
+        bram_count=4,
+        dsp_count=2,
+    )
     result = flow._aggregate_results(
         ["default"], {"default": current}, {"default": baseline}, "abc1234"
     )
@@ -2083,9 +2091,13 @@ def test_summary_record_keeps_every_metric_with_delta_sub_row(
     assert "baseline: abc1234" in text
     header, rows = _fpga_table(text)
     assert len(rows) == 2, "one Target row plus one delta sub-row"
-    lut_col = header.index("LUT")
-    assert rows[0][lut_col:].startswith("1,010")
-    assert rows[1][lut_col:].startswith("Δ +1.0%")
+    for column, shown in (
+        ("LUT", "Δ +1.0%"),
+        ("FF", "Δ +25.0%"),
+        ("BRAM", "Δ +100.0%"),
+        ("DSP", "Δ -50.0%"),
+    ):
+        assert rows[1][header.index(column) :].startswith(shown), column
     assert "(LUTs" not in text
     for token in ("125.0s", "0.123 ns", "0.010 ns", "170.2 MHz [slow]", "PASS"):
         assert token in rows[0], token

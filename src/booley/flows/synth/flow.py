@@ -54,8 +54,8 @@ from booley.flows.plan import (
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
+    compose_result,
     note_line,
-    result_text,
     status_cell,
     tty_text,
 )
@@ -2582,9 +2582,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             eda_warnings,
             implementation_aggregate.exit_code,
         )
-        header = [f"baseline: {short_sha}"] if self.args.baseline and short_sha else []
-        table = self._summary_table_lines(targets, current_results, baseline_results)
-        result = result_text([*header, *table, *([""] if notes else []), *notes, "", result_line])
+        result = compose_result(
+            short_sha if self.args.baseline else None,
+            self._summary_table_lines(targets, current_results, baseline_results),
+            notes,
+            result_line,
+        )
         report_text = result.record
         print(tty_text(result))
         detail = self._implementation_aggregate_detail(
@@ -2743,11 +2746,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> list[str]:
         """The per-Target table: one row per Target; ``Δ`` columns only against a baseline."""
         with_delta = any(target in baseline for target in targets)
-        headers = ["Target", "Area"]
-        headers += ["Δ"] if with_delta else []
-        headers += ["Crit path"]
-        headers += ["Δ"] if with_delta else []
-        headers += ["Fmax", "Setup slack", "Time", "Status"]
+        delta = ["Δ"] if with_delta else []
+        headers = ["Target", "Area", *delta, "Crit path", *delta, "Fmax", "Setup slack", "Time"]
+        headers.append("Status")
         rows = [
             self._summary_row(target, current[target], baseline.get(target), with_delta)
             for target in targets
@@ -2763,8 +2764,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> list[str]:
         """Cells of one Target's table row (``—`` for a metric the run lacks)."""
         worst = worst_clock(cur.per_clock)
-        # Fmax/critical path are per-clock; show the timing-worst clock, tagged
-        # with its name only when the design has more than one clock.
+        # Per-clock metrics: the timing-worst clock, named only for multi-clock designs.
         tag = f" [{worst.clock}]" if worst and len(cur.per_clock) > 1 else ""
         logical = cur.synth_mode is SynthMode.LOGICAL
         crit_ps = _worst_critical_path_ps(cur)
@@ -2779,7 +2779,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         )
         area = f"{cur.area_kge:.1f} kGE" if cur.area_kge is not None else MISSING
         slack = f"{cur.wns_ns:+.3f} ns" if cur.wns_ns is not None else MISSING
-        status = self._format_status_suffix(cur).strip() or "PASS"
+        status = self._format_status_suffix(cur).strip() or self._passing_status(target, cur)
         cells = [target, area]
         if with_delta:
             cells.append(self._delta_cell(cur.area_kge, base.area_kge if base else None))
@@ -2789,6 +2789,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 self._delta_cell(crit_ps, _worst_critical_path_ps(base) if base else None)
             )
         return [*cells, fmax, slack, f"{cur.elapsed_s:.1f}s", status_cell(status)]
+
+    def _passing_status(self, target: str, cur: SynthMetrics) -> str:
+        """``PASS``, unless a fatal timing violation fails this Target's run."""
+        fatal = getattr(self, "_timing_violation_is_fatal", False)
+        return "FAIL (timing)" if fatal and self._timing_violation(target, cur) else "PASS"
 
     @classmethod
     def _delta_cell(cls, current: float | None, baseline: float | None) -> str:

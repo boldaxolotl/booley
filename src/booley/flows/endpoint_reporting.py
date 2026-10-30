@@ -179,18 +179,16 @@ def _contains_whole_line_block(
 ) -> bool:
     """Return whether *text* appears in *blob* as complete lines.
 
-    A block that begins with an indented line (a table header) still starts
-    its line: the stripped needle may be preceded by that line's indentation.
+    Leading indentation belongs to the needle: a block that begins with an
+    indented line (a table header) matches only where that exact indentation
+    starts a line, so an indented echo of a one-line verdict never counts.
     """
-    needle = (text or "").strip()
+    needle = (text or "").lstrip("\r\n").rstrip()
     if not needle:
         return False
     start = 0
     while (idx := blob.find(needle, start)) >= 0:
-        line_start = blob.rfind("\n", 0, idx) + 1
-        starts_line = not blob[line_start:idx].strip() and (
-            line_start > 0 or not leading_truncated
-        )
+        starts_line = blob[idx - 1] == "\n" if idx else not leading_truncated
         end = idx + len(needle)
         ends_line = end == len(blob) or blob[end] == "\n"
         if starts_line and ends_line:
