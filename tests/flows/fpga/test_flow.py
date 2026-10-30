@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import os
 import subprocess
@@ -23,7 +24,7 @@ from booley.evidence.fields import (
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_PARAM,
 )
-from booley.evidence.timing import ClockTiming
+from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
@@ -1940,3 +1941,201 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, targets
         else {"eda_tools": {"default": "vivado", "other": "vivado"}}
     )
     assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected
+
+
+# ---------------------------------------------------------------------------
+# Per-Target summary table (#2428)
+# ---------------------------------------------------------------------------
+
+_GREEN = "\x1b[32m"
+_RED = "\x1b[31m"
+_DIM = "\x1b[2m"
+
+
+class _TtyOut(io.StringIO):
+    """In-memory stdout that claims to be a terminal (never read from the host)."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def _passing_fpga(**overrides) -> FpgaMetrics:
+    fields = {
+        "lut_count": 12034,
+        "ff_count": 8100,
+        "bram_count": 4,
+        "dsp_count": 2,
+        "wns_ns": 0.123,
+        "whs_ns": 0.01,
+        "elapsed_s": 125.0,
+        "per_clock": {"clk": make_clock_timing("clk", 6.0, 0.123, 0.01)},
+    }
+    fields.update(overrides)
+    return FpgaMetrics(**fields)
+
+
+def _fpga_table(report_text: str) -> tuple[str, list[str]]:
+    """Return the header line and the lines under its rule up to the first blank."""
+    lines = report_text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.lstrip().startswith("Target ")]
+    assert starts, f"no table header in:\n{report_text}"
+    assert set(lines[starts[0] + 1].replace(" ", "")) == {"─"}, "no rule under the header"
+    rows: list[str] = []
+    for line in lines[starts[0] + 2 :]:
+        if not line.strip():
+            break
+        rows.append(line)
+    return lines[starts[0]], rows
+
+
+def test_summary_table_aligns_targets_and_cuts_long_names(
+    tmp_path: Path, state_file: Path
+) -> None:
+    flow = _flow(tmp_path, state_file)
+    long_name = "a_very_long_target_name_" * 3
+    result = flow._aggregate_results(
+        ["default", long_name],
+        {"default": _passing_fpga(), long_name: _passing_fpga(lut_count=77)},
+        {},
+        None,
+    )
+    header, rows = _fpga_table(result.report_text)
+    assert len(rows) == 2
+    lut_col = header.index("LUT")
+    assert rows[0][lut_col:].startswith("12,034")
+    assert rows[1][lut_col:].startswith("77")
+    name_cell = rows[1][:lut_col].strip()
+    assert len(name_cell) <= 40 and name_cell.endswith("…")
+    for column in ("FF", "BRAM", "DSP", "WNS", "WHS", "Fmax", "Time", "Status"):
+        assert column in header
+    assert "Δ" not in result.report_text, "no baseline, no delta row"
+
+
+def test_summary_table_tty_colors_only_the_console_copy(
+    tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    out = _TtyOut()
+    monkeypatch.setattr("sys.stdout", out)
+    flow = _flow(tmp_path, state_file)
+    result = flow._aggregate_results(["default"], {"default": _passing_fpga()}, {}, None)
+    printed = out.getvalue()
+    assert f"{_GREEN}PASS\x1b[0m" in printed
+    assert "\x1b" not in result.report_text
+    assert colors.strip_ansi(printed).rstrip("\n") == result.report_text
+
+
+def test_summary_table_tty_failure_prints_once_on_stdout(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.flows.endpoint_reporting import _publish_console_report, _StdoutWitness
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    flow = _flow(tmp_path, state_file)
+    capsys.readouterr()  # argument-parsing notices are not the report under test
+    sink = _TtyOut()
+    witness = _StdoutWitness(sink)
+    monkeypatch.setattr("sys.stdout", witness)
+    failing = _passing_fpga(returncode=1, wns_ns=-0.5)
+    result = flow._aggregate_results(["default"], {"default": failing}, {}, None)
+    endpoint = SimpleNamespace(
+        _console_publication_requested=True,
+        _stdout_witness=witness,
+        _human_report=None,
+        endpoint_kind="flow",
+        announce_success_report=False,
+    )
+    _publish_console_report(endpoint, result)
+    printed = sink.getvalue()
+    assert f"{_RED}FAIL\x1b[0m" in printed
+    assert printed.count("RESULT: FAIL") == 1
+    assert capsys.readouterr().err == ""
+
+
+def test_summary_record_keeps_every_metric_with_delta_sub_row(
+    tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    out = _TtyOut()
+    monkeypatch.setattr("sys.stdout", out)
+    flow = _flow(tmp_path, state_file)
+    flow.args.baseline = "abc1234"
+    current = _passing_fpga(
+        lut_count=1010,
+        ff_count=200,
+        per_clock={
+            "fast": make_clock_timing("fast", 2.0, 0.5, 0.1),
+            "slow": make_clock_timing("slow", 6.0, 0.123, 0.01),
+        },
+    )
+    baseline = _passing_fpga(lut_count=1000, ff_count=160, bram_count=2, dsp_count=4)
+    current = _passing_fpga(
+        lut_count=1010,
+        ff_count=200,
+        per_clock=current.per_clock,
+        bram_count=4,
+        dsp_count=2,
+    )
+    result = flow._aggregate_results(
+        ["default"], {"default": current}, {"default": baseline}, "abc1234"
+    )
+    text = result.report_text
+    assert "\x1b" not in text
+    assert "baseline: abc1234" in text
+    header, rows = _fpga_table(text)
+    assert len(rows) == 2, "one Target row plus one delta sub-row"
+    for column, shown in (
+        ("LUT", "Δ +1.0%"),
+        ("FF", "Δ +25.0%"),
+        ("BRAM", "Δ +100.0%"),
+        ("DSP", "Δ -50.0%"),
+    ):
+        assert rows[1][header.index(column) :].startswith(shown), column
+    assert "(LUTs" not in text
+    for token in ("125.0s", "0.123 ns", "0.010 ns", "170.2 MHz [slow]", "PASS"):
+        assert token in rows[0], token
+    assert f"{_DIM}" in out.getvalue(), "delta sub-row is dimmed on the console"
+
+
+def test_summary_notes_drop_the_flow_prefix(
+    tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    out = _TtyOut()
+    monkeypatch.setattr("sys.stdout", out)
+    flow = _flow(tmp_path, state_file)
+    flow.args.baseline = "abc1234"
+    broken = _passing_fpga(
+        latches=1,
+        failure_output="line one\nline two",
+        log_path="reports/fpga/1/artifacts/default/run.log",
+    )
+    base_error = FpgaMetrics(infra_error="baseline broke", returncode=2)
+    result = flow._aggregate_results(
+        ["default"], {"default": broken}, {"default": base_error}, "abc1234"
+    )
+    lines = result.report_text.splitlines()
+    assert not [line for line in lines if line.lstrip().startswith("[fpga]")]
+    _, rows = _fpga_table(result.report_text)
+    after_table = lines[lines.index(rows[-1]) + 1 :]
+    result_at = max(i for i, line in enumerate(after_table) if line.startswith("RESULT:"))
+    notes = after_table[:result_at]
+    assert any("default: CRITICAL --" in line for line in notes)
+    assert any("baseline default: ERROR -- baseline broke" in line for line in lines)
+    assert any(
+        line.strip() == "default: log: reports/fpga/1/artifacts/default/run.log" for line in notes
+    )
+    assert "default: subprocess output:" in "\n".join(notes)
+    printed = out.getvalue()
+    assert f"{_RED}CRITICAL\x1b[0m" in printed
+    assert f"{_RED}ERROR\x1b[0m" in printed

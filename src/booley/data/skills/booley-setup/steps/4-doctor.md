@@ -7,12 +7,14 @@ zero failures and zero active (unwaived) warnings in every required invocation.
 An exit code of 0 is necessary but not sufficient because warnings do not change
 Doctor's exit code.
 
-Doctor reports six statuses. Only `[XX] FAIL` sets a non-zero exit code. `[!!]
-WARN` names a real, actionable failure mode: fix it or justify it with a
-project-local waiver before setup is complete. `[ii] WAIVED` is that same
-warning matched by a reviewed waiver; it stays visible but is not active.
-`[ii] NOTE` is an observation about a healthy setup with nothing to fix (design
-scale, for instance). `[--] SKIP` means the check did not apply here.
+Doctor reports six statuses, each marked by one glyph at the start of its row.
+Only `✗` FAIL sets a non-zero exit code. `!` WARN names a real, actionable
+failure mode: fix it or justify it with a project-local waiver before setup is
+complete. `~` WAIVED is that same warning matched by a reviewed waiver; it stays
+visible but is not active. `·` marks both a NOTE, an observation about a healthy
+setup with nothing to fix (design scale, for instance), and a SKIP, a check
+that did not apply here. Hints sit under their row, led by `→`. The run ends
+with a table of the active FAIL and WARN rows, then a count for each status.
 
 For `.core` findings, keep modernization scope separate from structural
 correctness. Configured/selected Targets and every Target in a hidden adapter
@@ -33,10 +35,10 @@ over that severity bug with a project waiver.
    with an explicit `--sandbox` flag; the Codex CLI treats those modes as
    mutually exclusive.
 2. Read the output **unabridged** — never pipe doctor through `tail`/`head`:
-   the layout puts FAIL rows where truncation eats them, and a `[--] SKIP`
-   next to a PASS can be the whole story (an enabled Flow whose Target can
+   the closing tables sit at the end, where `head` eats them, and a `·` SKIP
+   next to a `✓` PASS can be the whole story (an enabled Flow whose Target can
    never resolve reads as PASS+SKIP, i.e. it will never actually run).
-3. Fix every `[XX] FAIL` and `[!!] WARN`, using its `fix:` hint when present,
+3. Fix every `✗` FAIL and `!` WARN, using its `→` hint when present,
    and re-run `booley doctor` until it exits 0 **and reports 0 warnings**. If a
    warning describes a deliberate project constraint that cannot or should not
    be changed, review and record a waiver as described below; do not merely
@@ -151,8 +153,8 @@ setup defect, a transient machine problem, or simply to make the output green.
 Fix those. A waiver is for a warning whose risk is understood and deliberately
 accepted by this project.
 
-Every warning ends with a stable identity such as
-`[sim.trace-unavailable:sim_fast]`. Copy the check ID and, when shown, the exact
+Every warning ends with a dimmed, stable identity such as
+`sim.trace-unavailable:sim_fast`. Copy the check ID and, when shown, the exact
 subject into one `[[waiver]]` entry:
 
 ```toml
@@ -175,7 +177,7 @@ expires = 2026-11-01
   applies to all of them.
 - Waivers match exact structured identities, never message text. They cannot
   suppress failures or notes. A malformed waiver file is itself a Doctor FAIL.
-- A match prints `WAIVED` plus the reason and is counted separately. An expired
+- A match prints a `~` row with a `→ reason:` hint and is counted separately. An expired
   entry is ignored and noted; the warning becomes active again. Re-review and
   edit or replace that exact entry if the risk is still accepted, or delete it
   if the risk vanished—never append a duplicate `check`/`subject` pair. Run
@@ -183,8 +185,8 @@ expires = 2026-11-01
   anything, then remove them.
 
 After adding or changing a waiver, run the warning's original command again and
-read the output. The expected result is the exact finding changing from `WARN`
-to `WAIVED`, never disappearing. Log it in the setup plan's deviation record
+read the output. The expected result is the exact finding changing from a `!` row
+to a `~` row, never disappearing. Log it in the setup plan's deviation record
 only when it changes an approved decision; always include every final waiver in
 the user report.
 
@@ -251,7 +253,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
     history and local-summary policy, and use `permanent = true` for that stable
     project decision. Commit the waiver in the independent Booley repository so
     future Paired Checkouts receive it and their inner checkout stays clean.
-    Rerun the warning's original command and verify `WARN` becomes `WAIVED`.
+    Rerun the warning's original command and verify the `!` row becomes a `~` row.
   - An unexcluded authenticated Paired Checkout reports **PASS**:
     `Goal summaries remain local; Paired Checkout preserves independent Booley history`.
     That result needs no preservation waiver. A standalone current checkout's
@@ -304,7 +306,7 @@ Step 7.
 Setup is not complete while any doctor invocation exits nonzero **or reports an
 active warning**. Report to the
 user in the **onboarding voice** (SKILL.md): a newcomer does not know what a
-`[!!] WARN`, a waiver, or a `--deep` selftest is, so say in plain English what
+`!` warning, a waiver, or a `--deep` selftest is, so say in plain English what
 passed, which risks were explicitly accepted, and what they mean for using the
 project.
 Once all three final invocations are green:

@@ -27,6 +27,9 @@ exit code. `WAIVED` is not active, but report it as an accepted risk. `NOTE` is
 informational. A `SKIP` can be legitimate; inspect it rather than treating all
 skips as failures or silently counting one as a pass.
 
+Doctor marks rows with glyphs: `✓` pass, `!` WARN, `✗` FAIL, `~` WAIVED, and `·`
+for a NOTE or SKIP. The closing table lists the active `✗` and `!` rows.
+
 Use one of these outcomes when the full contract is not met:
 
 - **Locally clean — user action required**: the Sandbox is clean, but a host,
@@ -67,7 +70,7 @@ Never describe one of those partial outcomes as healed.
    the repair entry point for limited housekeeping such as guidance links; include those changes in the evidence and rerun before
    diagnosing remaining rows.
 3. Build the active set from every `FAIL` and unwaived `WARN`. Record, where
-   present, the severity, message, `fix:` hint, check ID, and subject.
+   present, the severity, message, `→` fix hint, check ID, and subject.
 4. Group only findings that demonstrably share one root cause. Repair parsing
    and schema failures before downstream Target, Flow, Specialist, or EDA-tool failures, because the
    latter may be consequences.
@@ -108,7 +111,7 @@ actionable.
 
 Use evidence in this order:
 
-1. **Doctor's `fix:` hint.** Treat it as the primary repair instruction, then
+1. **Doctor's `→` fix hint.** Treat it as the primary repair instruction, then
    verify rather than assuming it worked.
 2. **The packaged troubleshooting guide.** Resolve it with:
 
@@ -163,7 +166,7 @@ user hand-off. Do not let one host-only action hide other useful progress.
 
 Treat every `tickets.leftover-*` finding as a user decision. Ask the user before
 moving, archiving, or deleting the reported files or directories, including
-unchanged shipped guidance. The `fix:` hint describes the available repair;
+unchanged shipped guidance. The `→` fix hint describes the available repair;
 it does not authorize deletion. Inspect and explain what would be preserved,
 where it would go, and what would be deleted so the user can approve a concrete
 choice. Gitignored Ticket content can still contain work the user needs.
@@ -195,8 +198,8 @@ Explain the warning's concrete failure mode and the real repair first. If the
 user explicitly accepts the constraint, create the narrowest structured entry
 in `.booley/doctor-waivers.toml` using Doctor's check ID and subject.
 Require a specific reason and exactly one expiry date or `permanent = true`.
-Rerun the originating command and confirm the row changes from `WARN` to
-`WAIVED`; it must not disappear. Never waive a `FAIL`, transient machine issue,
+Rerun the originating command and confirm the row changes from `!` (WARN) to
+`~` (WAIVED); it must not disappear. Never waive a `FAIL`, transient machine issue,
 Doctor bug, or fixable defect.
 
 ### Verified Booley or documentation defect
