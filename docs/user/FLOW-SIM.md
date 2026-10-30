@@ -56,36 +56,6 @@ Multiple simulator processes can run in parallel up to `[jobs].max_heavy`
 (default `1`, i.e. serial). Tests sharing a literal `run_cwd` always run one at a
 time.
 
-### The run summary
-
-Every run ends with a summary: one header per Target with its verdict and
-test counts, then a table of its tests.
-
-```text
---- summary (Sandbox) ---
-[sim] lite: PASS (2/2 tests, 1.2s)
-  Test    Result   Cycles   Time   Build
-  ─────   ──────   ──────   ────   ─────
-  smoke   PASS     4,242    1.0s
-  reset   PASS     120      12ms
-[sim] full: FAIL (0/1 tests, sva_errors=2, TIMED OUT, 2.0s)
-  Test    Result   Cycles   Time   Build
-  ─────   ──────   ──────   ────   ─────
-  smoke   FAIL              2.0s   5s
-  log: reports/sim/1/artifacts/candidate/sim_full/tests/full/run.log
-
-RESULT: FAIL (1/2 targets)
-```
-
-- The Sandbox, where every Simulation runs, is named once, in the heading.
-- `Build` shows the seconds the test spent building the model, when at least
-  one.
-- `sva_errors=<n>` appears only when a test reported SVA errors.
-- An inconclusive test or Target reads `INCONCLUSIVE`.
-- On a terminal the summary is colored, durations read like `1m 01s`, and a
-  test name longer than 40 characters ends in `…`. Piped or redirected output
-  carries the same table as plain text with full names.
-
 ## Test Runs, Test Variants and seeds
 
 A **Test Variant** is a Test with a fixed set of extra run-time arguments and
