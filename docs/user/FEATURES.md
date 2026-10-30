@@ -18,7 +18,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 - [LLM Backend Selection](#llm-backend-selection)
 - [Guided Project Setup](#guided-project-setup)
 - [Extensible Toolkit](#extensible-toolkit)
-- [Parallel Instances](#parallel-sessions)
+- [Parallel Sessions](#parallel-sessions)
 - [Windows Support](#windows-support)
 - [Stealth Mode](#stealth-mode)
 - [Code Coverage](#code-coverage)
@@ -119,7 +119,7 @@ Making a project Booley-ready is a guided, mostly hands-off process. Booley ship
 
 Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
-## Parallel sessions
+## Parallel Sessions
 
 Run each Goal session in a separate linked worktree and Goal Branch inside the
 Sandbox. The Dashboard shows concurrent sessions, Goals, and Jobs. Per-Job-Class
