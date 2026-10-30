@@ -277,12 +277,12 @@ in a hand-written spec, such as a Codespace.
 4. Otherwise Claude, with its login offered.
 
 The spec's `postStartCommand` (and `postCreateCommand`, when the spec has one)
-must run `python -m booley.harness.incontainer_register`. It makes the choice
-at every start, so a changed credential changes the app at the next start, and
-Booley's agents, `booley chat` and `booley doctor` all follow it. In a Sandbox
-`booley doctor` shows the app and why it was chosen, and WARNs when
-`[agent] provider` pins an app that `auto` might not pick; remove the pin or
-set `BOOLEY_AGENT_APP` to it.
+must run Booley's registrar, the `booley.harness.incontainer_register` module.
+It makes the choice at every start, so a changed credential changes the app at
+the next start, and Booley's agents, `booley chat` and `booley doctor` all
+follow it. In a Sandbox `booley doctor` shows the app and why it was chosen,
+and WARNs when `[agent] provider` pins an app that `auto` might not pick;
+remove the pin or set `BOOLEY_AGENT_APP` to it.
 
 `auto` outside a Sandbox is refused, and the message names the variable.
 
