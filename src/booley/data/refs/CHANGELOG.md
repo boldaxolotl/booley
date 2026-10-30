@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley targets` now prints an aligned table with a header row, one group row
+  per `.core` file, and a `✓` Doctor column that replaces the old `Dr` marker.
+  The FLOW column shows the Booley Flows that can drive each Target (the
+  edalize flow moves to a `.core flow` row in `booley targets <name>`). Piped
+  output is plain aligned text; `--json` is unchanged.
 - B-Wave `-s` globs now also match relative to the common scope that
   `bwave list` prints, in every command and in `bwave gui`: with
   `# scope: TOP.tb`, `-s 'dut.*'` finds `TOP.tb.dut.*` at any depth below

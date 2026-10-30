@@ -1740,6 +1740,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     import json as _json
 
     from booley.fusesoc import fusesoc_registry
+    from booley.harness import targets_view
     from booley.targets import target_surface
 
     selector: str | None = getattr(args, "selector", None)
@@ -1765,7 +1766,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
         except fusesoc_registry.FuseSocError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
-        print(_json.dumps(payload, indent=2) if as_json else target_surface.render_detail(payload))
+        print(_json.dumps(payload, indent=2) if as_json else targets_view.render_detail(payload))
         return 0
 
     try:
@@ -1784,7 +1785,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     elif nothing_authored:
         print("no .core Targets authored yet")
     else:
-        print(target_surface.render_listing(surface, project_root))
+        print(targets_view.render_listing(target_surface.surface_payload(surface, project_root)))
     return 0
 
 
