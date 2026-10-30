@@ -10,23 +10,52 @@ the plain layout equals the ANSI-stripped colored layout.
 
 from __future__ import annotations
 
+import itertools
+import shutil
+import sys
 from collections.abc import Mapping, Sequence
 
-from .colors import bold_accent, chrome, len_visible, strip_ansi
+from .colors import bold_accent, char_width, chrome, len_visible, strip_ansi
 
 _INDENT = "  "
 _GAP = "   "
 _ELLIPSIS = "…"
+#: Line width off a terminal (pipes, captures), so the same run prints the same bytes.
+DEFAULT_WIDTH = 100
+
+
+def width_budget() -> int:
+    """Columns a line may use: the terminal's on a TTY, else :data:`DEFAULT_WIDTH`."""
+    if not sys.stdout.isatty():
+        return DEFAULT_WIDTH
+    return shutil.get_terminal_size((DEFAULT_WIDTH, 24)).columns
 
 
 def _cap(cell: str, cap: int | None) -> str:
-    """Cut *cell* to *cap* visible characters, ending in an ellipsis.
+    """Cut *cell* to *cap* terminal cells, ending in an ellipsis.
 
-    A cut cell loses its styling: it is cut on its ANSI-stripped text.
+    A cut cell loses its styling: it is cut on its ANSI-stripped text. The cut
+    never leaves a wide character straddling the cap.
     """
     if cap is None or len_visible(cell) <= cap:
         return cell
-    return strip_ansi(cell)[: cap - 1].rstrip() + _ELLIPSIS
+    plain = strip_ansi(cell)
+    kept = sum(1 for cells in itertools.accumulate(map(char_width, plain)) if cells <= cap - 1)
+    return plain[:kept].rstrip() + _ELLIPSIS
+
+
+def _fit(widths: Sequence[int], width: int) -> list[int]:
+    """Shrink the widest columns to a shared limit so the table fits *width*.
+
+    The limit is the largest one for which every column ``min(w, limit)`` fits
+    the space left after the indent and gaps; narrower columns keep their
+    width. A table that cannot fit even at a limit of 1 stays at 1.
+    """
+    room = width - len(_INDENT) - len(_GAP) * (len(widths) - 1)
+    limit = max(widths)
+    while limit > 1 and sum(min(w, limit) for w in widths) > room:
+        limit -= 1
+    return [min(w, limit) for w in widths]
 
 
 def _join(cells: Sequence[str], widths: Sequence[int]) -> str:
@@ -50,6 +79,7 @@ def render_table(
     rows: Sequence[Sequence[str]],
     *,
     max_widths: Mapping[int, int] | None = None,
+    width: int | None = None,
 ) -> list[str]:
     """Render a column-aligned table as lines: header, rule, then one line per row.
 
@@ -58,12 +88,15 @@ def render_table(
     with empty cells; extra cells are ignored. ``max_widths`` maps a column
     index to a cap on its visible width: a longer cell is cut and ends in
     ``…`` (cells never wrap). Raises ``ValueError`` for a cap below 1.
+    ``width`` is the budget for a whole line, indent included: a table wider
+    than it shrinks its widest columns (cut cells end in ``…``) until it fits,
+    or as far as one cell per column. ``None`` leaves the table unbounded.
 
-    Cell preconditions (callers own them; the renderer does not sanitize):
-    each cell is a single line of narrow text (no ``\n``, ``\t``, or
-    double-width CJK/emoji: width is counted in characters, not terminal
-    cells) whose styling is self-contained, i.e. every opened style code is
-    closed inside the cell, because padding is appended after the cell.
+    Widths count terminal cells, so double-width CJK/emoji align. Cell
+    preconditions (callers own them; the renderer does not sanitize):
+    each cell is a single line of text (no ``\n`` or ``\t``) whose styling is
+    self-contained, i.e. every opened style code is closed inside the cell,
+    because padding is appended after the cell.
     """
     caps = dict(max_widths or {})
     if any(cap < 1 for cap in caps.values()):
@@ -76,6 +109,11 @@ def render_table(
         max([len_visible(header), *(len_visible(row[i]) for row in body)])
         for i, header in enumerate(headers)
     ]
+    if width is not None:
+        fitted = _fit(widths, width)
+        headers = [_cap(h, w) for h, w in zip(headers, fitted, strict=True)]
+        body = [[_cap(cell, w) for cell, w in zip(row, fitted, strict=True)] for row in body]
+        widths = fitted
     lines = [
         _join([bold_accent(h) for h in headers], widths),
         _INDENT + chrome(_GAP.join("─" * w for w in widths)),

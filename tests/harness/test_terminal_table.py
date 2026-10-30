@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
+import os
+import shutil
+import sys
 
 import pytest
 
@@ -94,3 +98,53 @@ def test_plain_output_when_color_is_off(monkeypatch):
 
     assert not any("\x1b" in line for line in plain)
     assert plain == _plain(colored)
+
+
+def _fitting_renderer():
+    """``render_table``, asserting it accepts a total ``width`` budget."""
+    render_table = _renderer()
+    assert "width" in inspect.signature(render_table).parameters, "render_table has no width"
+    return render_table
+
+
+def test_width_caps_only_the_widest_columns(monkeypatch):
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    rows = [["w" * 30, "m" * 10, "abc"], ["short", "m", "x"]]
+    lines = _fitting_renderer()(("A", "B", "C"), rows, width=40)
+
+    # 40 - 2 indent - 2 gaps of 3 = 32 cells for columns: the widest shrinks to 19.
+    assert max(len(line) for line in lines) <= 40
+    assert lines[2] == "  " + "w" * 18 + "…" + "   " + "m" * 10 + "   abc"
+    assert lines[3].startswith("  short" + " " * 17 + "m")
+
+    narrow = _fitting_renderer()(("A", "B", "C"), rows, width=5)  # cannot fit: floors, no crash
+    assert narrow[2] == "  …   …   …"
+
+    unbounded = _fitting_renderer()(("A", "B", "C"), rows)
+    assert unbounded[2].startswith("  " + "w" * 30)
+
+
+def test_columns_and_cuts_count_terminal_cells(monkeypatch):
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    render_table = _renderer()
+    rows = [["日本語", "x"], ["ab", "y"]]  # 6 cells, not 3 characters
+
+    lines = render_table(("H", "N"), rows)
+    assert lines[3] == "  ab       y"
+
+    cut = render_table(("H", "N"), rows, max_widths={0: 5})
+    assert cut[2] == "  日本…   x"
+    assert colors.len_visible("e\u0301") == 1  # combining mark takes no cell
+
+
+@pytest.mark.parametrize(
+    ("tty", "columns", "expected"), [(False, 72, 100), (True, 72, 72)], ids=["pipe", "tty"]
+)
+def test_width_budget(monkeypatch, tty, columns, expected):
+    module = importlib.import_module("booley.harness.terminal_table")
+    assert hasattr(module, "width_budget"), "width_budget missing"
+    monkeypatch.setenv("COLUMNS", "300")  # misleading: the stubbed size wins
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: tty)
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *_: os.terminal_size((columns, 24)))
+
+    assert module.width_budget() == expected

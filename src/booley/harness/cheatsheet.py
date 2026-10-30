@@ -5,7 +5,7 @@ the whole sheet. Section flags (``--criteria``, ``--flows``, ...) select
 individual slices: the Goal skill only needs the criteria catalog, a user
 debugging a container only needs the Sandbox & Docker table.
 
-Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
+``render_index`` draws the section index. Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
 pins each to a stable CLI flag name. A heading in the file with no entry here
 is unreachable by flag, so ``tests/harness/test_cheatsheet.py`` guards the two
 against drift.
@@ -14,6 +14,9 @@ against drift.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from .colors import accent, len_visible
+from .render_md import inline, wrap
 
 # Cheatsheet sections are `### ` headings; `## ` is the document title.
 _HEADING_PREFIX = "### "
@@ -109,3 +112,20 @@ def select(text: str, slugs: list[str] | tuple[str, ...]) -> str:
 def section_help(slug: str) -> str:
     """Return the argparse help string for one section slug."""
     return _BY_SLUG[slug].help
+
+
+def render_index(width: int) -> list[str]:
+    """The section index: one ``--flag`` row each, descriptions aligned and wrapped.
+
+    Rows fit *width* cells; a wrapped description hangs under its column.
+    Backticks in help text render as inline code.
+    """
+    flags = {slug: section_flags(slug) for slug in section_slugs()}
+    column = 2 + max(len(f"--{names[0]}") for names in flags.values()) + 2
+    rows: list[str] = []
+    for slug, (flag, *aliases) in flags.items():
+        alias_note = f" (alias: {', '.join(f'--{name}' for name in aliases)})" if aliases else ""
+        lead = f"  {accent(f'--{flag}')}"
+        first = lead + " " * (column - len_visible(lead))
+        rows.extend(wrap(inline(section_help(slug) + alias_note), width, first, " " * column))
+    return rows
