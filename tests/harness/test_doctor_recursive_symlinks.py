@@ -56,7 +56,7 @@ def test_public_doctor_groups_54_links_with_complete_verbose_paths(
     assert "+51 more" in message
     assert "--verbose" in message
     assert paths[3] not in message
-    assert output.count("FAIL  FuseSoC recursive symlinks") == 1
+    assert output.count("  ✗  FuseSoC recursive symlinks") == 1
     assert "each link's containing directory" in failures[0].fix
     for path in paths:
         assert (path in output) is (verbose or path in paths[:3])

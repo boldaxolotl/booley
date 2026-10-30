@@ -28,7 +28,7 @@ from booley.audit import (
 )
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import developer_probe, doctor, host_diagnostics
+from booley.harness import colors, developer_probe, doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
@@ -391,9 +391,9 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 0
-    assert "NOTE  project guidance file missing" in output
+    assert "  ·  project guidance file missing" in output
     tool_calls = [call for call in calls if "booley.flows.sim" in call]
     assert tool_calls
     assert tool_calls[0][:2] == ["doc" + "ker", "exec"]
@@ -424,7 +424,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
 
     captured = capsys.readouterr()
     assert result == 1
-    assert "FAIL" in captured.out
+    assert "  ✗  " in captured.out
     assert "could not enter the Sandbox" in captured.out
     assert str(booley_config) in captured.out
     assert "0755" in captured.out
@@ -500,7 +500,9 @@ permanent = true
 
     assert rc == 0
     output = capsys.readouterr().out
-    assert ("PASS  " not in output) is concise
+    # A pass row is "  ✓  <message>"; the counts table's "✓ passed" row always prints.
+    pass_row = "  ✓  devcontainer.json present and structurally current"
+    assert (pass_row not in colors.strip_ansi(output)) is concise
     stamp = doctor_stamp.load_stamp(booley_dir)
     assert stamp is not None, output
     assert stamp["fingerprint"] == doctor_stamp.compute_fingerprint(booley_dir, tmp_path)
@@ -581,9 +583,10 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 1
-    assert "FAIL  devcontainer.json BOOLEY_AGENT_APP 'claude'" in output
+    assert "  ✗  devcontainer.json BOOLEY_AGENT_APP 'claude'" in output
+    assert re.search(r"^  ✗ failed +1$", output, re.M)
     assert "[agent] provider 'codex'" in output
     assert doctor_stamp.load_stamp(booley_dir) is None
 
@@ -863,14 +866,15 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 0
-    assert "WARN  synth deep check [synth_fast] returned a WARN verdict" in output
-    # Issue #885: a flushed RUN line precedes the long check, and the summary
-    # states agent spend (the probe SKIPs host-side, so none).
-    run_line = "RUN   synth deep check [synth_fast] (real EDA run; timeout"
+    warn_row = "  !  synth deep check [synth_fast] returned a WARN verdict"
+    assert warn_row in output
+    # Issue #885: a flushed running-step line precedes the long check, and the
+    # summary states agent spend (the probe SKIPs host-side, so none).
+    run_line = "  ▸  synth deep check [synth_fast] (real EDA run; timeout"
     assert run_line in output
-    assert output.index(run_line) < output.index("WARN  synth deep check [synth_fast]")
+    assert output.index(run_line) < output.index(warn_row)
     assert "Agent-backed checks: no agent call ran (0 tokens, $0.00)." in output
     assert doctor_stamp.load_stamp(booley_dir) is None
 
@@ -1328,8 +1332,8 @@ def test_core_resolve_announces_before_container_run(
     doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
 
     assert (
-        "RUN   .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10m 00s)" in printed_before_run[0]
+        "  ▸  .core resolvability of 1 Target(s) in the Sandbox "
+        "(FuseSoC configure; timeout 10m 00s)" in colors.strip_ansi(printed_before_run[0])
     )
 
 
@@ -4525,7 +4529,7 @@ def test_large_design_does_not_count_as_a_doctor_warning(tmp_path, capsys):
     doctor._check_design_size(_derived_project_audit(proj), reporter.pass_, reporter.note_)
     assert reporter.counts["note"] == 1
     assert reporter.counts["warn"] == 0
-    assert "NOTE  large design" in capsys.readouterr().out
+    assert "  ·  large design" in colors.strip_ansi(capsys.readouterr().out)
 
 
 def test_design_size_passes_for_small_design_and_skips_pruned_dirs(tmp_path):
@@ -5880,9 +5884,10 @@ class TestFailPathSelfTest:
         doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
 
         assert len(printed_before_run) == 2
-        assert "RUN   sim self-test good case" in printed_before_run[0]
-        assert "real EDA run; timeout" in printed_before_run[0]
-        assert "RUN   sim self-test bad case" in printed_before_run[1]
+        good_start, bad_start = (colors.strip_ansi(text) for text in printed_before_run)
+        assert "  ▸  sim self-test good case" in good_start
+        assert "real EDA run; timeout" in good_start
+        assert "  ▸  sim self-test bad case" in bad_start
 
     def test_selftests_cannot_inherit_ticket_acceptance_context(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
@@ -6147,8 +6152,8 @@ class TestDeveloperProbe:
         reporter.finish()
 
         assert (
-            "RUN   provider-backed check: Specialist provider memory and authorization probe"
-            in seen_before_call[0]
+            "  ▸  provider-backed check: Specialist provider memory and authorization probe"
+            in colors.strip_ansi(seen_before_call[0])
         )
         assert (
             "Agent-backed checks: 1 agent call, 1,234 input tokens (1,000 cached), "
@@ -7056,7 +7061,7 @@ class TestReporterAcceptsFixHints:
     def test_warn_without_a_fix_hint_prints_no_empty_fix_line(self, capsys):
         reporter = doctor._Reporter.create()
         reporter.warn_(doctor.warning("test.example", "just a warning"))
-        assert "fix:" not in capsys.readouterr().out
+        assert "→" not in capsys.readouterr().out
 
     def test_plain_warning_without_stable_id_is_rejected(self):
         reporter = doctor._Reporter.create()
@@ -7074,13 +7079,16 @@ def test_concise_reporter_suppresses_only_pass_rendering(capsys) -> None:
     reporter.fail_("broken runtime", "repair runtime")
     exit_code = reporter.finish()
 
-    output = capsys.readouterr().out
-    assert "PASS  healthy Target" not in output
-    assert "NOTE  informational detail" in output
-    assert "WARN  actionable warning" in output
-    assert "SKIP  optional probe unavailable" in output
-    assert "FAIL  broken runtime" in output
-    assert "1 passed, 1 warning(s)" in output
+    output = colors.strip_ansi(capsys.readouterr().out)
+    # The counts table's "✓ passed" row always prints; only the pass message row is hidden.
+    assert "  ✓  healthy Target" not in output
+    assert "  ·  informational detail" in output
+    assert "  !  actionable warning" in output
+    assert "test.concise" in output
+    assert "  ·  optional probe unavailable" in output
+    assert "  ✗  broken runtime" in output
+    assert re.search(r"^  ✓ passed +1$", output, re.M)
+    assert re.search(r"^  ! warnings +1$", output, re.M)
     assert reporter.counts == {
         "pass": 1,
         "fail": 1,
@@ -8080,8 +8088,8 @@ def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch
     doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
 
     assert (
-        "RUN   .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
-        in capsys.readouterr().out
+        "  ▸  .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
+        in colors.strip_ansi(capsys.readouterr().out)
     )
 
 
@@ -8461,9 +8469,10 @@ def test_doctor_renders_removed_documentation_item_with_fix(
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert result == (0 if severity == "WARN" else 1)
-    assert any(severity in line and item in line for line in output.splitlines())
+    glyph = {"WARN": "!", "FAIL": "✗"}[severity]
+    assert any(line.startswith(f"  {glyph}  ") and item in line for line in output.splitlines())
     assert fix in output
 
 
