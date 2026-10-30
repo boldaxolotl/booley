@@ -2,14 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import sys
-
-
-def _dim(text: str) -> str:
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
-        return text
-    return f"\033[2m{text}\033[0m"
+from collections.abc import Callable
 
 
 def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
@@ -18,6 +12,18 @@ def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
     return f"  * [{description}] elapsed: {elapsed}{suffix}"
 
 
-def render_heartbeat(description: str, elapsed: str, extra: str = "") -> None:
-    """Render one standalone progress line without Harness presentation state."""
-    print(_dim(format_heartbeat(description, elapsed, extra)), flush=True)
+def render_heartbeat(
+    description: str,
+    elapsed: str,
+    extra: str = "",
+    *,
+    style: Callable[[str], str] | None = None,
+) -> None:
+    """Render one standalone progress line without Harness presentation state.
+
+    ``style`` (a shared color helper chosen by the caller) applies only on a
+    terminal, so captured flow stdout stays free of escape codes even when
+    colors are forced on.
+    """
+    line = format_heartbeat(description, elapsed, extra)
+    print(style(line) if style and sys.stdout.isatty() else line, flush=True)
