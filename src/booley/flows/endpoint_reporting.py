@@ -520,7 +520,7 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if already_shown:
         return
     original, separator, diagnosis = result.report_text.partition("\nCompletion failure (")
-    human = getattr(endpoint, "_human_report", None)
+    human = endpoint._human_report
     if human is not None and human.record_text == original:
         print(human, flush=True)
         if separator:

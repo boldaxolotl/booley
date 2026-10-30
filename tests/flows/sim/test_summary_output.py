@@ -98,6 +98,20 @@ def test_tty_summary_is_an_aligned_table_with_capped_names(colored):
     assert "\x1b" in out
 
 
+def test_tty_summary_keeps_milliseconds_and_colors_verdicts(colored):
+    out, _err, _text = _publish(_flow(), _Tty())
+    plain = colors.strip_ansi(out)
+
+    # F-39: a sub-second test is never flattened to "0.0s"; minutes read "1m 01s".
+    long_row = next(ln for ln in plain.splitlines() if "…" in ln)
+    assert "12ms" in long_row and "0.0s" not in plain
+    assert "[sim] lite: PASS (2/2 tests, 1m 01s)" in plain
+    # PASS green, FAIL red, and the closing RESULT line bold red on a failing run.
+    assert colors.green("PASS") in out
+    assert colors.red("FAIL") in out
+    assert colors.bold_red("RESULT: FAIL (1/2 targets)") in out
+
+
 @pytest.mark.parametrize("terminal", ["tty", "pipe"])
 def test_summary_spells_out_inconclusive_and_hides_zero_sva_errors(colored, terminal):
     flow = _flow()

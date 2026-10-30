@@ -2448,6 +2448,11 @@ def _report_elapsed(elapsed_s: float) -> str:
     return f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
 
 
+def _human_elapsed(elapsed_s: float) -> str:
+    """Terminal duration: ``1m 01s`` from one second up, milliseconds below it (F-39)."""
+    return format_duration(elapsed_s) if elapsed_s >= 1.0 else _report_elapsed(elapsed_s)
+
+
 def _verdict_word(*, inconclusive: bool, passed: bool) -> str:
     """The verdict as shown in reports: PASS, FAIL, or INCONCLUSIVE."""
     if inconclusive:
@@ -2467,7 +2472,7 @@ def _test_table_lines(tests: Sequence[TestResult], *, human: bool) -> list[str]:
     The record keeps full names and record durations; the human form colors
     verdicts, caps long names, and reads durations like ``1m 01s``.
     """
-    duration = format_duration if human else _report_elapsed
+    duration = _human_elapsed if human else _report_elapsed
     rows = []
     for test in tests:
         word = _verdict_word(inconclusive=test.inconclusive, passed=test.passed)
@@ -6623,7 +6628,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             flags = f", sva_errors={sva_errors}" if sva_errors else ""
             if any(t.timed_out for t in r.tests):
                 flags += ", TIMED OUT"
-            elapsed = format_duration(r.elapsed_s) if human else _report_elapsed(r.elapsed_s)
+            elapsed = _human_elapsed(r.elapsed_s) if human else _report_elapsed(r.elapsed_s)
             name = colors.bold_accent(r.target) if human else r.target
             lines.append(
                 f"[sim] {name}: {_paint_verdict(verdict) if human else verdict} "
