@@ -25,21 +25,11 @@ What counts as RTL:
 - Every file in the Target's resolved fileset **without** the `tb` tag. Tag
   every testbench file `tb`; an untagged one is scored as RTL.
 - Only code elaborated under the testbench top gets coverage points. An RTL
-  module that is never instantiated can produce no points. After complete
-  collection, Booley reports each module-bearing RTL source with no native
-  coverage points as an advisory warning. Percentages remain unchanged.
-- This is a file-level check: a measured module can conceal an unmeasured sibling
-  in the same file. TB-tagged and FuseSoC include files are excluded, as are
-  package-only, interface-only, parameter-only, and defines-only sources.
-- Zero points means no native measurement records, including unsupported record
-  classes. Zero hits, waivers, and point eligibility do not create this warning.
-  It does not establish deadness or lack of instantiation.
-- Candidates come from a lexical scan at Preflight: `verilogSource` and
-  `systemVerilogSource` inputs that are neither include files nor `tb`-tagged
-  and whose text, with comments removed, has a line starting with `module` or
-  `macromodule`. The scan does no preprocessing, so a module inside an `ifdef`
-  counts at face value. A file whose records Verilator remaps elsewhere
-  (`` `line `` directives) may still be reported.
+  module that is never instantiated can produce no points.
+- After collection, Booley warns about RTL files that produced no coverage
+  points (usually a module that is never instantiated). The warning does not
+  change the percentages. The check is per file and uses a simple text scan, so
+  it can miss a file or report one by mistake.
 - Points are per instance: a module instantiated four times contributes four
   sets of points, and each instance must be exercised.
 
@@ -65,7 +55,6 @@ and testbench improvements. The verdict card prints the exact
 - Only `--mode simulate` (the default). `--trace` can be combined with
   `--coverage`.
 - Tests run one at a time, one simulator process per test (including cocotb).
-- Coverage builds are cached separately from normal and trace builds.
 - Testbench properties such as excluding reset from coverage, or hooks for a
   custom C++ main, live in the Target's `.core`. See
   [Coverage configuration](#native-coverage-configuration).
@@ -112,13 +101,8 @@ A coverage Goal declares thresholds per Target:
  "metrics": {"line": 90, "branch": 80}}
 ```
 
-Only points in the RTL count toward the percentages; testbench and generated
-code are reported but not scored. Points that are legitimately unreachable or
-out of scope can be waived by a human in a project-wide approval directory.
-Waivers are checked per Target: one invalid approval blocks that Target's
-evaluation. See [Coverage configuration](#native-coverage-configuration)
-and [Approved coverage waivers](#approved-coverage-waivers) for the
-full syntax.
+A human can waive points that are unreachable or out of scope; see
+[Approved coverage waivers](#approved-coverage-waivers).
 
 ## Coverage waivers at review
 
@@ -176,30 +160,11 @@ numbered report directory (qualified Target selectors are percent-encoded):
       hooks/                 hook evidence, when collected
 ```
 
-Cycle counts: the numbered `report.json` lists every test's count under
-`cycle_counts.<Target selector>[]` as `{test, cycle_count}` (`test: null` for
-an unnamed test, or `cycle_counts_error: unavailable` if counts couldn't be
-collected). Each Target's `simulation.json` has them as `tests[].cycles`; find
-it via `detail.campaigns.<selector>.artifacts.simulation`, whose `path_base`
-may point at the original run after a resume.
-
-The Target reference's `coverage_campaign.path` resolves from the origin Target
-directory, as declared by `coverage_campaign.path_base: origin_target`. The
-nested manifest binds the point store and contains rollups and verdicts; its
-native artifact paths are relative to the **Coverage Campaign directory**.
-
 Pass the numbered Target-level `coverage.json` reference to the Coverage Analyst.
 It authenticates the nested Coverage Campaign and reads the matching completed Simulation result;
-it does not accept the nested manifest directly. Manifest readers
-in `booley.flows.sim.coverage_campaign_store` take the resolved Campaign manifest,
-not the reference. Never edit or pass the point store directly, and keep the
-reference and enclosing Simulation Campaign together.
-
-`<reports>/sim.json` is a mutable, last-writer-wins compatibility copy of the
-newest invocation's `report.json`. It may contain Campaign pointers, but it is
-not a stable Campaign selection: a later failed run can replace it with empty
-`detail`. Use the numbered `<reports>/sim/<N>/...` paths for consumers. Booley
-never infers a latest Campaign or merges coverage across Targets or runs.
+it does not accept the nested manifest directly. Never edit or pass the point
+store directly, and keep the reference and enclosing Simulation Campaign
+together.
 
 ## Analyzing a Campaign
 
@@ -207,6 +172,8 @@ never infers a latest Campaign or merges coverage across Targets or runs.
 which tests to add, and Waiver Candidates for human review.
 
 Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact coverage.json>"`.
+An optional `instruction` focuses it. Pick its model like any Specialist's,
+under [`[models]`](CONFIG.md#model-selection-models).
 
 It never runs simulation, changes Criteria, or approves waivers; in Goal
 Mode Booley records its candidates for
@@ -301,7 +268,7 @@ directory = "coverage-waivers"
 ```
 
 `anchor` is exactly `rtl_repository` or `project_data_repository`; the latter is
-the directory resolved by `booley.runtime.booley_dir.resolve_booley_dir()`.
+the Booley Directory.
 `directory` is a safe relative path. Approval files mirror RTL paths: source
 `rtl/counter.sv` uses `coverage-waivers/rtl/counter.sv.toml`. A human-authored file
 has this shape (replace the placeholders with exact retained evidence):
@@ -333,27 +300,10 @@ approval document; otherwise loading reports it as unreferenced. `excluded`
 cannot carry proof. Both reasons yield `waived`; only
 exact RTL points are waivable. Loading rejects unsafe paths/symlinks, malformed
 or duplicate approvals, stale sources, unknown Target identities, missing proofs,
-and candidate content. Matching is then transactional per Target: when a Target
-is collected, only approvals naming that Target are validated against its
-Campaign. An unmatched or otherwise invalid point approval blocks evaluation for
-that Target and none of that Target's approvals apply. Approvals naming a known
-Target outside the current invocation are not checked against points by that run.
-The immutable digest binds bytes, configuration, sources, approvals, proof, and
-provenance. Every `--coverage` run loads this directory, with or without a Coverage
-Criterion. Without one, an invalid set, or an unmatched approval in a completely
-collected Campaign, still blocks evaluation and exits 2. `--no-waivers` skips
-loading. Analyst Waiver Candidates have no approval authority of their own and
+and candidate content. One unmatched or invalid approval blocks that Target's
+evaluation, and none of that Target's approvals apply. Analyst Waiver Candidates have no approval authority of their own and
 cannot be copied here by hand; they become approval files through a human-approved
 `goal_propose_change` waiver proposal (see [Coverage waivers at review](#coverage-waivers-at-review)).
-
-### Coverage Analyst model role
-
-`coverage_analyst` retains its configured Specialist model role and standard tier
-floor. Its input is one exact canonical `coverage.json` path plus an optional
-`instruction`. It has no per-call coverage policy or waiver-directory settings;
-Goal Mode candidate recording needs no configuration.
-The model receives normalized evidence and, only when the entire current Target
-closure matches its recorded fingerprints, verified RTL/testbench text.
 
 ## Troubleshooting
 

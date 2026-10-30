@@ -109,9 +109,10 @@ from booley.harness import (
 from booley.harness import (
     doctor_sim_dump as sim_dump,
 )
-from booley.harness.colors import green, red, yellow
+from booley.harness import terminal_status as ts
+from booley.harness.colors import dim, yellow
 from booley.harness.setup import readiness
-from booley.harness.setup.common import banner, err, info, note, ok, skip, warn
+from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.line_endings import (
     LineEndingActionKind,
@@ -126,6 +127,7 @@ from booley.harness.setup.line_endings import (
     unknown_attributes_policy_details,
 )
 from booley.harness.setup.readiness import ProjectAudit
+from booley.harness.terminal_table import render_table
 from booley.runtime import (
     auth_token,
     doctor_stamp,
@@ -392,6 +394,12 @@ class DoctorRunResult:
         return self.diagnostics.health.clean
 
 
+def _section(title: str) -> None:
+    """Start a Doctor section: a blank line, then its header."""
+    print()
+    print(ts.section_header(title))
+
+
 def _announce_long_check(label: str, expectation: str) -> None:
     """Print a start line before a long deep check and flush.
 
@@ -399,7 +407,7 @@ def _announce_long_check(label: str, expectation: str) -> None:
     output is often redirected to a file or pipe, where block buffering would
     hide the line until the check had already finished.
     """
-    print(f"  RUN   {label} ({expectation})", flush=True)
+    print(ts.status_line(ts.LineStatus.RUNNING, f"{label} ({expectation})"), flush=True)
 
 
 @dataclass(frozen=True)
@@ -523,15 +531,17 @@ class _Reporter:
             )
         )
         if not self.concise:
-            ok(f"PASS  {self.display_overrides.get(str(msg), str(msg))}")
+            print(
+                ts.status_line(ts.LineStatus.PASS, self.display_overrides.get(str(msg), str(msg)))
+            )
         self.counts["pass"] += 1
 
     def note_(self, msg: str, fix: str = "") -> None:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.NOTE, str(msg), fix))
-        note(f"NOTE  {msg}")
+        print(ts.status_line(ts.LineStatus.NOTE, str(msg)))
         if fix:
-            info(f"  fix: {fix}")
+            print(ts.hint_line(fix))
         self.counts["note"] += 1
 
     def warn_(self, msg: str, fix: str = "") -> None:
@@ -555,25 +565,35 @@ class _Reporter:
         self.findings.append(
             DiagnosticFinding(Severity.WARN, str(msg), fix, msg.check_id, msg.subject)
         )
-        warn(f"WARN  {self.display_overrides.get(str(msg), str(msg))} {suffix}")
+        print(
+            ts.status_line(
+                ts.LineStatus.WARN,
+                self.display_overrides.get(str(msg), str(msg)),
+                check_id=suffix,
+            )
+        )
         if fix:
-            info(f"  fix: {fix}")
+            print(ts.hint_line(fix))
         self.counts["warn"] += 1
 
     def waived_(self, finding: DiagnosticFinding) -> None:
         """Render an already-waived observation without making it active again."""
         assert self.findings is not None
         self.findings.append(finding)
-        note(
-            f"WAIVED  {self.display_overrides.get(finding.message, finding.message)} {_warning_identity(finding)}"
+        print(
+            ts.status_line(
+                ts.LineStatus.WAIVED,
+                self.display_overrides.get(finding.message, finding.message),
+                check_id=_warning_identity(finding),
+            )
         )
-        info(f"  reason: {finding.fix}")
+        print(ts.hint_line(f"reason: {finding.fix}"))
         self.counts["waived"] += 1
 
     def skip_(self, msg: str) -> None:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.SKIP, str(msg)))
-        skip(f"SKIP  {msg}")
+        print(ts.status_line(ts.LineStatus.SKIP, str(msg)))
         self.counts["skip"] += 1
 
     def agent_check_enabled(self, description: str) -> bool:
@@ -588,34 +608,27 @@ class _Reporter:
     ) -> None:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix, check_id, subject))
-        err(f"FAIL  {msg}")
+        identity = _warning_identity(self.findings[-1]) if check_id else ""
+        shown = self.display_overrides.get(str(msg), str(msg))
+        print(ts.status_line(ts.LineStatus.FAIL, shown, check_id=identity))
         if fix:
-            info(f"  fix: {fix}")
+            print(ts.hint_line(fix))
         self.counts["fail"] += 1
 
     def finish(self) -> int:
+        unused = self.waivers.unused() if self.verbose else ()
+        if self.waivers.expired or unused:
+            # Own header, so these notes do not land under the last check section.
+            _section("Waivers")
         for item in self.waivers.expired:
             subject = f" subject={item.subject!r}" if item.subject is not None else ""
             self.note_(
                 f"expired Doctor waiver ignored: {item.check}{subject} (expired {item.expires})"
             )
-        if self.verbose:
-            for item in self.waivers.unused():
-                subject = f" subject={item.subject!r}" if item.subject is not None else ""
-                self.note_(f"Doctor waiver did not match an active warning: {item.check}{subject}")
-        print()
-        summary = (
-            f"  {self.counts['pass']} passed, {self.counts['warn']} warning(s), "
-            f"{self.counts['waived']} waived, {self.counts['note']} note(s), "
-            f"{self.counts['skip']} skipped, "
-            f"{self.counts['fail']} failed."
-        )
-        if self.counts["fail"]:
-            print(red(summary))
-        elif self.counts["warn"]:
-            print(yellow(summary))
-        else:
-            print(green(summary))
+        for item in unused:
+            subject = f" subject={item.subject!r}" if item.subject is not None else ""
+            self.note_(f"Doctor waiver did not match an active warning: {item.check}{subject}")
+        self._print_summary()
         if self.profile.deep:
             assert self.agent_calls is not None
             print(f"  {_agent_usage_summary(self.agent_calls)}")
@@ -625,6 +638,36 @@ class _Reporter:
             )
         assert self.findings is not None
         return DiagnosticReport(tuple(self.findings)).health.exit_code
+
+    def _print_summary(self) -> None:
+        """Print the closing problem table (FAIL then WARN) and the counts table."""
+        assert self.findings is not None
+        _section("Summary")
+        # FAIL rows first; the sort is stable, so each tier keeps report order.
+        active = sorted(
+            DiagnosticReport(tuple(self.findings)).active_findings,
+            key=lambda finding: finding.severity is not Severity.FAIL,
+        )
+        if active:
+            rows = [
+                [
+                    f"{ts.glyph(_LINE_STATUS[finding.severity])} {finding.severity}",
+                    " ".join(self.display_overrides.get(finding.message, finding.message).split()),
+                    dim(_warning_identity(finding)) if finding.check_id else "",
+                ]
+                for finding in active
+            ]
+            print(
+                "\n".join(render_table(("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}))
+            )
+        else:
+            print(ts.status_line(ts.LineStatus.PASS, "no failures or warnings"))
+        print()
+        count_rows = [
+            [f"{ts.glyph(_LINE_STATUS[kind])} {label}", str(self.counts[kind])]
+            for kind, label in _COUNT_LABELS
+        ]
+        print("\n".join(render_table(("Status", "Count"), count_rows)))
 
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
@@ -637,9 +680,30 @@ class _Reporter:
         )
 
 
+#: Severity -> the glyph status that marks it.
+_LINE_STATUS = {
+    Severity.PASS: ts.LineStatus.PASS,
+    Severity.WARN: ts.LineStatus.WARN,
+    Severity.FAIL: ts.LineStatus.FAIL,
+    Severity.SKIP: ts.LineStatus.SKIP,
+    Severity.NOTE: ts.LineStatus.NOTE,
+    Severity.WAIVED: ts.LineStatus.WAIVED,
+}
+
+#: Counts-table rows in display order: (counter key, label).
+_COUNT_LABELS = (
+    ("pass", "passed"),
+    ("warn", "warnings"),
+    ("waived", "waived"),
+    ("note", "notes"),
+    ("skip", "skipped"),
+    ("fail", "failed"),
+)
+
+
 def _warning_identity(finding: DoctorWarning | DiagnosticFinding) -> str:
     subject = f":{finding.subject}" if finding.subject is not None else ""
-    return f"[{finding.check_id}{subject}]"
+    return f"{finding.check_id}{subject}"
 
 
 def _load_waivers(project_root: Path) -> tuple[DoctorWaivers, str | None]:
@@ -729,7 +793,7 @@ def run_doctor(args: argparse.Namespace, project_root: Path) -> int:
         validate_environment()
         require_current_layout(project_root)
     except BooleyLayoutError as exc:
-        err(str(exc))
+        print(ts.status_line(ts.LineStatus.FAIL, str(exc)))
         return 2
     result = run_doctor_result(args, project_root)
     if runtime_context.inside_session_runtime():
@@ -753,9 +817,8 @@ def run_doctor_result(
     conditions but never rewrites guidance links or moves orphaned tickets.
     Manual ``booley doctor`` retains its established self-healing behavior.
     """
-    banner("Booley Doctor")
+    _section("Booley Doctor")
     info(f"version: {booley.__version__}")
-    print()
 
     verbose = getattr(args, "verbose", False)
     concise = getattr(args, "concise", False)
@@ -895,7 +958,7 @@ def _run_project_phase(
     read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and Goal presence checks."""
-    banner("Host checks")
+    _section("Host checks")
     host = host_diagnostics.inspect_host()
     reporter.diagnostics(host.report)
     docker_exe = host.docker_exe
@@ -1182,7 +1245,7 @@ def _run_flow_and_core_phase(
 ) -> None:
     """Run Flow dry-runs and the authored FuseSoC core audit."""
     progress("Flow dry-runs")
-    banner("Booley Flow setup checks")
+    _section("Booley Flow setup checks")
     if project is None:
         reporter.skip_("Flow dry-runs skipped - project config invalid")
     else:
@@ -1198,7 +1261,7 @@ def _run_flow_and_core_phase(
             reporter.fail_,
         )
     progress("FuseSoC .core audit")
-    banner("FuseSoC .core checks")
+    _section("FuseSoC .core checks")
     if project is None:
         reporter.skip_(".core audit skipped - project config invalid")
     else:
@@ -1220,7 +1283,7 @@ def _run_deep_phase(
     verbose: bool,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
-    banner("Deep checks")
+    _section("Deep checks")
     if project is None:
         reporter.skip_("deep checks skipped - project config invalid")
         return doctor_deep.DeepAttemptSummary(("project-config",))
@@ -2401,7 +2464,7 @@ def _run_container_checks(
     """Run container EDA tool and runtime checks."""
     from booley.runtime import runtime_context
 
-    banner("Container checks")
+    _section("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
@@ -2535,7 +2598,7 @@ def _run_mcp_checks(
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
-    banner("Interactive Mode checks")
+    _section("Interactive Mode checks")
     if project is None:
         reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
@@ -3559,7 +3622,7 @@ def _run_project_checks(
     reporter: _Reporter,
 ) -> None:
     """Run shared Project configuration, repository, and backend checks."""
-    banner("Project checks")
+    _section("Project checks")
     if project is None:
         reporter.skip_("Project checks skipped - project config invalid")
         return

@@ -60,12 +60,13 @@ if [ -n "$wheel" ]; then
 fi
 ```
 Host Bootstrap refuses the disposable environment above because its package
-is under the system temporary directory. Persistent installed-wheel venvs can
-become canonical; source/editable installs and named ephemeral workspace paths
-remain ineligible. Follow
-[canonical host installation policy](../user/SETUP.md) and
-[host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment)
-to intentionally use this wheel on the host.
+is under the system temporary directory. One installed wheel per machine owns
+the host integrations (the skills under `~/.agents` and `~/.claude`); Booley
+records it in `~/.config/booley/host-installation.json` and refuses host
+commands from any other. Persistent installed-wheel venvs can become canonical;
+source/editable installs and named ephemeral workspace paths remain ineligible.
+To use this wheel on the host on purpose, run `booley bootstrap --update` from
+it; see [host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
 
 ### Agent source-development checks
 

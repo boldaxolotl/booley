@@ -18,6 +18,7 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
+from booley.harness.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -158,9 +159,13 @@ class _StdoutWitness:
         Requiring the text to occupy whole lines still recognises the
         ``print(report_text)`` this exists for (F-28), while a mention inside a
         longer line no longer silences the diagnostic.
+
+        The stdout tail is compared without ANSI codes: a Flow may print a
+        coloured console copy of its plain report on a terminal, and that copy
+        still counts as the report having been shown.
         """
         return _contains_whole_line_block(
-            "".join(self._chunks),
+            strip_ansi("".join(self._chunks)),
             text,
             leading_truncated=self._truncated,
         )
@@ -172,8 +177,13 @@ def _contains_whole_line_block(
     *,
     leading_truncated: bool = False,
 ) -> bool:
-    """Return whether *text* appears in *blob* as complete lines."""
-    needle = (text or "").strip()
+    """Return whether *text* appears in *blob* as complete lines.
+
+    Leading indentation belongs to the needle: a block that begins with an
+    indented line (a table header) matches only where that exact indentation
+    starts a line, so an indented echo of a one-line verdict never counts.
+    """
+    needle = (text or "").lstrip("\r\n").rstrip()
     if not needle:
         return False
     start = 0
@@ -508,7 +518,11 @@ def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) ->
 
 
 def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    """Publish the original verdict body before any invocation notice."""
+    """Publish the original verdict body before any invocation notice.
+
+    An endpoint that deferred a human rendition of its report (``_human_report``)
+    prints it here, after the live progress rows are closed.
+    """
     if not result.report_text:
         return
     witness = endpoint._stdout_witness
@@ -516,6 +530,12 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if already_shown:
         return
     original, separator, diagnosis = result.report_text.partition("\nCompletion failure (")
+    human = endpoint._human_report
+    if human is not None and human.record_text == original:
+        print(human, flush=True)
+        if separator:
+            print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
+        return
     if separator and witness is not None and witness.saw(original):
         print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
         return

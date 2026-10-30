@@ -18,7 +18,7 @@ document: Evaluation designs
         <tr id="picorv32">
           <td data-l="Design"><span><b>PicoRV32</b></span></td>
           <td data-l="What it is"><span>A small RISC-V CPU core (<a href="https://github.com/YosysHQ/picorv32">YosysHQ/picorv32</a>)</span></td>
-          <td data-l="Notes"><span>Start here. Clone it, open it in VS Code, and type your first request to the agent.</span></td>
+          <td data-l="Notes"><span>Start here. Clone it, open it in VS Code, and type your first request to the agent. Or <a href="https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1">open it in GitHub Codespaces</a> to try it in your browser with nothing to install, using your own Codespaces quota and Claude or ChatGPT account.</span></td>
           <td data-l="Project" class="lnk"><span><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md">Open the PicoRV32 demo</a></span></td>
         </tr>
         <tr>
@@ -44,7 +44,7 @@ document: Evaluation designs
     <li><span>Open it in VS Code.</span></li>
     <li><span>Type a request to the agent, such as your own change to the design.</span></li>
   </ol>
-  <p class="proc__f">Booley must be installed first: <code>pipx install booley-rtl</code>, then <code>booley bootstrap</code>. See the <a href="https://github.com/boldaxolotl/booley#installation">installation guide</a>.</p>
+  <p class="proc__f">Booley must be installed first: <code>pipx install booley-rtl</code>, then <code>booley bootstrap</code>. See the <a href="../docs/install/">installation guide</a>.</p>
 </section>
 
 <section aria-labelledby="s3">

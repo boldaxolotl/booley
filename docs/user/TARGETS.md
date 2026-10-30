@@ -138,7 +138,7 @@ Name project-owned Targets `<axis>_<subject>` using the Booley Flow axis:
 
 The axis is needed because CAPI2 has no synthesis flow: synth and FPGA Targets
 can both resolve as `generic`. A bare axis such as `lint` is fine when there is
-only one Target for it; the Elaboration Check reuses a sim Target. Targets with an `asic_` prefix run; `booley doctor` recommends `synth_`.
+only one Target for it; the Elaboration Check reuses a sim Target.
 
 Use `default:` only when another core depends on this one; Booley does not show
 it as a selectable Target. Vendored upstream cores keep their original names.
@@ -207,7 +207,7 @@ booley flow lint --target lint_structural
 - Add `lint_config` to other Verilator Targets only where the same waiver is
   intended.
 - `--mode elab-only-standalone` probes (see
-  [Elaboration Check](FLOW-SIM.md#elaboration-check-flowssim)) use their own HDL-only
+  [Elaboration checks](FLOW-SIM.md#elaboration-checks)) use their own HDL-only
   inputs and ignore Target waiver filesets.
 
 #### Verible lint Target
@@ -300,21 +300,11 @@ What differs from an SV Target:
   a missing or truncated `results.xml` is *inconclusive*, never a pass. RTL
   assertion output is still scanned.
 - **One test module per Target.** A cocotb Target names exactly one
-  `cocotb_module`, so a second test module is a second Target — this is a
-  mechanical consequence of the `.core`, not a style preference, and it is the
-  rule that wins over any "one Target per intent" advice you may read
-  elsewhere. That advice applies to **classic HDL testbenches**, where one
-  sentinel-scored TB toplevel usually covers a whole intent and splitting it
-  buys nothing.
-  A project with eight cocotb modules therefore has eight sim Targets. If it
-  also has build variants (a `-D` set per hardware flavour), the Targets
-  multiply: variants × modules. That is fine up to a point — the Targets are a
-  handful of `.core` lines each and `booley targets` stays readable — but it is
-  worth deciding **which** variants earn a full module sweep rather than
-  generating the whole matrix. A common shape is: every module on the default
-  variant, plus the one or two modules that actually exercise the varying
-  behaviour on the other variants. Goals name Targets explicitly, so
-  an unenumerated combination is simply one nobody gates on.
+  `cocotb_module`, so a second test module is a second Target. Build variants
+  (a `-D` set per hardware flavour) multiply that: variants × modules. Decide
+  which variants earn a full module sweep rather than generating the whole
+  matrix; a common shape is every module on the default variant, plus the
+  modules that exercise the varying behaviour on the other variants.
 - **Tracing goes through a VCD.** Booley converts it to FST; `--trace-fst` is
   rejected. See [Tracing a Cocotb Target](#tracing-a-cocotb-target).
 - **Image-provisioned only**, Icarus or Verilator. Commercial simulators are
@@ -404,14 +394,9 @@ Goal Mode and baseline-relative Flows run in isolated git worktrees. Booley
 does not run `git submodule update` there: doing so may re-clone from a private
 SSH URL that the Sandbox cannot reach.
 
-After the worktree's branch or the Flow's baseline ref is selected, Booley
-reads that revision's exact gitlinks and reconstructs each submodule from the
-initialized repository at the **same path** in the main Project. It transfers
-the pinned commit's local Git objects into a standalone detached repository;
-it does not copy a working tree, share a `.git` pointer, configure a remote, or
-consult the URL in `.gitmodules`. Recursive submodules use the same rule at
-each level. Consequently, SSH-only URLs are harmless once the source hierarchy
-is initialized locally.
+Instead, Booley rebuilds each submodule offline from your locally initialized
+copy at the **same path** in the main Project, at the commit the branch pins,
+so SSH-only URLs are fine. Recursive submodules work the same way.
 
 What this asks of you, once, on the host:
 
@@ -432,11 +417,7 @@ these preconditions is not met, for example:
 - `submodule <path> is shallow; fetch its complete history first`
 - `local objects for submodule <path> are incomplete`
 
-The destination gitlink is authoritative: if the main Project currently has a
-newer submodule checkout, Booley still materializes the historical pin. A
-matching clean destination is accepted on resume. If a later recursive step
-fails, repositories created by that attempt are rolled back; pre-existing
-content is never removed.
+Booley uses the pinned commit even when your main checkout has a newer one.
 
 To copy only some of the submodules (a big docs or FPGA-board submodule nothing
 builds against), list the ones you want:

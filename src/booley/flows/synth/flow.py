@@ -51,6 +51,14 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.result_table import (
+    MISSING,
+    TARGET_WIDTH,
+    compose_result,
+    note_line,
+    status_cell,
+    tty_text,
+)
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
@@ -62,6 +70,7 @@ from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
+from booley.harness.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -1704,7 +1713,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     @staticmethod
     def _fmt_area(kge: float | None) -> str:
-        return f"{kge:>6.1f} KGe" if kge is not None else "   -- KGe"
+        return f"{kge:>6.1f} kGE" if kge is not None else "   -- kGE"
 
     @staticmethod
     def _fmt_timing(ps: float | None) -> str:
@@ -2434,33 +2443,40 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             )
         return baseline_results
 
-    def _target_report_lines(
-        self,
-        tgt: str,
-        cur: SynthMetrics,
-        base: SynthMetrics | None,
-    ) -> list[str]:
-        """Render the human-facing report lines for one target."""
-        lines = [self._format_config_line(tgt, cur, base)]
+    def _target_note_lines(self, tgt: str, cur: SynthMetrics) -> list[str]:
+        """Render the notes (everything but the table row) for one target."""
+        lines: list[str] = []
         if cur.passed:
-            lines.append(self._format_qor_line(tgt, cur))
+            detail = self._format_detail_note(tgt, cur)
+            if detail:
+                lines.append(detail)
             if cur.estimated_fmax_mhz is not None:
                 lines.append(
-                    f"[synth] {tgt}: WARNING -- estimated Fmax is probably inaccurate; "
-                    "logical mode excludes placement and wire delays"
+                    note_line(
+                        tgt,
+                        "WARNING",
+                        "estimated Fmax is probably inaccurate; "
+                        "logical mode excludes placement and wire delays",
+                    )
                 )
         elif cur.has_metrics and not cur.ppa_complete:
             lines.append(
-                f"[synth] {tgt}: PARTIAL -- Yosys emitted intermediate "
-                "area/cell data, but the synthesis/PPA run did not complete; "
-                "do not use these numbers as final QoR"
+                note_line(
+                    tgt,
+                    "PARTIAL",
+                    "Yosys emitted intermediate area/cell data, but the synthesis/PPA "
+                    "run did not complete; do not use these numbers as final QoR",
+                )
             )
         if not cur.structural_checks_complete and (
             cur.latches or cur.comb_loops or cur.multi_driven or cur.process_count
         ):
             lines.append(
-                f"[synth] {tgt}: INCONCLUSIVE -- structural counts were emitted "
-                "before the final synthesis checks completed"
+                note_line(
+                    tgt,
+                    "INCONCLUSIVE",
+                    "structural counts were emitted before the final synthesis checks completed",
+                )
             )
         if _is_io_bound_critical(cur):
             lines.append(self._format_io_bound_line(tgt, cur))
@@ -2469,14 +2485,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if cur.warning_summary.total_warnings:
             lines.append(self._format_warning_line(tgt, cur))
             lines.extend(
-                f"[synth] {tgt}: WARNING -- {group.message} {group.rationale}"
+                note_line(tgt, "WARNING", f"{group.message} {group.rationale}")
                 for group in cur.warning_summary.representatives
                 if group.category == "combinational_loop" and group.disposition == "advisory"
             )
         if cur.failure_output:
             lines.append(self._format_failure_output(tgt, cur))
         if cur.log_path:
-            lines.append(f"[synth] {tgt}: log: {cur.log_path}")
+            lines.append(f"  {tgt}: log: {cur.log_path}")
         return lines
 
     @staticmethod
@@ -2494,11 +2510,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self,
         tgt: str,
         cur: SynthMetrics,
-        base: SynthMetrics | None,
     ) -> tuple[list[str], str | None, str | None]:
-        """Return report lines, timing violation, and failure summary for one target."""
+        """Return note lines, timing violation, and failure summary for one target."""
         failure = None if cur.passed else self._format_failure_summary(tgt, cur)
-        return self._target_report_lines(tgt, cur, base), self._timing_violation(tgt, cur), failure
+        return self._target_note_lines(tgt, cur), self._timing_violation(tgt, cur), failure
 
     @staticmethod
     def _comparison_error_lines(
@@ -2512,7 +2527,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             for message in errors:
                 if str(message).startswith("baseline infrastructure error:"):
                     continue
-                lines.append(f"[synth] comparison {target}: ERROR -- {message}")
+                lines.append(note_line(f"comparison {target}", "ERROR", str(message)))
                 failures.append(f"comparison {target}: {message}")
         return lines, failures
 
@@ -2554,28 +2569,27 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             implementation_reports,
             baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
         )
-        stdout_lines, failed_targets, selfcompare_msg = self._aggregate_prefix(
-            short_sha, baseline_results, implementation_reports
+        notes, failed_targets, selfcompare_msg = self._aggregate_prefix(
+            baseline_results, implementation_reports
         )
-        violated = self._append_target_blocks(
-            stdout_lines, failed_targets, targets, current_results, baseline_results
-        )
+        violated = self._append_target_blocks(notes, failed_targets, targets, current_results)
         self._append_fatal_timing_failure(failed_targets, violated)
         eda_warnings = self._eda_warning_headlines(targets, current_results)
-        stdout_lines.extend(
-            [
-                "",
-                _result_line(
-                    failed_targets,
-                    selfcompare_msg,
-                    violated,
-                    eda_warnings,
-                    implementation_aggregate.exit_code,
-                ),
-            ]
+        result_line = _result_line(
+            failed_targets,
+            selfcompare_msg,
+            violated,
+            eda_warnings,
+            implementation_aggregate.exit_code,
         )
-        report_text = "\n".join(stdout_lines)
-        print(report_text)
+        result = compose_result(
+            short_sha if self.args.baseline else None,
+            self._summary_table_lines(targets, current_results, baseline_results),
+            notes,
+            result_line,
+        )
+        report_text = result.record
+        print(tty_text(result))
         detail = self._implementation_aggregate_detail(
             targets,
             current_results,
@@ -2606,24 +2620,22 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     def _aggregate_prefix(
         self,
-        short_sha: str | None,
         baseline_results: dict[str, SynthMetrics],
         reports: dict[str, ImplementationReport],
     ) -> tuple[list[str], list[str], str | None]:
+        """Return the run-level notes, failures and self-compare message."""
         lines: list[str] = []
         failures: list[str] = []
-        if self.args.baseline and short_sha:
-            lines.append(f"[synth] baseline: {short_sha}")
         for target, metrics in baseline_results.items():
             if metrics.infra_error:
-                lines.append(f"[synth] baseline {target}: ERROR -- {metrics.infra_error}")
+                lines.append(note_line(f"baseline {target}", "ERROR", metrics.infra_error))
                 failures.append(f"baseline {target}: {metrics.infra_error}")
         comparison_lines, comparison_failures = self._comparison_error_lines(reports)
         lines.extend(comparison_lines)
         failures.extend(comparison_failures)
         selfcompare_msg = getattr(self, "_baseline_selfcompare_msg", None)
         if selfcompare_msg:
-            lines.append(f"[synth] WARNING -- {selfcompare_msg}")
+            lines.append(note_line("", "WARNING", selfcompare_msg))
         return lines, failures, selfcompare_msg
 
     def _append_target_blocks(
@@ -2632,13 +2644,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         failures: list[str],
         targets: list[str],
         current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
     ) -> list[str]:
+        """Append every target's notes to *lines*; return the timing violations."""
         violated: list[str] = []
         for target in targets:
-            current = current_results[target]
             target_lines, violation, failure = self._emit_target_block(
-                target, current, baseline_results.get(target)
+                target, current_results[target]
             )
             lines.extend(target_lines)
             if violation is not None:
@@ -2703,33 +2714,21 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     def _format_failure_output(tgt: str, cur: SynthMetrics) -> str:
         """Render the captured subprocess error tail under the config line."""
         indented = "\n".join(f"    {ln}" for ln in cur.failure_output.splitlines())
-        return f"[synth] {tgt}: subprocess output:\n{indented}"
+        return f"  {tgt}: subprocess output:\n{indented}"
 
     @staticmethod
-    def _format_qor_line(tgt: str, cur: SynthMetrics) -> str:
-        """One-line QoR summary (cells / area / timing) for a passing config.
+    def _format_detail_note(tgt: str, cur: SynthMetrics) -> str | None:
+        """Metrics the table has no column for (cells, estimated Fmax, hold, reg2reg).
 
         These numbers otherwise land only in ``util/syn/`` report files; a
-        concise summary here keeps the happy-path output actionable.
+        concise note keeps the happy-path output actionable. ``None`` when the
+        run produced none of them.
         """
         parts: list[str] = []
         if cur.cells is not None:
             parts.append(f"{cur.cells:,} cells")
-        if cur.area_kge is not None:
-            parts.append(f"{cur.area_kge:.1f} kGE")
         if cur.estimated_fmax_mhz is not None:
             parts.append(f"estimated Fmax {cur.estimated_fmax_mhz:.0f} MHz")
-        # Fmax/critical path are per-clock; show the timing-worst clock here,
-        # tagged with its name only when the design has more than one clock (so
-        # single-clock output is unchanged). Full breakdown lives in the report.
-        worst = worst_clock(cur.per_clock)
-        tag = f" [{worst.clock}]" if worst and len(cur.per_clock) > 1 else ""
-        if worst is not None and worst.critical_path_ps is not None:
-            parts.append(f"crit path {worst.critical_path_ps:,.0f} ps{tag}")
-        if worst is not None and worst.fmax_mhz is not None:
-            parts.append(f"Fmax {worst.fmax_mhz:.0f} MHz{tag}")
-        if cur.wns_ns is not None:
-            parts.append(f"setup slack {cur.wns_ns:+.3f} ns")
         worst_hold = _worst_hold_slack_ns(cur)
         if worst_hold is not None:
             parts.append(f"hold slack {worst_hold:+.3f} ns")
@@ -2737,18 +2736,83 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             parts.append(f"reg2reg Fmax {cur.reg2reg_fmax_mhz:.0f} MHz")
         elif cur.reg2reg_slack_ns is not None:
             parts.append(f"reg2reg slack {cur.reg2reg_slack_ns:+.3f} ns")
-        return f"[synth] {tgt}: QoR -- {', '.join(parts) or 'no metrics'}"
+        return f"  {tgt}: {', '.join(parts)}" if parts else None
+
+    def _summary_table_lines(
+        self,
+        targets: list[str],
+        current: dict[str, SynthMetrics],
+        baseline: dict[str, SynthMetrics],
+    ) -> list[str]:
+        """The per-Target table: one row per Target; ``Δ`` columns only against a baseline."""
+        with_delta = any(target in baseline for target in targets)
+        delta = ["Δ"] if with_delta else []
+        headers = ["Target", "Area", *delta, "Crit path", *delta, "Fmax", "Setup slack", "Time"]
+        headers.append("Status")
+        rows = [
+            self._summary_row(target, current[target], baseline.get(target), with_delta)
+            for target in targets
+        ]
+        return render_table(headers, rows, max_widths={0: TARGET_WIDTH})
+
+    def _summary_row(
+        self,
+        target: str,
+        cur: SynthMetrics,
+        base: SynthMetrics | None,
+        with_delta: bool,
+    ) -> list[str]:
+        """Cells of one Target's table row (``—`` for a metric the run lacks)."""
+        worst = worst_clock(cur.per_clock)
+        # Per-clock metrics: the timing-worst clock, named only for multi-clock designs.
+        tag = f" [{worst.clock}]" if worst and len(cur.per_clock) > 1 else ""
+        logical = cur.synth_mode is SynthMode.LOGICAL
+        crit_ps = _worst_critical_path_ps(cur)
+        if logical:
+            crit = "logical estimate"
+        else:
+            crit = f"{crit_ps:,.0f} ps" if crit_ps is not None else MISSING
+        fmax = (
+            f"{worst.fmax_mhz:.0f} MHz{tag}"
+            if worst is not None and worst.fmax_mhz is not None and not logical
+            else MISSING
+        )
+        area = f"{cur.area_kge:.1f} kGE" if cur.area_kge is not None else MISSING
+        slack = f"{cur.wns_ns:+.3f} ns" if cur.wns_ns is not None else MISSING
+        status = self._format_status_suffix(cur).strip() or self._passing_status(target, cur)
+        cells = [target, area]
+        if with_delta:
+            cells.append(self._delta_cell(cur.area_kge, base.area_kge if base else None))
+        cells.append(crit)
+        if with_delta:
+            cells.append(
+                self._delta_cell(crit_ps, _worst_critical_path_ps(base) if base else None)
+            )
+        return [*cells, fmax, slack, f"{cur.elapsed_s:.1f}s", status_cell(status)]
+
+    def _passing_status(self, target: str, cur: SynthMetrics) -> str:
+        """``PASS``, unless a fatal timing violation fails this Target's run."""
+        fatal = getattr(self, "_timing_violation_is_fatal", False)
+        return "FAIL (timing)" if fatal and self._timing_violation(target, cur) else "PASS"
+
+    @classmethod
+    def _delta_cell(cls, current: float | None, baseline: float | None) -> str:
+        """``+1.2%`` against the baseline, ``—`` when it cannot be computed."""
+        pct = cls._compute_delta_pct(current, baseline)
+        return f"{pct:+.1f}%" if pct is not None else MISSING
 
     @staticmethod
     def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:
         """Advisory: the worst path is I/O-bound, so period_ps is the wrong lever."""
         worst = cur.wns_ns
         r2r = cur.reg2reg_slack_ns
-        return (
-            f"[synth] {tgt}: NOTE -- critical path is I/O-bound "
+        return note_line(
+            tgt,
+            "NOTE",
+            f"critical path is I/O-bound "
             f"(worst slack {worst:+.3f} ns vs reg2reg {r2r:+.3f} ns); "
             "period_ps won't move it — declare I/O delays / false-path the port "
-            "via the [flows.synth.timing].sdc knob"
+            "via the [flows.synth.timing].sdc knob",
         )
 
     @staticmethod
@@ -2761,7 +2825,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             parts.append(f"{cur.comb_loops} comb loop")
         if cur.multi_driven:
             parts.append(f"{cur.multi_driven} multi-driven")
-        return f"[synth] {tgt}: CRITICAL -- {', '.join(parts)}"
+        return note_line(tgt, "CRITICAL", ", ".join(parts))
 
     @staticmethod
     def _format_warning_line(tgt: str, cur: SynthMetrics) -> str:
@@ -2769,10 +2833,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         summary = cur.warning_summary
         label = "WARNING" if summary.actionable_warnings else "NOTE"
         noun = "warning" if summary.total_warnings == 1 else "warnings"
-        return (
-            f"[synth] {tgt}: {label} -- {summary.total_warnings} EDA {noun}, "
+        return note_line(
+            tgt,
+            label,
+            f"{summary.total_warnings} EDA {noun}, "
             f"{summary.unique_warnings} unique; full diagnostics: "
-            f"{cur.log_path or 'run.log'}"
+            f"{cur.log_path or 'run.log'}",
         )
 
     @staticmethod
