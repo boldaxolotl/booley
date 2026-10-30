@@ -88,8 +88,8 @@ instead of applying entry-only eligibility checks. Their versioned capture has
 independent disk and HEAD membership and includes executable state. This catches
 committed additions absent on disk and committed mode edits with restored working
 modes. Matched files join the ordinary protected paths, deduplicating coverage by
-built-ins. Digest format 3 includes the declaration capture; an omitted or empty
-list keeps the existing format 2 bytes unchanged.
+built-ins. The digest has one format and always includes the declaration
+capture; an omitted or empty list contributes an empty view.
 """
 
 from __future__ import annotations
@@ -110,6 +110,7 @@ from booley.goals.declared_inputs import (
     DeclaredCapture,
     DeclaredFile,
     capture_violations,
+    empty_view_json,
     head_matches,
     validate_entry_matches,
     working_matches,
@@ -132,7 +133,7 @@ PROTECTED_INPUT_NAMES: tuple[str, ...] = (
 CONFIG_FILE_NAMES: tuple[str, ...] = ("booley.toml", "pipeline.toml")
 # The legacy Booley Directory layout resolve_booley_toml still reads.
 _SKIPPED_DIRECTORIES = frozenset({"__pycache__"})
-_DIGEST_FORMAT = "booley-protected-inputs/2"
+_DIGEST_FORMAT = "booley-protected-inputs/3"
 
 Entry = dict[str, object]
 Tree = dict[str, Entry]
@@ -185,10 +186,8 @@ class ProtectedInputRoots:
     checkout_label: tuple[RootKind, str] | None = None
 
     @repository_facts()
-    def with_input_paths(self, saved: Mapping[str, Any] | None) -> ProtectedInputRoots:
+    def with_input_paths(self, saved: Mapping[str, Any]) -> ProtectedInputRoots:
         """Physical proof preserves D7 labels and resolves them through the current mount."""
-        if saved is None:
-            return self
         current = capture_roots(self.worktree, self.booley_dir)
         require_bindings(saved, current)
         return replace(
@@ -386,10 +385,12 @@ def _digest_inputs(
         if head_view is not None and path.root is RootKind.WORKTREE and location is not None:
             tree = head_view.committed_tree(location, tree, frozenset())
         entries.append({"path": path.encode(), "tree": tree})
-    value: dict[str, Any] = {"format": _DIGEST_FORMAT, "head": head, "inputs": entries}
-    if declared is not None:
-        value["format"] = "booley-protected-inputs/3"
-        value["declared"] = declared.view_json(head=head)
+    value: dict[str, Any] = {
+        "format": _DIGEST_FORMAT,
+        "head": head,
+        "inputs": entries,
+        "declared": empty_view_json() if declared is None else declared.view_json(head=head),
+    }
     payload = json.dumps(
         value,
         sort_keys=True,
@@ -402,7 +403,7 @@ def _digest_inputs(
 def protected_input_violations(
     recorded_paths: Sequence[str],
     working_digest: str,
-    head_digest: str | None,
+    head_digest: str,
     roots: ProtectedInputRoots,
     declared: DeclaredCapture | None = None,
 ) -> list[str]:
@@ -431,7 +432,7 @@ def protected_input_violations(
         return [f"protected inputs now resolve to different files: {', '.join(changed)}"]
     if snapshot.working_digest != working_digest:
         return ["a protected input differs from its state at entry"]
-    if head_digest is not None and snapshot.head_digest != head_digest:
+    if snapshot.head_digest != head_digest:
         return ["a protected input differs from its state at entry in HEAD"]
     return []
 

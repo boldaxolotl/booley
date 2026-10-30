@@ -328,10 +328,7 @@ def protected_drift(record: GoalRecord, snapshot: ProtectedSnapshot) -> str:
         return "protected inputs resolve to different files than at entry"
     if snapshot.working_digest != record.protected_digest:
         return "a protected input differs from its state at entry"
-    if (
-        record.protected_head_digest is not None
-        and snapshot.head_digest != record.protected_head_digest
-    ):
+    if snapshot.head_digest != record.protected_head_digest:
         return "a protected input differs from its state at entry in HEAD"
     return ""
 

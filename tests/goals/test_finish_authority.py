@@ -233,18 +233,6 @@ def test_saved_success_also_validates_the_frozen_package(complete):
         finish_goal(call, environment(complete))
 
 
-def test_legacy_unpaired_record_can_freeze_and_retry_with_current_authority(complete):
-    record_file = complete.control / "goals" / complete.record.id / "record.json"
-    value = json.loads(record_file.read_bytes())
-    del value["input_paths"]
-    del value["input_topology_digest"]
-    record_file.write_text(json.dumps(value))
-    call = request(complete)
-    result = finish_goal(call, environment(complete))
-    assert result["status"] == "finished"
-    assert finish_goal(call, environment(complete)) == result
-
-
 def test_publication_journal_substitution_refuses_before_next_effect(layout):
     layout = publication_layout(layout)
     call, operation = freeze(layout, "commit-journaled")

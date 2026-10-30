@@ -365,14 +365,12 @@ def _closure_timestamp(value: object) -> str | None:
 
 
 def _transaction_digest(value: object, decision: Decision | None) -> str | None:
-    if value is None:
-        return None  # Terminal legacy metadata remains readable; recovery requires a binding.
+    if value is None and decision is None:
+        return None  # A pending proposal has no prepared transaction yet.
+    if value is None or decision is None or decision.transaction_id is None:
+        raise ProposalError("invalid prepared transaction authority digest")
     result = text(value, "transaction_digest")
-    if (
-        decision is None
-        or decision.transaction_id is None
-        or re.fullmatch(r"[0-9a-f]{64}", result) is None
-    ):
+    if re.fullmatch(r"[0-9a-f]{64}", result) is None:
         raise ProposalError("invalid prepared transaction authority digest")
     return result
 

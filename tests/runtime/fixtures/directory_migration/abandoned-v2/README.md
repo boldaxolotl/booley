@@ -1,1 +1,0 @@
-Captured using unmodified Booley commit `dd102418c42e94db24c57086eccd78a281a52557` over a synthetic Git Project. Original sealed abandonment and evidence bytes remain unchanged; historical absolute paths identify a deliberately unavailable checkout.

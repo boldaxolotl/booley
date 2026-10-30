@@ -603,7 +603,6 @@ class DevelopmentState:
             "strict_criteria": self.strict_criteria,
             "criteria": {k: v.to_dict() for k, v in self.criteria.items()},
             "category_map": self.category_map,
-            "all_mandatory_met": self.all_mandatory_met(),
             "timeline": self.timeline,
             "acceptance_transactions": self.acceptance_transactions,
             "authorized_zero_mandatory_basis_id": self.authorized_zero_mandatory_basis_id,

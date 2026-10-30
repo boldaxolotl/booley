@@ -163,7 +163,7 @@
   ]
 }
 === dir .runtime
-=== file .runtime/booley_state.json (821 bytes)
+=== file .runtime/booley_state.json (792 bytes)
 {
   "slug": "fix-uart",
   "ticket_type": "bugfix",
@@ -193,7 +193,6 @@
     }
   },
   "category_map": {},
-  "all_mandatory_met": true,
   "timeline": [],
   "acceptance_transactions": [
     "31531c864f634155ea301b624c964f7bca573f11d8b1548035d9f8ca4ccf511e"

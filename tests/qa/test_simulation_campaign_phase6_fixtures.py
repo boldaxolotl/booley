@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.goals.conftest import git
+from tests.goals.conftest import INPUT_PATHS, git
 
 from booley.criteria.evidence_ledger import AcceptanceTransaction, record_or_verify_transaction
 from booley.criteria.state import DevelopmentState
@@ -182,6 +182,8 @@ def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[
         protected_paths=snapshot.encoded_paths,
         protected_digest=snapshot.working_digest,
         protected_head_digest=snapshot.head_digest,
+        input_paths=INPUT_PATHS,
+        input_topology_digest="sha256:" + "e" * 64,
     )
     with store.worktree_lock(identity) as lock:
         record = store.create(lock, record)
