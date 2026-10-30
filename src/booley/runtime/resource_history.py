@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.timefmt import format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -77,3 +79,92 @@ def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
             atomic_replace_bytes(path, json.dumps(document, separators=(",", ":")).encode("utf-8"))
         finally:
             release_file_lock(handle)
+
+
+def _spread(values: list[float | None]) -> dict[str, float | None] | None:
+    """Min, median, max and max/median (how far the worst run strays) of measured values."""
+    measured = [value for value in values if value is not None]
+    if not measured:
+        return None
+    median = statistics.median(measured)
+    top = max(measured)
+    return {
+        "min": min(measured),
+        "median": median,
+        "max": top,
+        "ratio": top / median if median else None,
+    }
+
+
+def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Statistics per history key, in key order."""
+    groups: dict[tuple[str, str, tuple[str, ...], str], list[dict[str, Any]]] = {}
+    for record in records:
+        groups.setdefault(_key(record), []).append(record)
+    summaries = []
+    for _, group in sorted(groups.items()):
+        solo = [
+            r
+            for r in group
+            if r["solo"] and None not in (r["container_peak_delta_mb"], r["peak_memory_mb"])
+        ]
+        summaries.append(
+            {
+                "key": group[0]["key"],
+                "runs": len(group),
+                "peak_memory_mb": _spread([r["peak_memory_mb"] for r in group]),
+                "wall_s": _spread([r["wall_s"] for r in group]),
+                "solo_runs": len(solo),
+                # Paired per run: a max of each column could come from different runs.
+                "solo_container_over_rss": _spread(
+                    [
+                        r["container_peak_delta_mb"] / r["peak_memory_mb"]
+                        for r in solo
+                        if r["peak_memory_mb"]
+                    ]
+                ),
+            }
+        )
+    return summaries
+
+
+def _line(summary: dict[str, Any]) -> str:
+    key = summary["key"]
+    flags = f" [{','.join(key['flags'])}]" if key["flags"] else ""
+    tests = f" tests={key['test_run']}" if key["test_run"] else ""
+    parts = [
+        f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {summary['runs']} run{'' if summary['runs'] == 1 else 's'}"
+    ]
+    for label, field, unit in (("peak memory", "peak_memory_mb", "MiB"), ("wall", "wall_s", "")):
+        spread = summary[field]
+        if spread is None:
+            parts.append(f"{label} unmeasured")
+            continue
+        shown = [
+            f"{spread[n]:.0f} MiB" if unit else format_duration(spread[n])
+            for n in ("min", "median", "max")
+        ]
+        ratio = "-" if spread["ratio"] is None else f"{spread['ratio']:.2f}"
+        parts.append(f"{label} {' / '.join(shown)} (max/median {ratio})")
+    if summary["solo_runs"]:
+        ratio = summary["solo_container_over_rss"]
+        shown = (
+            "unmeasured"
+            if ratio is None
+            else " / ".join(f"{ratio[n]:.2f}" for n in ("min", "median", "max"))
+        )
+        parts.append(f"solo runs {summary['solo_runs']}: container peak / (RSS+TMPDIR) {shown}")
+    return "; ".join(parts)
+
+
+def render_report(summaries: list[dict[str, Any]]) -> str:
+    """One line per history key: min / median / max, max/median and solo calibration."""
+    if not summaries:
+        return "No Job resource history yet: run a Booley Flow first."
+    return "\n".join(
+        [
+            *(_line(summary) for summary in summaries),
+            "Peak memory = process-tree RSS + the Job's own TMPDIR files; "
+            "files a tool writes outside TMPDIR are not counted.",
+        ]
+    )

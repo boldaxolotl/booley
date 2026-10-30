@@ -314,8 +314,53 @@ def test_history_is_ignored_by_git(tmp_path):
     )
 
 
+def test_report_shows_spread_ratio_and_solo_calibration(tmp_path, capsys):
+    from booley.harness import resources_cli
+
+    samples = [(100.0, 10.0, False, None), (200.0, 20.0, True, 250.0), (400.0, 30.0, True, 380.0)]
+    resource_history.append_records(
+        tmp_path,
+        [
+            _record("core", peak_memory_mb=m, wall_s=w, solo=s, container_peak_delta_mb=c)
+            for m, w, s, c in samples
+        ],
+    )
+    (summary,) = resource_history.summarize(_history(tmp_path))
+    assert summary["runs"] == 3 and summary["solo_runs"] == 2
+    assert summary["peak_memory_mb"] == {"min": 100.0, "median": 200.0, "max": 400.0, "ratio": 2.0}
+    assert summary["wall_s"]["ratio"] == 1.5
+    # Paired per run (1.25 and 0.95); a max-vs-max comparison would hide the 25% shortfall.
+    assert summary["solo_container_over_rss"]["min"] == pytest.approx(0.95)
+    assert summary["solo_container_over_rss"]["max"] == 1.25
+
+    assert resources_cli.run(type("Args", (), {"json": False})(), tmp_path) == 0
+    text = capsys.readouterr().out
+    assert "core p: 3 runs; peak memory 100 MiB / 200 MiB / 400 MiB (max/median 2.00)" in text
+    assert "wall 10s / 20s / 30s (max/median 1.50)" in text
+    assert "solo runs 2: container peak / (RSS+TMPDIR) 0.95 / 1.10 / 1.25" in text
+    assert "outside TMPDIR" in text
+    assert resources_cli.run(type("Args", (), {"json": True})(), tmp_path) == 0
+    assert json.loads(capsys.readouterr().out) == [summary]
+
+
 def test_cgroup_oom_counter_parser(tmp_path, monkeypatch):
     events = tmp_path / "memory.events"
     events.write_text("low 0\nhigh 0\noom 3\noom_kill 2\n", encoding="utf-8")
     monkeypatch.setattr(job_resources, "_CGROUP_MEMORY_EVENTS", events)
     assert job_resources.cgroup_oom_kill_count() == 2
+
+
+def test_report_handles_empty_unreadable_and_unmeasured_history(tmp_path, capsys):
+    from booley.harness import resources_cli
+
+    args = type("Args", (), {"json": False})()
+    assert resources_cli.run(args, tmp_path) == 0
+    assert "No Job resource history yet" in capsys.readouterr().out
+
+    resource_history.append_records(tmp_path, [_record("core")])
+    assert resources_cli.run(args, tmp_path) == 0
+    assert "peak memory unmeasured; wall unmeasured" in capsys.readouterr().out
+
+    resource_history.history_path(tmp_path).write_text("not json", encoding="utf-8")
+    assert resources_cli.run(args, tmp_path) == 2
+    assert "cannot read the Job resource history" in capsys.readouterr().err

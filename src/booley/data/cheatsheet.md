@@ -30,6 +30,7 @@ requires the Sandbox.
 | `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley help` | either | Show top-level help, same as `booley --help` |
+| `booley resources` | either | Show measured peak memory and run time per Target and Job phase |
 | `booley targets` | either | List or filter Targets; full detail resolution requires the Sandbox |
 
 #### Host-only commands
