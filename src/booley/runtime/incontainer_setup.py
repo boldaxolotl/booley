@@ -743,6 +743,20 @@ def _apply_claude_credential(token: str | None, home: Path | None = None) -> str
     return "written"
 
 
+def is_registrar_codex_key_file(path: Path) -> bool:
+    """Whether *path* is exactly the single-key ``auth.json`` this module writes.
+
+    Such a file is a copy of a stored or exported API key, not a Codex login,
+    so it must not count as the visitor's credential on a later start.
+    """
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    var = auth_token.CREDENTIALS[auth_token.APP_CODEX].env_var
+    return isinstance(existing, dict) and set(existing) == {var}
+
+
 def _apply_codex_credential(token: str | None, home: Path | None = None) -> str:
     """Sync ``~/.codex/auth.json`` with the stored API key *token*.
 
@@ -956,7 +970,9 @@ def trust_keys(paths: Sequence[Path]) -> tuple[str, ...]:
 
 def _claude_credential_present(home: Path | None) -> bool:
     """Whether Claude would find a login credential, by the registrar's own inputs."""
-    policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "auto")
+    from booley.config.agent import env_auth_handoff
+
+    policy = env_auth_handoff() or "auto"
     credential = auth_token.effective_credential(
         auth_token.APP_CLAUDE, policy, home=home or _agent_home()
     )
@@ -1201,11 +1217,12 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     Returns ``off``, ``invalid`` (incomplete gateway environment), ``skipped``
     (a TOML layout that cannot take the entries), ``current`` or ``written``.
     """
+    from booley.config import agent_app
     from booley.config.agent import env_auth_handoff
     from booley.config.gateway import GATEWAY_AUTH
 
     if env_auth_handoff() != GATEWAY_AUTH:
-        return "off"
+        return _drop_codex_gateway(home) if agent_app.auto_choice() else "off"
     path = codex_config_path(home)
     inputs = _gateway_inputs(path)
     if inputs is None:
@@ -1230,6 +1247,46 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
         return "current"
     _publish_codex_config(path, updated)
     return "written"
+
+
+def _strip_codex_root_key(existing: str, key: str) -> str:
+    """Remove the root assignment of *key*, keeping every other byte."""
+    return "".join(
+        statement
+        for statement, path, header in _toml_entries(existing)
+        if header or path != (key,)
+    )
+
+
+def _drop_codex_gateway(home: Path | None) -> str:
+    """Remove Booley's gateway selection from the user's Codex config.
+
+    For ``BOOLEY_AGENT_APP=auto`` only: a start that stopped using the gateway
+    must not leave Codex routed through it. Drops the owned provider table,
+    ``model_provider`` when it selects that provider, and ``model`` when it
+    equals the current gateway model pin. ``features.fast_mode`` and the token
+    exclusion stay: neither routes traffic and either may be the user's.
+
+    Returns ``removed`` or ``off`` (nothing of Booley's to remove).
+    """
+    from booley.config.gateway import GatewayConfigError, gateway_model_pin_from_env
+
+    path = codex_config_path(home)
+    existing = _read_codex_config(path)
+    data = _codex_data(existing, path=path)
+    updated = _strip_owned_codex_table(existing, ("model_providers", GATEWAY_PROVIDER_ID))
+    if data.get("model_provider") == GATEWAY_PROVIDER_ID:
+        updated = _strip_codex_root_key(updated, "model_provider")
+        try:
+            pin = gateway_model_pin_from_env().model
+        except GatewayConfigError:
+            pin = None
+        if pin and data.get("model") == pin:
+            updated = _strip_codex_root_key(updated, "model")
+    if updated == existing:
+        return "off"
+    _publish_codex_config(path, updated)
+    return "removed"
 
 
 def _gateway_entries_present(data: dict, provider_toml: str) -> bool:

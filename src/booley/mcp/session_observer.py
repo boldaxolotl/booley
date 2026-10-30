@@ -323,7 +323,7 @@ class SessionObserver:
         await self._bounded(self._prune, maintenance=True)
 
     def _prune(self) -> None:
-        """Expire registry rows, then the activity signals of sessions no longer held."""
+        """Expire registry rows, then the signals and end markers of sessions no longer held."""
         registry = self._registry()
         registry.prune(
             now=self.now(),

@@ -472,3 +472,26 @@ def test_reader_joins_each_visible_session_with_its_reported_activity(tmp_path, 
     assert before == {
         str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     }
+
+
+def test_codex_session_end_hides_its_row_on_the_next_dashboard_read(tmp_path, monkeypatch):
+    import time
+
+    from tests.harness.test_session_activity_hook import hook
+
+    monkeypatch.setattr(model, "namespace", lambda: SCOPE)
+    now = time.time()
+    registry = SessionRegistry(tmp_path)
+    for thread in ("ended", "open"):
+        registry.upsert(
+            Attribution(f"codex:{thread}", "thread", "/fixture", "repo:w", namespace=SCOPE),
+            "sim",
+            "completed",
+            now=now - 60,
+        )
+    reader = model.DashboardReader(tmp_path, tmp_path)
+    assert {row.attribution.key for row in reader.read().sessions} == {"codex:ended", "codex:open"}
+    payload = {"hook_event_name": "SessionEnd", "session_id": "ended"}
+    assert hook.record("codex", payload, project=tmp_path, now=now)
+    assert [row.attribution.key for row in reader.read().sessions] == ["codex:open"]
+    assert registry.path("codex:ended").exists()  # Reading hides; maintenance deletes.

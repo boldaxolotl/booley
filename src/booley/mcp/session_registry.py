@@ -23,6 +23,7 @@ from booley.runtime.handles import HandleStore, fallback_predecessors, session_w
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_activity import (
+    ActivityStore,
     process_session_key,
     thread_session_key,
     valid_thread_id,
@@ -161,10 +162,11 @@ class SessionPresence:
     kind: str
     quiet: bool
     process_state: ProcessState | None
+    ended: bool = False
 
     @property
     def retained(self) -> bool:
-        return (
+        return not self.ended and (
             self.process_state not in DEAD_PROCESS_STATES
             if self.kind == "process"
             else not self.quiet
@@ -195,8 +197,11 @@ class SessionRegistry:
     """Nonblocking serialized upsert/prune; observational snapshots never lock or write.
 
     Thread and fallback presence expires after quiet_after. Unknown process
-    liveness is retained. Each scan is bounded; excess/corrupt rows are diagnosed,
-    never deleted as if dead. The maintenance owner alone prunes presence.
+    liveness is retained. A session whose client reported SessionEnd after the
+    row's last call (a usable end marker) is hidden and pruned at once; an
+    unusable marker leaves the row to the rules above. Each scan is bounded;
+    excess/corrupt rows are diagnosed, never deleted as if dead. The
+    maintenance owner alone prunes presence.
     """
 
     def __init__(
@@ -210,6 +215,23 @@ class SessionRegistry:
     def path(self, key: str) -> Path:
         """Opaque filename; logical keys never become filesystem components."""
         return self.root / (sha256(key.encode()).hexdigest() + ".json")
+
+    def _presence(self, row: SessionRow, *, now: float, store: ActivityStore) -> SessionPresence:
+        """Row presence, ended when its end marker is newer than the last call.
+
+        The marker is read only for a row that is otherwise retained, so rows
+        that are out of scope, quiet or dead cost no extra read.
+        """
+        presence = session_presence(
+            row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
+        )
+        if presence.retained:
+            ended_at = store.ended_at(row.attribution.key, now=now)
+            if ended_at is not None and parse_timestamp(ended_at) > parse_timestamp(
+                row.last_call_at
+            ):
+                return replace(presence, ended=True)
+        return presence
 
     @contextmanager
     def _writer(self) -> Iterator[None]:
@@ -260,12 +282,11 @@ class SessionRegistry:
                 unavailable=True,
             )
         rows = []
+        store = ActivityStore(self.booley_dir)
         for row in snapshot.rows:
             if row.attribution.namespace != scope:
                 continue
-            presence = session_presence(
-                row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
-            )
+            presence = self._presence(row, now=now, store=store)
             if presence.retained:
                 rows.append(replace(row, process_state=presence.process_state))
         return RegistrySnapshot(tuple(rows), snapshot.diagnostics, snapshot.unavailable)
@@ -408,6 +429,7 @@ class SessionRegistry:
     ) -> int:
         """Remove only proven expired registry rows; refresh cannot race deletion."""
         removed = 0
+        store = ActivityStore(self.booley_dir)
         with self._writer():
             for path in islice(self.root.glob("*.json"), MAX_ROWS):
                 try:
@@ -420,9 +442,7 @@ class SessionRegistry:
                 missing = bool(
                     facts.worktree_key and worktree_exists and worktree_exists(facts) is False
                 )
-                presence = session_presence(
-                    row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
-                )
+                presence = self._presence(row, now=now, store=store)
                 if missing or not presence.retained:
                     path.unlink(missing_ok=True)
                     removed += 1
