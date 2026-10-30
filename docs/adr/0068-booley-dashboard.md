@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -384,3 +384,19 @@ Neither handle map ever shrank, so each grew toward its 16 MiB bound, past which
 - **Numbering.** A map left with no entries restarts at 1. Otherwise its counter keeps counting above every remaining number, so a number still in use is never handed out again; numbers freed by pruning can be.
 - **Dashboard.** An expired Job whose handle was pruned shows its run ID, and its owner shows the owner's session key when that session has no handle. `?` stays reserved for live Jobs and Sessions without a handle.
 - **Doctor.** `handles.map-size` warns when a map exceeds 75% of the bound.
+
+### 2026-10-29: Session end and tool-call registration (#2394)
+
+A `tools/list` request created a `worktree:` fallback row for a tab that had made no tool call, and `SessionEnd` removed only the activity signal, so the row stayed until `quiet_after`. This amendment supersedes three rules above.
+
+- **Rows come from tool calls.** Supersedes 2026-10-06 "a row is upserted on every Booley call under its key and removed when its identity is dead". A row is created or refreshed only by a Booley tool call; `tools/list` and every other request write no row and never change `last_call_at`. A tab that has made no tool call is not listed. A row is also removed once its session has ended.
+- **`SessionEnd` leaves an end marker.** Supersedes 2026-10-11 Event mapping "`SessionEnd` removes the signal". The hook replaces the session's signal with an end marker: the same file and layout, with `state: "ended"`. A marker is not activity; the Dashboard shows unknown activity for it. A row whose key has a marker newer than its `last_call_at` (strictly, at one-second resolution) is hidden at once, whatever its kind, and registry maintenance deletes it. A later tool call moves `last_call_at` past the marker and shows the session again. A missing, unreadable, symlinked, oversized, malformed or foreign marker, a wrong schema, another state, a non-canonical time, or a time more than 5 s in the future is ignored, and the row follows `quiet_after` and process liveness as before.
+- **Markers are removed with their row.** Supersedes 2026-10-11 Freshness "Registry maintenance removes a signal once its session has no row and the signal is older than the quiet threshold" for end markers: maintenance removes a marker as soon as its session has no row, after re-examining it as for any signal.
+
+Consequences:
+
+- Ending is revocable. Any later hook event of the same key overwrites the marker, so a row that maintenance has not yet pruned follows the ordinary rules again. A row already pruned (one maintenance pass, at most 60 s) returns only with the next Booley tool call, with a new start time and an empty call history. This includes a Claude Code `/clear`, which fires `SessionEnd` in a process that survives.
+- Without a usable `CLAUDE_PID`, a Claude Code tab's hooks find no row before its first tool call, so they record nothing until then. With `CLAUDE_PID` they record as before, and its `SessionEnd` marker is removed by the next maintenance pass.
+- A `worktree:` fallback row created by a real tool call cannot be ended by a hook and still waits out `quiet_after`.
+- Doctor's `goals.quiet-session` check does not read markers. Once maintenance prunes an ended row, it can warn within about a minute of `SessionEnd` instead of after `quiet_after`; the warning already says it is not evidence of abandonment.
+- Accepted inaccuracies: a tool call still in flight when `SessionEnd` fires moves `last_call_at` past the marker when it completes, and a still-running earlier hook (`Stop`) that finishes after `SessionEnd` replaces the marker. In both cases the row waits out `quiet_after`. A full activity store (`MAX_SIGNALS`) drops a `SessionEnd` for a key with no signal, which falls back the same way.
