@@ -609,7 +609,8 @@ class _Reporter:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix, check_id, subject))
         identity = _warning_identity(self.findings[-1]) if check_id else ""
-        print(ts.status_line(ts.LineStatus.FAIL, str(msg), check_id=identity))
+        shown = self.display_overrides.get(str(msg), str(msg))
+        print(ts.status_line(ts.LineStatus.FAIL, shown, check_id=identity))
         if fix:
             print(ts.hint_line(fix))
         self.counts["fail"] += 1

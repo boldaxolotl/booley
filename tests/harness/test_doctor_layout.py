@@ -189,3 +189,16 @@ def test_expired_waiver_note_sits_under_its_own_section(capsys, monkeypatch, tmp
     header = lines.index("Waivers")
     assert lines[header + 1].startswith("  ·  expired Doctor waiver ignored: sim.old")
     assert header < lines.index("Summary")
+
+
+def test_fail_row_and_problem_table_show_the_same_override(capsys, monkeypatch):
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    reporter = doctor._Reporter.create()
+    reporter.display_overrides["login expired 2026-01-01"] = "login expired 3 days ago"
+
+    reporter.fail_("login expired 2026-01-01")
+    reporter.finish()
+
+    out = capsys.readouterr().out
+    assert out.count("login expired 3 days ago") == 2
+    assert "2026-01-01" not in out
