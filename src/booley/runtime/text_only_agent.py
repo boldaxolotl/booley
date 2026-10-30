@@ -4,11 +4,13 @@ Codex 0.160.0 registers apply_patch from model metadata independently of shell
 feature flags. A private exact-model catalog removes that metadata; explicit
 startup overrides remove the remaining tool registration gates. No user/project
 MCP configuration or skills are inherited into the empty analysis workspace.
-Under the gateway policy the catalog entry is generated, not read from the
-models cache: that cache comes from the native login the policy excludes.
+The catalog entry is generated, not read from the models cache, under the
+gateway policy (that cache comes from the native login the policy excludes) and
+whenever the cache lacks the model.
 """
 
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -17,6 +19,8 @@ from booley.core.boundary import require_dict, require_list
 from booley.core.models import AgentCallParams
 
 from .mcp_config import generate_codex_config
+
+logger = logging.getLogger(__name__)
 
 # Booley's system prompt already arrives in the stdin prompt.
 _GATEWAY_BASE_INSTRUCTIONS = (
@@ -53,30 +57,27 @@ def prepare_codex_text_only(
     *,
     auth_mode: str = "auto",
 ) -> tuple[list[str], dict[str, str]]:
-    """Build an isolated invocation config; missing exact model metadata is an error."""
+    """Build an isolated invocation config; a model absent from the cache gets a generated entry."""
     original = Path(
         environment.get("CODEX_HOME") or Path(environment.get("HOME", str(Path.home()))) / ".codex"
     )
     # Fails loud, naming the variable, before any file is written.
     gateway_url = gateway_settings_from_env(environment).url if auth_mode == GATEWAY_AUTH else None
-    if gateway_url and not params.nested_mcp_tools:
-        # The provider lives in config.toml, and the Booley MCP server written
-        # next to it offers poll/cancel/targets without a nested tool allowlist.
-        raise ValueError(
-            f"text-only Codex runs under auth '{GATEWAY_AUTH}' need a nested MCP tool allowlist"
-        )
-    selected = (
-        _gateway_model(params.model, params.reasoning_effort)
-        if gateway_url
-        else _exact_model(original, params.model)
-    )
+    selected = None if gateway_url else _cached_model(original, params.model)
+    if selected is None:
+        if not gateway_url:
+            logger.warning(
+                "Codex models cache lacks %r; using Booley's generated tool-free catalog entry",
+                params.model,
+            )
+        selected = _generated_model(params.model, params.reasoning_effort)
     private = Path(params.cwd) / ".text-only-codex"
     private.mkdir(exist_ok=True, mode=0o700)
     catalog = _write_catalog(private, selected)
     from .auth_token import link_codex_auth
 
     link_codex_auth(original / "auth.json", private / "auth.json", auth_mode)
-    if params.nested_mcp_tools:
+    if params.nested_mcp_tools or gateway_url:
         _write_config(private, params, gateway_url)
     env = {**environment, "CODEX_HOME": str(private)}
     settings = [
@@ -109,7 +110,7 @@ def _write_catalog(private: Path, selected: Mapping[str, object]) -> Path:
 
 
 def _write_config(private: Path, params: AgentCallParams, gateway_url: str | None) -> None:
-    """Write ``config.toml``: the nested MCP server and, under the gateway, its provider."""
+    """Write ``config.toml``: the nested MCP server (if any) and, under the gateway, its provider."""
     nested_env = {
         **(params.nested_mcp_env or {}),
         "BOOLEY_NESTED_AGENT": "1",
@@ -123,13 +124,14 @@ def _write_config(private: Path, params: AgentCallParams, gateway_url: str | Non
             existing_config=existing,
             gateway_url=gateway_url,
             gateway_cwd=str(private),
+            booley_server=bool(params.nested_mcp_tools),
         ),
         encoding="utf-8",
     )
 
 
-def _gateway_model(name: str, effort: str | None) -> dict[str, object]:
-    """Catalog entry for *name* under the gateway, which has no models cache.
+def _generated_model(name: str, effort: str | None) -> dict[str, object]:
+    """Catalog entry for *name* when the gateway or a cache without it supplies none.
 
     Mirrors Codex ``model_info_from_slug`` (rust-v0.160.0, the fallback for an
     unknown slug) with three deviations: the tool fields (forced off by
@@ -160,7 +162,11 @@ def _gateway_model(name: str, effort: str | None) -> dict[str, object]:
     }
 
 
-def _exact_model(original: Path, name: str) -> dict[str, object]:
+def _cached_model(original: Path, name: str) -> dict[str, object] | None:
+    """The cache's entry for *name*, or None when the cache is absent or lacks the model.
+
+    An unreadable, malformed or ambiguous cache is a fault, not a missing model.
+    """
     try:
         data = require_dict(
             json.loads((original / "models_cache.json").read_text(encoding="utf-8"))
@@ -170,12 +176,14 @@ def _exact_model(original: Path, name: str) -> dict[str, object]:
             for model in require_list(data.get("models"))
             if isinstance(model, dict) and model.get("slug") == name
         ]
+    except FileNotFoundError:
+        return None
     except (OSError, ValueError) as exc:
         raise ValueError(
             "Text-only analysis requires the exact model in the Codex models cache; refresh Codex model metadata first"
         ) from exc
-    if len(matches) != 1:
+    if len(matches) > 1:
         raise ValueError(
             "Text-only analysis requires exactly one exact model in the Codex models cache"
         )
-    return matches[0]
+    return matches[0] if matches else None

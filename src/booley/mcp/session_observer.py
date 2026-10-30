@@ -65,11 +65,22 @@ class SessionObserver:
     Responses wait only for the advisory budget. Colliding callers retain their
     own observation/outcome handles; reads and idle maintenance have independent
     bounded workers. No registry operation supplies routing or lifecycle authority.
+    A read-only observer (``writes=False``) still resolves attribution and the
+    shared-worktree warning but never writes or prunes registry rows.
     """
 
-    def __init__(self, *, now: Callable[[], float] = time.time, budget: float = 0.05) -> None:
+    def __init__(
+        self,
+        *,
+        now: Callable[[], float] = time.time,
+        budget: float = 0.05,
+        writes: bool = True,
+    ) -> None:
         self.now = now
         self.budget = budget
+        # A nested server (one Booley starts for its own agent) reads the registry
+        # but never writes it, so its calls are not listed as Sessions.
+        self.writes = writes
         self._pending: asyncio.Task[Any] | None = None
         self._maintenance_pending: asyncio.Task[Any] | None = None
         self._read_pending: asyncio.Task[Any] | None = None
@@ -147,7 +158,7 @@ class SessionObserver:
                 facts = await asyncio.to_thread(self._resolve, observation)
                 observation.resolved = facts
                 self._remember(facts, observation)
-                if self._latest_observation(observation):
+                if self.writes and self._latest_observation(observation):
                     call = observation.call
                     await asyncio.to_thread(self._publish, observation, call)
                     if observation.call != call:
@@ -299,7 +310,7 @@ class SessionObserver:
 
     async def record(self, facts: Attribution | None, tool: str, outcome: str) -> None:
         """Carry the outcome on its request handle, never an unresolved fallback row."""
-        if facts is None:
+        if facts is None or not self.writes:
             return
         observation = self._handles.get(id(facts))
         if observation is not None:
@@ -320,6 +331,8 @@ class SessionObserver:
 
     async def maintain(self) -> None:
         """Prune during MCP silence; owned by the server lifespan, never Dashboard reads."""
+        if not self.writes:
+            return  # Its cwd is a Specialist workspace, so worktree presence would misjudge rows.
         await self._bounded(self._prune, maintenance=True)
 
     def _prune(self) -> None:
