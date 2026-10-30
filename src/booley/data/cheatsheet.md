@@ -328,7 +328,7 @@ Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax
 
 | Command | What it does |
 |---------|-------------|
-| `booley targets` | List every `.core` Target: flow, EDA tool, toplevel, and `Dr` Doctor selection |
+| `booley targets` | List every `.core` Target: drivable Booley Flows, EDA tool, toplevel, and `✓` Doctor selection |
 | `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
 | `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |

@@ -9,7 +9,6 @@ from booley.harness.render_md import (
     _inline,
     _is_separator,
     _parse_table_row,
-    _render_table,
     render,
 )
 
@@ -82,7 +81,7 @@ class TestRenderTable:
             "| bar | 99 |",
         ]
         with patch.object(colors_mod, "COLORS_ENABLED", False):
-            result = _render_table(rows)
+            result = render("\n".join(rows)).splitlines()
         assert len(result) == 4  # header + separator + 2 data rows
         # Data rows contain cell values
         assert "foo" in result[2]
@@ -97,8 +96,28 @@ class TestRenderTable:
             "| x |",  # fewer cells
         ]
         with patch.object(colors_mod, "COLORS_ENABLED", False):
-            result = _render_table(rows)
+            result = render("\n".join(rows)).splitlines()
         assert len(result) >= 3
+
+    def test_cheat_table_layout_is_kept_without_trailing_whitespace(self):
+        md = "| Name | Value |\n|---|---|\n| **foo** | `42` |\n| barbaz | 9 |"
+        with patch.object(colors_mod, "COLORS_ENABLED", False):
+            lines = render(md).splitlines()
+        assert lines == [
+            "  Name     Value",
+            "  ──────   ─────",
+            "  foo      42",
+            "  barbaz   9",
+        ]
+
+    def test_header_and_rule_use_the_shared_palette(self):
+        md = "| Name | Value |\n|---|---|\n| foo | 42 |"
+        with patch.object(colors_mod, "COLORS_ENABLED", True):
+            lines = render(md).splitlines()
+            expected_header = colors_mod.bold_accent("Name")
+            expected_rule = colors_mod.chrome("────")
+        assert expected_header in lines[0]
+        assert lines[1].startswith("  " + expected_rule[: expected_rule.index("─")])
 
 
 # ---------------------------------------------------------------------------

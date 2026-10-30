@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -445,7 +446,6 @@ def test_unchanged_catalog_retains_project_boundary_validation(project, monkeypa
 
 
 def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
-    import time
     from types import SimpleNamespace
 
     from booley.mcp import catalog_worker
@@ -485,6 +485,11 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
         assert_worker_pid_stopped(pid)
 
 
+# Upper bound for a queued SIGKILL to take effect on a loaded host; it matches
+# the worker's own 5 s reap bound and is only spent when the process lingers.
+_KILL_LANDS_SECONDS = 5
+
+
 def assert_worker_pid_stopped(pid):
     import csv
     import subprocess
@@ -499,14 +504,27 @@ def assert_worker_pid_stopped(pid):
         )
         assert all(len(row) < 2 or row[1] != pid for row in csv.reader(result.stdout.splitlines()))
     else:
-        # A stopped process may vanish while we look at it: before open() gives
-        # FileNotFoundError, between open() and read() gives ProcessLookupError.
-        try:
-            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        except (FileNotFoundError, ProcessLookupError):
-            return
-        # The state field follows the (possibly paren-laden) comm; a zombie is stopped.
-        assert stat_text.rsplit(")", 1)[1].split()[0] == "Z"
+        # killpg() returns once SIGKILL is queued, not once the target has
+        # exited: under CPU load a killed grandchild can still be runnable
+        # ("R") for a moment before it becomes a zombie or vanishes. The worker
+        # cannot reap it (it is not the worker's child), so wait for the kill to
+        # land. A process that never stops still fails after the deadline.
+        deadline = time.monotonic() + _KILL_LANDS_SECONDS
+        while (state := _proc_state(pid)) not in (None, "Z"):
+            assert time.monotonic() < deadline, f"pid {pid} still in state {state!r}"
+            time.sleep(0.01)
+
+
+def _proc_state(pid):
+    """Return the /proc state letter of *pid*, or None once it has vanished."""
+    # A stopped process may vanish while we look at it: before open() gives
+    # FileNotFoundError, between open() and read() gives ProcessLookupError.
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    # The state field follows the (possibly paren-laden) comm; "Z" is a zombie.
+    return stat_text.rsplit(")", 1)[1].split()[0]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="reads /proc")
