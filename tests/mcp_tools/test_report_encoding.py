@@ -56,6 +56,18 @@ def test_text_tails_and_whole_line_deduplication(monkeypatch):
     assert "detail.reason: invalid design" in text
 
 
+def test_report_starting_with_an_indented_table_header_is_deduplicated():
+    table = "  Target   Area\n  top      1.0 kGE\n\nRESULT: PASS"
+
+    shown = ReportEncoder().text_result(0, f"noise\n{table}\n", "", {"report_text": table})
+    echoed = ReportEncoder().text_result(
+        1, "subprocess output:\n    RESULT: FAIL\n", "", {"report_text": "RESULT: FAIL"}
+    )
+
+    assert shown.count("RESULT: PASS") == 1
+    assert echoed.count("RESULT: FAIL") == 2, "an indented echo is not the verdict"
+
+
 def test_unicode_text_retains_historical_character_tail(monkeypatch):
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "3")
     text = ReportEncoder().text_result(0, "αβγδ", "")
