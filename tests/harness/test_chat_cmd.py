@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,61 @@ def deterministic_claude_launch(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args: "S17", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def cli_on_path(monkeypatch):
+    """Keep launch tests independent of which agent CLIs the host has installed."""
+    monkeypatch.setattr(shutil, "which", lambda name, mode=None: f"/usr/bin/{name}")
+
+
+def _configure_provider(monkeypatch, provider):
+    """Point ``run`` at ``provider`` without reading a real Project config."""
+    config = type("Config", (), {"provider": provider})()
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_missing_cli_prints_only_the_error(tmp_path, monkeypatch, capsys, provider):
+    _configure_provider(monkeypatch, provider)
+    monkeypatch.setattr(shutil, "which", lambda name, mode=None: None)
+    monkeypatch.setattr(
+        chat_cmd.os, "execvp", lambda *_args: (_ for _ in ()).throw(FileNotFoundError)
+    )
+
+    assert chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path) == 2
+
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"ERROR: configured agent CLI '{provider}' was not found on PATH.\n"
+    ), "missing CLI must not announce startup"
+    assert captured.out == ""
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_notice_is_the_last_line_before_exec(tmp_path, monkeypatch, capsys, provider):
+    _configure_provider(monkeypatch, provider)
+    if provider == "codex":
+        monkeypatch.setattr(
+            chat_cmd.codex_chat,
+            "command",
+            lambda _directory: (_ for _ in ()).throw(RuntimeError("no handle")),
+        )
+    seen = []
+
+    def execvp(executable, argv):
+        seen.append(capsys.readouterr().err)
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
+
+    notice = f"Booley is starting the {provider} interactive agent.\n"
+    note = "NOTE: Codex tab handle is unavailable: no handle\n" if provider == "codex" else ""
+    assert seen == [note + notice]
 
 
 def test_run_uses_named_codex_command(tmp_path, monkeypatch):

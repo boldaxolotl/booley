@@ -17,6 +17,16 @@ Packaged release history starts at 0.2.7. For older changes, see
   only when the scope's own name repeats below it. A glob that matches nothing
   now adds `did you mean '<full-path glob>'?` to its error when it matches
   below another scope.
+- Codex `gpt-6-astra` runs are now costed at Astra's own price instead of
+  `gpt-5.6-sol`'s, so their cost readouts rise. Unknown GPT model ids now fall
+  back to the Astra price.
+- `booley init --scaffold <name> --stealth` now scaffolds a hidden-footprint
+  Project: `[stealth] enabled = true` and the design and Doctor selftest cores
+  under `.booley/cores/`, so nothing Booley-authored reaches the RTL repository.
+  Doctor gains the `stealth.scaffold-core-tracked` WARN for a scaffold Project
+  switched to Stealth Mode with its scaffold cores still tracked at the root; it
+  names each core and the move. Without `--stealth` the scaffold is unchanged.
+
 - Doctor's attached-window checks (the Viewer Bridge and the installed
   VaporView version) now run when a VS Code window is attached to the Sandbox.
   Before, they always skipped with "no VS Code extension host attached", so
@@ -106,9 +116,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   no longer appears, and `` `line `` directives or token joins no longer suppress
   `COV_RTL_SOURCE_WITHOUT_POINTS`. The Analyst `zero_point_sources` view and
   overview drop `discovery_status`, `comparison_status` and `unusable_findings`,
-  and the verdict card omits the source line when there are no gaps. Campaigns
-  from 0.3.0 still load. A coverage Simulation Campaign interrupted before the
-  upgrade cannot be resumed because its command model changed; collect it again.
+  and the verdict card omits the source line when there are no gaps. A coverage
+  Simulation Campaign interrupted before the upgrade cannot be resumed because
+  its command model changed; collect it again.
 - Deep Doctor now keeps only the latest completed deep attempt: a failed or
   incomplete attempt makes deep status due until the next qualifying run, reports one
   "latest deep attempt failed" reason, and `deep_status` no longer includes
@@ -418,9 +428,18 @@ Packaged release history starts at 0.2.7. For older changes, see
   Cocotb batch that is not the default suite at the Default Seed is written
   to `tests/batch-<hex>/`. Update scripts that build these paths; read them
   from `report.json` and `simulation.json` instead.
-- **A Simulation Campaign started before the upgrade cannot be resumed**
-  (#1233). `--resume-from` on such a manifest exits with "start a new
-  Simulation Campaign". Its reports stay readable.
+- **Simulation Campaigns written by Booley 0.3.0 are no longer read** (#2342).
+  Booley no longer resumes, inspects, prunes, analyzes or uses as a Cycle Count
+  baseline a Simulation Campaign written by 0.3.0, and no longer reads its
+  results or `simulation.json`. (Coverage analysis is refused only through a
+  `coverage.json` reference into such a Simulation Campaign; nothing here is
+  about Coverage Campaign records.) Goal completion that selected evidence from
+  such a Campaign also stops, and Goal status reports that Campaign as
+  unreadable with the same message. Each stops with an error such as `Simulation
+  Campaign manifest booley.simulation-campaign-manifest/v1 was written by Booley
+  0.3.0 and is no longer supported; delete the Simulation invocation directory
+  <path> by hand`. Delete that directory by hand. `.runtime/campaign-child-executions/`
+  under the Booley Directory is no longer used; you can delete it.
 - **Active Goal Modes need one more Simulation Flow run** (#1233). A Goal
   Record that is active across the upgrade has no frozen Test Runs. Booley
   freezes them on the next Flow run or status read, and simulation, Cycle

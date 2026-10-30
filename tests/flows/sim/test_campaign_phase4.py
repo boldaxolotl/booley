@@ -68,7 +68,6 @@ from booley.runtime.supervised_execution import (
     SupervisedProcessSet,
     supervised_execution_scope,
 )
-from tests.flows.sim.campaign_v030_support import publish_v030_child
 from tests.flows.sim.test_campaign_manifest_codec import _sha
 from tests.flows.sim.test_campaign_phase3 import _build_execution, _two_item_manifest
 
@@ -166,7 +165,7 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         str(item["work_item_id"]), attempt_id
     )
     child_id = _unique_execution_id()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     prepared = registry.prepare(
         child_id,
         work_item_id=str(item["work_item_id"]),
@@ -178,26 +177,6 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     flow = FlowMechanics()
     flow.args = SimpleNamespace(work_dir=project)
     return project_data, child_id, registry, prepared, flow
-
-
-def _prepared_v030_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Like ``_prepared_child``, plus the Project and Campaign entries Booley 0.3.0 wrote."""
-    project_data, child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
-    manifest = registry._manifest
-    item = manifest.document["work_items"][0]
-    attempt = registry._store.work_item_directory(str(item["work_item_id"])) / "attempts"
-    attempt = next(attempt.iterdir())
-    ordinal, _, attempt_id = attempt.name.partition("-")
-    legacy = publish_v030_child(
-        registry,
-        execution_id=child_id,
-        work_item_id=str(item["work_item_id"]),
-        attempt_id=attempt_id,
-        attempt_ordinal=int(ordinal),
-        attempt_directory=attempt,
-        parent_execution_id=ExecutionId("a" * 32),
-    )
-    return project_data, child_id, registry, legacy, flow
 
 
 def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
@@ -542,64 +521,6 @@ def test_lease_loss_starts_exact_child_recovery_before_work_returns(
     assert capacity.cancellation_cause() is None
 
 
-def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) -> None:
-    manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
-    campaign_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    item = manifest.document["work_items"][0]
-    work_item_id = str(item["work_item_id"])
-    attempt_id = "f" * 32
-    ordinal, attempt = campaign_store.allocate_attempt_directory(work_item_id, attempt_id)
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
-    execution_id = _unique_execution_id()
-    publish_v030_child(
-        registry,
-        execution_id=execution_id,
-        work_item_id=work_item_id,
-        attempt_id=attempt_id,
-        attempt_ordinal=ordinal,
-        attempt_directory=attempt,
-        parent_execution_id=ExecutionId("a" * 32),
-    )
-    slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id)
-    registry.recover_unretired(slot_store)
-    project_retirement = (
-        project / ".booley/.runtime/campaign-child-executions/retired" / f"{execution_id}.json"
-    )
-    campaign_retirement = campaign_store.root / "child-executions/retired" / f"{execution_id}.json"
-    document = json.loads(project_retirement.read_text())
-    document["execution_terminal_sha256"] = "sha256:" + "9" * 64
-    project_retirement.chmod(0o600)
-    project_retirement.write_bytes(canonical_json_bytes(document))
-    campaign_retirement.unlink()
-    with pytest.raises(SimulationCampaignIntegrityError, match="terminal digest"):
-        registry.recover_unretired(slot_store)
-
-
-@pytest.mark.parametrize("defect", ["symlink", "hardlink"])
-def test_child_recovery_rejects_linked_entry_before_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
-) -> None:
-    _project_data, child_id, registry, prepared, _flow = _prepared_v030_child(
-        tmp_path, monkeypatch
-    )
-    source = prepared.project_entry.with_name("source.json")
-    prepared.project_entry.rename(source)
-    if defect == "symlink":
-        prepared.project_entry.symlink_to(source.name)
-    else:
-        prepared.project_entry.hardlink_to(source)
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="link"):
-        registry.recover_unretired(None)
-
-    assert not (registry._campaign_root / "retired" / f"{child_id}.json").exists()
-
-
 @pytest.mark.skipif(os.name == "nt", reason="Windows prevents renaming an open file")
 def test_child_protocol_parses_the_same_bytes_it_authenticated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -617,10 +538,9 @@ def test_child_protocol_parses_the_same_bytes_it_authenticated(
         return descriptor
 
     monkeypatch.setattr(child_protocol, "open_regular_nofollow", open_then_replace)
-    raw, document = child_protocol._read_protocol_record(path, "test entry")
+    raw = child_protocol._read_protocol_bytes(path, "test entry")
 
     assert raw == original
-    assert document == {"value": "original"}
 
 
 @pytest.mark.parametrize("defect", ["symlink", "hardlink"])
@@ -640,56 +560,6 @@ def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str)
     assert source.read_bytes() == raw
 
 
-@pytest.mark.parametrize(
-    "boundary",
-    ["campaign-entry", "context", "record", "waiter", "terminal", "campaign-retirement"],
-)
-def test_child_protocol_crash_prefixes_recover_exactly(tmp_path: Path, boundary: str) -> None:
-    manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
-    campaign_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    item = manifest.document["work_items"][0]
-    work_item_id = str(item["work_item_id"])
-    attempt_id = "f" * 32
-    ordinal, attempt = campaign_store.allocate_attempt_directory(work_item_id, attempt_id)
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
-    execution_id = _unique_execution_id()
-    prepared = publish_v030_child(
-        registry,
-        execution_id=execution_id,
-        work_item_id=work_item_id,
-        attempt_id=attempt_id,
-        attempt_ordinal=ordinal,
-        attempt_directory=attempt,
-        parent_execution_id=ExecutionId("a" * 32),
-    )
-    slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    paths = execution_paths(execution_id, booley_dir=registry.project_data)
-    if boundary == "campaign-entry":
-        prepared.campaign_entry.unlink()
-    elif boundary == "context":
-        paths.context.unlink()
-    elif boundary == "record":
-        paths.record.unlink()
-    elif boundary == "waiter":
-        slot_store.submit(CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id)
-    elif boundary == "terminal":
-        registry.mark_terminal(prepared, "completed")
-        slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id)
-    elif boundary == "campaign-retirement":
-        registry.recover_unretired(slot_store)
-        (campaign_store.root / "child-executions/retired" / f"{execution_id}.json").unlink()
-    registry.recover_unretired(slot_store)
-    assert registry.is_terminal(execution_id)
-    assert prepared.campaign_entry.is_file()
-    assert paths.context.is_file()
-    assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
-    assert (campaign_store.root / "child-executions/retired" / f"{execution_id}.json").is_file()
-
-
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
@@ -697,7 +567,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     active = 0
@@ -736,28 +606,15 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
     assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
 
 
-def test_child_context_fails_closed_when_project_entry_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project_data, child_id, _registry, _prepared, _flow = _prepared_v030_child(
-        tmp_path, monkeypatch
-    )
-    paths = execution_paths(child_id, booley_dir=project_data)
-    paths.context.unlink()
-    assert child_context_matches(paths, child_id) is False
-
-
 def test_lane_prepare_writes_context_without_child_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_data, child_id, registry, prepared, _flow = _prepared_child(tmp_path, monkeypatch)
+    project_data, child_id, _registry, prepared, _flow = _prepared_child(tmp_path, monkeypatch)
     paths = execution_paths(child_id, booley_dir=project_data)
 
     assert prepared.context_path == paths.context
     assert paths.context.is_file()
     assert read_json(paths.record)["state"] == "waiting"
-    assert not (registry._campaign_root).exists()
-    assert not registry._project_root.exists()
     assert child_context_matches(paths, child_id) is True
 
 
@@ -768,7 +625,7 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     admission = AdmissionContext(
         "unmanaged", None, None, 1, "interactive", "a" * 32, 0.01, lambda: False
     )
@@ -802,7 +659,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     cancelled = threading.Event()
@@ -859,7 +716,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
         managed=False,
@@ -893,7 +750,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_writes_no_chil
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     cancelled = threading.Event()
@@ -1403,7 +1260,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(campaign_store, manifest, project)
+    registry = ChildExecutionRegistry(manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     child_finished = threading.Event()

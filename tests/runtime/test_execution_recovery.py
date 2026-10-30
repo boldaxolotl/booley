@@ -208,9 +208,8 @@ def test_recovers_execution_after_supervisor_is_killed(
             _cleanup_execution(execution_id, paths, known_identities)
 
 
-def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> None:
-    """A parallel Campaign lane has a context sidecar and no Project child entry."""
-    booley_dir = tmp_path / ".booley"
+def _publish_waiting_lane(booley_dir: Path, *, context_execution_id: str | None = None):
+    """A waiting parallel-lane record with its context sidecar; returns ``(id, paths)``."""
     # Unique: recovery signals every host process carrying this ID (xdist workers too).
     execution_id = ExecutionId(uuid.uuid4().hex)
     paths = execution_paths(execution_id, booley_dir=booley_dir)
@@ -218,7 +217,7 @@ def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> No
         paths.context,
         {
             "$schema": "booley.supervised-child-context/v1",
-            "child_execution_id": str(execution_id),
+            "child_execution_id": context_execution_id or str(execution_id),
             "parent_execution_id": "a" * 32,
             "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
             "manifest_sha256": "sha256:" + "1" * 64,
@@ -241,12 +240,45 @@ def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> No
             "updated_at": "2026-10-25T00:00:00Z",
         },
     )
+    return execution_id, paths
+
+
+def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> None:
+    """A parallel Campaign lane has a context sidecar and no Project child entry."""
+    booley_dir = tmp_path / ".booley"
+    execution_id, paths = _publish_waiting_lane(booley_dir)
 
     assert recover_execution(execution_id, booley_dir=booley_dir) is True
 
     record = read_json(paths.record)
     assert record is not None
     assert record["state"] == "terminal" and record["tree_terminal"] is True
+
+
+def test_recovery_accepts_a_valid_lane_context_despite_a_leftover_project_child_entry(
+    tmp_path: Path,
+) -> None:
+    """A Booley 0.3.0 entry that does not bind the context is ignored, not trusted."""
+    booley_dir = tmp_path / ".booley"
+    execution_id, paths = _publish_waiting_lane(booley_dir)
+    entries = booley_dir / ".runtime" / "campaign-child-executions" / "entries"
+    entries.mkdir(parents=True)
+    (entries / f"{execution_id}.json").write_text("{}", encoding="utf-8")
+
+    assert recover_execution(execution_id, booley_dir=booley_dir) is True
+
+    record = read_json(paths.record)
+    assert record is not None and record["tree_terminal"] is True
+
+
+def test_recovery_refuses_a_mismatched_lane_context(tmp_path: Path) -> None:
+    booley_dir = tmp_path / ".booley"
+    execution_id, paths = _publish_waiting_lane(booley_dir, context_execution_id="b" * 32)
+
+    assert recover_execution(execution_id, booley_dir=booley_dir) is False
+
+    record = read_json(paths.record)
+    assert record is not None and record["state"] == "waiting"
 
 
 def test_import_does_not_require_sigkill() -> None:

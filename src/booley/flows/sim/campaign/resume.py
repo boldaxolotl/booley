@@ -20,6 +20,7 @@ from booley.targets.domain import TargetHandle
 from .codec import (
     MANIFEST_MAX_BYTES,
     SimulationCampaignIntegrityError,
+    UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,
     encode_simulation_campaign_manifest,
 )
@@ -202,7 +203,10 @@ def _origin_invocation(path: Path) -> Path:
 
 def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
     raw = _read_regular(path, booley_dir)
-    manifest = decode_simulation_campaign_manifest(raw)
+    try:
+        manifest = decode_simulation_campaign_manifest(raw)
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise exc.located(_origin_invocation(path)) from None
     return ValidatedManifestNode(path, manifest, manifest_digest(manifest))
 
 

@@ -73,6 +73,39 @@ class SimulationCampaignIntegrityError(ValueError):
     """An authoritative campaign value violates its exact contract."""
 
 
+class UnsupportedSimulationCampaignFormatError(ValueError):
+    """A record Booley 0.3.0 wrote.
+
+    Deliberately not an integrity error: the storage is intact, only too old, so no
+    integrity catch may report it as corrupt. Callers that know the invocation
+    directory bind it with :meth:`located` so the message can name it.
+    """
+
+    def __init__(self, label: str, schema: str, invocation: Path | None = None) -> None:
+        where = (
+            f"the Simulation invocation directory {invocation}"
+            if invocation is not None
+            else "its Simulation invocation directory"
+        )
+        super().__init__(
+            f"{label} {schema} was written by Booley 0.3.0 and is no longer supported; "
+            f"delete {where} by hand"
+        )
+        self.label = label
+        self.schema = schema
+
+    def located(self, invocation: Path) -> UnsupportedSimulationCampaignFormatError:
+        """The same refusal naming the invocation directory to delete."""
+        return UnsupportedSimulationCampaignFormatError(self.label, self.schema, invocation)
+
+
+def raise_if_retired(document: Mapping[str, object]) -> None:
+    """Refuse a document in a format Booley 0.3.0 wrote, before any other check."""
+    schema = document.get("$schema")
+    if isinstance(schema, str) and schema in _RETIRED_SCHEMAS:
+        raise UnsupportedSimulationCampaignFormatError(_RETIRED_SCHEMAS[schema], schema)
+
+
 def _thaw(value: FrozenJson) -> object:
     if isinstance(value, Mapping):
         return {key: _thaw(item) for key, item in value.items()}
@@ -97,24 +130,24 @@ def canonical_json_bytes(value: object) -> bytes:
     return text.encode("utf-8") + b"\n"
 
 
-_MANIFEST_V1_SCHEMA = "booley.simulation-campaign-manifest/v1"
-# v2 (v0.3.0) = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).
-# v1 and v2 are immutable and stay readable.
-_MANIFEST_V2_SCHEMA = "booley.simulation-campaign-manifest/v2"
-# v4 = v2 plus the required ``test_runs`` of every work item: the concrete
-# Test Runs (Test Variant, seed, declared arguments and environment) the item
-# executes (ADR 0072), an optional ``no_waivers`` and explicit declared source
-# identities in disclosures. It is the only version written.
-_MANIFEST_V4_SCHEMA = "booley.simulation-campaign-manifest/v4"
-MANIFEST_SCHEMA = _MANIFEST_V4_SCHEMA
-_MANIFEST_SCHEMAS = frozenset({_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, _MANIFEST_V4_SCHEMA})
+# v4 = the exact work-item shape with the required ``test_runs`` of every work
+# item: the concrete Test Runs (Test Variant, seed, declared arguments and
+# environment) the item executes (ADR 0072), an optional ``no_waivers`` and
+# explicit declared source identities in disclosures. It is the only version
+# written and read.
+MANIFEST_SCHEMA = "booley.simulation-campaign-manifest/v4"
 
-_RESULT_V2_SCHEMA = "booley.simulation-result/v2"
-# v3 = v2 plus the required ``test_run`` of every observation: the resolved
-# name of the Test Run it observed (ADR 0072). Observations are then unique by
-# Test Run instead of by Test. v2 (v0.3.0) stays readable.
+# v3 = the required ``test_run`` of every observation: the resolved name of the
+# Test Run it observed (ADR 0072). Observations are unique by Test Run.
 RESULT_SCHEMA = "booley.simulation-result/v3"
-_RESULT_SCHEMAS = frozenset({_RESULT_V2_SCHEMA, RESULT_SCHEMA})
+
+# Formats Booley 0.3.0 wrote. They are recognised only to be refused.
+_RETIRED_SCHEMAS = {
+    "booley.simulation-campaign-manifest/v1": "Simulation Campaign manifest",
+    "booley.simulation-campaign-manifest/v2": "Simulation Campaign manifest",
+    "booley.simulation-result/v2": "Simulation Result",
+    "booley.simulation-projection/v2": "Simulation projection",
+}
 
 _MANIFEST_FIELDS = frozenset(
     {
@@ -259,7 +292,7 @@ T = TypeVar("T", bound=SimulationCampaignDocument)
 def _decode(
     raw: bytes,
     *,
-    schema: str | frozenset[str],
+    schema: str,
     fields: frozenset[str],
     limit: int,
     value_type: type[T],
@@ -274,14 +307,14 @@ def _decode(
         document = require_dict(value, field="document")
     except BoundaryError as exc:
         raise SimulationCampaignIntegrityError(str(exc)) from exc
+    raise_if_retired(document)
     if set(document) != fields:
         missing = sorted(fields - set(document))
         unknown = sorted(set(document) - fields)
         raise SimulationCampaignIntegrityError(
             f"document must have exact fields; missing={missing}, unknown={unknown}"
         )
-    allowed = frozenset({schema}) if isinstance(schema, str) else schema
-    if document.get("$schema") not in allowed:
+    if document.get("$schema") != schema:
         raise SimulationCampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
     try:
         _validate_json(document)
@@ -475,7 +508,7 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
 
 def _validate_child_identity(value: Mapping[str, object]) -> None:
     child_id, child_digest = value["child_execution_id"], value["child_entry_sha256"]
-    # Booley 0.3.0 attempts carry a child entry digest; current ones name the lane
+    # The digest is part of the attempt grammar; current attempts name the lane
     # execution with a null digest. A digest without a lane identity is invalid.
     if child_digest is not None and child_id is None:
         raise SimulationCampaignIntegrityError("child_entry_sha256 requires a child_execution_id")
@@ -564,11 +597,7 @@ def _validate_simulation_result(value: Mapping[str, object]) -> None:
         raise SimulationCampaignIntegrityError("invalid strict grade")
     _validate_result_state(value, build_result)
     _validate_runtime_inputs(value["runtime_inputs"], blocked=state == "blocked_by_build")
-    observations = _validate_observations(
-        value["observations"],
-        cast(str, state),
-        names_test_runs=value["$schema"] == RESULT_SCHEMA,
-    )
+    observations = _validate_observations(value["observations"], cast(str, state))
     _validate_result_grade(value["grade"], observations)
     _validate_diagnostics(value["diagnostics"])
     _validate_evidence_list(value["evidence"], "evidence")
@@ -851,19 +880,17 @@ def _validate_runtime_inputs(value: object, *, blocked: bool) -> None:
         raise SimulationCampaignIntegrityError("runtime input identities must be unique")
 
 
-def _validate_observations(
-    value: object, state: str, *, names_test_runs: bool = False
-) -> list[Mapping[str, object]]:
+def _validate_observations(value: object, state: str) -> list[Mapping[str, object]]:
     observations = _exact_list(value, "observations", MAX_OBSERVATIONS)
     if not observations:
         raise SimulationCampaignIntegrityError("result observations must be nonempty")
     tests: list[object] = []
     decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(observations):
-        observation = _validate_observation(item, index, names_test_runs=names_test_runs)
-        # A v3 result is unique by Test Run: one Test may be observed under
+        observation = _validate_observation(item, index)
+        # A result is unique by Test Run: one Test may be observed under
         # several Test Variants or seeds.
-        tests.append(observation["test_run"] if names_test_runs else observation["test"])
+        tests.append(observation["test_run"])
         decoded.append(observation)
         if state == "completed" and observation["execution"] != "completed":
             raise SimulationCampaignIntegrityError(
@@ -934,16 +961,11 @@ OBSERVATION_FIELDS = frozenset(
 _OBSERVATION_FIELDS = set(OBSERVATION_FIELDS)
 
 
-def _validate_observation(
-    value: object, index: int, *, names_test_runs: bool = False
-) -> Mapping[str, object]:
+def _validate_observation(value: object, index: int) -> Mapping[str, object]:
     observation = _exact_object(
-        value,
-        ({"test_run"} if names_test_runs else set()) | _OBSERVATION_FIELDS,
-        f"observations[{index}]",
+        value, {"test_run"} | _OBSERVATION_FIELDS, f"observations[{index}]"
     )
-    if names_test_runs:
-        _bounded_string(observation["test_run"], f"observations[{index}].test_run")
+    _bounded_string(observation["test_run"], f"observations[{index}].test_run")
     if observation["execution"] not in OBSERVATION_EXECUTIONS:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
@@ -1008,7 +1030,6 @@ def _validate_diagnostics(value: object) -> None:
 
 
 def _validate_manifest(value: Mapping[str, object]) -> None:
-    schema = cast(str, value["$schema"])
     origin = _exact_object(value["origin"], {"execution_id", "invocation_id"}, "origin")
     execution_id = origin["execution_id"]
     parsed_execution_id = _bounded_string(execution_id, "origin.execution_id", allow_empty=True)
@@ -1022,7 +1043,7 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
     _read_required_suite(value["required_suite"])
     _read_build_variant_ids(value["build_variants"])
     _validate_prerequisites(value["prerequisites"])
-    _validate_work_items(value["work_items"], schema)
+    _validate_work_items(value["work_items"])
     fingerprints = _exact_object(value["fingerprints"], set(_FINGERPRINT_FIELDS), "fingerprints")
     for key, digest in fingerprints.items():
         _require_digest(digest, f"fingerprints.{key}")
@@ -1129,11 +1150,11 @@ def _validate_prerequisites(value: object) -> None:
         raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
 
 
-def _validate_work_items(value: object, schema: str) -> None:
+def _validate_work_items(value: object) -> None:
     items = _exact_list(value, "work_items", MAX_WORK_ITEMS)
     decoded_items: list[Mapping[str, object]] = []
     for ordinal, item in enumerate(items):
-        decoded = _decode_work_item(item, ordinal, schema)
+        decoded = _decode_work_item(item, ordinal)
         _require_work_item_id(decoded["work_item_id"])
         _require_digest(decoded["fingerprint_sha256"], "work item fingerprint_sha256")
         _require_variant_id(decoded["build_variant_id"])
@@ -1144,16 +1165,12 @@ def _validate_work_items(value: object, schema: str) -> None:
 
 
 def _planned_observation_count(item: Mapping[str, object]) -> int:
-    """How many observations a work item is planned to produce."""
-    if "test_runs" in item:
-        return len(cast(tuple[object, ...], item["test_runs"]))
-    selection = cast(Mapping[str, object], item["selection"])
-    names = cast(tuple[object, ...], selection["names"])
-    return len(names) or (1 if selection["kind"] == "default" else 0)
+    """How many observations a work item is planned to produce: one per Test Run."""
+    return len(cast(tuple[object, ...], item["test_runs"]))
 
 
 def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
-    """Check a v4 work item's Test Runs are well formed, named uniquely and fit its kind."""
+    """Check a work item's Test Runs are well formed, named uniquely and fit its kind."""
     entries = _exact_list(item["test_runs"], "test_runs", MAX_OBSERVATIONS)
     try:
         runs = [test_run_from_document(entry, trust_fingerprint=True) for entry in entries]
@@ -1178,11 +1195,11 @@ def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
         )
 
 
-def _decode_work_item(value: object, ordinal: int, schema: str) -> Mapping[str, object]:
+def _decode_work_item(value: object, ordinal: int) -> Mapping[str, object]:
     item = _exact_object(
         value,
-        ({"test_runs"} if schema == _MANIFEST_V4_SCHEMA else set())
-        | {
+        {
+            "test_runs",
             "work_item_id",
             "ordinal",
             "kind",
@@ -1209,8 +1226,7 @@ def _decode_work_item(value: object, ordinal: int, schema: str) -> Mapping[str, 
     _bounded_string_list(
         item["arguments"], "arguments", count_limit=10_000, byte_limit=MAX_COMMAND_BYTES
     )
-    if schema == _MANIFEST_V4_SCHEMA:
-        _validate_work_item_test_runs(item)
+    _validate_work_item_test_runs(item)
     return item
 
 
@@ -1293,7 +1309,7 @@ _DOCUMENT_SPECS: dict[
     tuple[str, frozenset[str], int, Callable[[Mapping[str, object]], None]],
 ] = {
     SimulationCampaignManifest: (
-        _MANIFEST_V1_SCHEMA,
+        MANIFEST_SCHEMA,
         _MANIFEST_FIELDS,
         MANIFEST_MAX_BYTES,
         _validate_manifest,
@@ -1317,7 +1333,7 @@ _DOCUMENT_SPECS: dict[
         _validate_build_result,
     ),
     SimulationResult: (
-        _RESULT_V2_SCHEMA,
+        RESULT_SCHEMA,
         _RESULT_FIELDS,
         RECORD_MAX_BYTES,
         _validate_simulation_result,
@@ -1336,19 +1352,11 @@ _DOCUMENT_SPECS: dict[
     ),
 }
 _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
-_DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[_MANIFEST_V4_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[RESULT_SCHEMA] = _validate_simulation_result
 
 
 def _decode_registered(raw: bytes, value_type: type[T]) -> T:
     schema, fields, limit, _ = _DOCUMENT_SPECS[value_type]
-    allowed: str | frozenset[str] = schema
-    if value_type is SimulationCampaignManifest:
-        allowed = _MANIFEST_SCHEMAS
-    elif value_type is SimulationResult:
-        allowed = _RESULT_SCHEMAS
-    return _decode(raw, schema=allowed, fields=fields, limit=limit, value_type=value_type)
+    return _decode(raw, schema=schema, fields=fields, limit=limit, value_type=value_type)
 
 
 def decode_simulation_campaign_manifest(raw: bytes) -> SimulationCampaignManifest:

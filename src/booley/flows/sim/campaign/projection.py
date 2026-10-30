@@ -10,19 +10,17 @@ from enum import StrEnum
 from booley.core.boundary import BoundaryError, as_dict, require_list
 from booley.flows.test_runs import test_run_from_document
 
+from .codec import raise_if_retired
 from .test_run_report import TEST_RUN_GRADES
 
-#: Written today: v2 plus one ``test_runs`` row per observed Test Run (ADR 0072).
+#: Written today: one ``test_runs`` row per observed Test Run (ADR 0072).
 SIMULATION_PROJECTION_SCHEMA = "booley.simulation-projection/v3"
-#: The shape before Test Runs were reported; still decoded.
-_PROJECTION_V2_SCHEMA = "booley.simulation-projection/v2"
 
 
 class ProjectionTrust(StrEnum):
     """Authority available from one decoded projection profile."""
 
     AUTHENTICATED = "authenticated"
-    COVERAGE_AUTHENTICATED_LEGACY = "coverage_authenticated_legacy"
     TARGET_CONSISTENT_LEGACY = "target_consistent_legacy"
 
 
@@ -40,20 +38,16 @@ def decode_simulation_projection(
     """Decode a new projection or classify the exact legacy profile."""
     if not isinstance(value, dict):
         raise ValueError("Simulation projection must be an object")
+    raise_if_retired(value)
     schema = value.get("$schema")
     if schema is None:
-        _validate_legacy(value)
         if coverage_expected:
-            if (
-                value.get("coverage_campaign") != "coverage.json"
-                or value.get("coverage_campaign_base") != "origin_target"
-            ):
-                raise ValueError("legacy Coverage projection pointers disagree")
-            trust = ProjectionTrust.COVERAGE_AUTHENTICATED_LEGACY
-        else:
-            trust = ProjectionTrust.TARGET_CONSISTENT_LEGACY
-        return SimulationProjection(value, trust)
-    if schema not in {SIMULATION_PROJECTION_SCHEMA, _PROJECTION_V2_SCHEMA}:
+            raise ValueError(
+                "schema-less Simulation projection cannot authenticate a Coverage Campaign"
+            )
+        _validate_legacy(value)
+        return SimulationProjection(value, ProjectionTrust.TARGET_CONSISTENT_LEGACY)
+    if schema != SIMULATION_PROJECTION_SCHEMA:
         raise ValueError("unsupported Simulation projection schema")
     _validate_common(value)
     fields = {
@@ -68,15 +62,13 @@ def decode_simulation_projection(
         "campaign_id",
         "campaign_manifest",
         "complete",
+        "test_runs",
     }
     if coverage_expected:
         fields.update({"coverage_campaign", "collection", "evaluation"})
-    if schema == SIMULATION_PROJECTION_SCHEMA:
-        fields.add("test_runs")
     if set(value) != fields:
         raise ValueError("Simulation projection fields are not exact")
-    if schema == SIMULATION_PROJECTION_SCHEMA:
-        _validate_test_runs(value["test_runs"])
+    _validate_test_runs(value["test_runs"])
     try:
         campaign_id = uuid.UUID(str(value["campaign_id"]))
     except ValueError as exc:

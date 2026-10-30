@@ -389,19 +389,19 @@ class FlowMechanics:
         from booley.flows.terminal_progress import current_progress
 
         observer = current_progress()
-        if observer is not None:
-            observer.begin_command()
-            if cmd[:3] == ["python3", "-m", "booley.flows.sim"] or (
-                len(cmd) > 2 and cmd[1] == "-m" and cmd[2].startswith("booley.flows.sim.")
-            ):
-                env["PYTHONUNBUFFERED"] = "1"
+        is_sim_module = cmd[:3] == ["python3", "-m", "booley.flows.sim"] or (
+            len(cmd) > 2 and cmd[1] == "-m" and cmd[2].startswith("booley.flows.sim.")
+        )
+        if observer is not None and is_sim_module:
+            env["PYTHONUNBUFFERED"] = "1"
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
         proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
-            if observer is not None:
-                observer.end_command()
             return SubprocessResult(returncode=-1)
+        if observer is not None:
+            # Only a spawned tool counts as started in the progress record.
+            observer.begin_command()
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
         if observer is not None:

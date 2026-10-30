@@ -11,6 +11,7 @@ from .artifact_reference import (
 )
 from .codec import (
     SimulationCampaignIntegrityError,
+    UnsupportedSimulationCampaignFormatError,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
     decode_executable_snapshot,
@@ -118,6 +119,7 @@ __all__ = [
     "SimulationProjection",
     "SimulationResult",
     "SimulatorBundle",
+    "UnsupportedSimulationCampaignFormatError",
     "ValidatedResumeManifest",
     "acceptance_facts_sha256",
     "authenticate_retained_campaign_inventory",

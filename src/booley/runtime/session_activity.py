@@ -61,6 +61,19 @@ def process_session_key(identity: ProcessIdentity) -> str:
     return f"pid:{identity.identity_scope}:{identity.pid}:{identity.start_token}"
 
 
+def process_identity_from_session_key(key: str) -> ProcessIdentity | None:
+    """Inverse of :func:`process_session_key`; ``None`` when *key* is not a process key."""
+    if not key.startswith("pid:"):
+        return None
+    try:
+        scope, pid, start_token = key[len("pid:") :].rsplit(":", 2)
+        return ProcessIdentity.from_payload(
+            {"pid": int(pid), "identity_scope": scope, "start_token": int(start_token)}
+        )
+    except ValueError:
+        return None
+
+
 def thread_session_key(thread: str) -> str:
     """Registry key of a session identified by its Codex thread."""
     return "codex:" + thread

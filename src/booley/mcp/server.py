@@ -72,6 +72,7 @@ from booley.mcp import (
     call_context,
     catalog,
     endpoint_process,
+    handle_pruning,
     job_lifecycle,
     job_results,
 )
@@ -122,6 +123,7 @@ from booley.runtime.mcp_config import (
     HTTP_PORT_ENV,
     http_port,
 )
+from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 
@@ -2194,6 +2196,7 @@ async def _main() -> None:
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
     server, _ = _build_server(lifetime)
+    handle_pruning.prune_at_start()
     async with stdio_server() as (read_stream, write_stream):
         run_task = asyncio.create_task(
             server.run(
@@ -2242,6 +2245,7 @@ def _run_http(port: int) -> None:
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
+    handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
     app = SessionMaintenanceApp(app, lifetime.sessions)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
@@ -2289,6 +2293,9 @@ def main() -> None:
     except runtime_context.EgressModeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+
+    # Reclaim scratch (agent homes, Specialist workspaces) left by killed runs.
+    sweep_stale_scratch()
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

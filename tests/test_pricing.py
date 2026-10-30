@@ -57,6 +57,16 @@ class TestResolve:
     def test_empty_returns_none(self):
         assert resolve("") is None
 
+    def test_gpt_6_astra_has_its_own_row_and_is_the_gpt_floor(self):
+        """Astra is priced as itself, and it is what an unknown GPT id falls back to."""
+        row = MODEL_PRICING.get("gpt-6-astra")
+        assert row is not None
+        assert resolve("gpt-6-astra") is row
+        assert (row.input, row.output, row.cache_read, row.cache_write) == pytest.approx(
+            (10.00, 50.00, 1.00, 12.50)
+        )
+        assert resolve("gpt-7-nova") is row
+
     def test_gpt_6_luna_resolves_to_its_own_row(self):
         p = resolve("gpt-6-luna")
         assert p is not None

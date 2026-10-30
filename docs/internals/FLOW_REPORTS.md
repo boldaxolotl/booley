@@ -277,9 +277,7 @@ evaluation, Criteria, percentages, or exit codes. The verdict card appears only
 when at least one finding exists and previews three escaped paths; the Analyst
 overview previews 50 and `zero_point_sources` pages through the complete sorted
 list with `limit` (1–100) and `cursor`. Report-only access works without current
-Project source files. A Campaign published by 0.3.0 may carry `declaration_inventory`
-and `declaration_raw` artifacts and a `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`
-finding: it loads, and those entries are ignored.
+Project source files.
 
 ### Coverage retention
 

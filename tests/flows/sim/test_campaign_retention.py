@@ -554,8 +554,8 @@ def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
     result = _run_retention_cli("--help")
     assert result.returncode == 0
     help_text = " ".join(result.stdout.split()).replace("--reports- root", "--reports-root")
-    assert "verify canonical ownership for --full" in help_text
-    assert "not required for --native-target" in help_text
+    assert "needed by --full only when an interrupted lane" in help_text
+    assert "not used by --native-target" in help_text
     assert "--include-dependents" in help_text
 
 

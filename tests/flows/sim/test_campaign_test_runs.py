@@ -322,7 +322,6 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
         "found_b",
         "found_a",
     ]
-    assert observation_test_runs({}, observed) is None
 
 
 def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
@@ -412,7 +411,7 @@ def _result_document(tmp_path: Path) -> dict:
     return json.loads(encode_simulation_result(results[0]))
 
 
-def test_result_v3_round_trips_and_previous_versions_still_decode(tmp_path: Path):
+def test_result_v3_round_trips(tmp_path: Path):
     from booley.flows.sim.campaign.codec import (
         canonical_json_bytes,
         decode_simulation_result,
@@ -422,14 +421,6 @@ def test_result_v3_round_trips_and_previous_versions_still_decode(tmp_path: Path
     document = _result_document(tmp_path)
     raw = canonical_json_bytes(document)
     assert encode_simulation_result(decode_simulation_result(raw)) == raw
-
-    older = copy.deepcopy(document)
-    older["$schema"] = "booley.simulation-result/v2"
-    for observation in older["observations"]:
-        del observation["test_run"]
-    decoded = decode_simulation_result(canonical_json_bytes(older))
-    assert decoded.document["$schema"] == "booley.simulation-result/v2"
-    assert all("test_run" not in item for item in decoded.document["observations"])
 
 
 @pytest.mark.parametrize(
@@ -453,13 +444,4 @@ def test_result_v3_refusals(tmp_path: Path, alter, message):
     document = _result_document(tmp_path)
     alter(document)
     with pytest.raises(SimulationCampaignIntegrityError, match=message):
-        decode_simulation_result(canonical_json_bytes(document))
-
-
-def test_a_v2_result_may_not_name_test_runs(tmp_path: Path):
-    from booley.flows.sim.campaign.codec import canonical_json_bytes, decode_simulation_result
-
-    document = _result_document(tmp_path)
-    document["$schema"] = "booley.simulation-result/v2"
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         decode_simulation_result(canonical_json_bytes(document))

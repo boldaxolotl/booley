@@ -356,7 +356,7 @@ class DashboardReader:
             GoalView(str(item), diagnostic="corrupt Goal Record") for item in scan.corrupt
         )
         resources = self.resources.sample(self.root, now=time.monotonic())
-        jobs = self.jobs.read(scan.records, session_handles=handles)
+        jobs = self.jobs.read(scan.records, session_handles=handles, now=now)
         measured = []
         for job in jobs.jobs:
             identity = ProcessIdentity.from_payload(job.record.process_identity)

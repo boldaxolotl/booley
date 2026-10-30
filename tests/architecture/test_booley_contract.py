@@ -226,7 +226,6 @@ def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> No
     ("source", "target"),
     [
         ("booley.flows.sim.campaign.coordinator", "booley.flows.sim.campaign.store"),
-        ("booley.flows.sim.campaign.child_protocol", "booley.flows.sim.campaign.store"),
         ("booley.flows.sim.campaign.inspection", "booley.flows.sim.campaign.store"),
         ("booley.flows.sim.campaign", "booley.flows.sim.campaign.inspection"),
     ],

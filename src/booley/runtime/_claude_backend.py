@@ -135,6 +135,7 @@ class ClaudeSDKBackend:
     ) -> AgentResult:
         """Call a Claude agent via the Agent SDK with retry."""
         on_event = kwargs.pop("on_event", None)
+        on_start = kwargs.pop("on_start", None)
 
         from .auth_token import credential_plan
 
@@ -156,6 +157,7 @@ class ClaudeSDKBackend:
                     attempt=attempt,
                     label=params.label,
                     on_event=on_event,
+                    on_start=on_start,
                 )
             except (UsageLimitError, ContextExhaustedError):
                 raise
@@ -187,6 +189,8 @@ class ClaudeSDKBackend:
         transcript_file: Any,
         on_event: Any,
         state: _StreamState,
+        *,
+        on_start: Callable[[], None] | None = None,
     ) -> None:
         """Stream agent messages, recording progress into ``state``.
 
@@ -206,6 +210,14 @@ class ClaudeSDKBackend:
         that used to die mid-stream now survive.
         """
         with anyio.fail_after(timeout_seconds) as idle_scope:
+
+            def on_message() -> None:
+                idle_scope.deadline = anyio.current_time() + timeout_seconds
+                # The SDK yields nothing before its CLI connected and
+                # initialized, so the first message confirms the start.
+                if on_start is not None:
+                    on_start()
+
             await _consume_claude_stream(
                 prompt,
                 options,
@@ -213,9 +225,7 @@ class ClaudeSDKBackend:
                 transcript_file,
                 on_event,
                 state,
-                on_message=lambda: setattr(
-                    idle_scope, "deadline", anyio.current_time() + timeout_seconds
-                ),
+                on_message=on_message,
             )
 
     async def _call_once(
@@ -231,6 +241,7 @@ class ClaudeSDKBackend:
         attempt: int = 1,
         label: str | None = None,
         on_event: Any = None,
+        on_start: Callable[[], None] | None = None,
     ) -> AgentResult:
         """Single attempt to call the agent."""
         source = transcript_path_for_label(transcript_path, label)
@@ -269,6 +280,7 @@ class ClaudeSDKBackend:
                         transcript_file,
                         on_event,
                         stream_state,
+                        on_start=on_start,
                     )
                 except TimeoutError:
                     # A ResultMessage already landed before the stall, so the

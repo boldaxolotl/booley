@@ -13,7 +13,7 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
-    MANIFEST_SCHEMA,
+    UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,
 )
 from booley.goals.derivation import selected_observations
@@ -69,7 +69,11 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
             != envelope["manifest_sha256"]
         ):
             continue
-        producer = decode_simulation_campaign_manifest(raw).document
+        try:
+            producer = decode_simulation_campaign_manifest(raw).document
+        except UnsupportedSimulationCampaignFormatError as exc:
+            # ``<invocation>/targets/<target>/campaign/manifest.json``
+            raise exc.located(path.parents[3]) from None
         if (
             producer["campaign_id"] != envelope["campaign_id"]
             or producer["origin"] != envelope["origin"]
@@ -87,11 +91,8 @@ def _declares_source_identities(producer: Mapping[str, object]) -> bool:
     """Whether a campaign manifest's disclosures map generated files to sources.
 
     The fact is read from the disclosures: a setup planner with contract
-    version 2, or any entry that names a source path. Older manifests never
-    declare source identities.
+    version 2, or any entry that names a source path.
     """
-    if producer["$schema"] != MANIFEST_SCHEMA:
-        return False
     disclosures = cast("tuple[Mapping[str, Any], ...]", producer["planning_disclosures"])
     return any(
         (

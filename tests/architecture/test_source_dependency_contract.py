@@ -23,7 +23,6 @@ _CAMPAIGN_STORAGE_OWNERS = frozenset(
     {
         "booley.flows.sim.campaign.store",
         "booley.flows.sim.campaign.coordinator",
-        "booley.flows.sim.campaign.child_protocol",
         "booley.flows.sim.campaign.inspection",
     }
 )

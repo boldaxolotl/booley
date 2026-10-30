@@ -188,6 +188,13 @@ Both IDs are stable and waivable through `doctor-waivers.toml`. Doctor also
 WARNs on ignored `[developer]` settings and `[jobs].max_tickets` with a delete
 fix. These settings do not configure Goal Mode.
 
+`handles.map-size` (subject `session` or `job`) warns when a Dashboard handle
+map (`runtime/sessions/handles/map.json` or `runtime/job-handles/map.json`)
+is larger than 12 MiB, three quarters of its 16 MiB cap. Past the cap, new
+sessions and Jobs cannot get handles. Run `booley session down`, then
+`booley session up`: the Booley MCP server prunes expired handles when it
+starts. It is waivable through `doctor-waivers.toml`.
+
 Doctor WARNs with `workspace.legacy-source-stash` when an interrupted run left
 a source stash record for this worktree; see
 [manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run).
