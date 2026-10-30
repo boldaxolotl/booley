@@ -168,7 +168,7 @@ fn escape_glob_literal(prefix: &str) -> String {
     let mut escaped = String::with_capacity(prefix.len());
     for ch in prefix.chars() {
         match ch {
-            '[' | '*' | '?' | '{' | '\\' => {
+            '[' | '*' | '?' | '{' | '}' | '\\' => {
                 escaped.push('[');
                 escaped.push(ch);
                 escaped.push(']');
@@ -468,9 +468,21 @@ mod tests {
 
     #[test]
     fn escape_glob_literal_neutralizes_every_metacharacter() {
-        assert_eq!(
-            escape_glob_literal("a*b?c{d}e\\f[g]."),
-            "a[*]b[?]c[{]d}e[\\]f[[]g]."
-        );
+        let escaped = escape_glob_literal("a*b?c{d}e\\f[g].");
+        assert_eq!(escaped, "a[*]b[?]c[{]d[}]e[\\]f[[]g].");
+        // The escaped prefix compiles and matches the literal name only.
+        let pats = compile_patterns(&[format!("{escaped}*")], "").unwrap();
+        assert!(match_signal("a*b?c{d}e\\f[g].x", &pats));
+        assert!(!match_signal("aXb?c{d}e\\f[g].x", &pats));
+    }
+
+    #[test]
+    fn glob_gains_relative_matches_when_the_scope_name_repeats() {
+        // The relative form is tried for every glob, so a full-path glob that
+        // already matched also picks up a deeper signal whose scope-relative
+        // name matches (the scope's own name recurring below it).
+        let pats = compile_patterns(&["top.x.*".into()], "top.").unwrap();
+        assert!(match_signal("top.x.y", &pats));
+        assert!(match_signal("top.top.x.y", &pats));
     }
 }

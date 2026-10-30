@@ -207,7 +207,7 @@ def test_gui_total_miss_suggests_anchored_form(
 def test_anchored_globs_select_as_before(store: Path, glob: str) -> None:
     """AC2: full-path and ``*``-led globs keep their meaning, in every command."""
     expected = DUT_TREE if glob == "TOP.tb.dut.*" else ALL_DUT_NAMED
-    for command in ("list", "value", "sample", "stats"):
+    for command in ("list", "value", "find", "sample", "stats"):
         assert _selected(command, store, glob) == (0, expected), command
 
 
@@ -218,3 +218,25 @@ def test_bare_name_suffix_match_unchanged(store: Path) -> None:
         0,
         {"TOP.tb.count[7:0]", "TOP.tb.dut.count[7:0]"},
     )
+
+
+def _resolve_gui(store: Path, glob: str, monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Names ``gui --signals glob`` resolves on the built binary."""
+    monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    signals, _listing = cli._resolve_signal_globs(str(store), [glob], 100)
+    return {signal.bwave_name for signal in signals}
+
+
+@pytest.mark.parametrize(
+    ("glob", "expected"),
+    [
+        ("TOP.tb.dut.*", DUT_TREE),
+        ("*dut.*", ALL_DUT_NAMED),
+        ("bus", {"TOP.tb.data_bus[7:0]"}),
+    ],
+)
+def test_gui_keeps_anchored_and_bare_matching(
+    store: Path, monkeypatch: pytest.MonkeyPatch, glob: str, expected: set[str]
+) -> None:
+    """AC2/AC4: ``gui`` resolves full-path, ``*``-led and bare names as before."""
+    assert _resolve_gui(store, glob, monkeypatch) == expected

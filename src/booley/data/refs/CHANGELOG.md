@@ -12,10 +12,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 - B-Wave `-s` globs now also match relative to the common scope that
   `bwave list` prints, in every command and in `bwave gui`: with
   `# scope: TOP.tb`, `-s 'dut.*'` finds `TOP.tb.dut.*` at any depth below
-  `dut`, and still nothing outside the scope. Full-path globs, `*`-led globs
-  and bare-name suffix matches select what they did before. A glob that matches
-  nothing now ends its error with `did you mean '<full-path glob>'?` when it
-  matches below another scope.
+  `dut`, and still nothing outside the scope. `*`-led globs and bare-name
+  suffix matches select what they did before; a full-path glob gains a signal
+  only when the scope's own name repeats below it. A glob that matches nothing
+  now adds `did you mean '<full-path glob>'?` to its error when it matches
+  below another scope.
 - Doctor's attached-window checks (the Viewer Bridge and the installed
   VaporView version) now run when a VS Code window is attached to the Sandbox.
   Before, they always skipped with "no VS Code extension host attached", so

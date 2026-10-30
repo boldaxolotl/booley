@@ -117,8 +117,9 @@ worked. Flag semantics (native groups, clock row, markers, `--append`,
   `dut.*` finds `TOP.tb.dut.*` at any depth. It is anchored at that scope: it
   never reaches `TOP.tb.other.dut.x` or anything outside it. (A narrowed
   `list -s` prints a deeper scope, which is not the anchor.) When a glob
-  matches only below some other scope, the error ends with
-  `did you mean 'TOP.tb.dut.u_core.*'?`; paste that form. Use `*dmem_addr*`
+  matches only below some other scope, the error carries
+  `did you mean 'TOP.tb.dut.u_core.*'?` (the first such place in store
+  order); paste that form. Use `*dmem_addr*`
   for substring, and `bwave list` to see what exists. JSON-mode `find`/`value`/
   `stats` still print an empty envelope on stdout alongside the error.
 - `# WARNING: no signals match '<pat>' — filter dropped`: one `-s` of several
