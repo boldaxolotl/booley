@@ -122,10 +122,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 @pytest.mark.parametrize("flow_type", FLOW_TYPES, ids=lambda flow_type: flow_type.name)
 def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> None:
     flow = flow_type()
-    # Hidden (help=SUPPRESS) deprecated aliases are deliberately undocumented.
+    # Read the person-facing parser: its hidden (help=SUPPRESS) compatibility
+    # aliases, such as --timeout-ms and --work-dir, are deliberately undocumented.
     parser_options = {
         option
-        for action in build_parser(flow)._actions
+        for action in build_parser(flow, human=True)._actions
         if action.help != argparse.SUPPRESS
         for option in action.option_strings
         if option.startswith("--")
@@ -180,8 +181,9 @@ def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
     config = " ".join(_flow_section("sim").split())
 
     assert "[flows.sim].build_timeout_ms" in shared
-    assert "recipe `build_timeout_ms`" in shared
-    assert "Standalone units" in shared and "have no build field" in shared
+    dry_run = " ".join(_reference_text(REPORTS).split())
+    assert "recipe `build_timeout_ms`" in dry_run
+    assert "Standalone units" in dry_run and "have no build field" in dry_run
     assert "defaults to `3600000` (one hour)" in config
     assert "independent fixed 600-second budget" in config
 

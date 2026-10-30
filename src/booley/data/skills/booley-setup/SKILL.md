@@ -8,8 +8,8 @@ description: Perform design-aware Project Setup after Host Bootstrap and Project
 This skill owns Booley setup from **Step 0 (plan)** through **Step 7 (cleanup)**,
 plus an **optional post-gate Step 5 (parity)** for projects that want their
 Booley results cross-checked against the repo's native build system.
-The parts outside it are installation and Host Bootstrap in Booley's
-[README](https://github.com/boldaxolotl/Booley#installation), followed by
+The parts outside it are installation and Host Bootstrap in
+[the install guide](https://booley.dev/docs/install/), followed by
 Project Initialization with `booley init` in `docs/user/SETUP.md`. Host
 Bootstrap deploys this skill; Project Initialization records the Project's
 agent provider and authentication policy before this design-aware work begins.

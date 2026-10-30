@@ -1,4 +1,4 @@
-"""Run README installation on distro Python; exempt only full Host Bootstrap.
+"""Run the Install guide's commands on distro Python; exempt only full Host Bootstrap.
 
 Fixture preparation installs sudo and pipx, creates an unprivileged user with
 /home storage, and writes a direct-wheel constraint. Artifacts are read-only;
@@ -28,20 +28,20 @@ COMMANDS = {
 BOOTSTRAP_EXEMPTION = "booley bootstrap"
 
 
-def read_commands(readme: str) -> dict[str, tuple[str, ...]]:
+def read_commands(guide: str) -> dict[str, tuple[str, ...]]:
     """Reject ambiguous blocks and command drift before executing documentation."""
-    markers = re.findall(r"<!-- booley-smoke:([^>]+) -->", readme)
-    endings = re.findall(r"<!-- /booley-smoke:([^>]+) -->", readme)
+    markers = re.findall(r"<!-- booley-smoke:([^>]+) -->", guide)
+    endings = re.findall(r"<!-- /booley-smoke:([^>]+) -->", guide)
     if sorted(markers) != sorted(COMMANDS) or sorted(endings) != sorted(COMMANDS):
-        raise ValueError("missing, duplicate, or unexpected README smoke block")
+        raise ValueError("missing, duplicate, or unexpected install smoke block")
     result = {}
     for name, expected in COMMANDS.items():
         pattern = (
             rf"<!-- booley-smoke:{name} -->\n```bash\n(.*?)\n```\n<!-- /booley-smoke:{name} -->"
         )
-        matches = re.findall(pattern, readme, re.DOTALL)
+        matches = re.findall(pattern, guide, re.DOTALL)
         if len(matches) != 1 or tuple(matches[0].splitlines()) != expected:
-            raise ValueError(f"unexpected README commands in {name}")
+            raise ValueError(f"unexpected install guide commands in {name}")
         result[name] = tuple(matches[0].splitlines())
     return result
 
@@ -186,7 +186,7 @@ def inside(wheel: Path, commands: dict[str, tuple[str, ...]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--readme", type=Path)
+    parser.add_argument("--guide", type=Path)
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--probe", action="store_true")
@@ -195,12 +195,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.probe and (args.inside or args.launcher is None or args.operation is None):
         parser.error("--probe requires --launcher and --operation and excludes --inside")
-    if not args.probe and args.readme is None:
-        parser.error("--readme is required for the installation smoke")
+    if not args.probe and args.guide is None:
+        parser.error("--guide is required for the installation smoke")
     if args.probe:
         probe(args.wheel, args.launcher, args.operation)
         return
-    commands = read_commands(args.readme.read_text())
+    commands = read_commands(args.guide.read_text())
     if args.inside:
         inside(args.wheel, commands)
         return
@@ -215,15 +215,15 @@ def main() -> None:
             "--mount",
             f"type=bind,src={Path(__file__).resolve()},dst=/smoke/runner.py,readonly",
             "--mount",
-            f"type=bind,src={args.readme.resolve()},dst=/README.md,readonly",
+            f"type=bind,src={args.guide.resolve()},dst=/INSTALL.md,readonly",
             IMAGE,
             "bash",
             "-c",
             'apt-get update && apt-get install -y python3 && exec python3 /smoke/runner.py "$@"',
             "smoke",
             "--inside",
-            "--readme",
-            "/README.md",
+            "--guide",
+            "/INSTALL.md",
             "--wheel",
             f"/artifacts/{wheel.name}",
         ],

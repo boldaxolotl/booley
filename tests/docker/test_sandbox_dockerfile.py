@@ -276,16 +276,14 @@ def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
     assert "Node.js, Rust" not in setup
 
 
-def test_readme_uses_current_slim_image_storage_guidance() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
+def test_install_requirements_use_current_slim_image_storage_guidance() -> None:
+    guide = Path("docs/user/INSTALL.md").read_text(encoding="utf-8")
+    requirements = guide.split("## Requirements", 1)[1].split("\n## ", 1)[0]
 
-    assert "15 GB of Docker storage" not in readme
-    assert "21 GB" not in readme
-    assert "about **4 GB** free for the image" in readme
-    assert "(**6 GB** with the RISC-V toolchain)" in readme
-    assert "On the measured containerd store" not in readme
-    assert "1.58/2.02 GB" not in readme
-    assert "2.82/4.48 GB" not in readme
+    assert "15 GB of Docker storage" not in guide
+    assert "21 GB" not in guide
+    assert "about **4 GB** free for the image" in requirements
+    assert "(**6 GB** with the RISC-V toolchain)" in requirements
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:

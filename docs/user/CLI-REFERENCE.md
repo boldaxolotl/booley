@@ -45,7 +45,7 @@ booley cheat --criteria           # evidence catalog (combine sections)
 booley doctor                     # check setup
 booley doctor --concise           # show only problems
 booley doctor --deep              # also run short real sims, lints, and syntheses
-booley doctor --deep --skip-agent-checks   # CI: skip the login checks
+booley doctor --deep --skip-agent-checks   # skip agent credential and provider checks
 booley --version                  # version, plus commit and its UTC commit date when known
 
 # Job resources
@@ -94,36 +94,58 @@ prints the worktree path to stdout and these steps to stderr, with a warning: Bo
 cannot map paths to the host, so the commands use quoted absolute **Sandbox
 paths**. Do not paste them into a host terminal.
 
-Outside Goal Mode, `--baseline` uses the Paired Checkout branch's recorded
-creation base ahead of its upstream. Pushing, merging or rebasing newer Project
-changes does not update that recorded commit: the Project baseline is its
-merge-base with the current HEAD. Rewriting history can therefore select an
-older common ancestor. A branch without a recorded base falls back to its
-upstream's merge-base with HEAD; a branch with neither refuses. An invalid
-recorded base refuses even when an upstream exists. A detached paired HEAD
-uses its checked-out commit, including during a rebase or bisect. Baseline
-preparation progress names the rule and commit. Goal Mode keeps the exact
-Paired Checkout commit pinned at entry.
+Each successful `booley init` remembers its Project Root. `booley projects`
+lists those roots with their EDA Grants and marks each `present`, `missing`, or
+`uninitialized`. `booley projects discover <root>...` imports existing
+initialized Projects; it scans only the named roots and does not follow
+directory symlinks.
 
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported
 by that scan; run `booley projects discover <nested path>` on a nested Project
 directly to import it.
 
-Booley also runs a quick health check on its own when the container starts and
-on supported command and Flow paths: about once a week, daily while problems remain, and
-whenever the configuration changes. It never blocks work. New problems show up
-in `booley session up` and the next Flow result. The last result
-is in `.booley/runtime/doctor/last.log`.
+`booley projects forget <project>` drops a remembered root once its live Grants
+are revoked. It then lists, with sizes, what the Project still holds in Docker:
+images, agent state volumes (a copy of the agent's login and history),
+containers, and networks. It removes none of them; `--purge` also removes the
+unused ones, even for a root already forgotten or deleted. If you forget a
+Project that still exists, run `booley init` there before using it again.
+`booley projects prune-keepers` previews leftover images from earlier forgets;
+`--confirm <digest>` removes exactly that preview.
 
-Plain Doctor and `booley session up` also report whether prior deep validation is
-current or due. Deep evidence has no expiry; automatic change triggers are only
-the Booley version and active immutable Sandbox Image. Project/Target/RTL edits
-leave that evidence intact. Deep due is advisory and never launches deep checks.
-See [Doctor health and deep validation](DOCTOR.md) for qualification, failed and
-cancelled attempts, and image identity handling.
+Booley also runs plain Doctor automatically; see
+[automatic checks](DOCTOR.md#automatic-checks).
+
+Plain Doctor and `booley session up` also say when deep validation is due; see
+[Doctor health and deep validation](DOCTOR.md).
 
 Use `booley cheat --goals` for the Goal lifecycle and MCP tools.
+
+## Selecting a Project
+
+`-C/--project PATH` selects the checkout or worktree for a Project-bound
+command; any directory inside it works. The path is relative to where you run
+the command. Without it, Booley uses the checkout that contains the current
+directory. An explicit selector overrides `RTL_PROJECT_ROOT`.
+
+```bash
+booley -C ../other targets
+booley session -C ../other status
+booley session status --project ../other
+booley flow lint --target lint --project ../other
+```
+
+Give the selector once: before the command, after it, or on a nested
+operation. It works on Flows, Specialists, `session`, `chat`, `doctor`,
+`init`, `upgrade`, `cleanup`, `feedback`, `auth --status`, and on bare
+`booley` inside the Sandbox (to pick the Project for chat). On the host, bare
+`booley` prints help. Bare `cheat` and `cheat --list` ignore it; `bootstrap`,
+`projects`, and `eda` don't accept it. Ambiguous abbreviations of option names
+are errors, and arguments after a command's `--` are passed through untouched.
+
+The selector picks the checkout; `BOOLEY_DIR` picks the Booley Directory. The
+directory must exist, except for `init`, which accepts an uninitialized one.
 
 ## Booley Flows & Specialists
 
@@ -155,7 +177,7 @@ LLM-powered Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
@@ -209,8 +231,6 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
-
-The Developer Agent writes testbenches directly.
 
 ## Running a Booley Flow directly
 
