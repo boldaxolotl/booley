@@ -25,8 +25,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, TextIO
+from typing import BinaryIO, NamedTuple, TextIO
 
+from booley.harness.colors import accent, amber, dim
 from booley.runtime.booley_dir import runtime_dir
 from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
 
@@ -45,6 +46,10 @@ _OWNED_RECORD = re.compile(
 )
 _STAGE_LINES = re.compile(r"(?m)^BOOLEY_STAGE:[^\n]*$")
 _STAGE = re.compile(r"^BOOLEY_STAGE:\s*([\w.-]+)\s*$")
+# Live-row layout: a Target or lane name keeps at least this many cells when cut.
+_MIN_NAME_CELLS = 8
+_LANE_INDENT = "  "
+_LANE_TAIL_INDENT = "    "
 
 
 @dataclass(eq=False)
@@ -99,21 +104,62 @@ def sanitize(value: str, limit: int = 2048) -> str:
     return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 
 
+def _char_cells(char: str) -> int:
+    """Terminal cells one character occupies: combining 0, wide 2, otherwise 1."""
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
+def _cells(text: str) -> int:
+    return sum(_char_cells(char) for char in text)
+
+
 def fit_width(text: str, width: int) -> str:
     """Clip by terminal cells, including wide and combining Unicode characters."""
     cells = 0
     for index, char in enumerate(text):
-        size = (
-            0
-            if unicodedata.combining(char)
-            else 2
-            if unicodedata.east_asian_width(char) in {"W", "F"}
-            else 1
-        )
+        size = _char_cells(char)
         if cells + size > width:
             return text[:index]
         cells += size
     return text
+
+
+def _cut(text: str, cells: int) -> str:
+    """Fit *text* into *cells*, marking a cut with an ellipsis."""
+    if _cells(text) <= cells:
+        return text
+    return fit_width(text, cells - 1) + "…"
+
+
+class _Part(NamedTuple):
+    """One piece of a live row: plain separator, text, optional style, clippable."""
+
+    separator: str
+    text: str
+    style: Callable[[str], str] | None = None
+    clip: bool = False
+
+
+def _styled_row(parts: list[_Part], width: int) -> str:
+    """Join *parts* within *width* cells, styling only after the width math.
+
+    A part that does not fit is clipped when ``clip`` is set, otherwise it and
+    every later part are dropped whole, so no token is ever cut mid-way.
+    """
+    pieces: list[str] = []
+    remaining = width
+    for part in parts:
+        room = remaining - _cells(part.separator)
+        text = part.text if _cells(part.text) <= room else fit_width(part.text, room)
+        if not text or (text != part.text and not part.clip):
+            break
+        pieces.append(part.separator + (part.style(text) if part.style else text))
+        remaining = room - _cells(text)
+        if text != part.text:
+            break
+    return "".join(pieces)
 
 
 class _Lines:
@@ -219,7 +265,6 @@ class TerminalProgress:
         self.dimensions: Callable[[], os.terminal_size] = dimensions
         self.tool_output: bool = tool_output
         self.started: float = clock()
-        self.command_started: float = self.started
         self.stage: str = "preparing"
         self.tail: deque[str] = deque(maxlen=6)
         self.new_lines: deque[str] = deque(maxlen=6)
@@ -425,14 +470,12 @@ class TerminalProgress:
             self._open_transcript()
             lane = _LANE.get()
             if lane is None:
-                self.command_started = self.clock()
                 self.tail.clear()
                 self.last_output = None
             else:
                 # One lane's command start never clears another lane's tail.
                 lane.tail.clear()
                 lane.last_output = None
-                self.command_started = self.clock()
             if stage is not None:
                 self.stage_changed(stage)
             self._record("command started", lane=lane)
@@ -615,16 +658,13 @@ class TerminalProgress:
             if now - self.last_render < 0.25:
                 return
             self._clear()
-            age = "none" if self.last_output is None else format_age(0, now=now - self.last_output)
-            stage = f"lanes={len(open_lanes)}" if open_lanes else self.stage
-            status = (
-                f"{self.flow} elapsed={format_duration(now - self.started)} command={format_duration(now - self.command_started)} "
-                f"Target={self.target[:20]} {stage[:24]} last output={age}"
-            )
-            rows = [status, *self.tail, *self._lane_rows(open_lanes, now)][: max(1, height - 1)]
-            self._write(
-                "\n".join(fit_width(sanitize(row), max(1, width - 1)) for row in rows) + "\n"
-            )
+            budget = max(1, width - 1)
+            rows = [
+                self._status_row(now, budget, open_lanes),
+                *(fit_width(sanitize(line), budget) for line in self.tail),
+                *self._lane_rows(open_lanes, now, budget),
+            ][: max(1, height - 1)]
+            self._write("\n".join(rows) + "\n")
             self.rows = len(rows)
             self.last_render = now
         elif now - self.last_record >= 5:
@@ -640,14 +680,56 @@ class TerminalProgress:
             self.new_lines.clear()
             self.last_record = now
 
-    def _lane_rows(self, lanes: list[_Lane], now: float) -> list[str]:
-        """One header row per open lane, followed by its share of recent output."""
+    def _status_row(self, now: float, budget: int, lanes: list[_Lane]) -> str:
+        """``flow · Target · stage   elapsed   last output age`` within *budget* cells."""
+        stage = f"{len(lanes)} lane{'s' if len(lanes) != 1 else ''}" if lanes else self.stage
+        rest = [
+            _Part(" · ", sanitize(stage), amber, clip=True),
+            _Part("   ", format_duration(now - self.started), dim),
+        ]
+        if self.last_output is not None:
+            age = format_age(0, now=now - self.last_output)
+            rest.append(_Part("   ", f"last output {age}"))
+        flow = sanitize(self.flow)
+        # The Target is the long, variable part: it gives way first, but keeps a stub.
+        others = _cells(flow) + _cells(" · ") + sum(_cells(p.separator + p.text) for p in rest)
+        target = _cut(sanitize(self.target), max(_MIN_NAME_CELLS, budget - others))
+        return _styled_row(
+            [_Part("", flow, clip=True), _Part(" · ", target, accent, clip=True), *rest], budget
+        )
+
+    def _lane_rows(self, lanes: list[_Lane], now: float, budget: int) -> list[str]:
+        """Aligned, indented header per open lane, then its share of recent output."""
         share = max(1, 6 // len(lanes)) if lanes else 0
+        names = [sanitize(lane.label) for lane in lanes]
+        stages = [sanitize(lane.stage) for lane in lanes]
+        outputs = [
+            None
+            if lane.last_output is None
+            else f"last output {format_age(0, now=now - lane.last_output)}"
+            for lane in lanes
+        ]
+        stage_cells = max((_cells(stage) for stage in stages), default=0)
+        output_cells = max((_cells(output) for output in outputs if output), default=0)
+        fixed = len(_LANE_INDENT) + 3 + stage_cells + (3 + output_cells if output_cells else 0)
+        name_cells = min(
+            max((_cells(name) for name in names), default=0),
+            max(_MIN_NAME_CELLS, budget - fixed),
+        )
         rows: list[str] = []
-        for lane in lanes:
-            age = "none" if lane.last_output is None else format_age(0, now=now - lane.last_output)
-            rows.append(f"lane={lane.label} stage={lane.stage} last output={age}")
-            rows.extend(list(lane.tail)[-share:])
+        for lane, full_name, stage, output in zip(lanes, names, stages, outputs, strict=True):
+            name = _cut(full_name, name_cells)
+            parts = [
+                _Part(_LANE_INDENT, name, accent, clip=True),
+                _Part(" " * (name_cells - _cells(name)) + "   ", stage, amber, clip=True),
+            ]
+            if output:
+                parts.append(_Part(" " * (stage_cells - _cells(stage)) + "   ", output))
+            rows.append(_styled_row(parts, budget))
+            rows.extend(
+                _LANE_TAIL_INDENT + fit_width(sanitize(line), budget - len(_LANE_TAIL_INDENT))
+                for line in list(lane.tail)[-share:]
+            )
         return rows
 
     def _clear(self) -> None:
