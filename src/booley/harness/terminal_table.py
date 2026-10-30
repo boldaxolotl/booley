@@ -58,6 +58,12 @@ def render_table(
     with empty cells; extra cells are ignored. ``max_widths`` maps a column
     index to a cap on its visible width: a longer cell is cut and ends in
     ``…`` (cells never wrap). Raises ``ValueError`` for a cap below 1.
+
+    Cell preconditions (callers own them; the renderer does not sanitize):
+    each cell is a single line of narrow text (no ``\n``, ``\t``, or
+    double-width CJK/emoji: width is counted in characters, not terminal
+    cells) whose styling is self-contained, i.e. every opened style code is
+    closed inside the cell, because padding is appended after the cell.
     """
     caps = dict(max_widths or {})
     if any(cap < 1 for cap in caps.values()):

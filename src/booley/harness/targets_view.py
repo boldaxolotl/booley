@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from booley.targets.target_surface import SurfacePayload, TargetDetailPayload, TargetRow
 
 _HEADERS = ("TARGET", "FLOW", "EDA TOOL", "TOP", "DOCTOR")
-_TOP_COLUMN = 3
+_TOP_COLUMN = _HEADERS.index("TOP")
 
 # A declared toplevel is normally one module name; upstream cores occasionally
 # declare CAPI2 conditional expressions ("tool_verilator? (wrapper)" ...) that
