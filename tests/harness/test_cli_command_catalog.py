@@ -19,6 +19,7 @@ PUBLIC_COMMANDS: list[str] = [
     "cheat",
     "doctor",
     "help",
+    "resources",
     "targets",
     "auth",
     "bootstrap",
@@ -38,8 +39,8 @@ def test_help_groups_public_commands_by_location() -> None:
         (command, location)
         for commands, location in [
             (PUBLIC_COMMANDS[:5], "Sandbox"),
-            (PUBLIC_COMMANDS[5:9], "either"),
-            (PUBLIC_COMMANDS[9:], "host"),
+            (PUBLIC_COMMANDS[5:10], "either"),
+            (PUBLIC_COMMANDS[10:], "host"),
         ]
         for command in commands
     ]
@@ -54,8 +55,8 @@ def test_cli_reference_has_the_same_public_inventory() -> None:
     )
     assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [
         ("Sandbox", PUBLIC_COMMANDS[:5]),
-        ("Either", PUBLIC_COMMANDS[5:9]),
-        ("Host-only", PUBLIC_COMMANDS[9:]),
+        ("Either", PUBLIC_COMMANDS[5:10]),
+        ("Host-only", PUBLIC_COMMANDS[10:]),
     ]
 
 
@@ -83,6 +84,7 @@ def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
         ("feedback", "either"),
         ("cleanup", "either"),
         ("upgrade", "either"),
+        ("resources", "either"),
         ("targets", "either"),
         ("auth", "host"),
         ("bootstrap", "host"),
