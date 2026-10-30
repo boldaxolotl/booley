@@ -154,9 +154,14 @@ lilac = fg256(PALETTE_LAVENDER)
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m|\033\]8;;[^\033\007]*(?:\033\\|\007)")
 
 
+def strip_ansi(text: str) -> str:
+    """*text* without ANSI style codes and OSC 8 hyperlink markers."""
+    return _ANSI_RE.sub("", text)
+
+
 def len_visible(text: str) -> int:
     """Length of *text* ignoring ANSI escape sequences."""
-    return len(_ANSI_RE.sub("", text))
+    return len(strip_ansi(text))
 
 
 def hyperlink(text: str, uri: str) -> str:
