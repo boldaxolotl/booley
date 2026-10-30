@@ -64,13 +64,7 @@ def retained_outputs(operation: LifecycleOperation) -> frozenset[Path]:
         result = prior.saved_result()
         if result is None or result["status"] != "revalidation_required":
             continue
-        from booley.runtime.booley_dir_migration import archival_path
-
-        destination = archival_path(
-            operation.store.booley_dir,
-            operation.root / frozen["path"],
-            record_id=operation.request.record_id,
-        )
+        destination = operation.root / frozen["path"]
         metadata = tracked.get(frozen["path"].encode())
         if metadata is not None and (
             not metadata.startswith(b"100644 blob ")

@@ -45,22 +45,6 @@ def byte_proof(raw: str) -> dict[str, Any]:
     return {"sha256": "sha256:" + hashlib.sha256(content).hexdigest(), "size": len(content)}
 
 
-def legacy_materialization_buffers(frozen: dict[str, Any]) -> bool:
-    """Historical terminal bytes remain immutable; unpublished private captures cannot publish."""
-    if frozen["schema"] != "booley.goal-finish-attempt/v1":
-        return False
-    package = frozen["package"]
-    proof = package["input_proof"]
-    return (
-        proof.get("original_project_snapshot") is not None
-        or package["record"].get("project_snapshot") is not None
-        or any(
-            "bytes" in row or "producer_manifest_bytes" in (row.get("provenance") or {})
-            for row in proof.get("nonversioned_observations", [])
-        )
-    )
-
-
 def validate_capture(raw: object, public: dict[str, Any]) -> dict[str, Any]:
     """Decode and hash every classified byte buffer before trusting its projection."""
     private = require_dict(raw, field="private completion capture")

@@ -225,10 +225,11 @@ def recover_locked(lock: RecordLock, env: ChangeEnvironment, *, abandoning: bool
         if (
             view.state not in {"approved", "rejected"}
             or view.decision is None
-            or view.decision.transaction_id is None
             or view.resolved_at is not None
         ):
             continue
+        # list_proposals refuses a decided proposal without a transaction authority.
+        assert view.decision.transaction_id is not None
         path = transaction_path(lock.record_dir, view.decision.transaction_id)
         transaction = ApplyTransaction.from_json(json.loads(path.read_bytes()))
         with _waiver_lock(view.proposal, env):
@@ -236,7 +237,9 @@ def recover_locked(lock: RecordLock, env: ChangeEnvironment, *, abandoning: bool
     unresolved = read_change_log(lock.record_dir / "changes.jsonl").interrupted
     if unresolved:
         raise ProposalError(
-            "interrupted legacy Goal apply has no captured transaction; restore/reconcile it explicitly"
+            "Change Log intent names no prepared Goal apply: "
+            + ", ".join(entry.id for entry in unresolved),
+            path=lock.record_dir / "changes.jsonl",
         )
 
 
@@ -526,7 +529,7 @@ def _validate_transaction(
         or transaction.decision != view.decision
     ):
         raise ProposalError("saved transaction does not bind this exact proposal decision")
-    if view.transaction_digest is None or view.transaction_digest != digest(transaction.to_json()):
+    if view.transaction_digest != digest(transaction.to_json()):
         raise ProposalError(
             "recovery conflict: captured transaction differs from durable decision authority; restore the exact prepared transaction before retrying"
         )

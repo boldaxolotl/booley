@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -143,23 +142,13 @@ def _complete_closures(
     operation: LifecycleOperation, record: GoalRecord, env: FinishEnvironment
 ) -> None:
     """Closure follows the terminal commit; a failed preterminal call closes nothing."""
-    path = operation.directory / "abandonment.authority.json"
-    if not path.exists():
-        return  # Legacy abandonment recorded no recoverable closure list.
     for view in _closure_views(operation):
         close_by_abandonment(operation.lock, view, closed_at=record.ended_at)
         env.checkpoint("proposal-closed")
 
 
 def _saved_notes(operation: LifecycleOperation) -> list[str]:
-    if (operation.directory / "abandonment.authority.json").exists():
-        value = operation.read_sealed("abandonment")
-    else:
-        # Legacy terminal requests recorded public notes without modern closure authority.
-        value = require_dict(
-            json.loads((operation.directory / "abandonment.json").read_bytes()),
-            field="legacy abandonment",
-        )
+    value = operation.read_sealed("abandonment")
     return [
         require_str_value(note, field="abandonment note")
         for note in require_list(value.get("notes"), field="abandonment notes")
@@ -177,21 +166,6 @@ def abandon_goal(
     on_bound: Callable[[LifecycleRequest], None] | None = None,
 ) -> dict[str, Any]:
     """Direct human selection/mint occurs once under the same worktree lock."""
-    if record_id is not None and operation_id is not None:
-        from booley.goals.lifecycle import archived_result
-
-        saved = archived_result(
-            store,
-            LifecycleRequest(
-                work_dir,
-                record_id,
-                operation_id,
-                abandon=True,
-                instruction_quote=instruction_quote,
-            ),
-        )
-        if saved is not None:
-            return saved
     result = _abandon_current(
         store,
         work_dir,
@@ -216,7 +190,7 @@ def _abandon_current(
     instruction_quote: str,
     on_bound: Callable[[LifecycleRequest], None] | None,
 ) -> dict[str, Any]:
-    """Bind an unarchived operation to its surviving checkout."""
+    """Bind the operation to its surviving checkout."""
     found = GoalCheckout(work_dir).containing_repository()
     if found is None:
         raise LifecycleError("abandon must run inside a Goal worktree")

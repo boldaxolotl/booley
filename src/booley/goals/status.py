@@ -110,9 +110,6 @@ def build_status(
     campaign_reader: CampaignResultsReader | None = None,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
-    from booley.runtime.booley_dir_migration import is_archived_record
-
-    observational = observational or is_archived_record(store.booley_dir, record.id)
     with store.record_lock(record.id, existing_only=observational):
         return _build_status(
             store,
@@ -132,13 +129,7 @@ def _build_status(
     resolvers: GoalFreshnessResolvers,
     campaign_reader: CampaignResultsReader | None,
 ) -> GoalStatusView:
-    from booley.runtime.booley_dir_migration import archival_path, is_archived_record
-
-    if is_archived_record(store.booley_dir, record.id):
-        return _archived_status(store, record)
-    root = work_dir or archival_path(
-        store.booley_dir, Path(record.worktree_path), record_id=record.id
-    )
+    root = work_dir or Path(record.worktree_path)
     try:
         checkout = GoalCheckout(root).containing_repository()
     except CheckoutError:
@@ -392,30 +383,3 @@ def status_views(
     campaign evidence before it reads.
     """
     return select_status(store, work_dir, campaign_reader=campaign_reader).views
-
-
-def _archived_status(store: GoalStore, record: GoalRecord) -> GoalStatusView:
-    """Inspect terminal frozen facts without reopening old inputs or judging live freshness."""
-    from booley.runtime.booley_dir_migration import archival_path
-
-    state, _history = load_goal_state_and_evidence(store, record)
-    rows: list[GoalStatus] = []
-    for goal in record.goals:
-        entry = state.criteria.get(goal.spec.key)
-        rows.append(
-            GoalStatus(
-                goal.spec.key,
-                "met" if entry is not None and entry.met else "unmet",
-                "recorded evidence (historical)",
-                presentation=goal_presentation(goal.spec, _entry_facts(entry)),
-            )
-        )
-    display = replace(
-        record,
-        worktree_path=str(
-            archival_path(store.booley_dir, Path(record.worktree_path), record_id=record.id)
-        ),
-    )
-    return GoalStatusView(
-        display, tuple(rows), "Historical Goal Record; current checkout freshness is not asserted."
-    )

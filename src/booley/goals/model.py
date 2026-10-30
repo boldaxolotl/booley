@@ -24,6 +24,8 @@ required. A field that changes what a Goal requires is written by every save,
 its default included, so that an older Booley refuses the record instead of
 judging its Goals by rules it does not know: ``test_run_resolutions`` (the
 Test Runs each Goal is frozen to, ADR 0072) is such a field.
+``input_paths``, ``input_topology_digest`` and ``protected_head_digest`` are
+required keys of every record.
 
 Nothing here touches the filesystem or Git; :mod:`booley.goals.store` owns
 persistence and :mod:`booley.goals.translate` owns GoalArg-to-Goal translation.
@@ -857,7 +859,9 @@ class GoalRecord:
     HEAD was on, ``branch`` the Goal Branch, ``branch_created`` whether entry
     created it. Finish fields: ``validated_head`` and ``package_digest``.
     ``protected_paths``, ``protected_digest`` (working view), and
-    ``protected_head_digest`` (HEAD view) are the D7 snapshot.
+    ``protected_head_digest`` (HEAD view) are the D7 snapshot. Entry saves the
+    two digests together at step 6, so they are ``None`` only together: in an
+    entering record and in a failed record rolled back before the snapshot.
     ``declared_protected_inputs`` retains the Project's optional versioned
     declarations and per-file working/HEAD properties for diagnostics.
     ``session_key`` is the entering session, an audit field only (D3).
@@ -879,6 +883,8 @@ class GoalRecord:
     original_ref: str
     base_sha: str
     entered_at: str
+    input_topology_digest: str
+    input_paths: Mapping[str, Any]
     revision: int = 0
     branch_created: bool = False
     session_key: str | None = None
@@ -896,8 +902,6 @@ class GoalRecord:
     finish_attempt_digest: str | None = None
     failure: str | None = None
     paired_project_base_sha: str | None = None
-    input_topology_digest: str | None = None
-    input_paths: Mapping[str, Any] | None = None
     project_snapshot: Mapping[str, str | None] | None = None
     publication_floor: int = 0
     finish_operation: str | None = None
@@ -933,7 +937,7 @@ class GoalRecord:
             "declared_protected_inputs": None
             if self.declared_protected_inputs is None
             else self.declared_protected_inputs.to_json(),
-            "input_paths": None if self.input_paths is None else dict(self.input_paths),
+            "input_paths": dict(self.input_paths),
             "project_snapshot": None
             if self.project_snapshot is None
             else dict(self.project_snapshot),
@@ -976,7 +980,12 @@ class GoalRecord:
             "finish_attempt_digest",
         ):
             _record_opt_digest(getattr(self, name), f"record.{name}")
-        _record_opt_digest(self.input_topology_digest, "input_topology_digest")
+        _record_digest(self.input_topology_digest, "input_topology_digest")
+        if (self.protected_digest is None) != (self.protected_head_digest is None):
+            raise GoalRecordFormatError(
+                "record.protected_head_digest must be null exactly when "
+                "record.protected_digest is null"
+            )
         if self.abandon_operation is not None:
             require_uuid4(self.abandon_operation, field="abandon_operation")
         if not 0 <= self.publication_floor <= self.revision:
@@ -1003,6 +1012,9 @@ _RECORD_KEYS = (
     "original_ref",
     "base_sha",
     "entered_at",
+    "input_topology_digest",
+    "input_paths",
+    "protected_head_digest",
 )
 
 
@@ -1051,7 +1063,7 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "protected_paths": tuple(
             _record_str_list(mapping.get("protected_paths", []), "record.protected_paths")
         ),
-        "protected_head_digest": mapping.get("protected_head_digest"),
+        "protected_head_digest": mapping["protected_head_digest"],
         "declared_protected_inputs": _record_declared_inputs(
             mapping.get("declared_protected_inputs")
         ),
@@ -1059,8 +1071,8 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "package_digest": mapping.get("package_digest"),
         "finish_attempt_digest": mapping.get("finish_attempt_digest"),
         "failure": _record_opt_str(mapping.get("failure"), "record.failure"),
-        "input_topology_digest": mapping.get("input_topology_digest"),
-        "input_paths": _record_input_paths(mapping.get("input_paths")),
+        "input_topology_digest": mapping["input_topology_digest"],
+        "input_paths": _record_input_paths(mapping["input_paths"]),
         "project_snapshot": _record_project_snapshot(mapping.get("project_snapshot")),
         "publication_floor": mapping.get("publication_floor", 0),
         "finish_operation": _record_opt_str(mapping.get("finish_operation"), "finish_operation"),
@@ -1156,11 +1168,9 @@ def _record_nonnegative_int(raw: object, where: str) -> int:
     return value
 
 
-def _record_input_paths(raw: object) -> dict[str, Any] | None:
+def _record_input_paths(raw: object) -> dict[str, Any]:
     from booley.goals.input_identity import parse_bindings
 
-    if raw is None:
-        return None
     try:
         return parse_bindings(raw)
     except ValueError as exc:
@@ -1199,8 +1209,10 @@ def _record_commit(raw: object, where: str) -> str:
 
 
 def _record_opt_digest(raw: object, where: str) -> str | None:
-    if raw is None:
-        return None
+    return None if raw is None else _record_digest(raw, where)
+
+
+def _record_digest(raw: object, where: str) -> str:
     try:
         return require_sha256_digest(raw, field=where)
     except BoundaryError as exc:

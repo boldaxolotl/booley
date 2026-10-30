@@ -41,6 +41,7 @@ from booley.goals.store import (
 )
 from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 from tests.conftest import symlink_or_skip
+from tests.goals.conftest import INPUT_PATHS
 from tests.goals.conftest import git as _git
 from tests.sharing_error_support import hold_opens
 
@@ -81,6 +82,10 @@ def _record(identity: WorktreeIdentity, goal_id: str, path: Path) -> GoalRecord:
         original_ref="refs/heads/work",
         base_sha=SHA,
         entered_at="2026-10-06T10:15:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
+        protected_digest=None,
+        protected_head_digest=None,
     )
 
 

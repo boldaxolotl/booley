@@ -78,6 +78,11 @@ def _record(directory: Path, state: GoalState, worktree: Path) -> GoalRecord:
         original_ref="refs/heads/main",
         base_sha="a" * 40,
         entered_at="2026-10-06T10:15:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths={
+            "rtl": {"path": str(worktree), "identity": [1, 2]},
+            "project": {"path": str(directory), "identity": [1, 3]},
+        },
         revision=1,
     )
     target = directory / "goals" / record.id / "record.json"
@@ -161,7 +166,6 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     assert "locked preserve" in git(tmp_path, "worktree", "list", "--porcelain")
     assert (tmp_path / NEW / "goals" / record.id / "record.json").read_bytes() == frozen
     assert GoalStore(tmp_path / NEW).load(record.id).worktree == identity
-    assert migration.archival_path(tmp_path / NEW, outer, record_id=record.id) == moved
     if paired:
         assert "prunable" not in git(tmp_path / NEW, "worktree", "list", "--porcelain")
         assert Path(git(moved / NEW, "rev-parse", "--show-toplevel")) == moved / NEW
@@ -239,53 +243,6 @@ def _linked_layout(tmp_path, paired, relative):
         nested.mkdir()
         (nested / "booley.toml").write_text("# snapshot\n")
     return old, outer
-
-
-@pytest.mark.parametrize("tamper", ["none", "corrupt", "missing_attempt", "missing_result"])
-def test_captured_v2_finish_replays_without_checkout_or_evidence_rewrite(tmp_path, tamper):
-    import shutil
-
-    from booley.goals.apply import ChangeEnvironment
-    from booley.goals.entry import EntryEnvironment
-    from booley.goals.finish import FinishEnvironment, finish_goal
-    from booley.goals.lifecycle import LifecycleError, LifecycleRequest
-    from booley.goals.status import build_status
-
-    fixture = Path(__file__).parent / "fixtures/directory_migration/finished-v2"
-    metadata = json.loads((fixture / "capture.json").read_bytes())
-    _repository(tmp_path)
-    shutil.copytree(fixture / "goals", tmp_path / OLD / "goals")
-    before = _snapshot(tmp_path / OLD / "goals")
-    migration.apply_migration(_inspect(tmp_path))
-    directory = tmp_path / NEW
-    assert _snapshot(directory / "goals") == before
-    store = GoalStore(directory)
-    record = store.load(metadata["record_id"])
-    operation = directory / "goals" / record.id / "operations" / metadata["operation_id"]
-    result = json.loads((operation / "result.json").read_bytes())
-    call = LifecycleRequest(
-        Path(record.worktree_path),
-        record.id,
-        metadata["operation_id"],
-        summary=metadata["summary"],
-        explain_html=True,
-    )
-    env = FinishEnvironment(ChangeEnvironment(EntryEnvironment(directory)))
-    if tamper != "none":
-        if tamper == "corrupt":
-            (operation / "attempt.json").write_text("{}")
-        else:
-            (
-                operation / ("attempt.json" if tamper == "missing_attempt" else "result.json")
-            ).unlink()
-        before = _snapshot(tmp_path)
-        with pytest.raises(LifecycleError, match=r"durable authority|missing"):
-            finish_goal(call, env)
-    else:
-        before = _snapshot(tmp_path)
-        assert finish_goal(call, env) == result
-        assert build_status(store, record).record.worktree == record.worktree
-    assert _snapshot(tmp_path) == before
 
 
 def test_recovery_rejects_unbound_journal_edit_without_writes(tmp_path, monkeypatch):
@@ -393,8 +350,6 @@ def test_post_migration_record_uses_ordinary_current_paths(tmp_path):
     migration.apply_migration(_inspect(tmp_path))
     directory = tmp_path / NEW
     record = _record(directory, GoalState.ACTIVE, tmp_path)
-    assert migration.archival_path(directory, tmp_path, record_id=record.id) == tmp_path
-    assert not migration.is_archived_record(directory, record.id)
     assert build_status(GoalStore(directory), record).record.id == record.id
 
 
@@ -461,39 +416,6 @@ def test_host_consumer_admission_is_visible_to_migration(tmp_path, monkeypatch):
     ):
         require_quiescent(tmp_path)
     require_quiescent(tmp_path)
-
-
-def test_captured_abandonment_replays_without_live_checkout(tmp_path):
-    import shutil
-
-    from booley.goals.abandon import abandon_goal
-    from booley.goals.apply import ChangeEnvironment
-    from booley.goals.entry import EntryEnvironment
-    from booley.goals.finish import FinishEnvironment
-
-    fixture = Path(__file__).parent / "fixtures/directory_migration/abandoned-v2"
-    metadata = json.loads((fixture / "capture.json").read_bytes())
-    _repository(tmp_path)
-    shutil.copytree(fixture / "goals", tmp_path / OLD / "goals")
-    migration.apply_migration(_inspect(tmp_path))
-    directory = tmp_path / NEW
-    store = GoalStore(directory)
-    record = store.load(metadata["record_id"])
-    operation = directory / "goals" / record.id / "operations" / metadata["operation_id"]
-    result = json.loads((operation / "result.json").read_bytes())
-    before = _snapshot(tmp_path)
-    assert (
-        abandon_goal(
-            store,
-            Path(record.worktree_path),
-            FinishEnvironment(ChangeEnvironment(EntryEnvironment(directory))),
-            record_id=record.id,
-            operation_id=metadata["operation_id"],
-            instruction_quote=metadata["instruction_quote"],
-        )
-        == result
-    )
-    assert _snapshot(tmp_path) == before
 
 
 def test_home_watcher_state_is_not_adopted_even_with_dotfiles_repository(tmp_path, monkeypatch):
@@ -912,13 +834,14 @@ def test_managed_ignore_rewrite_preserves_unrelated_bytes_and_line_endings(tmp_p
     )
 
 
-def test_captured_archive_replays_with_windows_lock_adapter(tmp_path, monkeypatch):
+def test_goal_store_locks_through_the_windows_adapter(tmp_path, monkeypatch):
     import os
     import sys
     from types import SimpleNamespace
 
     from booley.core import file_lock
     from booley.goals import store
+    from booley.goals.status import build_status
 
     calls = []
     adapter = SimpleNamespace(
@@ -927,5 +850,8 @@ def test_captured_archive_replays_with_windows_lock_adapter(tmp_path, monkeypatc
     monkeypatch.setitem(sys.modules, "msvcrt", adapter)
     monkeypatch.setattr(file_lock, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(store, "os", SimpleNamespace(name="nt", getpid=os.getpid, fstat=os.fstat))
-    test_captured_v2_finish_replays_without_checkout_or_evidence_rewrite(tmp_path, "none")
+    _repository(tmp_path)
+    directory = tmp_path / NEW
+    record = _record(directory, GoalState.ACTIVE, tmp_path)
+    build_status(GoalStore(directory), record)
     assert any(mode == adapter.LK_NBLCK for _, mode, _ in calls)

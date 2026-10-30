@@ -21,6 +21,7 @@ from booley.goals.changes import (
 )
 from booley.goals.model import GoalFamily, GoalRecord, GoalSpec, GoalState, WorktreeIdentity
 from booley.goals.store import GoalStore, GoalStoreError, RecordLock
+from tests.goals.conftest import INPUT_PATHS
 
 GOAL_ID = "fix-uart-20261006T101500Z"
 REPOSITORY = "1b4e28ba-2fa1-41d2-883f-0016d3cca427"
@@ -40,6 +41,8 @@ def locked(tmp_path: Path) -> Iterator[tuple[RecordLock, Path]]:
         original_ref="refs/heads/main",
         base_sha="a" * 40,
         entered_at="2026-10-06T10:15:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
     )
     with store.worktree_lock(identity) as wlock:
         store.create(wlock, record)

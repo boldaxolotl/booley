@@ -22,7 +22,7 @@ def protected_warnings(record: GoalRecord, booley_dir: Path, work_dir: Path) -> 
             protected_input_violations(
                 record.protected_paths,
                 record.protected_digest or "",
-                record.protected_head_digest,
+                record.protected_head_digest or "",
                 ProtectedInputRoots(work_dir, booley_dir).with_input_paths(record.input_paths),
                 record.declared_protected_inputs,
             )

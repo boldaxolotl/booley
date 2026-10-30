@@ -1,1 +1,0 @@
-Captured using unmodified Booley commit `dd102418c42e94db24c57086eccd78a281a52557` over a synthetic Git Project. The v2 finish attempt, authority, result and evidence bytes are retained unchanged. Absolute `/tmp/booley-1361-frozen-finish` paths are historical identities; the original checkout is deliberately unavailable during replay.

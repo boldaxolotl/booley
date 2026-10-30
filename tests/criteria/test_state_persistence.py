@@ -35,7 +35,6 @@ GOLDEN_STATE_FILE = """{
   "category_map": {
     "lint_clean_lite": "rtl"
   },
-  "all_mandatory_met": true,
   "timeline": [
     {
       "endpoint": "lint",
@@ -131,6 +130,19 @@ class TestDefaultStrategy:
 
         assert path.read_text(encoding="utf-8") == GOLDEN_STATE_FILE
         assert state.last_updated == FROZEN_NOW
+
+    def test_a_state_file_with_all_mandatory_met_loads_and_saves_without_it(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "booley_state.json"
+        saved = json.loads(GOLDEN_STATE_FILE)
+        saved["all_mandatory_met"] = True
+        path.write_text(json.dumps(saved, indent=2), encoding="utf-8")
+
+        DevelopmentState.load(path).save()
+
+        assert "all_mandatory_met" not in json.loads(path.read_text(encoding="utf-8"))
+        assert path.read_text(encoding="utf-8") == GOLDEN_STATE_FILE
 
     def test_state_without_file_path_saves_nothing(self, tmp_path: Path) -> None:
         state = DevelopmentState(slug="memory")

@@ -312,125 +312,42 @@ def test_abandonment_closure_requires_terminal_authority_and_recovers_crashes(
     assert closed.decision is None and closed.state == "pending"
 
 
-def legacy_attempt(complete, call):
+def _rewritten_attempt(complete, call, schema):
+    """A frozen attempt, crashed at ``attempt-frozen`` and rewritten as an earlier schema."""
     from booley.goals.proposals import digest, encode
-    from booley.review.goal_package import GoalCompletionPackage
-    from booley.review.goal_presentation_v1 import render_goal_briefing
 
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop_at("attempt-frozen")))
     directory = complete.control / "goals" / call.record_id / "operations" / call.operation_id
     authority = json.loads((directory / "attempt.authority.json").read_bytes())
     value = authority["value"]
-    value["schema"] = "booley.goal-finish-attempt/v1"
-    del value["presentation"]
-    capture = value.pop("private_capture")
-    value["package"]["input_proof"] = capture
-    value["package"].pop("earlier_attempts")
-    value["package_digest"] = digest(value["package"])
-    summary = render_goal_briefing(GoalCompletionPackage.from_json(value["package"])).encode()
-    import hashlib
-
-    value["summary_hex"] = summary.hex()
-    value["summary_digest"] = hashlib.sha256(summary).hexdigest()
+    value["schema"] = f"booley.goal-finish-attempt/{schema}"
+    if schema == "v1":
+        del value["presentation"]
+        value["package"]["input_proof"] = value.pop("private_capture")
+        value["package"].pop("earlier_attempts")
+        value["package_digest"] = digest(value["package"])
     authority["digest"] = digest(value)
     (directory / "attempt.json").write_bytes(encode(value))
     (directory / "attempt.authority.json").write_bytes(encode(authority))
-    return value, directory
+    return value
 
 
-@pytest.mark.parametrize("change_buffer", [False, True])
-def test_unpublished_legacy_buffers_require_fresh_operation(complete, monkeypatch, change_buffer):
-    call = request(complete, explain_html=True)
-    frozen, directory = legacy_attempt(complete, call)
-    before = (directory / "attempt.json").read_bytes()
-    if change_buffer:
-        (complete.control / "hooks" / "new-hook.py").parent.mkdir(exist_ok=True)
-        (complete.control / "hooks" / "new-hook.py").write_text("protected new input\n")
-    monkeypatch.setattr("booley.goals.finish.render_goal_briefing", lambda _: "upgraded renderer")
-    result = finish_goal(call, environment(complete))
-    record = GoalStore(complete.control).load(call.record_id)
-    assert result["status"] == "revalidation_required"
-    assert "legacy" in result["reason"] and record.state is GoalState.ACTIVE
-    assert record.publication_floor > frozen["record_revision"]
-    assert (directory / "attempt.json").read_bytes() == before
-    assert git(complete.worktree, "rev-parse", "HEAD") == frozen["inputs"]["rtl_pin"]
-    assert not (complete.worktree / frozen["path"]).exists()
-    assert finish_goal(call, environment(complete)) == result
-
-
-def publish_legacy_attempt(complete, call):
-    from booley.goals.finish_presentation import html_bytes
+@pytest.mark.parametrize("schema", ["v1", "v2"])
+def test_earlier_finish_attempt_schemas_are_refused(complete, schema):
+    from booley.goals.finish_attempt import validate_attempt
     from booley.goals.lifecycle import bind_operation
-    from booley.goals.proposals import digest, encode
-    from booley.runtime.pinned_history import (
-        PinnedPublication,
-        publication_pack,
-        publish_pinned,
-        raw_git,
-    )
 
-    frozen, directory = legacy_attempt(complete, call)
-    content = bytes.fromhex(frozen["summary_hex"])
-    with bind_operation(GoalStore(complete.control), call) as operation:
-        operation.store.save(
-            operation.lock,
-            replace(
-                operation.store.load(call.record_id),
-                state=GoalState.FINISHING,
-                finish_operation=call.operation_id,
-                validated_head=frozen["inputs"]["rtl_pin"],
-                package_digest="sha256:" + frozen["package_digest"],
-                finish_attempt_digest="sha256:" + digest(frozen),
-                publication_floor=frozen["record_revision"] + 1,
-            ),
-        )
-        (directory / "SUMMARY.md").write_bytes(content)
-        (directory / "review-package.json").write_bytes(encode(frozen["package"]))
-        (directory / "explanation.html").write_bytes(html_bytes(frozen))
-        destination = complete.worktree / frozen["path"]
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(content)
-        blob = (
-            raw_git(complete.worktree, "hash-object", "-w", "--no-filters", str(destination))
-            .strip()
-            .decode()
-        )
-        publication = PinnedPublication(
-            frozen["inputs"]["rtl_pin"], frozen["branch"], frozen["path"], blob
-        )
-        publish_pinned(
-            complete.worktree,
-            publication,
-            "legacy exact publication",
-            lambda commit: operation.write_sealed(
-                "publication",
-                {
-                    "blob": blob,
-                    "commit": commit,
-                    "pack_hex": publication_pack(
-                        complete.worktree, replace(publication, intended_commit=commit)
-                    ).hex(),
-                },
-            ),
-        )
-    return frozen, destination, content
-
-
-def test_proved_post_cas_legacy_replays_frozen_recipe_without_recapture(layout, monkeypatch):
-    import hashlib
-
-    complete = publication_layout(layout)
-    call = request(complete, explain_html=True)
-    frozen, destination, content = publish_legacy_attempt(complete, call)
-    head = git(complete.worktree, "rev-parse", "HEAD")
-    recreate(complete.worktree)
-    monkeypatch.setattr("booley.goals.finish.render_goal_briefing", lambda _: "changed renderer")
-    result = finish_goal(call, environment(complete))
-    assert result["status"] == "finished" and result["message"].encode() == content
-    assert hashlib.sha256(destination.read_bytes()).hexdigest() == frozen["summary_digest"]
-    assert git(complete.worktree, "rev-parse", "HEAD") == head
-    assert finish_goal(call, environment(complete)) == result
+    call = request(complete)
+    value = _rewritten_attempt(complete, call, schema)
+    with (
+        bind_operation(GoalStore(complete.control), call) as operation,
+        pytest.raises(
+            LifecycleError,
+            match="invalid frozen finish attempt: unknown finish attempt schema/fields",
+        ),
+    ):
+        validate_attempt(value, operation)
 
 
 @pytest.mark.parametrize(
@@ -646,31 +563,6 @@ def test_prefence_presentation_substitution_refuses_before_effects(complete, cha
     assert not (directory / "SUMMARY.md").exists()
     assert not (complete.control / "outside.json").exists()
     assert GoalStore(complete.control).load(call.record_id).state is GoalState.ACTIVE
-
-
-def test_legacy_revalidation_then_v2_success_replaces_only_proved_canonical_bytes(complete):
-    from booley.goals.proposals import encode
-
-    call = request(complete, explain_html=True)
-    frozen, directory = legacy_attempt(complete, call)
-    record_dir = directory.parent.parent
-    prior = {
-        "SUMMARY.md": bytes.fromhex(frozen["summary_hex"]),
-        "review-package.json": encode(frozen["package"]),
-    }
-    for name, content in prior.items():
-        (record_dir / name).write_bytes(content)
-    assert finish_goal(call, environment(complete))["status"] == "revalidation_required"
-    result = finish_goal(request(complete), environment(complete))
-    assert result["status"] == "finished"
-    assert (record_dir / "SUMMARY.md").read_bytes() == Path(result["summary"]).read_bytes()
-    assert (record_dir / "review-package.json").read_bytes() == Path(
-        result["package"]
-    ).read_bytes()
-    facts = json.loads(Path(result["package"]).read_bytes())
-    assert facts["earlier_attempts"][0]["operation_id"] == call.operation_id
-    assert facts["earlier_attempts"][0]["outcome"] == "revalidation_required"
-    assert json.loads((directory / "attempt.json").read_bytes()) == frozen
 
 
 @pytest.mark.parametrize(

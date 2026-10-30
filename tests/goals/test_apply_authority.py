@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -167,25 +168,24 @@ def test_digest_covers_complete_canonical_body_without_self_reference(layout):
 
 
 @pytest.mark.parametrize("answer", ["approve", "reject"])
-def test_terminal_legacy_metadata_without_authority_remains_readable(layout, answer):
+def test_decided_proposal_without_transaction_digest_is_an_invalid_record(layout, answer):
     env = setup_cycle(layout)
     view = proposal(layout, env)
     approve(layout, env, view.proposal.id, answer=answer)
     root = record_paths(layout.control, layout.record.id).root
-    path = proposal_path(root, view.proposal.id) / "state.json"
-    legacy = json.loads(path.read_bytes())
-    legacy.pop("transaction_digest")
-    path.write_text(json.dumps(legacy))
-    before = snapshot(root)
-    assert load_proposal(root, view.proposal.id).transaction_digest is None
-    recover(env.store, layout.record.id, env)
-    assert before == snapshot(root)
-    assert resume_proposal(env, layout.record.id, view.proposal.id).state == (
-        "applied" if answer == "approve" else "rejected"
-    )
+    directory = proposal_path(root, view.proposal.id)
+    state = json.loads((directory / "state.json").read_bytes())
+    state.pop("transaction_digest")
+    (directory / "state.json").write_text(json.dumps(state))
+    with pytest.raises(
+        ProposalError,
+        match=r"cannot read proposal .*: invalid prepared transaction authority digest",
+    ) as raised:
+        load_proposal(root, view.proposal.id)
+    assert raised.value.path == directory
 
 
-def test_unresolved_legacy_capture_without_separate_authority_fails_closed(layout):
+def test_interrupted_apply_without_captured_transaction_is_an_invalid_record(layout):
     env = setup_cycle(layout)
     view = proposal(layout, env)
     path, _captured = interrupted_transaction(layout, env, view, boundary="intent")
@@ -195,9 +195,22 @@ def test_unresolved_legacy_capture_without_separate_authority_fails_closed(layou
     raw.pop("transaction_digest")
     metadata.write_text(json.dumps(raw))
     before = snapshot(root)
-    with pytest.raises(ProposalError, match="durable decision authority"):
+    with pytest.raises(ProposalError, match="invalid prepared transaction authority digest"):
         recover(env.store, layout.record.id, env)
     assert before == snapshot(root)
+
+
+def test_interrupted_intent_without_its_proposal_is_an_invalid_record(layout):
+    env = setup_cycle(layout)
+    view = proposal(layout, env)
+    path, _captured = interrupted_transaction(layout, env, view, boundary="intent")
+    root = path.parent.parent
+    shutil.rmtree(proposal_path(root, view.proposal.id))
+    with pytest.raises(
+        ProposalError, match="Change Log intent names no prepared Goal apply"
+    ) as raised:
+        recover(env.store, layout.record.id, env)
+    assert raised.value.path == record_paths(layout.control, layout.record.id).changes_file
 
 
 @pytest.mark.parametrize(

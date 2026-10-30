@@ -111,6 +111,12 @@ def _initialize_snapshot_git(snapshot_root: Path) -> None:
             "user.name=Booley",
             "-c",
             "user.email=booley@localhost",
+            # Keep Git from spawning detached auto-maintenance that would still hold
+            # files inside the snapshot (objects/maintenance.lock) while it is removed.
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
             "commit",
             "--quiet",
             "--allow-empty",
