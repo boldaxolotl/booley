@@ -99,6 +99,11 @@ class DeclaredCapture:
         return cls(rules, *views)
 
 
+def empty_view_json() -> dict[str, Any]:
+    """The digest view of a Project that declares no protected files."""
+    return {"schema": CAPTURE_SCHEMA, "declarations": [], "files": []}
+
+
 def _parse_files(raw: object, rules: Sequence[str]) -> tuple[DeclaredFile, ...]:
     files = tuple(
         DeclaredFile.from_json(item) for item in require_list(raw, field="declared files")

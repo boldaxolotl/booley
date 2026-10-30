@@ -659,8 +659,8 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
     import hashlib
 
     from booley.goals.finish import render_goal_briefing
+    from booley.goals.finish_presentation import render_goal_html
     from booley.goals.review_package import canonical_json
-    from booley.review.goal_presentation_v1 import render_goal_html
 
     old_path = logs / "acceptance/transactions" / (old_transaction.transaction_id + ".json")
     assert (

@@ -46,7 +46,6 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D28", "booley.fusesoc.core_security", "booley.runtime.git", "seed.py"),
         ("D18", "booley.config.agent", "booley.runtime.agent_backend", "seed.py"),
         ("D21", "booley.review.goal_package", "booley.harness.booley", "seed.py"),
-        ("D21", "booley.review.goal_presentation_v1", "booley.harness.booley", "seed.py"),
         ("D15", "booley.flows", "booley.mcp", "flows/__init__.py"),
         ("D15", "booley.flows.base", "booley.mcp.base", "flows/base.py"),
         ("D15", "booley.flows.sim.flow", "booley.mcp.schema_extractor", "seed.py"),

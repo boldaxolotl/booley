@@ -198,8 +198,8 @@ A Project adds files to this set with `[project].protected_inputs`, read from
 the Goal worktree's effective configuration and resolved against the worktree
 root. For declared files, Goal entry also stores a versioned per-file capture of
 path, contents, type, and executable bit, separately for the working tree and
-HEAD, so a violation can name the file. Without declarations the stored digest
-is unchanged. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
+HEAD, so a violation can name the file. The digest uses one format whether or
+not the Project declares files. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
 Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.

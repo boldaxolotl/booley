@@ -576,8 +576,8 @@ def test_target_less_review_finishes_without_unused_target_producer(layout, monk
     )
     assert result["status"] == "finished"
     from booley.goals.finish import render_goal_briefing
+    from booley.goals.finish_presentation import render_goal_html
     from booley.review.goal_package import GoalCompletionPackage
-    from booley.review.goal_presentation_v1 import render_goal_html
 
     payload = Path(result["package"]).read_text()
     package = GoalCompletionPackage.from_json(json.loads(payload))

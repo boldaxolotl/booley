@@ -365,9 +365,10 @@ def _closure_timestamp(value: object) -> str | None:
 
 
 def _transaction_digest(value: object, decision: Decision | None) -> str | None:
-    if value is None:
-        return None  # Terminal legacy metadata remains readable; recovery requires a binding.
-    result = text(value, "transaction_digest")
+    if value is None and decision is None:
+        return None  # A pending proposal has no prepared transaction yet.
+    # A decided proposal without a digest fails the format check below.
+    result = "" if value is None else text(value, "transaction_digest")
     if (
         decision is None
         or decision.transaction_id is None

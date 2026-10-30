@@ -180,7 +180,6 @@
     }
   },
   "category_map": {},
-  "all_mandatory_met": true,
   "timeline": [],
   "acceptance_transactions": [
     "9d208a710985ead1bbe86198d906734ebc47b5f6bd3fa47d3e2adab65eaced4c"
