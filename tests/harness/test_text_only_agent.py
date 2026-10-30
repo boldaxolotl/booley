@@ -122,6 +122,15 @@ def test_text_only_corrupt_models_cache_still_fails_loud(tmp_path):
         prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
 
 
+def test_text_only_duplicate_model_in_cache_still_fails_loud(tmp_path):
+    """A slug listed twice is an ambiguous cache, not a missing model."""
+    entries = [{"slug": "m", "context_window": 1}] * 2
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": entries}))
+    params = AgentCallParams(prompt="Analyze", model="m", cwd=tmp_path, text_only=True)
+    with pytest.raises(ValueError, match="exactly one"):
+        prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
+
+
 def test_text_only_codex_may_expose_one_scoped_nested_mcp_tool(tmp_path):
     cache = tmp_path / "original"
     cache.mkdir()

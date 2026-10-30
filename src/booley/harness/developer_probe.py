@@ -170,8 +170,11 @@ def measure_developer_rss(
     :data:`FALLBACK_BYTES`.
     """
     # A scratch cwd keeps the text-only Codex home (with its auth link) out of the Project.
-    with owned_tempdir("booley-developer-probe-") as work:
-        return _measure_in(project_root, work, timeout_s, getrusage)
+    try:
+        with owned_tempdir("booley-developer-probe-") as work:
+            return _measure_in(project_root, work, timeout_s, getrusage)
+    except OSError as exc:  # fail-soft by contract: an unusable temp dir becomes a doctor SKIP
+        raise ProbeError(f"probe agent failed: {exc}") from exc
 
 
 def _measure_in(

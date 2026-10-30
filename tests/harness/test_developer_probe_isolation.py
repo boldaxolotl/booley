@@ -71,6 +71,7 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
         async def capture(*cmd, env, **_kwargs):
             config = Path(env["CODEX_HOME"]) / "config.toml"
             seen["cmd"] = cmd
+            seen["config_exists"] = config.exists()
             seen["config"] = config.read_text(encoding="utf-8") if config.exists() else ""
             catalog = Path(env["CODEX_HOME"]) / "model-catalog.json"
             seen["catalog"] = catalog.read_text(encoding="utf-8") if catalog.exists() else ""
@@ -97,8 +98,21 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
         assert (options.mcp_servers, options.tools) == ({}, [])
         assert options.strict_mcp_config is True
         return
+    # Native mode writes no config at all; gateway mode writes the provider only.
+    assert seen["config_exists"] is (flavor == "codex-gateway")
     assert "mcp_servers" not in seen["config"]
     assert "features.shell_tool=false" in seen["cmd"]
     assert any(str(part).startswith("model_catalog_json=") for part in seen["cmd"])
     assert '"shell_type": "disabled"' in seen["catalog"]
     assert ("booley_gateway" in seen["config"]) is (flavor == "codex-gateway")
+
+
+def test_probe_scratch_failure_is_a_probe_error(sandbox, monkeypatch):
+    """The probe's fail-soft contract covers a temp directory that cannot be created."""
+
+    def refuse(_prefix):
+        raise OSError("read-only temp")
+
+    monkeypatch.setattr(developer_probe, "owned_tempdir", refuse)
+    with pytest.raises(developer_probe.ProbeError, match="read-only temp"):
+        developer_probe.measure_developer_rss(sandbox)
