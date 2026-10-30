@@ -5,10 +5,10 @@ the whole sheet. Section flags (``--criteria``, ``--flows``, ...) select
 individual slices: the Goal skill only needs the criteria catalog, a user
 debugging a container only needs the Sandbox & Docker table.
 
-``render_index`` draws the section index. Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
+Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
 pins each to a stable CLI flag name. A heading in the file with no entry here
 is unreachable by flag, so ``tests/harness/test_cheatsheet.py`` guards the two
-against drift.
+against drift. ``render_index`` draws the section index.
 """
 
 from __future__ import annotations
