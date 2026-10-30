@@ -149,29 +149,6 @@ class _GeneratorExecution:
         yield self.group
 
 
-def _names_only_work_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Work items as manifests before v4 wrote them: Tests named, no Test Runs."""
-    legacy = []
-    for item in items:
-        identity = {
-            key: value
-            for key, value in item.items()
-            if key not in {"test_runs", "fingerprint_sha256", "work_item_id"}
-        }
-        from booley.flows.sim.campaign.planning import canonical_sha256
-
-        fingerprint = canonical_sha256(identity)
-        legacy.append(
-            {
-                "work_item_id": f"item:{item['ordinal']:04d}:"
-                + fingerprint.removeprefix("sha256:")[:16],
-                **identity,
-                "fingerprint_sha256": fingerprint,
-            }
-        )
-    return legacy
-
-
 def _selection_test_runs(names):
     return [test_run_document(build_test_run(name)) for name in names or (None,)]
 
@@ -1433,8 +1410,7 @@ def _prepared_diagnostic_pair():
     "case",
     [
         json.loads(line)
-        for name in ("prepared_manifest_pairs", "v4_manifest_pairs")
-        for line in (Path(__file__).parent / f"fixtures/{name}.jsonl")
+        for line in (Path(__file__).parent / "fixtures/v4_manifest_pairs.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
     ],

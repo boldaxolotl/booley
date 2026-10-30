@@ -1246,18 +1246,8 @@ def _direct_coverage_pre_sim_lines(target: str, tests: object) -> list[str]:
 def _manifest_run_groups(
     manifest: SimulationCampaignManifest,
 ) -> tuple[tuple[TestRun, ...], ...]:
-    """The Test Runs of each work item, exactly as the manifest froze them.
-
-    A manifest older than v4 names Tests only. It cannot be resumed: planning
-    it again would add seeds its work items never had, so it fails closed.
-    """
+    """The Test Runs of each work item, exactly as the manifest froze them."""
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
-    if any("test_runs" not in item for item in items):
-        raise SimulationCampaignIntegrityError(
-            "this Simulation Campaign manifest predates recorded Test Runs "
-            f"({manifest.document['$schema']}) and cannot be resumed; "
-            "start a new Simulation Campaign"
-        )
     return tuple(
         tuple(
             test_run_from_document(entry) for entry in cast(tuple[object, ...], item["test_runs"])
@@ -3964,20 +3954,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else DevelopmentState(),
             recorder=self._acceptance_recorder,
         )
-        runs = (
-            tuple(
-                test_run_from_document(entry)
-                for entry in cast(tuple[object, ...], items[0]["test_runs"])
-            )
-            if "test_runs" in items[0]
-            else None
+        runs = tuple(
+            test_run_from_document(entry)
+            for entry in cast(tuple[object, ...], items[0]["test_runs"])
         )
         prepared = prepare_coverage_invocation(
             CoverageInvocationRequest(
                 (target["selector"],),
                 tests=names,
-                # A v4 manifest froze its Test Runs: resume never resolves again.
-                test_runs={} if runs is None else {target["selector"]: runs},
+                # The manifest froze its Test Runs: resume never resolves again.
+                test_runs={target["selector"]: runs},
                 trace=cast(bool, workload["trace"]),
                 no_waivers=_manifest_no_waivers(manifest),
                 diagnostic=self.args.diagnostic,

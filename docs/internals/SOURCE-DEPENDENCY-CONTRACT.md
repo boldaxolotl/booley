@@ -393,7 +393,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
-| D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
+| D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10, C12-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
@@ -419,7 +419,7 @@ type-only positions. A companion AST ownership gate rejects static access to
 `CampaignStore`, `CampaignRecovery`, `WorkItemRecovery`, and
 `SharedBuildRecovery` through any Campaign module outside the exact store owners.
 Tests, arbitrary dynamic-name access, and dynamic-import expressions remain
-outside this production static gate. A live-edge ratchet requires every C10-C13
+outside this production static gate. A live-edge ratchet requires every C10, C12-C13
 permission to correspond to a current exact production edge.
 
 ## Criterion evidence ownership
@@ -489,7 +489,6 @@ named rule and gives no source module a blanket exemption.
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
-| C11 | D31 | `booley.flows.sim.campaign.child_protocol -> booley.flows.sim.campaign.store` | Recovery of v0.3.0 Campaign child records reads and retires durable Campaign paths. |
 | C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | Public read capabilities inspect storage through the private Campaign store. |
 | C13 | D31 | `booley.flows.sim.campaign -> booley.flows.sim.campaign.inspection` | The Campaign package facade publishes the storage-backed read capabilities. |
 

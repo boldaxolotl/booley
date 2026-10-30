@@ -1201,19 +1201,16 @@ Current Campaigns write no child records: each parallel lane has only its
 execution record and context sidecar, and its attempt names the lane's execution
 ID. Before removing an interrupted attempt's run directory, resume and full
 pruning cancel that lane execution and fail closed unless it is tree-terminal.
-Records written by Booley 0.3.0 are still recovered, retired and released as
-follows. Full pruning releases matching retired child-execution index entries
-before it removes the invocation. When authenticated surviving external resources exist,
-it first performs bounded recovery/cancellation of exact Campaign-mirrored orphan
-process trees, proves them terminal, reconciles their heavy-slot tokens, publishes
-retirement mirrors, and marker-authenticates cleanup of owned templated run
-directories. It does not require or inspect the Booley Directory when no such resource
-survives. Literal run directories are untouched.
+Full pruning also marker-authenticates cleanup of owned templated run directories.
+Recovering one
+invocation requires the Booley Directory only when such a resource survives;
+`--include-dependents` requires it for every interrupted dependent Campaign. It does not
+require or inspect the Booley Directory otherwise. Literal run directories are untouched.
 The Booley Directory root is inferred only when the report
 root is exactly `<booley-directory>/.runtime/flow-reports`. A nonstandard report
 root therefore requires `--project-data <resolved-booley-directory>` for `--full`
-when Campaign child records exist. Native-only pruning does not inspect or
-release those records and does not require the option.
+when an interrupted lane or owned run directory must be recovered. Native-only pruning
+does not require the option.
 
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,

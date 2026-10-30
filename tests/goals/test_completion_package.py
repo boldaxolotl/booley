@@ -548,30 +548,32 @@ def test_historical_inventory_body_omission_preserves_original_digest_and_refere
 
 def _publish_current_base_simulation(layout):
     from booley.criteria.state import DevelopmentState
-    from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
+    from booley.flows.sim.campaign.codec import (
+        MANIFEST_SCHEMA,
+        encode_simulation_campaign_manifest,
+    )
     from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
     from booley.goals.paths import record_paths
     from booley.goals.recorder import GoalEvidenceRecorder
-    from tests.flows.sim.campaign_legacy_fixtures import _legacy_manifest
-    from tests.flows.sim.test_campaign_manifest_codec import _manifest_components
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest_components, _manifest_work
     from tests.goals.conftest import bind, campaign_facts
 
-    target, _recipe, _build, workload, suite = _manifest_components()
+    target, recipe, build, workload, suite = _manifest_components()
     target.update(vlnv="::base:0", name="base", selector="base", revision="abc123")
-    legacy = _legacy_manifest(target=target)
+    variants, items = _manifest_work(target, recipe, build, workload)
     manifest = finalize_manifest(
         {
-            "$schema": "booley.simulation-campaign-manifest/v1",
+            "$schema": MANIFEST_SCHEMA,
             "campaign_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": "b" * 32, "invocation_id": 8},
             "target": target,
             "workload": workload,
             "required_suite": suite,
-            "build_variants": legacy["build_variants"],
+            "build_variants": variants,
             "planning_disclosures": [],
             "prerequisites": [],
-            "work_items": legacy["work_items"],
+            "work_items": items,
         }
     )
     paths = record_paths(layout.control, layout.record.id)

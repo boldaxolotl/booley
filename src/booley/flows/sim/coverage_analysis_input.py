@@ -12,12 +12,14 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign import (
-    ProjectionTrust,
     SimulationProjection,
     decode_simulation_projection,
     resolve_artifact_reference,
 )
-from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
+from booley.flows.sim.campaign.codec import (
+    MANIFEST_MAX_BYTES,
+    UnsupportedSimulationCampaignFormatError,
+)
 from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
@@ -87,6 +89,8 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             authenticated = authenticate_coverage_campaign_owner(resolved)
             _reference_projection(path, projection, resolved, authenticated)
         return loaded
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CoverageAnalysisError(str(exc)) from exc
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
             f"Cannot analyze Campaign at {path}: {exc}. Use an exact retained, completed Target Campaign; fully pruned invocations cannot be analyzed."
@@ -110,10 +114,13 @@ def _projection(
     path: Path, campaign: CoverageCampaign, *, coverage_expected: bool
 ) -> SimulationProjection:
     _safe_path(path)
-    projection = decode_simulation_projection(
-        require_dict(json.loads(path.read_text(encoding="utf-8"))),
-        coverage_expected=coverage_expected,
-    )
+    try:
+        projection = decode_simulation_projection(
+            require_dict(json.loads(path.read_text(encoding="utf-8"))),
+            coverage_expected=coverage_expected,
+        )
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise exc.located(path.parents[2]) from None
     expected = {
         "flow": "sim",
         "target": campaign.target.selector,
@@ -136,37 +143,35 @@ def _reference_projection(
 ) -> None:
     """Authenticate a Simulation projection through local Simulation Campaign bytes.
 
-    The legacy absolute manifest and summary strings are compatibility hints.
     Authority comes from the locally supplied Coverage reference, its enclosing
     authenticated Simulation Campaign, and the projection's Target/verdict fields.
     """
     expected_manifest = (public_path.parent / "campaign" / "manifest.json").absolute()
     document = projection.document
     owner = str(resolved.reference.document["simulation_campaign_id"])
-    if projection.trust is ProjectionTrust.AUTHENTICATED:
-        if document.get("campaign_id") != owner:
-            raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
-        entry = crossed_booley_dir_entry(public_path)
-        manifest_artifact = resolve_artifact_reference(
-            document.get("campaign_manifest"),
-            bases={"origin_target": public_path.parent},
-            allowed_bases={"origin_target"},
-            expected_kind="simulation_campaign_manifest",
-            expected_owner=owner,
-            maximum=MANIFEST_MAX_BYTES,
-            booley_dir=entry,
-        )
-        coverage_artifact = resolve_artifact_reference(
-            document.get("coverage_campaign"),
-            bases={"origin_target": public_path.parent},
-            allowed_bases={"origin_target"},
-            expected_kind="coverage_campaign_reference",
-            expected_owner=owner,
-            maximum=MAX_REFERENCE_BYTES,
-            booley_dir=entry,
-        )
-        if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
-            raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
+    if document.get("campaign_id") != owner:
+        raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
+    entry = crossed_booley_dir_entry(public_path)
+    manifest_artifact = resolve_artifact_reference(
+        document.get("campaign_manifest"),
+        bases={"origin_target": public_path.parent},
+        allowed_bases={"origin_target"},
+        expected_kind="simulation_campaign_manifest",
+        expected_owner=owner,
+        maximum=MANIFEST_MAX_BYTES,
+        booley_dir=entry,
+    )
+    coverage_artifact = resolve_artifact_reference(
+        document.get("coverage_campaign"),
+        bases={"origin_target": public_path.parent},
+        allowed_bases={"origin_target"},
+        expected_kind="coverage_campaign_reference",
+        expected_owner=owner,
+        maximum=MAX_REFERENCE_BYTES,
+        booley_dir=entry,
+    )
+    if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
+        raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
     reference = resolved.reference.document

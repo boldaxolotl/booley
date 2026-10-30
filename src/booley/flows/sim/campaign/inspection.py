@@ -247,9 +247,7 @@ def authenticate_retained_campaign_inventory(
 def recover_retained_campaign_resources(
     status: RetainedCampaignStatus, project_data: Path | None, *, booley_dir: Path | None = None
 ) -> None:
-    """Recover child records, interrupted lanes and interrupted owned run directories."""
-    from booley.runtime.job_slots import SlotStore
-
+    """Recover interrupted lanes and interrupted owned run directories."""
     from .child_protocol import ChildExecutionRegistry
     from .run_directory import (
         cleanup_interrupted_run_directory,
@@ -257,29 +255,17 @@ def recover_retained_campaign_resources(
     )
 
     store = _store_for_manifest(status.manifest_path, booley_dir)
-    children = store.root / "child-executions" / "entries"
-    unretired = (
-        tuple(
-            path
-            for path in children.glob("*.json")
-            if not (store.root / "child-executions" / "retired" / path.name).is_file()
-        )
-        if children.is_dir()
-        else ()
-    )
     surviving_runs = _surviving_owned_run_directories(store, status.interrupted)
     interrupted_lanes = _interrupted_lane_ids(store, status.interrupted)
-    if (unretired or surviving_runs or interrupted_lanes) and project_data is None:
+    if (surviving_runs or interrupted_lanes) and project_data is None:
         raise SimulationCampaignIntegrityError(
             "Booley Directory is required to recover retained Campaign resources"
         )
     if project_data is None:
         return
     registry = ChildExecutionRegistry.from_project_data(
-        store, status.manifest, project_data, booley_dir=booley_dir
+        status.manifest, project_data, booley_dir=booley_dir
     )
-    if unretired:
-        registry.recover_selected_unretired(SlotStore(project_data / "runtime" / "jobs" / "slots"))
     for lane_id in interrupted_lanes:
         # Fail closed before any interrupted run directory is removed.
         registry.recover_lane(lane_id)

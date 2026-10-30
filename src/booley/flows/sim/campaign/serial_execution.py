@@ -527,7 +527,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             None,
             True,
             commands=_frozen_hook_commands(request),
-            test_runs=_work_item_test_runs(request.work_item) or (),
+            test_runs=_work_item_test_runs(request.work_item),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -692,7 +692,7 @@ def _immutable_hook_failure(
         run_cwd,
         False,
         commands=_frozen_hook_commands(request),
-        test_runs=_work_item_test_runs(request.work_item) or (),
+        test_runs=_work_item_test_runs(request.work_item),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -873,18 +873,16 @@ def _fresh_shared_failure(
     )
 
 
-def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...] | None:
-    """The concrete Test Runs a work item froze, or ``None`` before manifest v4.
+def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
+    """The concrete Test Runs a work item froze.
 
     The manifest codec already validated every record, so a decode failure
     here means the record was altered after validation.
     """
-    documents = work_item.get("test_runs")
-    if documents is None:
-        return None
     try:
         return tuple(
-            test_run_from_document(entry) for entry in cast(tuple[object, ...], documents)
+            test_run_from_document(entry)
+            for entry in cast(tuple[object, ...], work_item["test_runs"])
         )
     except ValueError as exc:
         raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
@@ -1539,8 +1537,6 @@ def _named_observations(
 ) -> list[dict[str, object]]:
     """The observations, each naming the Test Run it observed."""
     bound = observation_test_runs(work_item, observations)
-    # Every written manifest is v4 (resume refuses older ones), so Test Runs are recorded.
-    assert bound is not None
     return [
         {**observation, "test_run": name}
         for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
