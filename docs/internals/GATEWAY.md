@@ -22,7 +22,7 @@ hand-written devcontainer. Booley-issued Sandboxes take their policy from
 | `BOOLEY_GATEWAY_TOKEN_COMMAND` | A command that prints the current token, used instead of `BOOLEY_GATEWAY_TOKEN` when the token is short-lived. Set exactly one of the two. |
 
 With `BOOLEY_AGENT_APP=auto`, leave `BOOLEY_PRIMARY_AUTH` unset or `auto`:
-the gateway is then used only when the visitor has no Claude or Codex
+the gateway is then used only when the user has no Claude or Codex
 credential (see [the agent app](../user/SANDBOX.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
 
 `[agent] provider` must be `codex`. Codex Specialists use the gateway; no

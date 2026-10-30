@@ -279,8 +279,7 @@ def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
 
     from booley.config import agent_app
 
-    choice = agent_app.auto_choice()
-    app_provider = choice.app if choice else os.environ.get("BOOLEY_AGENT_APP")
+    app_provider = agent_app.resolved_app(os.environ.get("BOOLEY_AGENT_APP"))
     if app_provider in _VALID_PROVIDERS:
         logger.info(
             "Resolved provider=%s from BOOLEY_AGENT_APP (no developer "
@@ -476,8 +475,7 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
     if provider is None:
         from booley.config import agent_app
 
-        choice = agent_app.auto_choice()
-        provider = choice.app if choice else _DEFAULT_PROVIDER
+        provider = agent_app.resolved_app(_DEFAULT_PROVIDER)
     if gateway_handoff_active():
         # Env-only policy: it has no toml home, so it overrides the toml value.
         auth = GATEWAY_AUTH
@@ -597,7 +595,8 @@ _parse_auth = parse_auth
 def env_auth_handoff() -> str | None:
     """The normalized ``BOOLEY_PRIMARY_AUTH`` hand-off, or ``None`` when unset/blank.
 
-    The single reader of the variable, so a Specialist subprocess, the MCP
+    The single consumer-side reader of the variable (the registrar's resolver
+    alone reads the raw value, once per start, to publish it), so a Specialist subprocess, the MCP
     server, Doctor and ``booley auth --status`` cannot disagree about spellings
     such as ``"gateway "``. Validity is judged by :func:`_env_auth`.
 

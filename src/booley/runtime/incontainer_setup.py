@@ -743,6 +743,20 @@ def _apply_claude_credential(token: str | None, home: Path | None = None) -> str
     return "written"
 
 
+def is_registrar_codex_key_file(path: Path) -> bool:
+    """Whether *path* is exactly the single-key ``auth.json`` this module writes.
+
+    Such a file is a copy of a stored or exported API key, not a Codex login,
+    so it must not count as the visitor's credential on a later start.
+    """
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    var = auth_token.CREDENTIALS[auth_token.APP_CODEX].env_var
+    return isinstance(existing, dict) and set(existing) == {var}
+
+
 def _apply_codex_credential(token: str | None, home: Path | None = None) -> str:
     """Sync ``~/.codex/auth.json`` with the stored API key *token*.
 

@@ -86,8 +86,18 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
     raw_policy = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip().lower() or None
     policy = None if raw_policy == GATEWAY_AUTH else raw_policy
     lookup = policy or "auto"
-    claude = auth_token.effective_credential(auth_token.APP_CLAUDE, lookup)
-    codex = auth_token.effective_credential(auth_token.APP_CODEX, lookup)
+    # Look where registration looks ($HOME), so the published reason names a
+    # credential the registered app will really use.
+    home = incontainer_setup._agent_home()
+    claude = auth_token.effective_credential(auth_token.APP_CLAUDE, lookup, home=home)
+    codex = auth_token.effective_credential(auth_token.APP_CODEX, lookup, home=home)
+    if (
+        codex is not None
+        and codex.mode == auth_token.MODE_SUBSCRIPTION
+        and incontainer_setup.is_registrar_codex_key_file(Path(codex.source))
+    ):
+        # The previous start's own auth.json copy of a key that is gone now: not a login.
+        codex = None
     if claude is not None:
         reason = f"Claude credential from {claude.source}"
         if codex is not None:

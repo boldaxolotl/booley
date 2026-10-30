@@ -2820,8 +2820,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
             return declared
     from booley.config import agent_app
 
-    choice = agent_app.auto_choice()
-    app_provider = choice.app if choice else (os.environ.get("BOOLEY_AGENT_APP") or "").strip()
+    app_provider = agent_app.resolved_app((os.environ.get("BOOLEY_AGENT_APP") or "").strip())
     if app_provider in _VALID_PROVIDERS:
         return app_provider
     return _DEFAULT_PROVIDER

@@ -10,8 +10,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 ## Unreleased
 
 - `BOOLEY_AGENT_APP=auto` (hand-written Sandbox specs, such as a Codespace) now
-  picks the agent app from the visitor's credentials at every start: Claude, then
-  Codex, then a configured gateway, then Claude with its login offered. A visitor's
+  picks the agent app from the user's credentials at every start: Claude, then
+  Codex, then a configured gateway, then Claude with its login offered. A user's
   own credential beats the gateway. Specialists, the MCP server, `booley chat` and
   Doctor follow the registrar's choice, Doctor reports it and why, and `auto`
   outside a Sandbox is refused. Explicit `claude`, `codex` and `none` are unchanged.

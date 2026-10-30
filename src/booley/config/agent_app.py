@@ -83,4 +83,13 @@ def auto_choice() -> AgentAppChoice | None:
         raise AgentAppError(unresolved) from exc
     if not isinstance(document, dict) or document.get("schema") != _RECORD_SCHEMA:
         raise AgentAppError(unresolved)
-    return AgentAppChoice(document["app"], document["policy"], document["reason"])
+    try:
+        return AgentAppChoice(document["app"], document["policy"], document["reason"])
+    except KeyError as exc:
+        raise AgentAppError(unresolved) from exc
+
+
+def resolved_app(fallback: str | None) -> str | None:
+    """The start's app under ``auto``; otherwise *fallback* (the explicit value)."""
+    choice = auto_choice()
+    return choice.app if choice else fallback

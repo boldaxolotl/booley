@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -176,7 +177,7 @@ def _provider_persistence_current(
 ) -> bool:
     spec_app = dc.spec_agent_app(spec)
     pinned = request.declared_provider
-    if pinned is not None and spec_app == "auto":
+    if pinned is not None and spec_app == agent_app.AUTO_APP:
         # "auto" resolves per start; a Sandbox without the pinned app's
         # credential registers the other app while Specialists keep the pin.
         _spec_warning(
