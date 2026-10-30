@@ -22,7 +22,6 @@ from booley.flows.sim.coverage_campaign import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V4,
     CAMPAIGN_SCHEMA_V5,
     CoverageCampaignStoreError,
     load_coverage_campaign,
@@ -266,19 +265,6 @@ def test_invalid_scoring_summary_and_deep_load_retain_points(tmp_path: Path) -> 
     assert loaded.summary.document["scoring"] == {"reason": "collector_error", "status": "invalid"}
     assert loaded.campaign.points
     assert loaded.campaign.rollups == ()
-
-
-def test_valid_v4_remains_readable_with_runs_named_by_their_test(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    rewrite_manifest_as_v4(manifest)
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    loaded = load_coverage_campaign(paths.campaign, TARGET)
-
-    assert loaded.summary.source_schema == CAMPAIGN_SCHEMA_V4
-    assert [(run.test, run.test_run) for run in loaded.campaign.runs] == [("reset", "reset")]
-    assert loaded.campaign == _campaign()
 
 
 def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:
@@ -598,3 +584,49 @@ def test_store_follows_only_the_booley_dir_entry(
     paths = publish_coverage_campaign(target_dir, _campaign())
     assert load_coverage_campaign(paths.campaign, TARGET).campaign == _campaign()
     assert _load_bytes(paths.campaign, TARGET).campaign == _campaign()
+
+
+def _publish_campaign_as_written_by_booley_0_3_0(root: Path):
+    """Publish a Campaign, then rewrite its manifest into what Booley 0.3.0 wrote."""
+    paths = publish_coverage_campaign(root, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    rewrite_manifest_as_v4(manifest)
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+    return paths
+
+
+def test_a_campaign_written_by_booley_0_3_0_is_refused_naming_its_directory(
+    tmp_path: Path,
+) -> None:
+    paths = _publish_campaign_as_written_by_booley_0_3_0(tmp_path)
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
+    assert str(paths.campaign.parent) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [
+        pytest.param(("test_run",), id="test_run"),
+        pytest.param(("variant",), id="variant"),
+        pytest.param(("test_run", "variant", "seed", "fingerprint"), id="all"),
+    ],
+)
+def test_a_run_without_its_test_run_identity_is_refused(
+    tmp_path: Path, dropped: tuple[str, ...]
+) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    for field in dropped:
+        del manifest["tests"]["runs"][0][field]
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignValidationError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
+
+    findings = {(finding.code, finding.pointer) for finding in error.value.findings}
+    for field in dropped:
+        assert ("COV_FIELD_REQUIRED", f"/tests/runs/0/{field}") in findings
