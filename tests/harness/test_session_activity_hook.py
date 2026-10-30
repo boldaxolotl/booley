@@ -123,6 +123,7 @@ def test_codex_hook_keys_by_thread_and_prefers_a_subagents_own_thread(tmp_path):
     assert store.read("codex:root").state == activity.WORKING
     assert record({"hook_event_name": "SessionEnd", "session_id": "root"})
     assert store.read("codex:root") is None
+    assert store.ended_at("codex:root", now=NOW + 5) is not None
 
 
 @pytest.mark.parametrize("agent_id", ["child", "root"])
@@ -467,3 +468,30 @@ def test_hook_accepts_shape_valid_handle_maps(tmp_path):
         == activity.WAITING_USER
     )
     assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("client", ["claude", "codex"])
+def test_session_end_writes_the_end_marker_the_package_reads(tmp_path, client):
+    assert getattr(hook, "ENDED", None) == getattr(activity, "ENDED", None) == "ended"
+    project = tmp_path / "project"
+    kwargs, key = {}, "codex:t"
+    if client == "claude":
+        proc = proc_tree(tmp_path / "proc", CHAIN)
+        kwargs = {"env": {"CLAUDE_PID": "300"}, "proc_root": proc, "pid": 500}
+        key = claude_key(proc, 300)
+    payload = {"hook_event_name": "SessionEnd", "session_id": "t"}
+    assert hook.record(client, payload, project=project, now=NOW + 0.9, **kwargs)
+    store = ActivityStore(project)
+    assert json.loads(store.path(key).read_text(encoding="utf-8")) == {
+        "schema": activity.SCHEMA,
+        "key": key,
+        "state": "ended",
+        "at": "2026-10-08T10:10:00Z",
+    }
+    assert store.read(key) is None  # An end marker is not activity.
+    assert store.ended_at(key, now=NOW + 5) == "2026-10-08T10:10:00Z"
+    # Ending is revocable: any later hook event of the session overwrites the marker.
+    later = {"hook_event_name": "UserPromptSubmit", "session_id": "t"}
+    assert hook.record(client, later, project=project, now=NOW + 2, **kwargs)
+    assert store.ended_at(key, now=NOW + 5) is None
+    assert store.read(key).state == activity.WORKING
