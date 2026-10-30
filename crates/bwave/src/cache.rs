@@ -14,7 +14,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::format::{format_value_with_radix, values_match, Radix, TriggerMode};
-use crate::signal::{compile_patterns, match_signal};
+use crate::signal::{anchored_form, compile_patterns, match_signal};
 use crate::ExtractConfig;
 
 use rayon::prelude::*;
@@ -108,6 +108,8 @@ pub struct ColumnCache {
     pub signals: Vec<CachedSignal>,
     fst: crate::fst::FstBacking,
     clock_analysis: std::sync::OnceLock<crate::clock::ClockAnalysis>,
+    /// Store-wide common scope (`TOP.tb.`), computed once for `-s` matching.
+    scope_prefix: std::sync::OnceLock<String>,
 }
 
 struct SignalSelection {
@@ -167,7 +169,32 @@ impl ColumnCache {
             signals,
             fst: backing,
             clock_analysis: std::sync::OnceLock::new(),
+            scope_prefix: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The deepest scope shared by every signal (trailing `.`, or empty).
+    /// `-s` globs also match relative to it: these are the names `list` prints.
+    pub fn scope_prefix(&self) -> &str {
+        self.scope_prefix.get_or_init(|| {
+            let names: Vec<String> = self.signals.iter().map(|s| s.name.clone()).collect();
+            crate::signal::common_scope_prefix(&names)
+        })
+    }
+
+    /// Anchored full-path forms for globs that matched nothing, one per
+    /// pattern that has one, deduplicated, in pattern order.
+    fn anchored_suggestions(&self, patterns: &[String]) -> Vec<String> {
+        let mut suggestions: Vec<String> = Vec::new();
+        for pattern in patterns {
+            let names = self.signals.iter().map(|s| s.name.as_str());
+            if let Some(form) = anchored_form(pattern, names) {
+                if !suggestions.contains(&form) {
+                    suggestions.push(form);
+                }
+            }
+        }
+        suggestions
     }
 
     /// Override the display clock with a different signal's timing.
@@ -184,7 +211,7 @@ impl ColumnCache {
     /// Detect clock period from a cached signal's transitions.
     /// Finds the signal matching `pattern`, reads its rising edges, and returns (period, first_rise, name).
     pub fn detect_clock_from_pattern(&self, pattern: &str) -> Result<(u64, u64, String), String> {
-        let matchers = compile_patterns(&[pattern.to_string()])
+        let matchers = compile_patterns(&[pattern.to_string()], self.scope_prefix())
             .map_err(|e| format!("invalid clock pattern: {}", e))?;
 
         let mut candidates: Vec<(usize, &str)> = self
@@ -313,7 +340,7 @@ impl ColumnCache {
         extra_names: &[String],
         report: bool,
     ) -> SignalSelection {
-        let matchers = match compile_patterns(patterns) {
+        let matchers = match compile_patterns(patterns, self.scope_prefix()) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("ERROR: {}", e);
@@ -422,10 +449,11 @@ fn alias_warnings(
     let mut warnings = Vec::new();
     let rows = cache.select_signals_with_names(patterns, &[], false).stored;
     for pattern in patterns.iter().filter(|p| explicit_glob(p)) {
-        let matchers = compile_patterns(std::slice::from_ref(pattern)).unwrap_or_else(|error| {
-            eprintln!("ERROR: {error}");
-            std::process::exit(2);
-        });
+        let matchers = compile_patterns(std::slice::from_ref(pattern), cache.scope_prefix())
+            .unwrap_or_else(|error| {
+                eprintln!("ERROR: {error}");
+                std::process::exit(2);
+            });
         let mut representative = HashMap::new();
         if event {
             for (i, signal) in cache
@@ -749,18 +777,33 @@ pub fn no_signals_in_store_message() -> &'static str {
 }
 
 /// The total-miss diagnostic line, shared between the stderr hard error and
-/// the JSON-envelope warning so both channels say the same thing.
-fn no_match_message(patterns: &[String], total_signals: usize) -> String {
+/// the JSON-envelope warning so both channels say the same thing. A glob that
+/// matches below some scope boundary gets the anchored full-path form before
+/// the generic hint.
+fn no_match_message(patterns: &[String], cache: &ColumnCache) -> String {
     let listed = patterns
         .iter()
         .map(|p| format!("'{}'", p))
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "no signals match pattern(s) {} ({} signals in store; try `bwave list` \
+        "no signals match pattern(s) {}{} ({} signals in store; try `bwave list` \
          or a broader -s glob)",
-        listed, total_signals
+        listed,
+        did_you_mean(&cache.anchored_suggestions(patterns))
+            .map(|text| format!("; {text}"))
+            .unwrap_or_default(),
+        cache.unique_signal_count()
     )
+}
+
+/// `did you mean 'A', 'B'?` for the given suggestions, or None for none.
+fn did_you_mean(suggestions: &[String]) -> Option<String> {
+    if suggestions.is_empty() {
+        return None;
+    }
+    let quoted: Vec<String> = suggestions.iter().map(|s| format!("'{}'", s)).collect();
+    Some(format!("did you mean {}?", quoted.join(", ")))
 }
 
 /// Hard-fail for the total-miss case: *every* pattern matched nothing.
@@ -769,9 +812,9 @@ fn no_match_message(patterns: &[String], total_signals: usize) -> String {
 /// caller then debugs the design instead of the glob. Exit 2 matches the
 /// other input errors (bad radix, bad pattern, missing store). Callers that
 /// owe consumers a JSON envelope emit it on stdout *before* calling this.
-pub(crate) fn exit_no_signal_match(patterns: &[String], total_signals: usize) -> ! {
+pub(crate) fn exit_no_signal_match(patterns: &[String], cache: &ColumnCache) -> ! {
     let mut err = BufWriter::new(io::stderr().lock());
-    let _ = writeln!(err, "ERROR: {}", no_match_message(patterns, total_signals));
+    let _ = writeln!(err, "ERROR: {}", no_match_message(patterns, cache));
     // Same hint as the partial-miss path: an element-indexed name usually
     // means an undumped unpacked array, not a typo. Dedup by array base so
     // a 16-element pattern list prints one hint, not 16.
@@ -922,7 +965,9 @@ fn build_radix_map(
         .patterns
         .iter()
         .filter(|p| !explicit_glob(p))
-        .flat_map(|p| compile_patterns(std::slice::from_ref(p)).unwrap_or_default())
+        .flat_map(|p| {
+            compile_patterns(std::slice::from_ref(p), cache.scope_prefix()).unwrap_or_default()
+        })
         .collect();
     let retained_exact: std::collections::HashSet<usize> = matched
         .iter()
@@ -930,7 +975,7 @@ fn build_radix_map(
         .filter(|&idx| match_signal(&cache.signals[idx].name, &exact_matchers))
         .collect();
     for (pat, radix) in &cfg.signal_radixes {
-        if let Ok(matchers) = compile_patterns(&[pat.clone()]) {
+        if let Ok(matchers) = compile_patterns(&[pat.clone()], cache.scope_prefix()) {
             let selected_groups: std::collections::HashSet<u64> = cache
                 .signals
                 .iter()
@@ -1221,10 +1266,10 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     clock_period_ns,
                     signals: Vec::new(),
                 },
-                vec![no_match_message(&cfg.patterns, cache.unique_signal_count())],
+                vec![no_match_message(&cfg.patterns, cache)],
             );
         }
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
     let (radix_map, radix_warnings) = build_radix_map(cache, &matched, cfg);
     json_warnings.extend(radix_warnings);
@@ -1541,7 +1586,7 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if matched.is_empty() {
         // A stuck-scan over zero signals would report "nothing stuck" — a
         // false all-clear. Total miss is the same hard error as elsewhere.
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
     let sync_mode = !cfg.async_mode;
 
@@ -1665,7 +1710,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         None => return,
     };
 
-    let find_matchers = match compile_patterns(&[find_pattern.clone()]) {
+    let find_matchers = match compile_patterns(&[find_pattern.clone()], cache.scope_prefix()) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("ERROR: {}", e);
@@ -1694,18 +1739,19 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // A missing target historically emits its error envelope before validating
     // watched selectors unless query_config already validated explicit selectors.
     let target_empty = target_indices.is_empty() && virtual_matches.is_empty();
-    let mut json_warnings =
-        if cfg.json_format && (!target_empty || compile_patterns(&cfg.patterns).is_ok()) {
-            let virtual_names: Vec<String> = resolve_virtuals(cache, cfg)
-                .iter()
-                .map(|v| v.name.clone())
-                .collect();
-            cache
-                .select_signals_with_names(&cfg.patterns, &virtual_names, false)
-                .warnings
-        } else {
-            Vec::new()
-        };
+    let mut json_warnings = if cfg.json_format
+        && (!target_empty || compile_patterns(&cfg.patterns, cache.scope_prefix()).is_ok())
+    {
+        let virtual_names: Vec<String> = resolve_virtuals(cache, cfg)
+            .iter()
+            .map(|v| v.name.clone())
+            .collect();
+        cache
+            .select_signals_with_names(&cfg.patterns, &virtual_names, false)
+            .warnings
+    } else {
+        Vec::new()
+    };
 
     if target_indices.is_empty() && virtual_matches.is_empty() {
         if cfg.json_format {
@@ -1736,10 +1782,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
         // Total miss is a hard error either way; JSON consumers got their
         // envelope above, the exit code says the pattern was wrong.
-        exit_no_signal_match(
-            std::slice::from_ref(find_pattern),
-            cache.unique_signal_count(),
-        );
+        exit_no_signal_match(std::slice::from_ref(find_pattern), cache);
     }
 
     let (radix_map, radix_warnings) = build_radix_map(cache, &target_indices, cfg);
@@ -2116,7 +2159,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     if !cfg.count_only && watched_indices.is_empty() && watched_virtual_indices.is_empty() {
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
 
     let mode = TriggerMode::classify(sa_value);
@@ -2368,7 +2411,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
         // Total miss is a hard error either way; JSON consumers got their
         // envelope above, the exit code says the pattern was wrong.
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
 
     // Sync mode requires both --at-cycle flag AND a detected clock
@@ -2634,7 +2677,7 @@ pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     let matched = cache.match_signals(&cfg.patterns);
     if matched.is_empty() {
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
 
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
@@ -2754,7 +2797,7 @@ fn collect_event_ticks(
     cb: u64,
     virtuals: &[VirtualEntry],
 ) -> EventCollect {
-    let matchers = match compile_patterns(&[pattern.to_string()]) {
+    let matchers = match compile_patterns(&[pattern.to_string()], cache.scope_prefix()) {
         Ok(m) => m,
         Err(error) => {
             eprintln!("ERROR: {error}");
@@ -3217,7 +3260,7 @@ fn distance_from_runs(
         match collect_event_ticks(cache, pattern, value, base, true, cfg, base, virtuals) {
             EventCollect::Runs(runs) => Some(runs),
             EventCollect::NoPatternMatch => {
-                exit_no_signal_match(std::slice::from_ref(pattern), cache.unique_signal_count())
+                exit_no_signal_match(std::slice::from_ref(pattern), cache)
             }
             EventCollect::NoEvents { .. } => {
                 emit_empty_distance(cfg, "cycles");
@@ -3385,7 +3428,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
         EventCollect::Ticks(t) => t,
         EventCollect::NoPatternMatch => {
-            exit_no_signal_match(std::slice::from_ref(pat_a), cache.unique_signal_count());
+            exit_no_signal_match(std::slice::from_ref(pat_a), cache);
         }
         EventCollect::NoEvents { multi_bit_edge } => {
             emit_empty_distance(cfg, if sync_mode { "cycles" } else { "ticks" });
@@ -3420,7 +3463,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             ) {
                 EventCollect::Ticks(t) => t,
                 EventCollect::NoPatternMatch => {
-                    exit_no_signal_match(std::slice::from_ref(pattern), cache.unique_signal_count())
+                    exit_no_signal_match(std::slice::from_ref(pattern), cache)
                 }
                 _ => Vec::new(),
             }
@@ -3503,7 +3546,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
             EventCollect::Ticks(t) => t,
             EventCollect::NoPatternMatch => {
-                exit_no_signal_match(std::slice::from_ref(pat_b), cache.unique_signal_count());
+                exit_no_signal_match(std::slice::from_ref(pat_b), cache);
             }
             EventCollect::NoEvents { multi_bit_edge } => {
                 if multi_bit_edge {
@@ -3614,7 +3657,7 @@ pub fn trace_from_cache(cache: &ColumnCache, original: &ExtractConfig) {
     let cfg = query_config(cache, original);
     let matched = cache.match_signals(&cfg.patterns);
     if matched.is_empty() {
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
     let (radixes, mut warnings) = build_radix_map(cache, &matched, &cfg);
     let names: Vec<_> = matched
@@ -3814,7 +3857,7 @@ pub fn list_signals_from_cache(
             ..Default::default()
         },
     );
-    let matchers = match crate::signal::compile_patterns(patterns) {
+    let matchers = match crate::signal::compile_patterns(patterns, cache.scope_prefix()) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("ERROR: {}", e);
@@ -3828,6 +3871,14 @@ pub fn list_signals_from_cache(
         .filter(|s| crate::signal::match_signal(&s.name, &matchers))
         .map(|s| (s.name.clone(), s.width, s.var_type.clone()))
         .collect();
+
+    // A total miss on a non-empty store: `list` stays exit 0, but names the
+    // anchored form so the next query can paste it.
+    let total_miss_suggestion = if matched.is_empty() && !cache.signals.is_empty() {
+        did_you_mean(&cache.anchored_suggestions(patterns))
+    } else {
+        None
+    };
 
     let prefix = crate::signal::common_scope_prefix(
         &matched
@@ -3900,6 +3951,7 @@ pub fn list_signals_from_cache(
             &hits,
             matched.is_empty(),
         ));
+        warnings.extend(total_miss_suggestion);
         if stripped.len() > limit {
             warnings.push(limit_warning(limit));
         }
@@ -3959,6 +4011,9 @@ pub fn list_signals_from_cache(
             matched.len()
         );
     } else {
+        if let Some(suggestion) = &total_miss_suggestion {
+            let _ = writeln!(stderr, "# {suggestion}");
+        }
         let _ = writeln!(
             stderr,
             "# {} signals — narrow with -s PATTERN or use --tree",
@@ -4130,7 +4185,7 @@ fn value_at_tick(transitions: &[(u64, String)], tick: u64) -> String {
 /// Among matches, prefer shallowest scope depth, then lexicographic.
 fn find_best_reset_idx(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<usize> {
     let explicit_matchers = match cfg.reset_pattern.as_ref() {
-        Some(pat) => Some(compile_patterns(&[pat.clone()]).ok()?),
+        Some(pat) => Some(compile_patterns(&[pat.clone()], cache.scope_prefix()).ok()?),
         None => None,
     };
 
@@ -4422,7 +4477,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let (matched, selected_virtual_indices) =
         cache.match_signals_with_names(&cfg.patterns, &virtual_names);
     if matched.is_empty() && selected_virtual_indices.is_empty() {
-        exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
+        exit_no_signal_match(&cfg.patterns, cache);
     }
     let selected_virtuals: Vec<&VirtualEntry> = selected_virtual_indices
         .iter()
@@ -5218,11 +5273,98 @@ $enddefinitions $end
 
     #[test]
     fn no_match_message_carries_the_python_marker() {
-        let msg = no_match_message(&["nope".to_string()], 7);
+        let cache = build_cache(SCOPED_VCD);
+        let msg = no_match_message(&["nope".to_string()], &cache);
         assert!(
             msg.to_lowercase().contains("no signals match"),
             "marker NO_MATCH_MARKER lost from: {msg}"
         );
+        // Nothing to suggest for a bare name: byte-identical to the old line.
+        assert_eq!(
+            msg,
+            "no signals match pattern(s) 'nope' (4 signals in store; try `bwave list` \
+             or a broader -s glob)"
+        );
+    }
+
+    #[test]
+    fn no_match_message_suggests_anchored_form_before_hint() {
+        let cache = build_cache(SCOPED_VCD);
+        let msg = no_match_message(&["u_core.*".to_string()], &cache);
+        assert_eq!(
+            msg,
+            "no signals match pattern(s) 'u_core.*'; did you mean 'TOP.tb.dut.u_core.*'? \
+             (4 signals in store; try `bwave list` or a broader -s glob)"
+        );
+        // Python (contract.py DID_YOU_MEAN_MARKER) greps for this substring.
+        assert!(msg.contains("did you mean"), "marker lost from: {msg}");
+    }
+
+    /// Common scope `TOP.tb.`: `dut` appears under it and again under `other`.
+    const SCOPED_VCD: &str = "\
+$timescale 1ns $end
+$scope module TOP $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$scope module dut $end
+$var wire 1 \" valid $end
+$scope module u_core $end
+$var wire 4 # state [3:0] $end
+$upscope $end
+$upscope $end
+$scope module other $end
+$scope module dut $end
+$var wire 1 $ flag $end
+$upscope $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0\"
+b0 #
+0$
+#5
+1!
+";
+
+    #[test]
+    fn relative_glob_selects_list_tree_signals() {
+        let cache = build_cache(SCOPED_VCD);
+        assert_eq!(cache.scope_prefix(), "TOP.tb.");
+        let names = |pattern: &str| -> Vec<String> {
+            cache
+                .match_signals(&[pattern.to_string()])
+                .into_iter()
+                .map(|i| cache.signals[i].name.clone())
+                .collect()
+        };
+        // `dut.*` is what `list` prints under dut; other.dut.flag is outside it.
+        assert_eq!(
+            names("dut.*"),
+            vec!["TOP.tb.dut.valid", "TOP.tb.dut.u_core.state[3:0]"]
+        );
+        // Full-path and `*`-led globs keep their meaning.
+        assert_eq!(names("TOP.tb.dut.*"), names("dut.*"));
+        assert_eq!(names("*dut.*").len(), 3);
+        // A relative glob cannot climb above the scope.
+        assert!(names("tb.*").is_empty());
+    }
+
+    #[test]
+    fn list_total_miss_names_the_anchored_form() {
+        let cache = build_cache(SCOPED_VCD);
+        let suggestions = cache.anchored_suggestions(&["u_core.*".to_string(), "tb.*".to_string()]);
+        assert_eq!(suggestions, vec!["TOP.tb.dut.u_core.*", "TOP.tb.*"]);
+        assert_eq!(
+            did_you_mean(&suggestions).as_deref(),
+            Some("did you mean 'TOP.tb.dut.u_core.*', 'TOP.tb.*'?")
+        );
+        assert_eq!(did_you_mean(&[]), None);
+        assert!(cache
+            .anchored_suggestions(&["nothing_here.*".to_string()])
+            .is_empty());
     }
 
     #[test]

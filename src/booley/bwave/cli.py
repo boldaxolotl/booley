@@ -46,7 +46,12 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn
 
 from booley.bwave import vaporview_bridge
-from booley.bwave.contract import BEYOND_RANGE_MARKER, EXIT_USAGE, NO_MATCH_MARKER
+from booley.bwave.contract import (
+    BEYOND_RANGE_MARKER,
+    DID_YOU_MEAN_MARKER,
+    EXIT_USAGE,
+    NO_MATCH_MARKER,
+)
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import (
     conversion_failure_messages,
@@ -824,18 +829,22 @@ def _run_query(cmd_args: list[str]) -> subprocess.CompletedProcess[str]:
         sys.exit(f"ERROR: bwave query timed out (120s): {' '.join(cmd_args)}")
 
 
-def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
-    """Return the JSON envelope `data`, surfacing the binary's own error on failure."""
+def _capture_envelope(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
+    """Return the JSON envelope, surfacing the binary's own error on failure."""
     if result.returncode != 0:
         _exit_with_inner_error(result, cmd_args, "bwave query failed")
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
         _exit_with_inner_error(result, cmd_args, "bwave returned non-JSON output for")
-    data = envelope.get("data")
-    if not isinstance(data, dict):
+    if not isinstance(envelope.get("data"), dict):
         _exit_with_inner_error(result, cmd_args, "bwave JSON envelope has no data object for")
-    return data
+    return envelope
+
+
+def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
+    """Return the JSON envelope `data`, surfacing the binary's own error on failure."""
+    return _capture_envelope(result, cmd_args)["data"]
 
 
 # Trailing bit range on a bwave signal name: "[7:0]" (vector) or "[3]" (bit).
@@ -944,7 +953,7 @@ def _with_selector_style(
     )
 
 
-def _list_query(trace: str, globs: list[str]) -> dict:
+def _list_envelope(trace: str, globs: list[str]) -> dict:
     """One `bwave list` envelope — the trace header plus the matched signals.
 
     This is the cheap query: `list` reads the hierarchy only (~100 ms on a
@@ -953,7 +962,13 @@ def _list_query(trace: str, globs: list[str]) -> dict:
     signal set, the clock, the end of the trace — rides on this one call.
     """
     flags = [flag for glob in globs for flag in ("-s", glob)]
-    return _run_capture(["list", trace, *flags, "--format", "json", "--limit", "10000"])
+    cmd_args = ["list", trace, *flags, "--format", "json", "--limit", "10000"]
+    return _capture_envelope(_run_query(cmd_args), cmd_args)
+
+
+def _list_query(trace: str, globs: list[str]) -> dict:
+    """The `data` object of one `bwave list` envelope (see `_list_envelope`)."""
+    return _list_envelope(trace, globs)["data"]
 
 
 def _clock_of(data: dict) -> _OpenSignal | None:
@@ -982,12 +997,19 @@ def _resolve_signal_globs(
     listing: dict | None = None
     signals: dict[str, _OpenSignal] = {}
     unmatched: list[str] = []
+    suggestions: list[str] = []
     for selector in selectors:
-        data = _list_query(trace, [selector.glob])
+        envelope = _list_envelope(trace, [selector.glob])
+        data = envelope["data"]
         if listing is None:
             listing = data
         if not data.get("signals"):
             unmatched.append(selector.glob)
+            suggestions.extend(
+                warning
+                for warning in envelope.get("warnings") or []
+                if isinstance(warning, str) and DID_YOU_MEAN_MARKER in warning
+            )
         prefix = data.get("scope_prefix") or ""
         for sig in data.get("signals", []):
             name = sig.get("name")
@@ -1003,7 +1025,8 @@ def _resolve_signal_globs(
         # Same wording class (and exit code) as the Rust total-miss error —
         # NO_MATCH_MARKER keeps the two surfaces greppable the same way.
         pat = ", ".join(f"'{g}'" for g in globs)
-        _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}")
+        hint = f"; {' '.join(suggestions)}" if suggestions else ""
+        _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}{hint}")
     for glob in unmatched:
         # Like the Rust partial miss: the other selectors still show.
         print(f"WARNING: {NO_MATCH_MARKER} {option} '{glob}'; not shown", file=sys.stderr)
