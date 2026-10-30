@@ -2009,8 +2009,7 @@ async def _resolve_observed_request_context(
         request=context.request if context is not None else None,
         tool=params.name,
     )
-    if params.name != "tools/list":
-        facts = await observer.resolved(facts)
+    facts = await observer.resolved(facts)
     keys, warning = await observer.shared(facts)
     return replace(
         request, attribution=facts, other_session_keys=keys, presentation_warning=warning
@@ -2048,10 +2047,6 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
         lifetime.mark_activity()
         if application.live_catalog is not None:
             await application.live_catalog.refresh()
-        request = await _observed_request_context(
-            _ctx, CallToolRequestParams(name="tools/list", meta=_ctx.meta), lifetime.sessions
-        )
-        await lifetime.sessions.record(request.attribution, "tools/list", "completed")
         return ListToolsResult(tools=[_sdk_tool(tool) for tool in application.list_tools()])
 
     async def handle_call_tool(

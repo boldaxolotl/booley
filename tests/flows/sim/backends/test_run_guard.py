@@ -653,6 +653,26 @@ def test_parent_death_guard_exits_when_the_parent_changed_while_arming(monkeypat
     assert exit_info.value.code == 143
 
 
+def _run_half_state(pid_file: Path, stderr_file: Path) -> str:
+    """Describe a run-half that outlived its launcher, for a failure message.
+
+    Reports its signal state from ``/proc`` (where there is one) and what it wrote
+    to stderr, so an unreproduced CI flake names its cause the next time it fails.
+    """
+    wanted = ("State", "Threads", "SigPnd", "SigBlk", "SigIgn")
+    try:
+        pid = pid_file.read_text()
+        status = Path(f"/proc/{pid}/status").read_text().splitlines()
+        state = ", ".join(line for line in status if line.split(":")[0] in wanted)
+    except (OSError, ValueError) as exc:
+        state = f"no /proc status ({exc.__class__.__name__})"
+    try:
+        stderr = stderr_file.read_text()[-2000:]
+    except OSError:
+        stderr = ""
+    return f"run-half state: {state}; stderr: {stderr!r}"
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
 def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_path):
     """Unmocked: kill the launcher, and the guarded process under it exits 143."""
@@ -660,6 +680,8 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
     import textwrap
 
     exit_file = tmp_path / "run_half_exit"
+    pid_file = tmp_path / "run_half_pid"
+    stderr_file = tmp_path / "run_half_stderr"
     # A "run-half" that installs the guard, reports that it is armed, then
     # blocks. The handler leaves through SystemExit, whose code it records.
     # The signal can arrive as soon as "armed" is out, so the report is inside
@@ -668,6 +690,8 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
         f"""
         import os, time
         from booley.flows.sim.run_guard import install_parent_death_guard
+        with open({str(pid_file)!r}, "w") as pid_out:
+            pid_out.write(str(os.getpid()))
         install_parent_death_guard()
         try:
             print("armed", flush=True)
@@ -687,9 +711,11 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
         time.sleep(60)
         """
     )
+    stderr_out = stderr_file.open("w")
     launcher = subprocess.Popen(
         [sys.executable, "-c", launcher_src, run_half_src],
         stdout=subprocess.PIPE,
+        stderr=stderr_out,
         text=True,
         env={
             **os.environ,
@@ -708,9 +734,13 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not exit_file.exists():
             time.sleep(0.05)
-        assert exit_file.exists(), "the guarded process did not leave through the handler"
+        assert exit_file.exists(), (
+            "the guarded process did not leave through the handler; "
+            + _run_half_state(pid_file, stderr_file)
+        )
         assert exit_file.read_text() == "143"
     finally:
+        stderr_out.close()
         if launcher.poll() is None:
             launcher.kill()
             launcher.wait(timeout=10)
