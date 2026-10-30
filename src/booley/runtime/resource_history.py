@@ -115,9 +115,13 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "peak_memory_mb": _spread([r["peak_memory_mb"] for r in group]),
                 "wall_s": _spread([r["wall_s"] for r in group]),
                 "solo_runs": len(solo),
-                "solo_peak_memory_mb": max((r["peak_memory_mb"] for r in solo), default=None),
-                "solo_container_peak_mb": max(
-                    (r["container_peak_delta_mb"] for r in solo), default=None
+                # Paired per run: a max of each column could come from different runs.
+                "solo_container_over_rss": _spread(
+                    [
+                        r["container_peak_delta_mb"] / r["peak_memory_mb"]
+                        for r in solo
+                        if r["peak_memory_mb"]
+                    ]
                 ),
             }
         )
@@ -143,10 +147,13 @@ def _line(summary: dict[str, Any]) -> str:
         ratio = "-" if spread["ratio"] is None else f"{spread['ratio']:.2f}"
         parts.append(f"{label} {' / '.join(shown)} (max/median {ratio})")
     if summary["solo_runs"]:
-        parts.append(
-            f"solo runs {summary['solo_runs']}: RSS+TMPDIR {summary['solo_peak_memory_mb']:.0f} MiB"
-            f" vs container {summary['solo_container_peak_mb']:.0f} MiB"
+        ratio = summary["solo_container_over_rss"]
+        shown = (
+            "unmeasured"
+            if ratio is None
+            else " / ".join(f"{ratio[n]:.2f}" for n in ("min", "median", "max"))
         )
+        parts.append(f"solo runs {summary['solo_runs']}: container peak / (RSS+TMPDIR) {shown}")
     return "; ".join(parts)
 
 
