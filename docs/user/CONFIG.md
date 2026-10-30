@@ -272,12 +272,13 @@ runs in all). Measurement only observes: it never changes a Job's verdict,
 queue position or exit code, and the `[jobs]` settings above are unchanged.
 
 Each record is keyed by Target, phase, instrumentation flags (`coverage`,
-`trace`) and Test Run. Phases are `sim_prepare`, `sim_pre_run`, `sim_build`,
+`trace`) and Test Run. Phases are `sim_prepare`, `sim_build`,
 `sim_run`, `sim_postprocess`, `lint`, `fpga_impl` and `synth`; any other
 command is keyed by its Flow's name. A synthesis also records its `sv2v`,
 `yosys` and `openroad` processes as separate phases, each with the outcome of
 the whole synthesis; a tool that finishes between two samples gets no phase
-record. A record holds:
+record. Pre-sim commands and other child processes a Flow starts itself count
+toward the enclosing command's peak, not as a record of their own. A record holds:
 
 - peak memory: process-tree RSS plus the files in the command's own
   temporary directory (`TMPDIR`), which live on the Sandbox's tmpfs and count
