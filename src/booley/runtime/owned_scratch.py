@@ -40,6 +40,7 @@ OWNED_PREFIXES = (
     "booley-specialist-ro-",
     "booley-coverage-analysis-",
     "booley-coverage-campaign-",
+    "booley-developer-probe-",
 )
 # Owner states that prove the owning process no longer exists. UNKNOWN is
 # deliberately absent: an unreadable observation never justifies deletion.

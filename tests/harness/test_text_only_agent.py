@@ -73,10 +73,61 @@ def test_text_only_auth_links_real_login(tmp_path):
     assert [p for p in root.rglob("auth.json") if not p.is_symlink()] == []
 
 
-def test_text_only_missing_exact_model_fails_closed(tmp_path):
-    (tmp_path / "models_cache.json").write_text('{"models": []}')
-    params = AgentCallParams(prompt="Analyze", model="missing", cwd=tmp_path, text_only=True)
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(None, id="no-cache-probe"),
+        pytest.param(["coverage_evidence"], id="cache-lacks-model-coverage-analyst"),
+    ],
+)
+def test_text_only_missing_exact_model_uses_generated_tool_free_entry(tmp_path, caplog, case):
+    """A cache without the model (or no cache) falls back to a generated, tool-free entry."""
+    if case:  # Coverage Analyst shape: a cache holding only another model.
+        (tmp_path / "models_cache.json").write_text('{"models": [{"slug": "other"}]}')
+    params = AgentCallParams(
+        prompt="Analyze",
+        model="missing",
+        cwd=tmp_path / "invocation",
+        text_only=True,
+        reasoning_effort="low",
+        nested_mcp_tools=case,
+    )
+    params.cwd.mkdir()
+    command, env = prepare_codex_text_only(
+        ["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)}
+    )
+    private = Path(env["CODEX_HOME"])
+    (entry,) = json.loads((private / "model-catalog.json").read_text())["models"]
+    assert entry["slug"] == "missing"
+    assert entry["context_window"] == 272_000
+    assert entry["shell_type"] == "disabled"
+    assert entry["apply_patch_tool_type"] is None
+    assert entry["experimental_supported_tools"] == []
+    assert "features.shell_tool=false" in command
+    assert [r.message for r in caplog.records if r.levelname == "WARNING"] == [
+        "Codex models cache lacks 'missing'; using Booley's generated tool-free catalog entry"
+    ]
+    if case:
+        config = (private / "config.toml").read_text()
+        assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
+    else:
+        assert not (private / "config.toml").exists()
+
+
+def test_text_only_corrupt_models_cache_still_fails_loud(tmp_path):
+    """Only a cache that lacks the model falls back; an unreadable one is a fault to see."""
+    (tmp_path / "models_cache.json").write_text("not json")
+    params = AgentCallParams(prompt="Analyze", model="m", cwd=tmp_path, text_only=True)
     with pytest.raises(ValueError, match="exact model"):
+        prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
+
+
+def test_text_only_duplicate_model_in_cache_still_fails_loud(tmp_path):
+    """A slug listed twice is an ambiguous cache, not a missing model."""
+    entries = [{"slug": "m", "context_window": 1}] * 2
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": entries}))
+    params = AgentCallParams(prompt="Analyze", model="m", cwd=tmp_path, text_only=True)
+    with pytest.raises(ValueError, match="exactly one"):
         prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
 
 
@@ -254,6 +305,8 @@ def test_text_only_gateway_seeds_pinned_model_catalog_entry(tmp_path):
         "models": models
     }
 
+    # Without an allowlist the run keeps the provider and writes no Booley MCP server.
     params.nested_mcp_tools = None
-    with pytest.raises(ValueError, match="nested MCP tool allowlist"):
-        prepare()
+    config = tomllib.loads((prepare() / "config.toml").read_text(encoding="utf-8"))
+    assert config["model_provider"] == "booley_gateway"
+    assert "mcp_servers" not in config

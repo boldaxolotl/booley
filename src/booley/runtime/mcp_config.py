@@ -162,6 +162,30 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
     ]
 
 
+def _booley_server_lines(
+    enabled_mcp_tools: list[str] | None, extra_env: dict[str, str] | None
+) -> list[str]:
+    """The ``[mcp_servers.booley]`` table and its ``[...env]`` table."""
+    lines = [
+        "",
+        "[mcp_servers.booley]",
+        'command = "python"',
+        'args = ["-m", "booley.mcp.server"]',
+        # Codex CLI defaults to 120s MCP tool timeout — far too short for
+        # long-running Flows or Specialists such as asic_synthesize / mutation_tester
+        # (up to 7200s subprocess timeout).
+        "tool_timeout_sec = 3600",
+        "",
+        "[mcp_servers.booley.env]",
+    ]
+    for key, val in sorted(_codex_server_env(enabled_mcp_tools, extra_env).items()):
+        # JSON string escaping is compatible with TOML basic strings and
+        # protects Windows paths such as C:\\Users\\... from becoming invalid
+        # escape sequences in the generated config.
+        lines.append(f"{key} = {json.dumps(val)}")
+    return lines
+
+
 def generate_codex_config(
     enabled_mcp_tools: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
@@ -169,6 +193,7 @@ def generate_codex_config(
     existing_config: str | None = None,
     gateway_url: str | None = None,
     gateway_cwd: str = "/",
+    booley_server: bool = True,
 ) -> str:
     """Generate config.toml content for the Codex MCP server.
 
@@ -182,6 +207,8 @@ def generate_codex_config(
         gateway_url: When set, route model traffic through the gateway at this
             https base URL (``BOOLEY_PRIMARY_AUTH=gateway``).
         gateway_cwd: Working directory of the gateway token command.
+        booley_server: False omits the Booley MCP server tables, leaving the
+            root keys, features and gateway provider (a run with no tools).
 
     Returns:
         TOML-formatted string.
@@ -195,24 +222,9 @@ def generate_codex_config(
         "[features]",
         "mcp_2026_07_28 = true",
         *(["fast_mode = false"] if gateway_url else []),
-        "",
-        "[mcp_servers.booley]",
-        'command = "python"',
-        'args = ["-m", "booley.mcp.server"]',
-        # Codex CLI defaults to 120s MCP tool timeout — far too short for
-        # long-running Flows or Specialists such as asic_synthesize / mutation_tester
-        # (up to 7200s subprocess timeout).
-        "tool_timeout_sec = 3600",
     ]
-
-    merged_env = _codex_server_env(enabled_mcp_tools, extra_env)
-    lines.append("")
-    lines.append("[mcp_servers.booley.env]")
-    for key, val in sorted(merged_env.items()):
-        # JSON string escaping is compatible with TOML basic strings and
-        # protects Windows paths such as C:\\Users\\... from becoming invalid
-        # escape sequences in the generated config.
-        lines.append(f"{key} = {json.dumps(val)}")
+    if booley_server:
+        lines.extend(_booley_server_lines(enabled_mcp_tools, extra_env))
 
     if gateway_url:
         lines.extend(_gateway_provider_lines(gateway_url, gateway_cwd))

@@ -112,6 +112,7 @@ from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
 from booley.runtime import pid, runtime_context
 from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -234,7 +235,7 @@ class _McpLifetime:
         now: Callable[[], float] = time.monotonic,
         heartbeat_path: str | None = None,
     ) -> None:
-        self.sessions = SessionObserver()
+        self.sessions = SessionObserver(writes=should_run_outer_bookkeeping())
         self.idle_timeout_seconds = idle_timeout_seconds
         self.max_age_seconds = max_age_seconds
         self._now = now
