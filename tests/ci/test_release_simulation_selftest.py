@@ -36,7 +36,7 @@ def test_simulation_selftest_proves_good_and_bad_runtime_views(
         [
             "[OK] sim self-test good case 'smoke' passes",
             "[OK] sim self-test bad case 'smoke + bad overlay' correctly graded a failure",
-            "0 failed.",
+            "  ✗ failed     0",
         ]
     )
     monkeypatch.setenv("DOCTOR_OUTPUT", output)
@@ -66,7 +66,7 @@ def test_simulation_selftest_rejects_false_passing_bad_overlay(
         [
             "[OK] sim self-test good case 'smoke' passes",
             "[XX] sim self-test bad case 'smoke + bad overlay' FALSE-PASSED",
-            "1 failed.",
+            "  ✗ failed     1",
         ]
     )
     monkeypatch.setenv("DOCTOR_OUTPUT", output)

@@ -259,7 +259,7 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
     for required in (
         "zero `FAIL` findings",
         "zero active `WARN` findings",
-        "Doctor's `fix:` hint",
+        "Doctor's `→` fix hint",
         "from booley.runtime.paths import troubleshooting_path",
         "booley doctor --deep",
         "after 12 remediation passes",
@@ -285,6 +285,24 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
     positions = [normalized.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
     assert "instead of rerunning the whole deep matrix after each edit" in skill
+
+
+def test_doctor_readers_use_glyph_vocabulary():
+    root = Path(__file__).resolve().parents[2]
+    skills = (
+        root / "src/booley/data/skills/booley-setup/steps/4-doctor.md",
+        root / "src/booley/data/skills/booley-heal/SKILL.md",
+    )
+    user_docs = (root / "docs/user/DOCTOR.md", root / "docs/user/SETUP.md")
+    stale = ("[XX]", "[!!]", "[ii]", "[--]", "`fix:`", "`[sim.trace-unavailable:")
+    for reader in (*skills, *user_docs):
+        text = reader.read_text(encoding="utf-8")
+        assert not [marker for marker in stale if marker in text], reader.name
+    for reader in skills:
+        text = reader.read_text(encoding="utf-8")
+        assert "`→`" in text, reader.name
+        assert "`✗`" in text, reader.name
+        assert "`WARN` becomes `WAIVED`" not in text, reader.name
 
 
 def test_setup_reserves_deep_doctor_for_one_final_gate():

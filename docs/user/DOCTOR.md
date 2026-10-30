@@ -148,15 +148,10 @@ a source stash record for this worktree; see
 `booley doctor` reserves `WARN` for an actionable failure mode. A clean setup
 has no active warnings: fix the cause, or explicitly accept a deliberate
 project constraint in `.booley/doctor-waivers.toml`. Waived findings
-remain visible as `WAIVED` and are counted separately; the file does not hide
+remain visible and are counted separately; the file does not hide
 output or change failures.
 
-Each warning prints a stable identity at the end of its line:
-
-```text
-WARN  trace unavailable for sim_fast [sim.trace-unavailable:sim_fast]
-```
-
+Each warning prints a stable identity such as `sim.trace-unavailable:sim_fast`.
 The part before the colon is `check`; the part after it is the optional
 `subject`. Match that identity exactly:
 
