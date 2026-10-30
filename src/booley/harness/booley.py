@@ -1499,7 +1499,11 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
             file=sys.stderr,
         )
 
-    cfg = get_agent_settings()
+    try:
+        cfg = get_agent_settings()
+    except RuntimeError as exc:  # BackendConfigError, e.g. BOOLEY_AGENT_APP=auto on the host
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     docker_cfg = DockerSandboxConfig(
         image=cfg.sandbox.image,
         needs_network=bool(getattr(args, "net", False)),
