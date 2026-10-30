@@ -1,4 +1,4 @@
-"""Contracts for README-driven Ubuntu installation and its one exemption."""
+"""Contracts for Install-guide-driven Ubuntu installation and its one exemption."""
 
 import importlib.util
 from pathlib import Path, PurePosixPath
@@ -11,11 +11,11 @@ SCRIPT = Path(".github/scripts/isolated_host_install_smoke.py")
 _spec = importlib.util.spec_from_file_location("isolated_host_install_smoke", SCRIPT)
 smoke = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(smoke)
-README = Path("README.md").read_text()
+GUIDE = Path("docs/user/INSTALL.md").read_text()
 
 
-def test_readme_commands_are_the_smoke_input():
-    commands = smoke.read_commands(README)
+def test_install_guide_commands_are_the_smoke_input():
+    commands = smoke.read_commands(GUIDE)
     assert commands["install"] == ("pipx install booley-rtl", "booley bootstrap")
     assert commands["upgrade"] == ("pipx upgrade booley-rtl", "booley bootstrap --update")
 
@@ -33,12 +33,12 @@ def test_readme_commands_are_the_smoke_input():
 )
 def test_command_or_block_drift_fails_explicitly(old, new):
     with pytest.raises(ValueError):
-        smoke.read_commands(README.replace(old, new))
+        smoke.read_commands(GUIDE.replace(old, new))
 
 
 def test_duplicate_blocks_are_refused():
     with pytest.raises(ValueError, match="duplicate"):
-        smoke.read_commands(README + "\n<!-- booley-smoke:install -->")
+        smoke.read_commands(GUIDE + "\n<!-- booley-smoke:install -->")
 
 
 def test_installed_probe_uses_resolved_launcher_interpreter(monkeypatch):
@@ -58,7 +58,7 @@ def test_container_mounts_only_fixture_inputs_and_bootstraps_distro_python(tmp_p
     calls = []
     monkeypatch.setattr(smoke, "run", lambda args, **kwargs: calls.append((args, kwargs)))
     monkeypatch.setattr(
-        smoke.sys, "argv", ["smoke", "--readme", "README.md", "--wheel", str(wheel)]
+        smoke.sys, "argv", ["smoke", "--guide", "docs/user/INSTALL.md", "--wheel", str(wheel)]
     )
     smoke.main()
     command, bounds = calls[0]
@@ -75,7 +75,7 @@ def test_container_mounts_only_fixture_inputs_and_bootstraps_distro_python(tmp_p
     assert bounds["timeout"] == 1200
 
 
-def test_inside_executes_readme_and_only_exempts_full_bootstrap(tmp_path, monkeypatch):
+def test_inside_executes_install_guide_and_only_exempts_full_bootstrap(tmp_path, monkeypatch):
     # Replace only fixture filesystem preparation and external operations.
     commands, probes, writes = [], [], []
     monkeypatch.setattr(smoke, "run", commands.append)
@@ -89,7 +89,7 @@ def test_inside_executes_readme_and_only_exempts_full_bootstrap(tmp_path, monkey
         ),
     )
     wheel = tmp_path / "exact.whl"
-    smoke.inside(wheel, smoke.read_commands(README))
+    smoke.inside(wheel, smoke.read_commands(GUIDE))
     assert commands[:3] == [
         ["apt-get", "update"],
         ["apt-get", "install", "-y", "sudo"],
@@ -109,11 +109,11 @@ def test_workflow_runs_distro_smoke_after_local_wheel_build_and_is_required():
     jobs = yaml.safe_load(Path(".github/workflows/test.yml").read_text())["jobs"]
     package = jobs["package-artifacts"]
     names = [step.get("name") for step in package["steps"]]
-    name = "Verify README isolated host install on Ubuntu 26.04"
+    name = "Verify Install guide isolated host install on Ubuntu 26.04"
     assert names.index(name) > names.index("Build wheel and source distribution")
     step = package["steps"][names.index(name)]
     assert ".github/scripts/isolated_host_install_smoke.py" in step["run"]
-    assert '--readme README.md --wheel "${wheels[0]}"' in step["run"]
+    assert '--guide docs/user/INSTALL.md --wheel "${wheels[0]}"' in step["run"]
     assert "package-artifacts" in jobs["ci-required"]["needs"]
 
 

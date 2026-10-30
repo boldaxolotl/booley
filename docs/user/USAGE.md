@@ -20,7 +20,7 @@ Flow, and Specialist is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
 
 This guide picks up after installation and project setup. It assumes that
 `booley init` and the `booley-setup` skill have both finished. If they haven't,
-install Booley using the [README](../../README.md#installation), then follow
+install Booley using [INSTALL.md](INSTALL.md), then follow
 [SETUP.md](SETUP.md).
 
 **What Booley does.** Booley lets a Developer Agent, such as Claude Code or
@@ -36,8 +36,6 @@ Booley offers two kinds of capability:
   predictable way. No AI is involved.
 - **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
   LLM-powered capabilities that each do one focused job.
-
-For direct CLI reproduction, see [live Flow progress and logs](FLOW_REFERENCE.md#live-progress-and-logs), including quiet and verbose output.
 
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
 and keeps the Developer Agent away from the rest of your computer.
@@ -62,40 +60,10 @@ in the glossary linked from the [context map](../../GLOSSARY-MAP.md).
 
 ### Selecting a Project
 
-Use `-C/--project PATH` on Project-bound commands to select a checkout or worktree,
-including a nested directory in it. Paths are relative to the caller; Booley does
-not change the process directory. With no selector, cwd discovery stays unchanged.
-An explicit canonical selector overrides `RTL_PROJECT_ROOT`.
-
-```bash
-booley -C ../other targets
-booley session -C ../other status
-booley session status --project ../other
-booley flow lint --target lint --project ../other
-```
-
-Use the selector once, at the root, command, or nested operation. It also works on
-`chat`, `doctor`, `init`, `upgrade`, `cleanup`, and `feedback`, and on bare
-`booley` inside the Sandbox to select the Project for chat. On the host, bare
-`booley` prints help without resolving the selector.
-`auth --status` optionally uses the selected Project and its auth policy; outside
-a Project it reports both supported AI agent clients (Claude Code and Codex),
-unless `--app` selects one. Bare `cheat` and `cheat --list` accept and ignore the
-selector without discovering a Project.
-`bootstrap`, `projects`, and `eda` retain their grammar
-and do not accept the new selector. Full option names are stable; ambiguous
-abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
-
-Selection chooses the checkout, while `BOOLEY_DIR` chooses the Booley Directory;
-an external data override remains supported. Checkout-local data configuration and
-initialization's destination scope keep their existing precedence. A selector
-requires an existing directory; `init` accepts an uninitialized directory.
-
-`cheat --project-files` selects the Project Files section.
-
-Flows and Specialists accept `--timeout DURATION`: positive integer seconds (`90`
-or `90s`), minutes (`30m`), hours (`2h`), or descending combinations (`1h30m`).
-MCP parameters and config keys use milliseconds.
+`-C/--project PATH` runs a command against another checkout or worktree (any
+directory inside it works), e.g. `booley -C ../other targets` or
+`booley flow lint --target lint --project ../other`. Details:
+[CLI-REFERENCE](CLI-REFERENCE.md#selecting-a-project).
 
 ## First, verify your setup
 
@@ -111,7 +79,7 @@ booley cheat           # available quick-reference sections
 Don't continue until `booley doctor` shows no failures or warnings.
 
 - If `booley` is not found, go back to the
-  [installation instructions](../../README.md#installation).
+  [installation instructions](INSTALL.md).
 - If Booley says its version changed, type `/booley-heal` in the Developer Agent chat.
 - For a quick overview of Booley, start with `booley cheat`. It lists the
   available sections; print the ones you need, for example `booley cheat --goals`
@@ -171,13 +139,9 @@ work, with one linked worktree and Goal Branch per session; see
     From then on you are using that CLI's own chat. To run several sessions,
     open more container terminals.
 
-    Arguments after `booley chat` go to that CLI unchanged, after Booley's own
-    launch arguments. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
-    Booley reads `-h`/`--help` and `-C`/`--project` only before any other
-    argument; put `--` first to forward them, as in `booley chat -- --help`.
-    Plain `booley` takes no agent arguments. If you pass `-n` or `--name` to
-    Claude, your session name replaces the `-n` name Booley would set.
+    Arguments after `booley chat` go to that CLI unchanged. To resume an
+    earlier conversation, run `booley chat --resume <id>` (Claude) or
+    `booley chat resume --last` (Codex).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -252,8 +216,6 @@ are saved in `.booley/.interactive_logs/`. Chat transcripts live in
 the Developer Agent CLI’s own session storage. If the
 Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
-How the connection works is in
-[ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode).
 
 ### Editing Project instructions
 
@@ -293,8 +255,8 @@ the rest. If a view fails to open, see
 
 ## Entering the Sandbox without VS Code
 
-**Reopen in Container** needs VS Code. Without it (in CI or for unattended
-work), `booley session` starts the same container. Run these on
+**Reopen in Container** needs VS Code. Without it (e.g. over SSH),
+`booley session` starts the same container. Run these on
 the **host**, after `booley init`:
 
 ```bash
@@ -311,14 +273,12 @@ container-only command works through it. `Ctrl-C` on a command run with `--`
 stops everything it started inside the container.
 
 `session refresh` is safe to interrupt; the prior container stays usable until
-the new one is ready. It won't replace a container that VS Code opened; use
-**Dev Containers: Rebuild Container** for that. If your EDA tools need a
-license server, run `booley session down` before refreshing.
+the new one is ready. If your EDA tools need a license server, run
+`booley session down` before refreshing.
 
-`up` and `enter` reuse the current Sandbox, including one owned by VS Code.
-`status` identifies a running VS Code Sandbox by owner and name. CLI `down`
-and `up --rebuild` refuse editor ownership: close the window or stop it through Dev Containers,
-and use **Dev Containers: Rebuild Container** to rebuild it.
+`up` and `enter` reuse a running Sandbox, including one VS Code opened.
+`refresh`, `down`, and `up --rebuild` leave a VS Code-owned container alone:
+close the window, or use **Dev Containers: Rebuild Container**.
 
 ## Auth & billing
 
@@ -333,10 +293,11 @@ does, with either a **subscription** or an **API key**:
 
 Both work in Interactive Mode and Goal Mode.
 
-- **Subscription:** usage counts against your plan. Claude rate-limit events
-  make Booley wait and retry a Specialist call within its retry and timeout
-  budgets. Codex usage caps stop the call; it must be invoked again after the
-  limit resets. Resume an interrupted Goal session with `goal_status(rules=true)`.
+- **Subscription:** usage counts against your plan. When you hit a Claude
+  rate limit, Booley waits and retries a Specialist call within its retry and
+  timeout budgets; a Codex call stops and must be invoked again after the
+  limit resets.
+  Resume an interrupted Goal session with `goal_status(rules=true)`.
 
 - **API key:** you pay per token.
 
@@ -362,9 +323,6 @@ The saved login lives in `~/.config/booley/`, outside every project, so it can't
 be committed by accident. Booley passes it to every container on its own,
 including VS Code's; rebuild an existing container once to pick it up.
 
-`booley init --skip-credentials` skips the login check, for CI machines that
-have no login on purpose. Don't use it for normal setup.
-
 ## When Booley itself misbehaves
 
 Maybe a Flow failed with no useful message, a doc describes a setting that
@@ -378,11 +336,4 @@ It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 "this wasn't worth the setup cost" are all worth one sentence to
 `/booley-feedback`. See [CONFIG.md](CONFIG.md#feedback-feedback).
 
-In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
-The log and default local report stay in the Main Booley Directory, even
-when a worktree has its own Paired Checkout. When the skill uses the
-feedback CLI, its `-C` / `--project` option selects the checkout used for context;
-it does not move that shared log or the default report. For Projects, the
-`BOOLEY_DIR` environment variable selects shared storage. Outside the
-Sandbox, without that override, storage is discovered from the selected checkout
-and may use a separate log. Use the report paths provided by the skill.
+Use the report path the skill prints.

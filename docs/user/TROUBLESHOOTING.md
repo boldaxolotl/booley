@@ -4,17 +4,13 @@ For setup breakage, start with `booley doctor`. If you suspect agent-planted Git
 configuration or hooks, read the [known Sandbox escape warning](https://booley.dev/docs/sandbox/#known-sandbox-escape-through-shared-git-metadata)
 first: host-side Doctor can trigger that vulnerability.
 
-`booley doctor --deep` additionally runs real sim/lint/synthesis smoke checks. Plain
-Doctor setup-checks marked FPGA Targets; deep mode prints their manual full-
-implementation commands instead of launching long Vivado runs. What
-follows is the residue Booley cannot safely repair itself: upstream constraints,
-host policy, project-specific intent, and third-party lifecycle behavior.
+`booley doctor --deep` additionally runs real sim/lint/synthesis smoke checks.
 With a Developer Agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;
 it uses this troubleshooting guide before improvising a fix and verifies both plain and deep
 Doctor before calling the project healthy.
 If Booley reports that its version changed, invoke `/booley-heal`.
 
-For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
+For installation see [INSTALL.md](https://booley.dev/docs/install/), for project setup see
 [SETUP.md](https://booley.dev/docs/setup/), for day-to-day driving see [USAGE.md](https://booley.dev/docs/usage/), and for
 the config knobs named below see [CONFIG.md](https://booley.dev/docs/config/#where-each-setting-lives). For the Booley-specific
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
@@ -43,8 +39,6 @@ booley bootstrap
 ```
 
 If you already have uv, use `uv tool install booley-rtl` instead.
-These persistent isolated wheel installs can own host state. Source/editable
-checkouts and temporary or ephemeral installs remain ineligible.
 
 ### The wrong `booley` runs (stale install shadowing)
 
@@ -58,7 +52,8 @@ upgrade older user or system installations that appear before the one you
 intend to use. Restore the canonical installed Booley launcher, run
 `pipx ensurepath` for pipx, and reopen the terminal. Then run
 `booley bootstrap`, or `booley bootstrap --update` after an intentional upgrade.
-The identity record refuses other installations until that explicit update.
+Booley records the owning installation in `~/.config/booley/host-installation.json`
+and refuses host commands from any other until `booley bootstrap --update`.
 
 After a distro Python upgrade, repair pipx environments with
 `pipx reinstall-all`. Once the intended launcher works, run
@@ -72,17 +67,10 @@ creates the Sandbox. The error names the missing or unavailable host
 source and its container target; restore that source, or run `booley init
 --seed` on the host when the source was intentionally removed.
 
-A rebuild may otherwise select a stopped VS Code container whose prior bind list
-still mentions a deleted skill, credential file, tool installation, mask
-directory, or editor-injected socket. When preparing the Sandbox for attachment, Booley
-removes such a stopped container (without deleting named volumes) so Dev
-Containers creates one from the current spec. When exactly one running VS Code container with a stale spec is authenticated to this Project, Booley stops it by immutable
-container ID, validates the current spec again, and removes that same stopped
-container. Bind mounts and named volumes remain; unpersisted data in the prior
-container's writable layer is discarded. Booley refuses without mutation when
-the container is headless, foreign, ambiguous, or one of multiple matches. If
-validation fails after the stop, the error includes the exact `docker start`
-recovery command.
+If an existing container's bind list is stale, Booley recreates the container
+from the current spec. Bind mounts and named volumes are kept; anything written
+only inside the replaced container is lost. If Booley refuses because the
+container is headless or ambiguous, stop and remove it yourself, then reopen.
 
 ### `booley` is missing from `/mcp` in Claude Code or Codex
 
@@ -128,13 +116,7 @@ file for diagnosis, repair or remove only the malformed metadata, and rerun
 Every valid built-in and custom MCP tool is discovered by default. To remove
 a Booley Flow from Developer Agent discovery and autonomous execution, set
 `[flows.<name>].enabled = false`; for a Specialist, set
-`[specialists.<name>].enabled = false`. Protocol utilities have no Project
-enable switch.
-
-Submit a Goal's Session Summary through `goal_finish`. The Developer Agent
-writes testbench code directly. Direct Flow diagnostics can list endpoints
-independently of the project discovery filter. An individual Flow may still
-report its configured flow as disabled when invoked directly.
+`[specialists.<name>].enabled = false`.
 
 For any other missing MCP tool:
 
@@ -149,8 +131,11 @@ For any other missing MCP tool:
 4. Check whether the MCP server was deliberately narrowed for a Specialist or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
-See [MCP-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/MCP-TOOLS.md#default-discovery-and-explicit-opt-out) for the complete
-discovery model.
+### `No space left on device` during an image build
+
+The image recipe outgrew Booley's disk estimate. Free Docker space, for example
+with `docker builder prune` (the next build may then rebuild the layers it
+removed), and retry.
 
 ### Windows first-run problems
 
@@ -167,21 +152,10 @@ so an unrelated Claude Code or Codex session on the host can revoke a running co
 and turn every in-flight Developer Agent and Specialist call into "Not logged in" mid-run: the one failure
 mode that bites long, unattended runs specifically.
 
-The fix is a **rotation-free** credential, stored by `booley auth`:
-
-| app | rotation-free credential | how |
-|---|---|---|
-| Claude | one-year OAuth token (never refreshes) | `booley auth`, which runs `claude setup-token` for you |
-| Codex | API key (`OPENAI_API_KEY`) | `booley auth --app codex`, then paste the key |
-
-`booley auth` writes the credential to `~/.config/booley/` (mode 0600,
-deliberately outside every repo and bind mount so it cannot be committed) and
-re-seeds the devcontainer spec; Booley then injects it on every container start.
-**Rebuild an existing container once** so the read-only mount exists.
-`booley auth --status` reports which credential each configured provider would use, and
-`booley doctor` warns when a run is about to rely on a refreshing one. Billing
-options are in [USAGE.md](https://booley.dev/docs/usage/#auth--billing);
-choosing between several credentials is in [CONFIG.md](https://booley.dev/docs/config/#pinning-what-bills-agent-auth).
+The fix is a **rotation-free** credential: run `booley auth` for Claude or
+`booley auth --app codex` for Codex, then **rebuild an existing container
+once** so the credential mount exists. Billing options and credential choice
+are in [USAGE.md](https://booley.dev/docs/usage/#auth--billing).
 
 ### Two Developer Agents keep clobbering each other's edits
 
@@ -221,121 +195,40 @@ The same applies to `tests.toml`, `goalsets/*.md`, `criteria.toml`, and the `.co
 repository on this machine and those files were never version-controlled: copy
 one aside before you edit it.
 
-### Doctor reports files under `tickets/` or guidance files
-
-`Project checks` reports `tickets.leftover-board` for nonempty
-`tickets/{board,state,logs,locks,waiver-candidates}` under the Booley Directory.
-Inspect and preserve any work you need, then delete the reported directory.
-Empty directories are listed in the same warning when applicable and are silent
-on their own; `tickets/history/` is not reported.
-
-`tickets.leftover-guidance` names `ticket_creation.md` or `ticket_defaults.md`.
-Delete a file that matches the shipped template. For edited or unfamiliar
-content, move its rules into a Goalset under `.booley/goalsets/`, then
-delete it. Both warning IDs can be narrowly waived in `doctor-waivers.toml`.
-
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
-Host Doctor prints the host's egress mode under `Host checks`, for example
-`host Sandbox egress mode: unproxied`. When Docker is ready, it then checks
-every running Booley Sandbox on the host; otherwise it reports
-`running Sandbox egress check skipped - Docker is not ready`. A Sandbox still
-issued for the other mode after you changed
-[`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml)
-gets a `host.sandbox-egress-mismatch` warning that names the Sandbox, its
-Project, and both modes.
-
-The check is host-wide: Doctor in any Project reports every Project's
-mismatched Sandbox, and the warning keeps Doctor from recording clean health
-until you resolve it. Recreate the Sandbox from a freshly issued spec:
+After you change
+[`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml),
+host Doctor warns `host.sandbox-egress-mismatch` for every running Sandbox, in
+any Project, still issued for the other mode. Recreate it from a fresh spec:
 
 - Headless: run `booley session down --project <root>`, then
   `booley init --seed --project <root>`, then start the Sandbox again.
 - VS Code: run `booley init --seed --project <root>`, then use Dev Containers:
   Rebuild Container in that Project's VS Code window.
 
-Booley never recreates a Sandbox automatically. The warning clears once the
-Sandbox is recreated or stopped. To keep one running in the other mode
-deliberately, waive `host.sandbox-egress-mismatch` with `subject` set to that
-Project's root, in the `.booley/doctor-waivers.toml` of each Project where you
-run Doctor. Write a Windows path as a single-quoted TOML string so its
-backslashes stay literal. If Doctor instead fails with
-`cannot check running Sandboxes against host egress mode`, resolve the problem
-it names; Sandbox starts are refused for the same reason.
+To keep one running in the other mode deliberately, waive
+`host.sandbox-egress-mismatch` with `subject` set to that Project's root, in the
+`.booley/doctor-waivers.toml` of each Project where you run Doctor. Write a
+Windows path as a single-quoted TOML string so its backslashes stay literal.
+If Doctor instead fails with
+`cannot check running Sandboxes against host egress mode`, fix what it names.
 
-### Retained issued Sandbox Images
+A stopped Sandbox that won't start after a switch to `"unproxied"` needs the
+same recreation: run `booley session down`, then `booley session up`.
 
-`booley session down` and Grant revocation retain issued-image keeper tags.
-`booley projects forget <project>` first checks that no live Grants remain,
-then releases only that root's keeper when no container uses its immutable image.
-An in-use keeper remains, but forgetting succeeds; Docker inspection or removal
-failure preserves the inventory entry for retry. A present forgotten Project
-whose keeper was released needs `booley init` before session reuse.
+### Docker disk still used after removing a Project
 
-Forget also lists the Docker resources the Project leaves behind, with sizes:
+Deleting a Project's directory leaves its Sandbox Images and agent state
+volumes in Docker. `booley projects forget <root>` lists them with sizes but
+removes nothing. `booley projects forget --purge <root>`, with the exact
+absolute root, removes the unused ones, including the copy of the agent's login
+and history in its state volumes. Both refuse while the root has a live Grant.
 
-- images named by the Project's own Sandbox Image tags, or recorded as built
-  for it, marked `in-use` (a container uses it), `shared` (a tag outside the
-  Project also names it), or `unused`. An untagged image that still shows the
-  Project's repository name but has no build record is marked `unrecorded`;
-- the Project's agent state volumes, marked `in-use` or `unused`. A state
-  volume holds a copy of the agent's login and the agent's history;
-- containers and networks still labelled for the Project, marked `labelled`.
-
-Forget removes none of the listed resources; it only deletes untagged images
-recorded as built for the Project once nothing uses them, before it lists the
-rest. If Docker cannot list them, the root stays
-forgotten and the command reports the error and the keeper outcome.
-
-An untagged image with neither a build record nor the Project's repository
-name can't be traced to any Project, so forget doesn't list it.
-`docker image prune` reclaims every dangling image on the host, from any Project.
-
-To remove the listed resources, run `booley projects forget --purge <project>`
-with the exact absolute root. Purge never follows a symlink in that path. It
-works on a remembered root and on one that is already forgotten or deleted; a
-live Grant for the root refuses it. Purge removes:
-
-- every tag of the Project's own Sandbox Image family and its keeper, unless a
-  container uses the image. Removal never forces and never prunes untagged
-  parent images, so a tag outside the Project keeps its bytes;
-- untagged images recorded as built for the Project, once nothing needs them;
-- the Project's unused state volumes, including the login copy and agent
-  history inside them.
-
-`booley init` and `booley init --force` record the images a rebuild
-supersedes and remove them after the Session keeper moves to the new image.
-An image a container uses, or that another tag still names, stays and init
-names it with the reason.
-
-Purge prints a `Removed:` line for each removal and a `Kept:` line, with the
-reason, for each recorded image it had to keep. It keeps `in-use`,
-`unrecorded`, and `labelled` entries and lists them afterwards. Remove an
-`unrecorded` image yourself with `docker image rm <id>`
-once you are sure no other Project needs it. If a removal fails, the error
-names what was already removed; run the same command again to finish.
-
-To reclaim keepers from Projects forgotten before this behavior was available:
-
-```bash
-booley projects prune-keepers
-booley projects prune-keepers --confirm <digest>
-```
-
-Copy the digest from the preview. Confirmation rechecks the candidate set;
-a changed preview requires a new confirmation. Inventory absence is the explicit
-orphan policy, including historical issuance records: remember Projects whose
-pins you want to preserve. Inventoried roots (including missing, uninitialized,
-and Grant-only roots) and images used by any container are protected.
-Stopped and foreign containers count too. For a VS Code-owned Sandbox, close
-the window or stop it through Dev Containers, then explicitly remove its
-container before reclaiming its keeper. CLI `session down` refuses editor ownership.
-
-The command releases exact keeper tags without force. Other tags or containers
-may retain the image bytes, so a released tag does not guarantee disk space was
-freed. External Docker changes cannot be atomic with these checks. A partial
-failure reports tags already released and returns an error; preview again before
-retrying. Doctor only reports retained keepers and never removes them.
+For images left by earlier forgets, run `booley projects prune-keepers`, then
+`booley projects prune-keepers --confirm <digest>` with the digest it printed.
+Purge keeps images marked `unrecorded`; remove one with `docker image rm <id>`
+once no other Project needs it. See [`booley projects`](https://booley.dev/docs/cli-reference/#commands).
 
 ### Recover sources hidden by an interrupted older run
 
@@ -356,15 +249,11 @@ Sandbox, before rebuilding it or clearing its temp directory:
 
 ### Goal evidence and state recovery
 
-Selected immutable producer observations govern Goal evidence. A lost or delayed
-state save recovers automatically when Booley reads or saves Goal state; status
-reads preserve the state file and immutable observations. If a Goal lacks a usable
-current observation, status names the Goal, the evidence fields, and the producer
-to rerun. For ELAB, rerun `sim mode=elab_only` for its Target; for REVIEW, follow
-the Goal's review category and focus. A fresh successful producer run publishes
-consistent evidence and state. If publication still fails, report the persistence
-failure. Report ledger validation corruption with its diagnostic; preserve state
-and evidence files instead of editing or removing them.
+If `goal_status` says a Goal has no usable current evidence, rerun the producer
+it names (ELAB: `sim mode=elab_only` on its Target; REVIEW: the Goal's review
+category and focus). If saving Goal state keeps failing or the ledger reports
+corruption, report it with the diagnostic and don't edit or delete state or
+evidence files.
 
 ### Monitoring Goal work
 
@@ -448,35 +337,10 @@ coverage floors alone, so it never shows `goal-test-run-incomplete`,
 | `goal-test-run-metric-missing` | The latest run recorded Test Run outcomes but did not measure the Goal's Cycle Count or coverage. | Cycle Count: run the Goal's frozen Test Run. Coverage: run exactly the Goal's frozen Test Runs in one `--coverage` run. |
 | `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A Simulation Campaign registration that cannot be read is moved aside only when you approve a Goal change. |
 
-A `retarget` that leaves the Goal as written freezes its Test Runs again from
-the Target as it is now; it is refused when the Goal names a Test the Target
-skips. Like every Goal change it needs your approval, and the Goal's Test Run
-outcomes start again.
-
-A failing Test Run that is not one of a Goal's frozen Test Runs is
-**diagnostic**. The Flow report lists it under `Diagnostic failures`, and it
-blocks no Goal. Ask for a Goal change if that Test Run should become required.
-
-A run with `--diagnostic` records nothing, so a frozen Test Run that passes or
-fails in it keeps the outcome `goal_status` showed before. The Flow report
-names the Goals whose frozen Test Runs ran and the ones that failed. Run again
-without `--diagnostic` to record them.
-
-Inside Goal Mode, Booley registers a Simulation Campaign before its first
-Test Run starts when its Target has a simulation or Cycle Count Goal: one
-`booley.goal-campaign/v1` document per Simulation Campaign under
-`logs/acceptance/campaigns/` of the Goal Record. Booley does not register a
-baseline Simulation Campaign. When a registered
-Simulation Campaign is cancelled or killed, the next Flow run or status read
-reads the results it finished and adds them to the Test Run outcomes of
-simulation and Cycle Count Goals; a failure it saw counts. Do not edit or delete these documents. One that cannot
-be read gives every simulation and Cycle Count Goal the reason
-`goal-campaign-unaccounted`, and Booley moves it to `quarantine/` beside the
-others when you approve a Goal change.
-
-The Review Package lists the Test Runs that Booley froze after entry, under
-the heading `Test Runs resolved after entry`, and every Simulation Campaign
-whose results were never fully accounted for.
+Don't edit or delete the Simulation Campaign records under the Goal Record's
+`logs/acceptance/campaigns/`. An unreadable one shows
+`goal-campaign-unaccounted`, and Booley moves it aside when you approve a Goal
+change.
 
 ## Targets and simulation
 
@@ -603,13 +467,7 @@ contents and how to layer EDA tools on top, see
 ### `bwave gui` fails on a scoped view
 
 A scoped view (`--signals` / `--group` / `--time` / `--cursor` / `--append`)
-drives VaporView in an attached VS Code window through the Viewer Bridge that
-the Booley Sandbox Integration extension starts in every window of the
-Sandbox. The generated devcontainer spec installs both extensions. If no attached window
-answers, the scoped view fails with a setup hint, deliberately, rather than
-silently opening the whole trace and letting you read the wrong picture. A
-bare `bwave gui` needs no bridge: it falls back to launching the editor CLI on
-the file.
+needs a VS Code window attached to the Sandbox. A bare `bwave gui` doesn't.
 
 When a window is attached, the usual fix is **"Developer: Reload Window"** in
 it, not a rebuild: the bridge starts when the window loads. If Doctor also
@@ -644,19 +502,10 @@ versions. Run the install command above in the attached remote window, then
 **Developer: Reload Window**. If Doctor also reports devcontainer drift,
 refresh the Sandbox so its spec installs the bundled build.
 
-Booley's attach hook applies one small compatibility patch to the installed
-VaporView. It stops the remote extension host from looking up your desktop
-color theme, which lives on your machine, not in the Sandbox: that lookup
-fails with an "Error getting user theme" notification and greys out every
-waveform. It also makes the three palette slots behind `@red`, `@blue`, and
-`@green` honor the colors in the Sandbox spec. The patch applies only to the
-exact official 1.6.0 build; a different or modified build is left untouched and
-reported as unsupported. On the first window of a fresh container it lands
-after VaporView has started, so it takes effect at the next **Developer: Reload
-Window**. When installation is delayed, the attach hook leaves one
-background watcher until VaporView arrives. It patches VS Code's hidden staging
-copy before the completed install is published. Watcher diagnostics are written
-to `~/.booley/vaporview-install-watch.log` if automatic repair cannot complete.
+On the first window of a fresh container, Booley's VaporView fixes (theme
+lookup, `@red`/`@blue`/`@green` colors) take effect only after **Developer:
+Reload Window**. If an "Error getting user theme" notification persists, see
+`~/.booley/vaporview-install-watch.log`.
 
 A view that opens but is missing signals is a different thing: signals the
 viewer has no netlist entry for are left out and named in a WARNING on stderr;
@@ -698,8 +547,7 @@ with `error: 'stat_if' cannot be used in an expression`, naming the array rather
 than the `$size` call. **Workaround:** hoist the count into a named constant
 (`localparam STAT_CNT = 2;`) and use it at both the declaration and the
 instantiation. This is not a Booley bug and not a dead end; the fix is usually a
-two-line RTL change. The running list of `slang` limitations (and where to add a
-new one) is in
+two-line RTL change. The running list of `slang` limitations is in
 [SUPPORTED-EDA-TOOLS.md](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
 If you don't need `slang`, stay on the default `sv2v` frontend.
 
@@ -729,15 +577,14 @@ defined`. Compile the whole filelist (headers first) as **one** unit — in a
 
 ### Host-provisioned Vivado will not start
 
-Run `booley doctor` on the host, then rerun it with `--deep` inside the Sandbox. Confirm that the Project has an exact Grant, the opaque Vivado
-installation registration still points to a supported Linux x86-64 Vivado 2025.2
+Run `booley doctor` on the host, then rerun it with `--deep` inside the Sandbox. Confirm that the Project has an exact Grant, the registered Vivado
+installation still points to a supported Linux x86-64 Vivado 2025.2
 release, and the generated Sandbox specification has not drifted. Reseed the
 Sandbox only after the host authority has been corrected.
 
 Do not attempt to expose a host daemon, a Docker socket, a direct license-server
-address, or a license environment variable to repair this. Those paths are not
-part of the product and a failed registration/licensing check deliberately fails
-closed. Use `booley eda installation list`, `booley eda license list`, and
+address, or a license environment variable to repair this. These are
+unsupported. Use `booley eda installation list`, `booley eda license list`, and
 `booley projects` to inspect administrator-owned records and see each Project's
 Grants together.
 
@@ -756,39 +603,19 @@ with `booley projects forget /exact/deleted/project`.
 
 ### Coverage Campaign diagnostics and retention
 
-Coverage collection requires explicit `sim --coverage` / `--cov` or MCP
-`coverage: true`. The numbered Target's `coverage.json` is a
-`booley.coverage-campaign-reference/v1` pointer. Resolve its
-`coverage_campaign.path` from that origin Target directory
-(`coverage_campaign.path_base: origin_target`) to the selected attempt's
-`campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
-That nested Campaign manifest keeps overall and per-source-file
-percentages and evaluation, with exact points in its required sibling
-`coverage-points.jsonl.gz`. Native paths resolve from the nested Coverage Campaign
-directory, which also holds `native/raw/`, `native/merged/`, and collected hook
-evidence. Report retention is explicit: native-only pruning
-keeps both Campaign files, `simulation.json`, and hook evidence; full
-invocation pruning removes all reports and prevents re-analysis. See the
-[exact retention commands](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/FLOW_IMPLEMENTATION.md#exact-report-retention).
+To find a Campaign's files or prune them, see
+[Where the evidence lives](https://booley.dev/docs/coverage/#where-the-evidence-lives)
+and [Cleaning up completed Campaigns](https://booley.dev/docs/coverage/#cleaning-up-completed-campaigns).
 
-An `availability.json` status of `pruning` means cleanup was interrupted. Retry
-the same exact maintenance command after resolving the filesystem error.
-`invocation N is still being produced` means the producer lock is owned; wait and
-retry. `Simulation Campaign is being resumed` means an exact resume owns the
-Campaign mutation lock; wait for that resume. Do not delete either lock file. An interrupted
-Simulation starts a new numbered invocation when rerun without an exact
-`--resume-from <manifest.json>`. Durable Simulation Campaigns resume only the
-named manifest; Booley never guesses a “latest” Simulation Campaign. A resume
-still creates a new compatibility invocation while authoritative results remain
-beside the original manifest. Ordinary HDL retries only interrupted work items;
-Cocotb retries the whole interrupted batch; native coverage never retries its
-collection: a resume, or its `--dry-run` preview, of a coverage Campaign whose
-collection has no recorded result exits `2`; start a new
-`booley flow sim --coverage` run. A coverage resume only finishes an
-interrupted publication. Neither Cocotb nor coverage resumes or overwrites an
-interrupted native result database. Non-Campaign and elaboration-only invocations are not resumable. Empty
-`.pruned-N` directories reserve historical invocation numbers and should be
-retained.
+| Message | What to do |
+|---|---|
+| `availability.json` status `pruning` | Cleanup was interrupted. Fix the filesystem error, then rerun the same cleanup command. |
+| `invocation N is still being produced` | A run is still writing it. Wait, then retry. |
+| `Simulation Campaign is being resumed` | A resume owns the Campaign. Wait for it to finish. |
+| `collection has no recorded result` | Coverage collection never finished, so the Campaign can't resume. Start a new `booley flow sim --coverage` run; the message prints the command. |
+
+Never delete a lock file to get past these. Keep empty `.pruned-N` directories:
+they reserve used invocation numbers.
 
 #### A Simulation Campaign will not resume
 
@@ -800,12 +627,6 @@ directory, or a guessed `latest` path. Use a read-only preview first:
 booley flow sim --resume-from /exact/path/to/campaign/manifest.json --dry-run
 ```
 
-The preview reports completed, interrupted, and pending work plus named
-workload mismatches without acquiring a heavy slot, creating attempts, running
-Pre-Sim Commands, or changing Criteria. A real resume reuses completed results,
-creates a new attempt only for interrupted/pending work, and writes a new
-compatibility invocation pointing back to the original authority.
-
 An integrity error is intentionally fail-closed. Truncated, resized, linked,
 noncanonical, digest-mismatched, or identity-mismatched Campaign evidence must
 be restored byte-for-byte from the same Campaign; do not hand-edit hashes or
@@ -815,38 +636,14 @@ changed, start a new Campaign instead of weakening the mismatch check. An
 unsupported manifest version must be rerun with the current Booley version;
 Booley never rewrites an older immutable manifest in place.
 
-For a templated `run_cwd`, an interrupted attempt may leave its owned directory
-behind. Resume removes it only when the exact ownership marker matches. A
-missing/changed marker, symlink, reparse point, or foreign file tree requires
-human inspection; move that foreign data out of the configured path and retry.
+If resume refuses to clean a templated `run_cwd` directory, inspect it and move
+any foreign data out of the configured path, then retry.
 Never delete Project job-slot or execution records to force progress:
-their leases protect live EDA process trees, and normal recovery releases them
-only after terminal proof.
+their leases protect live EDA process trees.
 
-An authenticated abandoned Simulation Campaign can be discarded with exact
-`--full` pruning after its producer exits. Full pruning cancels interrupted lane
-executions and does marker-checked cleanup of owned templated run directories.
-The Booley Directory is needed only when one of those authenticated external resources
-survives. An empty reservation abandoned before its first `progress.json` can also
-be discarded with `--full` when its external invocation lock remains intact.
-Use the printed `booley flow sim --resume-from <manifest>` command instead when the
-evidence is worth preserving. Native-only pruning requires a completed Target and
-will point to those choices; it cannot prune partial native evidence independently.
-Malformed, contradictory, linked, foreign, or unrecognized evidence remains
-protected. For coverage collected inside a Simulation
-Campaign, the public Target-level `coverage.json` is an authenticated reference
-to the selected attempt's nested Coverage Campaign; keep the reference and
-enclosing Simulation Campaign together. If full pruning reports that the Booley
-Directory is required, the supplied report root is outside the inferable
-`<booley-directory>/.runtime/flow-reports` and `<booley-directory>/flow-reports` layouts;
-retry the same exact `--full`
-selection with `--project-data <resolved-booley-directory>`. Do not add that option
-to compensate for an incorrect Booley Directory path or for native-only pruning.
-
-`<reports>/sim.json` is a mutable last-writer compatibility copy of the newest
-invocation report, not a stable Campaign pointer. A later failed run can
-replace its `detail` with an empty object. Select evidence through the numbered
-`<reports>/sim/<N>/...` paths instead.
+Discard an abandoned Campaign with `--full` pruning (see
+[Cleaning up completed Campaigns](https://booley.dev/docs/coverage/#cleaning-up-completed-campaigns));
+add `--project-data <resolved-booley-directory>` only if it asks.
 
 #### Coverage Analyst input and model availability
 
@@ -862,10 +659,7 @@ Native-payload pruning preserves analysis. Full-invocation pruning removes the
 Campaign, so select another retained invocation or collect new evidence.
 
 The Analyst requires that canonical Target-level reference with matching completed
-`simulation.json`; it does not accept the resolved nested manifest. The manifest
-readers in `booley.flows.sim.coverage_campaign_store` instead take
-the resolved nested Campaign manifest, which is distinct from the Target
-reference schema.
+`simulation.json`; it does not accept the resolved nested manifest.
 
 Missing, changed, unsafe, or mismatched Target sources produce report-only analysis.
 Stealth-mode projects also use report-only analysis because resolving their sources
@@ -873,18 +667,13 @@ requires FuseSoC registry reconciliation, which would change project files.
 This does not change the Campaign's measured verdict. The Analyst does not reuse
 mutable `coverage_waivers.json` files or approve its candidates.
 
-Large valid Campaigns are not copied into the model prompt. The Analyst validates
-the complete Campaign first, then retrieves bounded overview, point, and verified
-source views through its private evidence tool. Point views include Approved Waiver
-disposition and provenance. If the cumulative evidence budget or model context is
-exhausted, narrow the optional instruction or retry with a larger-context model; the
-failure report identifies the exhausted boundary instead of returning an empty report.
+If the evidence budget or model context is exhausted, narrow the instruction or
+use a larger-context model.
 
 Codex analysis requires cached metadata for the exact configured model. If that
 metadata is missing, start the configured Codex CLI to refresh model discovery,
 then retry. Analysis fails closed instead of starting a Specialist with execution
-capabilities. Claude analysis also disables built-in tools; both backends expose only
-the Campaign-bound evidence tool.
+capabilities.
 
 #### Coverage collection and evaluation failures
 
@@ -908,10 +697,8 @@ the Campaign-bound evidence tool.
 - Coverage Goals use a Target-bound argument such as
   `{"family":"COVERAGE","target":"sim_core","tests":"all","metrics":{"toggle": 50}}`;
   replace `all` with an exact registered suite when needed. Choose only a
-  supported native metric; no silent translation or waveform scoring remains.
-- Missing `sim_<target>.json`: follow the exact numbered report pointer. Missing `coverage_report.json` or mutable
-  `coverage_waivers.json` is expected; use a canonical Campaign and the configured
-  human-approved waiver directory.
+  supported native metric.
+- Missing `sim_<target>.json`: follow the exact numbered report pointer.
 
 #### Waiver Candidates at review
 

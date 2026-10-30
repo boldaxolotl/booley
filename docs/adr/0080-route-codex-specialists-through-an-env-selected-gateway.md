@@ -1,6 +1,6 @@
 # Route Codex Specialists through an env-selected gateway
 
-Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; and text-only Specialists, #2269; see Amendments)
+Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; text-only Specialists, #2269; and text-only runs without a tool allowlist or a cached model, #2437; see Amendments)
 
 ## Context
 
@@ -123,3 +123,20 @@ Codex in the Sandbox (and `booley chat`) use the gateway.
   tools, so `booley` commands run there still reach the gateway. A static
   `BOOLEY_GATEWAY_TOKEN` is hidden from them, so such a command fails loud for
   lack of a token source.
+
+## Amendments (#2437)
+
+[#2437](https://github.com/boldaxolotl/booley/issues/2437) lets a text-only
+Codex run carry no tools at all, which Doctor's developer probe needs. These
+amend the #2269 bullets above; the originals stay as history.
+
+- **A text-only run under `gateway` without a nested tool allowlist gets the
+  provider and no Booley MCP server.** The refusal existed because the provider
+  shared `config.toml` with an unfiltered Booley server; that server is no
+  longer written for such a run, so the guard is dropped.
+- **Booley also generates the model-catalog entry outside `gateway`** whenever
+  `models_cache.json` is absent or lacks the model, with every tool field off.
+  Coverage Analyst therefore runs where it used to fail with "requires the exact
+  model in the Codex models cache". A cache that cannot be read or parsed, or
+  that lists the model twice, still fails loud: that is a fault, not a missing
+  model.

@@ -31,10 +31,9 @@ present. Power is not measured.
 
 ## Configuration (`[flows.fpga]`)
 
-FPGA implementation runs through Vivado inside the Sandbox. The
-Linux host-provisioned policy obtains a read-only registered Vivado 2025.2 release
-through `[eda.vivado]`; it does not require Vivado on the Sandbox `PATH` from
-the host.
+FPGA implementation runs through Vivado inside the Sandbox. Vivado is
+provisioned from the host; see the
+[Vivado host-provisioning policy](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
 
 `[flows.fpga]` contains execution policy. Build inputs and target selection
 belong to the invocation and `.core` Target: put `part`, `out_of_context`, and
@@ -72,29 +71,8 @@ targets:
     toplevel: top
 ```
 
-`ppa_profile` expresses portable optimization intent. It resolves per-call
-`--ppa-profile`, then Target `flow_options.ppa_profile`, then `balanced`.
-Booley maps `compact` to Vivado's area-oriented synthesis and implementation
-strategies, leaves the existing Vivado defaults untouched for `balanced`, and
-maps `max_frequency` to its characterized performance strategies. Target
-`synth` and `pnr` fields are Edalize engine selectors, not strategy overrides;
-the built-in FPGA Flow neither forwards nor reinterprets them as an expert
-profile surface.
-
 The `file_type: xdc` fileset is the sole constraints source and is mandatory.
-There is no `[flows.fpga].xdc` key. Keeping constraints and the device part on
-the Target prevents one global Flow section from applying the wrong design
-intent to another Target.
 
-Repeated runs use a Booley-owned content cache, not Make timestamps. The cache
-fingerprint covers the resolved Target/EDAM, portable profile and concrete
-Vivado mapping, source/header/constraint bytes,
-top, part, parameters/defines, flow options, and the supported Vivado plus
-Edalize/FuseSoC identities. Reuse also re-hashes the routed report set and, for
-a non-OOC Target, its bitstream; a hit is reported explicitly as
-`cached: true`. A miss invokes Make with `-B`, so `Nothing to be done` cannot
-turn prior reports into either a false pass or a false failure.
-
-Profiles name optimization intent, not guaranteed outcomes. FPGA area is
-represented by utilization/resource counts; this Flow does not currently
-normalize or compare power.
+Repeat runs reuse a cached result when every input (sources, constraints, part,
+profile, parameters, flow options and tool versions) is identical; the report
+then says `cached: true`. `--no-cache` forces a fresh run.

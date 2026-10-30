@@ -29,7 +29,7 @@ The [Features page](https://booley.dev/docs/features/) is the complete feature r
 Three ways in, ordered by how much you want to invest:
 
 1. **[Level 1: Watch](#level-1-watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Clone the configured demo, open it in VS Code, and type your first request to the agent.
+2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Open the configured demo in your browser or clone it, then type your first request to the agent.
 3. **[Level 3: Use it on your own project](#level-3-use-it-on-your-own-project).** Full integration on your own RTL.
 
 ### Level 1: Watch
@@ -40,45 +40,31 @@ Two videos on the [Videos page](https://booley.dev/videos/) show an engineer dri
 
 **[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to try the demo, after you [install Booley](#installation).
 
+Or skip the install and run the demo in browser VS Code, macOS included:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)
+
+The Codespace uses your own GitHub Codespaces quota and your own Claude or
+ChatGPT account.
+
 ### Level 3: Use it on your own project
 
 Follow the [Setup guide](https://booley.dev/docs/setup/) to integrate Booley with your own RTL project, after you [install Booley](#installation).
 
 ## Installation
 
-Booley supports Windows and Linux (Ubuntu 26.04 tested); macOS is not
-supported. Designs must be SystemVerilog or Verilog: VHDL and UVM are not
-supported. You need:
+Booley runs on Windows and Linux (macOS is not supported) for SystemVerilog
+or Verilog designs. It needs Python 3.11+, Git, Docker, VS Code, and a Claude
+Code or Codex CLI. With
+[pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html):
 
-- Python 3.11+
-- [Git 2.37.2+](https://git-scm.com/downloads)
-- [Docker](https://www.docker.com/), with about **4 GB** free for the image
-  (**6 GB** with the RISC-V toolchain) plus room for build artifacts
-- [VS Code](https://code.visualstudio.com/)
-- An agent CLI on the host PATH with credentials configured for Project Setup:
-  [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
-  or [Codex](https://developers.openai.com/codex/cli) (`codex`)
-
-With [pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html), install Booley and prepare the host:
-
-<!-- booley-smoke:install -->
 ```bash
 pipx install booley-rtl
 booley bootstrap
 ```
-<!-- /booley-smoke:install -->
 
-To upgrade an existing install:
-
-<!-- booley-smoke:upgrade -->
-```bash
-pipx upgrade booley-rtl
-booley bootstrap --update
-```
-<!-- /booley-smoke:upgrade -->
-
-Seeing `externally-managed-environment`, PATH, or other install errors? See
-[Troubleshooting](https://booley.dev/docs/troubleshooting/#installation-fails-with-externally-managed-environment).
+The [Install guide](https://booley.dev/docs/install/) has the full
+requirements, upgrade steps, and what `booley bootstrap` does.
 
 **Next:** [try the demo](#level-2-try-the-demo-yourself) or [set up your own project](#level-3-use-it-on-your-own-project).
 

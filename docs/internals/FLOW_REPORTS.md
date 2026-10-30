@@ -95,6 +95,12 @@ A dry run runs no EDA tool, touches no Criteria, and fills no caches. It may
 run FuseSoC setup or generators in a throwaway directory when resolving the
 Target requires it; `planning_disclosures` says so when that happens.
 
+For Simulation, ordinary candidate and baseline units expose the simulator
+budget as `timeout_ms` and the invocation-carried build budget as recipe
+`build_timeout_ms`. Elaboration Check units expose their build budget in both
+fields because the Target build is their only subprocess. Standalone units
+retain the standalone-sweep `timeout_ms` and have no build field.
+
 ## `sim`
 
 ### Simulation Campaign layout

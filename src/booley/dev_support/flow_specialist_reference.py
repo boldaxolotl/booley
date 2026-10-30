@@ -340,8 +340,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "`--model`, `--max-turns`, and `--timeout` are CLI-only controls.",
         "",
         "For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. "
-        "The supported module alternative is `python -m booley.specialists.reviewer` "
-        "with the same flags. Common options are `-C/--project PATH`, `--report-dir`, "
+        "Common options are `-C/--project PATH`, `--report-dir`, "
         "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
