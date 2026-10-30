@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from booley.fusesoc import fusesoc_registry
 from booley.harness import booley as tlr
+from booley.harness import colors
 
 _CORE = textwrap.dedent(
     """\
@@ -54,6 +56,38 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _colors_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin plain output so FORCE_COLOR on a developer machine cannot break substrings."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+
+_EXTRA_CORE = textwrap.dedent(
+    """\
+    CAPI=2:
+    name: acme:ip:extra:1.0
+
+    targets:
+      lint_bad:
+        flow: lint
+        flow_options: {tool: slang}
+      sim_cocotb:
+        flow: sim
+        flow_options: {tool: verilator, cocotb_module: tb_alpha_tests}
+    """
+)
+
+_FOOTER = (
+    "✓ = selected by flow_options.booley.doctor · "
+    "`booley targets <name>` resolves parameters/files/SDC/XDC"
+)
+
+
+def _cells(line: str) -> list[str]:
+    """Split a table line into cells at runs of two or more spaces."""
+    return re.split(r"\s{2,}", line.strip())
+
+
 def _run(project: Path, *argv: str) -> int:
     parser = tlr._build_parser()
     args = parser.parse_args(["targets", *argv])
@@ -66,7 +100,66 @@ class TestTargetsListing:
         out = capsys.readouterr().out
         assert "acme:ip:alpha:1.0  (alpha.core)" in out
         assert "sim" in out and "synth" in out
-        assert "Dr sim" in out
+        assert "✓ sim" in out
+        assert re.search(r"\bDr\b", out) is None
+
+    def test_listing_has_header_groups_flow_doctor_and_footer(self, project: Path, capsys):
+        (project / "x.core").write_text(_EXTRA_CORE, encoding="utf-8")
+        assert _run(project) == 0
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+
+        assert _cells(lines[0]) == ["TARGET", "FLOW", "EDA TOOL", "TOP", "DOCTOR"]
+        assert set(lines[1].strip()) <= {"─", " "}
+        assert "acme:ip:alpha:1.0  (alpha.core)" in lines
+        rows = {_cells(line)[0]: _cells(line) for line in lines if line.startswith("  ")}
+        assert rows["sim"] == ["sim", "sim", "verilator", "tb_alpha", "✓ sim"]
+        assert rows["synth"][1] == "synth" and rows["synth"][-1] == "alpha"
+        assert len(rows["synth"]) == 4  # empty DOCTOR cell leaves no cell behind
+        assert rows["lint_bad"][1] == "-"
+        assert "generic" not in out and "top=" not in out
+        assert lines[-1] == _FOOTER
+        assert lines[-2] == ""
+        assert "\n\n\n" not in out
+
+    def test_listing_styles_groups_names_and_doctor(self, project: Path, capsys, monkeypatch):
+        monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+        assert _run(project) == 0
+        out = capsys.readouterr().out
+        group_line = next(line for line in out.splitlines() if "acme:ip:alpha:1.0" in line)
+
+        assert group_line.startswith(colors.bold_accent("acme:ip:alpha:1.0"))
+        assert colors.dim("(alpha.core)") in group_line
+        assert colors.bold("sim") in out
+        assert colors.green("✓ sim") in out
+        assert colors.dim(_FOOTER) in out
+
+    def test_piped_listing_is_aligned_plain_text(self, project: Path, capsys, monkeypatch):
+        for var in ("FORCE_COLOR", "NO_COLOR"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("TERM", "xterm")
+        # the real pipe decision: captured stdout is not a TTY
+        monkeypatch.setattr(colors, "COLORS_ENABLED", colors._color_supported())
+        (project / "x.core").write_text(_EXTRA_CORE, encoding="utf-8")
+        assert _run(project) == 0
+        lines = capsys.readouterr().out.splitlines()
+
+        assert not any("\x1b" in line for line in lines)
+        header = lines[0]
+        assert _cells(header)[0] == "TARGET"
+        starts = [header.index(h) for h in ("TARGET", "FLOW", "EDA TOOL", "TOP", "DOCTOR")]
+        wanted = {"sim", "synth", "lint_bad", "sim_cocotb"}
+        found = 0
+        for number, line in enumerate(lines):
+            if not line.startswith("  ") or line.split()[0] not in wanted:
+                continue
+            found += 1
+            # every cell (runs of text split at 2+ spaces) starts at a header column
+            for cell in re.finditer(r"\S+(?: \S+)*", line):
+                assert cell.start() in starts, line
+            if line.split()[0] == "sim_cocotb":
+                assert lines[number + 1].strip() == "cocotb tb_alpha_tests"
+        assert found == len(wanted)
 
     def test_no_cores_message(self, tmp_path: Path, capsys):
         assert _run(tmp_path) == 0
@@ -139,9 +232,51 @@ class TestTargetsDetail:
         assert _run(project, "sim") == 0
         out = capsys.readouterr().out
         assert "Target sim" in out
-        assert "Doctor        sim" in out
+        assert "Doctor        ✓ sim" in out
         assert "Resolved view unavailable: could not invoke fusesoc" in out
         assert "booley session enter" not in out
+
+    def test_detail_uses_listing_palette_and_flow_meaning(
+        self, project: Path, capsys, monkeypatch
+    ):
+        def failing_resolve(*args, **kwargs):
+            raise fusesoc_registry.TargetResolutionError("no fusesoc")
+
+        monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", failing_resolve)
+
+        assert _run(project, "synth") == 0
+        synth = capsys.readouterr().out
+        assert synth.startswith(colors.bold_accent("Target synth"))
+        assert colors.dim("flow".ljust(13)) + " synth" in synth  # drivable Flow, not "generic"
+        assert colors.dim(".core flow".ljust(13)) + " generic" in synth
+        assert "drivable by" not in synth
+        assert colors.dim("Doctor".ljust(13)) + " (not selected)" in synth
+
+        assert _run(project, "sim") == 0
+        assert colors.green("✓ sim") in capsys.readouterr().out
+
+    def test_detail_resolved_section_is_styled(self, project: Path, capsys, monkeypatch):
+        resolved = fusesoc_registry.ResolvedTarget(
+            name="sim",
+            vlnv="acme:ip:alpha:1.0",
+            toplevel="tb_alpha",
+            eda_tool=None,
+            configured_eda_tool="verilator",
+            files=(),
+            parameters={"WIDTH": {"datatype": "int", "default": 8}, "RAW": 3},
+            build_root=project / "build",
+            edam_path=project / "build/demo.eda.yml",
+        )
+        monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", lambda *_a, **_k: resolved)
+
+        assert _run(project, "sim") == 0
+        out = capsys.readouterr().out
+        assert colors.accent("Resolved via `fusesoc run --setup`:") in out
+        assert colors.strip_ansi(out).count("WIDTH (int) = 8, RAW = 3") == 1
 
     def test_detail_json(self, project: Path, capsys, monkeypatch):
         def failing_resolve(*args, **kwargs):
