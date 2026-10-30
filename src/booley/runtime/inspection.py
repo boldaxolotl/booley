@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -175,11 +176,19 @@ def _provider_persistence_current(
     request: RuntimeInspectionRequest, spec: dict, report: Findings
 ) -> bool:
     spec_app = dc.spec_agent_app(spec)
-    if (
-        request.declared_provider is not None
-        and spec_app is not None
-        and spec_app != request.declared_provider
-    ):
+    pinned = request.declared_provider
+    if pinned is not None and spec_app == agent_app.AUTO_APP:
+        # "auto" resolves per start; a Sandbox without the pinned app's
+        # credential registers the other app while Specialists keep the pin.
+        _spec_warning(
+            request,
+            report,
+            f"devcontainer.json BOOLEY_AGENT_APP 'auto' may resolve to an app other than "
+            f"[agent] provider '{pinned}': without that app's credential the session "
+            f"registers the other app while Specialists still use '{pinned}'; remove "
+            f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
+        )
+    elif pinned is not None and spec_app is not None and spec_app != pinned:
         report.fail(
             f"devcontainer.json BOOLEY_AGENT_APP '{spec_app}' != [agent] provider "
             f"'{request.declared_provider}': the Booley MCP entry is registered for "
