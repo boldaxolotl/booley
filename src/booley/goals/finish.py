@@ -708,10 +708,13 @@ def _finish_terminal(
 def _inputs_unchanged(
     operation: LifecycleOperation, record: GoalRecord, frozen: dict[str, Any]
 ) -> bool:
+    # A finishing Goal was entered, so both digests exist (null only while entering).
+    assert record.protected_digest is not None
+    assert record.protected_head_digest is not None
     violations = protected_input_violations(
         record.protected_paths,
-        record.protected_digest or "",
-        record.protected_head_digest or "",
+        record.protected_digest,
+        record.protected_head_digest,
         ProtectedInputRoots(operation.root, operation.store.booley_dir).with_input_paths(
             record.input_paths
         ),

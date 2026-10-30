@@ -70,11 +70,9 @@ Recorded while implementing
   separately from the host-authority checks (Docker sockets, host EDA
   configuration, SSH credentials) and the mounted-Vivado checks, which run
   whatever the identity result.
-
-## Amendments (2026-10-29)
-
-Recorded while implementing issue #2407. No release ever wrote Goal Records, so
-Goal code applies no archival rules: it no longer rebases presentation paths,
-accepts historical publication spellings, or replays a terminal operation
-without its worktree. Migration still moves Goal Records byte for byte. The
-paragraph above on archival support no longer describes Goal behavior.
+- **Goal code applies no archival rules (issue #2407).** No release ever wrote
+  Goal Records, so Goal code no longer rebases presentation paths, accepts
+  historical publication spellings, or replays a terminal operation without its
+  worktree. Migration still moves Goal Records byte for byte. The paragraph that
+  begins "Finished/abandoned records and sealed results retain their original
+  bytes" no longer describes Goal behavior.

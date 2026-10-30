@@ -834,14 +834,11 @@ def _protected_observation(view: CommittedView, path: Path) -> None:
         )
 
 
-def observations_unchanged(
-    proof: dict[str, Any], current_roots: Mapping[str, Any] | None = None
-) -> bool:
+def observations_unchanged(proof: dict[str, Any], current_roots: Mapping[str, Any]) -> bool:
     """Recheck exact captured exceptions on every recovery and terminal boundary."""
-    saved = proof.get("path_roots")
-    if saved is not None and current_roots is not None:
-        require_bindings(saved, current_roots)
-    if current_roots is not None and not materializations_unchanged(proof, dict(current_roots)):
+    saved = proof["path_roots"]
+    require_bindings(saved, current_roots)
+    if not materializations_unchanged(proof, dict(current_roots)):
         return False
     return all(
         _observation_unchanged(row, saved, current_roots)
