@@ -26,7 +26,12 @@ VCD transition is its own row with the raw timestamp.
 - `<FST_FILE>` required.
 - `-s PATTERN` optional, repeatable. Omitted means all
   signals (warning: that's typically too many; clap
-  caps via `--limit`).
+  caps via `--limit`). A bare name (no `*`, `?` or `[`) is a suffix
+  match. A glob matches the full path or the path relative to the common
+  scope that an unfiltered `bwave list` prints (`# scope: TOP.tb`), so
+  `dut.*` finds `TOP.tb.dut.*` at any depth and nothing outside that
+  scope. A total miss suggests the full-path form
+  (`did you mean 'TOP.tb.dut.u_core.*'?`).
 - `-t START:END` optional. Open-ended works:
   `-t 100:`, `-t :500`. A single `-t 100` is treated as
   `[100, 100]` (one cycle).

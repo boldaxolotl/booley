@@ -842,7 +842,7 @@ def fake_rust(monkeypatch):
             }
         else:
             raise AssertionError(f"unexpected bwave subcommand: {cmd}")
-        envelope = {"command": sub, "data": data, "warnings": []}
+        envelope = {"command": sub, "data": data, "warnings": state.get("warnings", [])}
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(envelope), stderr="")
 
     monkeypatch.setattr(bwave.subprocess, "run", fake_run)
@@ -1851,6 +1851,22 @@ def test_glob_without_match_errors_before_the_viewer(tmp_path, monkeypatch, fake
     # Rust binary's total-miss (see _bwave_contract).
     assert exc.value.code == 2
     assert "no signals match" in capsys.readouterr().err
+
+
+def test_glob_total_miss_relays_the_binary_suggestion(tmp_path, monkeypatch, fake_rust, capsys):
+    """The anchored form the binary suggests rides on gui's own total-miss error."""
+    _seed_default(tmp_path)
+    fake_rust["signals"] = []
+    fake_rust["warnings"] = ["did you mean 'tb.dut.fifo.*'?", "unrelated warning"]
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(signals=["fifo.*"])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "no signals match --signals 'fifo.*'" in err
+    assert "; did you mean 'tb.dut.fifo.*'?" in err
+    assert "unrelated warning" not in err
 
 
 def test_signal_cap_is_a_hard_error(tmp_path, monkeypatch, fake_rust, capsys):

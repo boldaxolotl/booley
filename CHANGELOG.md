@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- B-Wave `-s` globs now also match relative to the common scope that
+  `bwave list` prints, in every command and in `bwave gui`: with
+  `# scope: TOP.tb`, `-s 'dut.*'` finds `TOP.tb.dut.*` at any depth below
+  `dut`, and still nothing outside the scope. `*`-led globs and bare-name
+  suffix matches select what they did before; a full-path glob gains a signal
+  only when the scope's own name repeats below it. A glob that matches nothing
+  now adds `did you mean '<full-path glob>'?` to its error when it matches
+  below another scope.
 - `BOOLEY_AGENT_APP=auto` (hand-written Sandbox specs, such as a Codespace) now
   picks the agent app from the user's credentials at every start: Claude, then
   Codex, then a configured gateway, then Claude with its login offered. A user's
