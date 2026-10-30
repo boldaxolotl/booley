@@ -455,6 +455,8 @@ def _build_sdk_options(
         options.tools = []
         options.mcp_servers = {}
         options.setting_sources = []
+        # Load no MCP config at all, not even the registrar's user-scope Booley entry.
+        options.strict_mcp_config = True
 
     env_overrides = _claude_env_overrides(auth_mode)
     if env_overrides:

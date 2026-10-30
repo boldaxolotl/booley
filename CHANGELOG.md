@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Booley MCP servers that Booley starts for its own agents no longer add rows
+  to the Dashboard's Sessions view, and `booley doctor --deep`'s developer probe
+  no longer starts a Booley MCP server or offers tools.
+- Text-only Codex Specialists such as `coverage_analyst` no longer fail with
+  "Text-only analysis requires the exact model in the Codex models cache" when
+  the Codex models cache is missing or lacks the model. They now run without
+  tools.
 - `booley targets` now prints an aligned table with a header row, one group row
   per `.core` file, and a `✓` Doctor column that replaces the old `Dr` marker.
   The FLOW column shows the Booley Flows that can drive each Target (the

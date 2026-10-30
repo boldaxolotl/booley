@@ -3,8 +3,8 @@
 The container memory invariant needs a real number for "how much memory does
 an agent call cost?" — hardcoding it would drift with every agent
 CLI/SDK release. ``booley doctor --deep`` therefore spawns the cheapest real
-agent call (light-tier model, one turn, no MCP tools) and records the child
-process's peak RSS into project runtime state at
+agent call (light-tier model, one turn, no Booley MCP server and no tools) and
+records the child process's peak RSS into project runtime state at
 ``<booley_dir>/runtime/developer_probe.json``. The invariant check reads
 that file on every subsequent doctor run and multiplies it by the
 model-call admission cap; until a measurement exists it uses a conservative
@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.core.boundary import as_positive_int
 from booley.runtime.agent_execution import configure_agent_call
+from booley.runtime.owned_scratch import owned_tempdir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -48,7 +49,7 @@ FALLBACK_BYTES = 1024**3
 
 # Public: Doctor quotes the budget in its start-of-check announcement.
 PROBE_TIMEOUT_S = 300
-# The cheapest real agent call: a single trivial turn with MCP tools disabled.
+# The cheapest real agent call: one trivial turn, no Booley MCP server, no tools.
 _PROBE_PROMPT = "Health probe: reply with the single word OK and stop."
 
 
@@ -168,6 +169,21 @@ def measure_developer_rss(
     agent error, timeout, or no child RSS observed) — the caller degrades to
     :data:`FALLBACK_BYTES`.
     """
+    # A scratch cwd keeps the text-only Codex home (with its auth link) out of the Project.
+    try:
+        with owned_tempdir("booley-developer-probe-") as work:
+            return _measure_in(project_root, work, timeout_s, getrusage)
+    except OSError as exc:  # fail-soft by contract: an unusable temp dir becomes a doctor SKIP
+        raise ProbeError(f"probe agent failed: {exc}") from exc
+
+
+def _measure_in(
+    project_root: Path,
+    work: Path,
+    timeout_s: int,
+    getrusage: Callable[[int], Any] | None,
+) -> ProbeMeasurement:
+    """Run the probe agent call in the *work* directory (see :func:`measure_developer_rss`)."""
     import asyncio
 
     from booley.core.models import AgentCallParams
@@ -189,7 +205,8 @@ def measure_developer_rss(
             model=cfg.settings.model_for_tier("light"),
             # Only the gateway pin sets an effort; otherwise Codex's own default.
             reasoning_effort=cfg.settings.effort_pin,
-            cwd=str(project_root),
+            cwd=str(work),
+            text_only=True,
             allowed_agent_capabilities=[],
             max_turns=1,
             timeout_seconds=timeout_s,

@@ -52,7 +52,9 @@ def should_run_outer_bookkeeping() -> bool:
     Admission itself lives in the shared slot store (ADR 0028) and never
     consults bootstrap mode. This remains the chokepoint for:
 
-    * ``mcp_server._reconcile_orphaned_jobs`` (ghost job-record cleanup)
+    * ``mcp.handle_pruning.prune_at_start`` and
+      ``mcp.job_lifecycle.reconcile_orphaned`` (ghost record cleanup)
+    * Session registry writes and maintenance (``mcp.server._McpLifetime``)
 
     It must short-circuit in NESTED mode — see the module docstring.
     """
