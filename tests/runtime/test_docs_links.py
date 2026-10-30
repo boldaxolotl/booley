@@ -1,4 +1,4 @@
-"""User-doc links Booley prints point at published site pages (ADR 0076)."""
+"""User-doc links Booley prints point at published site pages (ADR 0081)."""
 
 from __future__ import annotations
 

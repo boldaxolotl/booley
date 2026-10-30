@@ -13,9 +13,9 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
 from booley.evidence.acceptance import PairedProjectBaseline
-from booley.flows import execution
+from booley.flows import execution, job_resources
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import SurfaceHelp
 from booley.flows.cli_selection import CliInvocation
@@ -32,6 +32,7 @@ from booley.flows.endpoint_context import EndpointContext
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
 from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.job_resources import JobResourceMonitor
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -70,9 +71,6 @@ class SubprocessResult:
     oom_kill_delta: int = 0
 
 
-_CGROUP_MEMORY_EVENT_PATHS = (Path("/sys/fs/cgroup/memory.events"),)
-
-
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
     from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
     from booley.runtime.supervised_execution import (
@@ -88,24 +86,6 @@ def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
 def _finish_supervised_process(scope, proc) -> None:
     if scope is not None and proc is not None:
         scope.processes.unregister(proc)
-
-
-def _cgroup_oom_kill_count() -> int | None:
-    """Return this cgroup's cumulative OOM-kill count when available."""
-    for path in _CGROUP_MEMORY_EVENT_PATHS:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            key, _, raw = line.partition(" ")
-            if key != "oom_kill":
-                continue
-            try:
-                return int(raw)
-            except ValueError:
-                break
-    return None
 
 
 def _popen_kwargs_with_lease() -> dict[str, Any]:
@@ -143,96 +123,10 @@ def _start_local_process(cmd, cwd, env, scope):
         raise
 
 
-def _linux_process_tree_rss_bytes(root_pid: int) -> int | None:
-    """Best-effort aggregate RSS for *root_pid* and its descendants.
-
-    The synthesis boundary's direct child is ``make`` while the memory lives
-    in yosys/ABC/OpenROAD grandchildren, so sampling only the root process
-    produces a dangerously reassuring number.  Linux exposes the descendant
-    PIDs through ``task/<pid>/children`` without an optional psutil dependency.
-    """
-    if not Path("/proc").is_dir():
-        return None
-    pending = [root_pid]
-    seen: set[int] = set()
-    total_kib = 0
-    measured = False
-    while pending:
-        pid = pending.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        try:
-            children = Path(f"/proc/{pid}/task/{pid}/children").read_text(encoding="utf-8")
-            pending.extend(int(tok) for tok in children.split())
-        except (OSError, ValueError):
-            pass
-        try:
-            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in status.splitlines():
-            if line.startswith("VmRSS:"):
-                try:
-                    total_kib += int(line.split()[1])
-                    measured = True
-                except (IndexError, ValueError):
-                    pass
-                break
-    return total_kib * 1024 if measured else None
-
-
-class _ProcessTreeMemoryMonitor:
-    """Small sampler used around long-running local mechanical commands."""
-
-    def __init__(self, pid: int, *, interval_s: float = 0.25) -> None:
-        self._pid = pid
-        self._interval_s = interval_s
-        self._stop = threading.Event()
-        self._peak_bytes: int | None = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self) -> None:
-        self._sample()
-        self._thread.start()
-
-    def finish(self) -> float | None:
-        self._sample()
-        self._stop.set()
-        self._thread.join(timeout=2)
-        return self._peak_bytes / (1024 * 1024) if self._peak_bytes is not None else None
-
-    def _sample(self) -> None:
-        rss = _linux_process_tree_rss_bytes(self._pid)
-        if rss is not None and (self._peak_bytes is None or rss > self._peak_bytes):
-            self._peak_bytes = rss
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._interval_s):
-            self._sample()
-
-
-def _process_resource_evidence(
-    scope: Any,
-    proc: subprocess.Popen,
-    monitor: _ProcessTreeMemoryMonitor,
-    oom_before: int | None,
-) -> tuple[float | None, int]:
-    _finish_supervised_process(scope, proc)
-    peak_rss_mb = monitor.finish()
-    oom_after = _cgroup_oom_kill_count()
-    oom_delta = (
-        max(0, oom_after - oom_before) if oom_before is not None and oom_after is not None else 0
-    )
-    return peak_rss_mb, oom_delta
-
-
 def _communicate_local_process(
     cmd: list[str],
     proc: subprocess.Popen,
     scope: Any,
-    monitor: _ProcessTreeMemoryMonitor,
-    oom_before: int | None,
     started: float,
     timeout: int,
 ) -> SubprocessResult:
@@ -246,37 +140,26 @@ def _communicate_local_process(
             logger.warning("Command timed out after %.1fs: %s", elapsed, " ".join(cmd))
             kill_process_tree(proc)
             stdout, stderr = _drain_after_kill(proc)
-            peak_rss_mb, oom_kill_delta = _process_resource_evidence(
-                scope, proc, monitor, oom_before
-            )
+            _finish_supervised_process(scope, proc)
             return SubprocessResult(
-                returncode=-1,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=True,
-                duration_s=elapsed,
-                peak_rss_mb=peak_rss_mb,
-                oom_kill_delta=oom_kill_delta,
+                returncode=-1, stdout=stdout, stderr=stderr, timed_out=True, duration_s=elapsed
             )
         except BaseException:
             logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
             kill_process_tree(proc)
-            monitor.finish()
             _finish_supervised_process(scope, proc)
             raise
         elapsed = time.monotonic() - started
-        peak_rss_mb, oom_kill_delta = _process_resource_evidence(scope, proc, monitor, oom_before)
+        _finish_supervised_process(scope, proc)
         return SubprocessResult(
             returncode=proc.returncode,
             stdout=_decode_output(stdout),
             stderr=_decode_output(stderr),
             duration_s=elapsed,
-            peak_rss_mb=peak_rss_mb,
-            oom_kill_delta=oom_kill_delta,
         )
 
 
-def _observe_local_process(proc, observer, scope, monitor, oom_before, started, timeout):
+def _observe_local_process(proc, observer, scope, started, timeout):
     from booley.flows.observed_process import communicate_observed
 
     result = SubprocessResult()
@@ -294,9 +177,7 @@ def _observe_local_process(proc, observer, scope, monitor, oom_before, started, 
         result.stderr = stderr
         result.timed_out = timed_out
     finally:
-        peak, oom = _process_resource_evidence(scope, proc, monitor, oom_before)
-    result.peak_rss_mb = peak
-    result.oom_kill_delta = oom
+        _finish_supervised_process(scope, proc)
     return result
 
 
@@ -394,23 +275,41 @@ class FlowMechanics:
         )
         if observer is not None and is_sim_module:
             env["PYTHONUNBUFFERED"] = "1"
+        flow = getattr(self, "name", type(self).__name__)
+        label = job_resources.current_label() or job_resources.ResourceLabel(
+            getattr(self, "_selected_target", None) or "", flow
+        )
+        monitor = JobResourceMonitor(label.split)
+        env.update(monitor.temp_env())
+        try:
+            result = self._run_measured(cmd, cwd, env, scope, observer, monitor, timeout)
+        finally:
+            measurement = monitor.finish()  # also when interrupted, so its thread stops
+            shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
+        if result is None:
+            return SubprocessResult(returncode=-1)
+        result.peak_rss_mb = measurement.peak_rss_mb
+        result.oom_kill_delta = measurement.oom_kill_delta or 0
+        job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
+        return result
+
+    def _run_measured(self, cmd, cwd, env, scope, observer, monitor, timeout):
+        """Run one command under *monitor*; ``None`` when it could not start."""
         start = time.monotonic()
-        oom_before = _cgroup_oom_kill_count()
         proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
-            return SubprocessResult(returncode=-1)
+            return None
         if observer is not None:
             # Only a spawned tool counts as started in the progress record.
             observer.begin_command()
-        memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
-        memory_monitor.start()
+        monitor.start(proc.pid)
         if observer is not None:
-            return _observe_local_process(
-                proc, observer, scope, memory_monitor, oom_before, start, timeout
-            )
-        return _communicate_local_process(
-            cmd, proc, scope, memory_monitor, oom_before, start, timeout
-        )
+            return _observe_local_process(proc, observer, scope, start, timeout)
+        return _communicate_local_process(cmd, proc, scope, start, timeout)
+
+    def _resource_flags(self) -> tuple[str, ...]:
+        """Instrumentation flags that key this Flow's resource history."""
+        return ()
 
     def _execute(
         self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
@@ -553,6 +452,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         self._simulation_campaign_outcomes: tuple[Any, ...] = ()
         self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
         self.reset_report_metadata()
+        job_resources.clear_label()  # a stage label must not outlive its invocation
 
     @property
     def args(self) -> RequestT:

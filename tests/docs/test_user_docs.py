@@ -1,6 +1,6 @@
 """docs/user/ Markdown renders the same on GitHub and on the project site.
 
-The site (website/hooks/user_docs.py, ADR 0076) renders the user docs with
+The site (website/hooks/user_docs.py, ADR 0081) renders the user docs with
 Python-Markdown, which needs list-item block content indented four spaces;
 GitHub accepts less. The hook also rewrites links so they work on the site.
 """
