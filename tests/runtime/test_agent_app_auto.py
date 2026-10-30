@@ -199,7 +199,12 @@ def test_visitor_credential_beats_a_configured_gateway(
 def _explicit_files(home: Path) -> dict[str, str]:
     """The user config the registrar wrote, with the home path made comparable."""
     names = (".claude.json", ".claude/settings.json", ".codex/config.toml", ".codex/auth.json")
-    return {name: _read(home / name).replace(str(home), "<HOME>") for name in names}
+    # TOML and JSON escape each Windows backslash, so replace the escaped form first.
+    escaped = str(home).replace("\\", "\\\\")
+    return {
+        name: _read(home / name).replace(escaped, "<HOME>").replace(str(home), "<HOME>")
+        for name in names
+    }
 
 
 @pytest.mark.parametrize(
