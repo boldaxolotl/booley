@@ -167,6 +167,21 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_sessions.py::test_stale_session_warning",
     "tests/bwave/test_sessions.py::test_fresh_trace_with_old_registration_does_not_warn",
     "tests/bwave/test_sessions.py::test_register_reports_trace_identity_and_age",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[list]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[value]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[find]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[sample]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[stats]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_resolves_relative_glob",
+    "tests/bwave/test_scope_relative_globs.py::test_glob_total_miss_suggests_anchored_form[u_core.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_glob_total_miss_suggests_anchored_form[tb.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_total_miss_suggests_anchored_form",
+    "tests/bwave/test_scope_relative_globs.py::test_anchored_globs_select_as_before[TOP.tb.dut.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_anchored_globs_select_as_before[*dut.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_bare_name_suffix_match_unchanged",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[TOP.tb.dut.*-expected0]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[*dut.*-expected1]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[bus-expected2]",
 }
 
 
