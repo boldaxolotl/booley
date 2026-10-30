@@ -47,15 +47,25 @@ def _status_cell(entry: Finding) -> str:
     if entry.kind == "win":
         return ""
     if entry.filed.strip():
-        return f"filed: {entry.filed.strip()}"
+        return f"filed: {_single_line(entry.filed)}"
     if entry.is_filable() or entry.bucket in ("project", "unknown"):
         return ""
     return colors.amber("needs evidence")
 
 
+def _single_line(text: str) -> str:
+    """Make user-written *text* safe for one table cell.
+
+    ``render_table`` leaves sanitising to its caller: drop escape sequences and
+    fold newlines and tabs into single spaces so a title cannot break the row
+    or bleed colour into the rows below.
+    """
+    return " ".join(colors.strip_ansi(text).split())
+
+
 def _row(entry: Finding) -> list[str]:
     bucket = _NO_BUCKET if entry.kind == "win" else entry.bucket
-    return [entry.id, _kind_cell(entry), bucket, entry.title, _status_cell(entry)]
+    return [entry.id, _kind_cell(entry), bucket, _single_line(entry.title), _status_cell(entry)]
 
 
 def _totals(log: FindingsLog) -> str:

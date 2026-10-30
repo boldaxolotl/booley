@@ -8,7 +8,7 @@ from argparse import ArgumentParser
 import pytest
 
 from booley.feedback import cli as feedback_cli
-from booley.feedback.findings import Finding, append
+from booley.feedback.findings import Finding, append, read_log
 from booley.harness import booley, colors
 from booley.runtime import booley_dir as booley_dir_mod
 
@@ -37,13 +37,19 @@ def _log(project, *findings: Finding) -> None:
         append(finding, project / ".booley")
 
 
-def _list(project, capsys, *flags: str) -> str:
+def _run_list(project, capsys, *flags: str) -> tuple[str, str]:
+    """Run ``booley feedback list`` and return what it wrote to stdout and stderr."""
     parser = ArgumentParser()
     feedback_cli.add_subparser(parser.add_subparsers(dest="command"))
     args = parser.parse_args(["feedback", "list", *flags])
     capsys.readouterr()
     assert booley._cmd_feedback(args, project) == 0
-    return capsys.readouterr().out
+    captured = capsys.readouterr()
+    return captured.out, captured.err
+
+
+def _list(project, capsys, *flags: str) -> str:
+    return _run_list(project, capsys, *flags)[0]
 
 
 def _mixed_log(project) -> None:
@@ -198,3 +204,53 @@ def test_list_json_is_byte_identical_while_human_view_is_a_table(project, capsys
     assert as_json == _JSON_GOLDEN
     assert json.loads(as_json)[0]["id"] == "F-1"
     assert human.splitlines()[0].split() == ["ID", "Kind", "Bucket", "Title", "Status"]
+
+
+def test_list_keeps_one_row_per_entry_for_control_characters_in_user_text(project, capsys):
+    _log(
+        project,
+        Finding(title="two\nlines\tand \x1b[31mred", bucket="project"),
+        Finding(title="after", bucket="project", filed="a\nb"),
+    )
+
+    out = _list(project, capsys)
+
+    rows = out.splitlines()[2:4]
+    assert rows[0].endswith("two lines and red")
+    assert rows[1].split() == ["F-2", "bug", "(note)", "project", "after", "filed:", "a", "b"]
+    assert "\x1b[" not in out
+
+
+def test_list_filters_by_kind_and_bucket_but_totals_count_the_whole_log(project, capsys):
+    _mixed_log(project)
+
+    by_kind = _list(project, capsys, "--kind", "win")
+    by_bucket = _list(project, capsys, "--bucket", "project")
+
+    assert [line.split()[0] for line in by_kind.splitlines()[2:3]] == ["F-4"]
+    assert "F-1" not in by_kind
+    assert [line.split()[0] for line in by_bucket.splitlines()[2:3]] == ["F-2"]
+    assert "F-4" not in by_bucket
+    for out in (by_kind, by_bucket):
+        assert out.splitlines()[-1].strip() == (
+            "bugs 2 (blocker 1 · workaround 0 · note 1)   friction 1   impressions 1   wins 1"
+        )
+
+
+def test_list_says_nothing_is_logged_for_an_empty_log(project, capsys):
+    out = _list(project, capsys)
+
+    assert out.startswith("Nothing logged yet (")
+    assert "ID" not in out
+
+
+def test_list_warns_on_stderr_about_unparseable_lines(project, capsys):
+    _log(project, Finding(title="boom", bucket="booley"))
+    log_path = read_log(project / ".booley").path
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+
+    out, err = _run_list(project, capsys)
+
+    assert "boom" in out
+    assert "1 unparseable line(s) skipped" in err
