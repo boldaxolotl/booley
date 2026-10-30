@@ -7,12 +7,17 @@ stale signal is "unknown", never a guess.
 The writer is the standalone hook script the Sandbox Image installs
 (``booley/data/docker/session_activity_hook.py``); it cannot import this
 package, so it repeats the event table, key formats and file layout below.
+
+``SessionEnd`` replaces the session's signal with an end marker: the same file
+and layout with state ``ended``. A marker is not activity (``read`` ignores
+it); the Session Registry uses it to hide and prune the session's row.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Collection
 from dataclasses import dataclass
 from hashlib import sha256
@@ -44,6 +49,8 @@ EVENT_STATES = {
     "Notification": WAITING_USER,
 }
 END_EVENT = "SessionEnd"
+# SessionEnd turns the session's signal into an end marker with this state.
+ENDED = "ended"
 
 # A client that died mid-turn sends no closing event. A busy state older than
 # the longest Booley tool call is therefore no longer evidence of activity.
@@ -131,22 +138,49 @@ class ActivityStore:
         with os.scandir(self.root) as scan:
             return list(islice(scan, MAX_SIGNALS))
 
+    def _read_bounded(self, key: str) -> bytes:
+        """The session file's bytes; refuses a symlinked or oversized file."""
+        path = self.path(key)
+        refuse_symlinks(path, booley_dir=self.booley_dir)
+        if path.stat().st_size > MAX_SIGNAL_BYTES:
+            raise ValueError("session activity signal is oversized")
+        return read_file_bytes(path)
+
     def read(self, key: str) -> ActivitySignal | None:
         """The session's signal, or ``None`` when absent, unsafe or malformed."""
-        path = self.path(key)
         try:
-            refuse_symlinks(path, booley_dir=self.booley_dir)
-            if path.stat().st_size > MAX_SIGNAL_BYTES:
-                return None
-            return _parse(read_file_bytes(path), key)
+            return _parse(self._read_bounded(key), key)
         except (OSError, ValueError, UnicodeError):
             return None
+
+    def ended_at(self, key: str, *, now: float) -> str | None:
+        """When the session ended (its end marker's ``at``), or ``None`` if unusable.
+
+        A missing, unsafe or malformed marker, another state, and a time more
+        than FUTURE_TOLERANCE ahead of *now* all read as "not ended".
+        """
+        try:
+            data = json.loads(self._read_bounded(key))
+            at = data.get("at") if isinstance(data, dict) else None
+            if (
+                not isinstance(at, str)
+                or data.get("schema") != SCHEMA
+                or data.get("key") != key
+                or data.get("state") != ENDED
+                or rfc3339_from_epoch(parse_timestamp(at).timestamp()) != at
+                or parse_timestamp(at).timestamp() - now > FUTURE_TOLERANCE
+            ):
+                return None
+        except (OSError, ValueError, UnicodeError):
+            return None
+        return at
 
     def prune(self, retained: Collection[str], *, now: float, quiet_after: float) -> int:
         """Drop signals of sessions the registry no longer holds, once they are quiet.
 
         A signal may precede its registry row (a prompt before the first Booley
         call), so an unmatched signal is kept until it is older than *quiet_after*.
+        An unmatched end marker can hide nothing, so it is removed at once.
         """
         keep = {self.path(key).name for key in retained}
         removed = 0
@@ -156,15 +190,28 @@ class ActivityStore:
         except OSError:
             return 0
         for entry in entries:
-            if entry.name not in keep and self._unlink_if_expired(entry, now - quiet_after):
+            if entry.name not in keep and self._unlink_if_unretained(entry, now - quiet_after):
                 removed += 1
         return removed
 
-    @staticmethod
-    def _unlink_if_expired(entry: os.DirEntry[str], cutoff: float) -> bool:
-        """Remove a signal last written before *cutoff*, unless the hook just replaced it.
+    def _is_end_marker(self, path: Path) -> bool:
+        """Whether *path* is a session's end marker, whoever the session was."""
+        try:
+            data = json.loads(read_file_bytes(path))
+        except (OSError, ValueError, UnicodeError):
+            return False
+        return (
+            isinstance(data, dict)
+            and data.get("state") == ENDED
+            and isinstance(data.get("key"), str)
+            and self.path(data["key"]).name == path.name
+        )
 
-        The hook publishes by atomic replacement and shares no lock with this
+    def _unlink_if_unretained(self, entry: os.DirEntry[str], cutoff: float) -> bool:
+        """Remove an end marker, or a signal last written before *cutoff*.
+
+        The bytes are read only for a file that is not yet expired. The hook
+        publishes by atomic replacement and shares no lock with this
         pruner, so the file is examined again immediately before removal: a
         replacement is a different inode. The remaining window is the instant
         between that check and the unlink; losing it shows unknown until the
@@ -174,7 +221,11 @@ class ActivityStore:
             path = Path(entry.path)
             # Windows DirEntry.stat() has no inode; use the same API for both reads.
             listed = path.lstat()
-            if listed.st_mtime > cutoff:
+            if listed.st_mtime > cutoff and not (
+                stat.S_ISREG(listed.st_mode)
+                and listed.st_size <= MAX_SIGNAL_BYTES
+                and self._is_end_marker(path)
+            ):
                 return False
             current = path.lstat()
             if (current.st_ino, current.st_mtime_ns) != (listed.st_ino, listed.st_mtime_ns):

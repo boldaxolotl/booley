@@ -46,6 +46,8 @@ EVENT_STATES = {
     "Notification": WAITING_USER,
 }
 END_EVENT = "SessionEnd"
+# What SessionEnd leaves behind: the same signal file, marked as ended.
+ENDED = "ended"
 # The only Claude Code notifications that mean "waiting for the user".
 WAITING_NOTIFICATIONS = frozenset({"idle_prompt", "permission_prompt", "elicitation_dialog"})
 CLIENT_COMMAND = "claude"
@@ -270,7 +272,7 @@ def record(
         if part.is_symlink():
             raise OSError(f"session activity storage is redirected: {part}")
     if event == END_EVENT:
-        (root / _signal_filename(key)).unlink(missing_ok=True)
+        _write(root, key, ENDED, "", now)
         return True
     state = EVENT_STATES[event]
     tool = payload.get("tool_name")
