@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
+import re
 import subprocess
 import sys
 import textwrap
@@ -34,12 +37,22 @@ from booley.targets.target_surface import (
     detail_payload,
     filter_surface,
     is_glob,
-    render_detail,
-    render_listing,
     surface_payload,
 )
 from tests.conftest import symlink_or_skip
 from tests.target_test_support import make_target_handle
+
+
+def _targets_view():
+    """Import the terminal views lazily so the file collects before the module exists."""
+    assert importlib.util.find_spec("booley.harness.targets_view"), "targets view missing"
+    return importlib.import_module("booley.harness.targets_view")
+
+
+@pytest.fixture(autouse=True)
+def _colors_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin plain output so FORCE_COLOR on a developer machine cannot break substrings."""
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
 
 
 def select_target(project_root, token, *, for_flow=None):
@@ -925,9 +938,9 @@ class TestToplevelDisplay:
             vlnv="acme:ip:alpha:1.0", core_file=project / "alpha/alpha.core", entries=(patched,)
         )
         surface = target_surface.TargetSurface(groups=(group,), warnings=())
-        text = render_listing(surface, project)
+        text = _targets_view().render_listing(surface_payload(surface, project))
         assert long_top not in text
-        assert "top=tool_verilator?" in text and "…" in text
+        assert "tool_verilator?" in text and "…" in text and "top=" not in text
         # the payload keeps the full string — only the terminal column is capped
         assert surface_payload(surface, project)["cores"][0]["targets"][0]["toplevel"] == long_top
 
@@ -960,15 +973,31 @@ class TestSurfacePayload:
 
 class TestRenderListing:
     def test_listing_groups_and_marks_doctor_membership(self, project: Path):
-        text = render_listing(collect_surface(project), project)
+        text = _targets_view().render_listing(surface_payload(collect_surface(project), project))
         assert "acme:ip:alpha:1.0  (alpha/alpha.core)" in text
-        assert "Dr sim" in text
-        assert "cocotb=tb_alpha_tests" in text
+        assert "✓ sim" in text
+        assert re.search(r"\bDr\b", text) is None
+        assert "cocotb tb_alpha_tests" in text
         assert "booley targets <name>" in text  # legend/hint line
 
     def test_empty_filter_result(self, project: Path):
         surface = filter_surface(collect_surface(project), glob="zzz*")
-        assert "(no Targets match)" in render_listing(surface, project)
+        payload = surface_payload(surface, project)
+        assert "(no Targets match)" in _targets_view().render_listing(payload)
+
+    def test_warnings_are_listed_after_the_footer(self, project: Path):
+        payload = surface_payload(collect_surface(project), project)
+        payload["warnings"] = ["something odd"]
+        text = _targets_view().render_listing(payload)
+        assert text.splitlines()[-1] == "WARNING: something odd"
+
+    def test_warnings_are_listed_after_an_empty_result(self, project: Path):
+        payload = surface_payload(filter_surface(collect_surface(project), glob="zzz*"), project)
+        payload["warnings"] = ["something odd"]
+        assert _targets_view().render_listing(payload).splitlines() == [
+            "(no Targets match)",
+            "WARNING: something odd",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1038,9 +1067,29 @@ class TestDetail:
         payload = detail_payload(project, "sim", runner=failing_runner)
         assert "resolved" not in payload
         assert "no fusesoc" in payload["resolved_error"]
-        text = render_detail(payload)
+        text = _targets_view().render_detail(payload)
         assert "Resolved view unavailable" in text
         assert "booley session enter" not in text
+
+    def test_detail_view_shows_warnings_and_empty_resolved_parameters(self, project: Path):
+        payload = detail_payload(project, "sim", resolve=False)
+        payload["warnings"] = ["something odd"]
+        payload["resolved"] = {
+            "toplevel": "tb_alpha",
+            "eda_tool": None,
+            "cocotb_module": None,
+            "parameters": {},
+            "rtl_hdl_sources": 1,
+            "rtl_include_dirs": 0,
+            "tb_files": 1,
+            "sdc_files": [],
+            "xdc_files": [],
+            "build_root": "build",
+        }
+        lines = _targets_view().render_detail(payload).splitlines()
+        assert lines[-1] == "WARNING: something odd"
+        assert any(line.endswith("(none)") and "parameters" in line for line in lines)
+        assert any("cocotb" in line and "tb_alpha_tests" in line for line in lines)
 
     def test_silent_invocation_failure_has_actionable_error(self, project: Path):
         def failing_runner(*args, **kwargs):
@@ -1099,7 +1148,7 @@ class TestDetail:
             "WIDTH": {"datatype": "int", "default": 8, "paramtype": "vlogparam"}
         }
 
-        text = render_detail(payload)
+        text = _targets_view().render_detail(payload)
         assert "WIDTH (int) = 8" in text
         assert "constraints/alpha.sdc" in text
 
