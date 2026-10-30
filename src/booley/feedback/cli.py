@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
@@ -45,6 +45,9 @@ from booley.feedback.findings import (
     select_unique,
 )
 from booley.feedback.storage import feedback_storage_dir
+
+#: Renders ``feedback list`` rows (given the whole log for its totals) as text.
+ListView = Callable[[FindingsLog, Sequence[Finding]], str]
 
 
 def add_subparser(sub: argparse._SubParsersAction) -> None:
@@ -428,7 +431,7 @@ def _cmd_triage(args: argparse.Namespace, booley_dir: Path) -> int:
     return 0
 
 
-def _cmd_list(args: argparse.Namespace, booley_dir: Path) -> int:
+def _cmd_list(args: argparse.Namespace, booley_dir: Path, list_view: ListView) -> int:
     log = read_log(booley_dir)
     entries = log.entries
     if args.kind:
@@ -441,27 +444,7 @@ def _cmd_list(args: argparse.Namespace, booley_dir: Path) -> int:
     if not entries:
         print(f"Nothing logged yet ({log.path}).")
         return 0
-    for entry in entries:
-        if entry.kind == "win":
-            print(f"{entry.id:6} ✅ win        {entry.title}")
-            continue
-        if entry.filed.strip():
-            flag = f"  [filed: {entry.filed.strip()}]"
-        elif entry.is_filable() or entry.bucket in ("project", "unknown"):
-            flag = ""
-        else:
-            flag = "  [needs evidence]"
-        print(f"{entry.id:6} {entry.marker} {entry.bucket:9} {entry.title}{flag}")
-    counts = log.counts()
-    # Bugs, friction, impressions and wins counted apart: the severity markers
-    # describe bugs only, so folding the others into that total makes the
-    # numbers not add up.
-    print(
-        f"\n{len(log.bugs)} finding(s): "
-        f"🔴 {counts['blocker']}  🟡 {counts['workaround']}  🔵 {counts['note']}"
-        f"   |   💬 {len(log.friction)} friction   |   📣 {len(log.impressions)} impression(s)"
-        f"   |   {len(log.wins)} win(s)"
-    )
+    print(list_view(log, entries))
     if log.corrupt_lines:
         print(f"⚠️  {log.corrupt_lines} unparseable line(s) skipped", file=sys.stderr)
     return 0
@@ -602,7 +585,6 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace, Path, Path], int]] = {
     "win": lambda args, _root, pdir: _cmd_win(args, pdir),
     "triage": lambda args, _root, pdir: _cmd_triage(args, pdir),
     "filed": lambda args, _root, pdir: _cmd_filed(args, pdir),
-    "list": lambda args, _root, pdir: _cmd_list(args, pdir),
     "redact": _cmd_redact,
 }
 
@@ -628,13 +610,17 @@ def run(
     project_root: Path,
     *,
     env: render.Environment | None = None,
+    list_view: ListView,
 ) -> int:
     """Dispatch ``booley feedback <subcommand>``."""
     command = getattr(args, "feedback_command", None)
-    handler = _HANDLERS.get(command)
+    # ``list`` prints through the view the harness injects: the palette and table
+    # renderer live there, and this package may not import them.
+    handlers = {**_HANDLERS, "list": lambda a, _root, pdir: _cmd_list(a, pdir, list_view)}
+    handler = handlers.get(command)
     environment_handler = _ENVIRONMENT_HANDLERS.get(command)
     if handler is None and environment_handler is None:
-        commands = [*_HANDLERS, *_ENVIRONMENT_HANDLERS]
+        commands = [*handlers, *_ENVIRONMENT_HANDLERS]
         print(
             f"Usage: booley feedback {{{'|'.join(commands)}}}\n       booley feedback --help",
             file=sys.stderr,
