@@ -29,6 +29,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from booley.bwave.waveform_store import StreamingConversion
@@ -695,10 +696,13 @@ def _execute_with_heartbeat(
     runtime_inputs: tuple[str, ...],
 ) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Execute one simulator process with heartbeat and trace cleanup."""
+    from booley.harness.colors import dim
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
-    heartbeat = Heartbeat("Verilator sim", render=render_heartbeat, interval=60)
+    heartbeat = Heartbeat(
+        "Verilator sim", render=partial(render_heartbeat, style=dim), interval=60
+    )
     heartbeat.start()
     try:
         return _stream_output(
