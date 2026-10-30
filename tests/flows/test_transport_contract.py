@@ -406,7 +406,11 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
         assert isinstance(content, tuple), content
         return content[1]["reports"][0]
 
-    report = asyncio.run(asyncio.wait_for(dispatch(), timeout=20))
+    # No wall-clock budget here: the child is a real Python process whose start-up
+    # is CPU-bound, so a fixed cap fails on a loaded host (a busy xdist run took
+    # more than 20 s for a ~3 s child). A hang is still bounded by the pytest
+    # timeout and the job supervisor's own timeout.
+    report = asyncio.run(dispatch())
     assert report["exit_code"] == 0
     assert "criterion_key" not in report and "criterion_met" not in report
     for key in ("flow", "target", "passed", "eda_tool"):
