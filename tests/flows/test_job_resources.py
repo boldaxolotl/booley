@@ -45,6 +45,12 @@ RECORD_FIELDS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _fresh_label():
+    """Stage labels are per invocation; sim tests in this worker must not leak theirs."""
+    job_resources.clear_label()
+
+
 @pytest.fixture
 def flow(tmp_path: Path) -> EchoFlow:
     from booley.criteria.state import DevelopmentState
