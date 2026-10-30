@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley targets` now prints an aligned table with a header row, one group row
+  per `.core` file, and a `✓` Doctor column that replaces the old `Dr` marker.
+  The FLOW column shows the Booley Flows that can drive each Target (the
+  edalize flow moves to a `.core flow` row in `booley targets <name>`). Piped
+  output is plain aligned text; `--json` is unchanged.
 - Codex `gpt-6-astra` runs are now costed at Astra's own price instead of
   `gpt-5.6-sol`'s, so their cost readouts rise. Unknown GPT model ids now fall
   back to the Astra price.

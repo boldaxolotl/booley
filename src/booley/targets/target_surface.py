@@ -1,7 +1,9 @@
 """Presentation of the Project's runnable Target catalog (``booley targets``).
 
 A read-only presentation layer over :class:`booley.targets.catalog.TargetCatalog`.
-Shared by the CLI verb and MCP tool so both render the same catalog facts.
+Shared by the CLI verb and MCP tool so both present the same catalog facts as
+JSON payloads; the terminal views of those payloads live in
+:mod:`booley.harness.targets_view`.
 
 Vocabulary (docs/GLOSSARY.md): a **Target** is a named FuseSoC ``.core`` build
 target, identified by ``(VLNV, name)`` (ADR 0030). "Doctor" means the Target
@@ -18,7 +20,7 @@ import subprocess
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict
 
 from booley.core.build_paths import work_root_for
 from booley.fusesoc import fusesoc_registry
@@ -301,123 +303,3 @@ def detail_payload(
             "build_root": _rel_to(resolved.build_root, root),
         }
     return payload
-
-
-# ---------------------------------------------------------------------------
-# Terminal rendering — `booley targets` without --json
-# ---------------------------------------------------------------------------
-
-_DOCTOR_MARK = "Dr"
-
-# A declared toplevel is normally one module name; upstream cores occasionally
-# declare CAPI2 conditional expressions ("tool_verilator? (wrapper)" …) that
-# would stretch the column across the whole terminal. Cap the display — the
-# detail view / --json carry the full string.
-_TOP_DISPLAY_CHARS = 28
-
-
-def _top_display(toplevel: str) -> str:
-    top = toplevel or "-"
-    if len(top) > _TOP_DISPLAY_CHARS:
-        top = top[: _TOP_DISPLAY_CHARS - 1].rstrip() + "…"
-    return f"top={top}"
-
-
-def render_listing(surface: TargetSurface, project_root: Path | str) -> str:
-    """The grouped-by-core terminal listing."""
-    root = Path(project_root)
-    lines: list[str] = []
-    entries = list(surface.entries())
-    if entries:
-        name_w = max(len(e.selector) for e in entries)
-        flow_w = max(len(e.flow or "-") for e in entries)
-        eda_tool_w = max(len(e.eda_tool or "-") for e in entries)
-        top_w = max(len(_top_display(e.declared_toplevel)) for e in entries)
-        for group in surface.groups:
-            lines.append(f"{group.vlnv}  ({_rel_to(group.core_file, root)})")
-            for e in group.entries:
-                top = _top_display(e.declared_toplevel)
-                row = (
-                    f"  {e.selector:<{name_w}}  {e.flow or '-':<{flow_w}}  "
-                    f"{e.eda_tool or '-':<{eda_tool_w}}  {top:<{top_w}}"
-                )
-                if e.cocotb_module:
-                    row += f"  cocotb={e.cocotb_module}"
-                if e.doctor_flows:
-                    row += f"  {_DOCTOR_MARK} {', '.join(e.doctor_flows)}"
-                lines.append(row.rstrip())
-            lines.append("")
-        lines.append(
-            f"{_DOCTOR_MARK} = selected by flow_options.booley.doctor · "
-            "`booley targets <name>` resolves parameters/files/SDC/XDC"
-        )
-    else:
-        lines.append("(no Targets match)")
-    for warning in surface.warnings:
-        lines.append(f"WARNING: {warning}")
-    return "\n".join(lines)
-
-
-def render_detail(payload: TargetDetailPayload) -> str:
-    """The single-Target detail view."""
-
-    def row(label: str, value: str) -> str:
-        return f"  {label:<13} {value}"
-
-    lines = [f"Target {payload['name']}  (core {payload['vlnv']}, {payload['core_file']})"]
-    lines.append(row("selector", payload["selector"]))
-    lines.append(row("flow", payload["flow"] or "-"))
-    lines.append(row("EDA tool", payload["eda_tool"] or "-"))
-    if payload["cocotb_module"]:
-        lines.append(row("cocotb", payload["cocotb_module"]))
-    lines.append(row("toplevel", (payload["toplevel"] or "-") + "  (declared in .core)"))
-    lines.append(row("Doctor", ", ".join(payload["doctor_flows"]) or "(not selected)"))
-    lines.append(row("drivable by", ", ".join(payload["drivable_by"]) or "-"))
-
-    resolved = payload.get("resolved")
-    if resolved is not None:
-        lines.append("")
-        lines.append("Resolved via `fusesoc run --setup`:")
-        lines.append(row("toplevel", resolved["toplevel"] or "-"))
-        lines.append(row("EDA tool", resolved["eda_tool"] or "-"))
-        params = resolved["parameters"]
-        lines.append(row("parameters", _render_parameters(params)))
-        lines.append(
-            row(
-                "rtl",
-                f"{resolved['rtl_hdl_sources']} (System)Verilog sources, "
-                f"{resolved['rtl_include_dirs']} include dirs",
-            )
-        )
-        lines.append(row("tb files", str(resolved["tb_files"])))
-        lines.append(row("SDC", ", ".join(resolved["sdc_files"]) or "(none)"))
-        lines.append(row("XDC", ", ".join(resolved["xdc_files"]) or "(none)"))
-        lines.append(row("build dir", resolved["build_root"]))
-    elif resolved_error := payload.get("resolved_error"):
-        lines.append("")
-        lines.append(f"Resolved view unavailable: {resolved_error}")
-        if resolution_command := payload.get("resolution_command"):
-            lines.append(f"  Run `{resolution_command}`.")
-
-    for warning in payload.get("warnings", []):
-        lines.append(f"WARNING: {warning}")
-    return "\n".join(lines)
-
-
-def _render_parameters(params: Mapping[str, object]) -> str:
-    """One-line EDAM ``parameters`` summary: ``NAME (datatype) = default``."""
-    if not params:
-        return "(none)"
-    parts: list[str] = []
-    for name, spec in params.items():
-        if isinstance(spec, Mapping):
-            item = cast(Mapping[object, object], spec)
-            datatype = item.get("datatype")
-            default = item.get("default")
-            piece = name + (f" ({datatype})" if datatype else "")
-            if default is not None:
-                piece += f" = {default}"
-            parts.append(piece)
-        else:
-            parts.append(f"{name} = {spec}")
-    return ", ".join(parts)
