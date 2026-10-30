@@ -263,6 +263,39 @@ Complete execution records are retained for seven days; an active Job lease
 pins its referenced record, and nonterminal or unfamiliar records are never
 garbage-collected automatically.
 
+#### Job resource history
+
+Booley measures every command a Job runs in the Sandbox and keeps a
+per-Project history in `.booley/runtime/resources/history.json`. Git ignores
+it, it survives restarts, and it keeps the newest 20 runs of each key (2,000
+runs in all). Measurement only observes: it never changes a Job's verdict,
+queue position or exit code, and the `[jobs]` settings above are unchanged.
+
+Each record is keyed by Target, phase, instrumentation flags (`coverage`,
+`trace`) and Test Run. Phases are `sim_prepare`, `sim_pre_run`, `sim_build`,
+`sim_run`, `sim_postprocess`, `lint`, `fpga_impl` and `synth`; any other
+command is keyed by its Flow's name. A synthesis also records its `sv2v`,
+`yosys` and `openroad` processes as separate phases, each with the outcome of
+the whole synthesis; a tool that finishes between two samples gets no phase
+record. A record holds:
+
+- peak memory: process-tree RSS plus the files in the command's own
+  temporary directory (`TMPDIR`), which live on the Sandbox's tmpfs and count
+  against its memory limit
+- CPU time (user and system) and wall-clock time
+- the exit outcome, the cgroup OOM-kill count during the run, and the
+  sampling interval (0.25 s)
+- for a run with no other Job in the Sandbox, the container's cgroup memory
+  peak above its starting level, to compare with RSS plus `TMPDIR`. It also
+  includes processes that are not Jobs, such as the Developer Agent.
+
+A value Booley cannot measure, such as RSS on a non-Linux host, is recorded as
+absent, never as zero. When the same Job runs two commands at once, and for
+the phases inside a synthesis, CPU time comes from the 0.25 s samples and
+misses each process's last interval; a command shorter than one interval
+shows only its first sample. Files a tool writes outside `TMPDIR`, for example
+to a hardcoded `/tmp` path, are not counted.
+
 ### Feedback (`[feedback]`)
 
 Booley keeps an append-only log of what went wrong, what was merely annoying, and

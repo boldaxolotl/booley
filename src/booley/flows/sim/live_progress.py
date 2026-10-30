@@ -11,12 +11,21 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from booley.flows.job_resources import label_commands
 from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
 from booley.flows.run_log import RunLogIdentity, current_run_token
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
-_STAGES = frozenset({"preparing", "pre_sim", "building", "executing", "postprocessing"})
+# Each lifecycle stage, and the Job resource history phase of the commands it runs.
+_RESOURCE_PHASES = {
+    "preparing": "sim_prepare",
+    "pre_sim": "sim_pre_run",
+    "building": "sim_build",
+    "executing": "sim_run",
+    "postprocessing": "sim_postprocess",
+}
+_STAGES = frozenset(_RESOURCE_PHASES)
 
 
 @dataclass(frozen=True)
@@ -213,6 +222,7 @@ def observe_stage(
     """Publish one real lifecycle transition, never infer a verdict."""
     if stage not in _STAGES:
         raise ValueError(f"invalid Simulation observation stage: {stage}")
+    label_commands(target, _RESOURCE_PHASES[stage], tests=tests)
     sink = _sink.get()
     if sink is None:
         return
