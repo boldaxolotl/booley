@@ -190,6 +190,7 @@ def _public_hook_endpoint(flow, invocation):
         _raw_argv=None,
         _console_publication_requested=True,
         _stdout_witness=None,
+        _human_report=None,
     )
     return endpoint
 
