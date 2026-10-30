@@ -508,7 +508,11 @@ def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) ->
 
 
 def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    """Publish the original verdict body before any invocation notice."""
+    """Publish the original verdict body before any invocation notice.
+
+    An endpoint that deferred a human rendition of its report (``_human_report``)
+    prints it here, after the live progress rows are closed.
+    """
     if not result.report_text:
         return
     witness = endpoint._stdout_witness
@@ -516,6 +520,12 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if already_shown:
         return
     original, separator, diagnosis = result.report_text.partition("\nCompletion failure (")
+    human = getattr(endpoint, "_human_report", None)
+    if human is not None and human.record_text == original:
+        print(human, flush=True)
+        if separator:
+            print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
+        return
     if separator and witness is not None and witness.saw(original):
         print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
         return
