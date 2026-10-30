@@ -348,3 +348,19 @@ def test_cgroup_oom_counter_parser(tmp_path, monkeypatch):
     events.write_text("low 0\nhigh 0\noom 3\noom_kill 2\n", encoding="utf-8")
     monkeypatch.setattr(job_resources, "_CGROUP_MEMORY_EVENTS", events)
     assert job_resources.cgroup_oom_kill_count() == 2
+
+
+def test_report_handles_empty_unreadable_and_unmeasured_history(tmp_path, capsys):
+    from booley.harness import resources_cli
+
+    args = type("Args", (), {"json": False})()
+    assert resources_cli.run(args, tmp_path) == 0
+    assert "No Job resource history yet" in capsys.readouterr().out
+
+    resource_history.append_records(tmp_path, [_record("core")])
+    assert resources_cli.run(args, tmp_path) == 0
+    assert "peak memory unmeasured; wall unmeasured" in capsys.readouterr().out
+
+    resource_history.history_path(tmp_path).write_text("not json", encoding="utf-8")
+    assert resources_cli.run(args, tmp_path) == 2
+    assert "cannot read the Job resource history" in capsys.readouterr().err
