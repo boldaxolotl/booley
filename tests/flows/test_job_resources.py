@@ -170,7 +170,9 @@ def test_concurrent_commands_fall_back_to_sampled_cpu(flow, tmp_path):
 
     (record,) = _history(tmp_path)
     assert record["solo"] is not True
-    assert record["cpu_user_s"] >= 0.2
+    # Sampling misses the last interval and a loaded host stretches it: only
+    # the fallback itself (a measured, nonzero value) is deterministic.
+    assert record["cpu_user_s"] > 0
 
 
 def test_history_failure_never_changes_the_result(flow, monkeypatch):
