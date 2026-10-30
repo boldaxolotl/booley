@@ -135,10 +135,6 @@ of the current catalog.
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
 | `--timeout DURATION` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](FLOW-SIM.md#simulation-build-pre-sim-and-run-timeouts). |
 
-`--timeout-ms` (milliseconds) and `--work-dir` (a literal path, without checkout
-discovery) are hidden aliases of `--timeout` and `-C/--project`; each prints a
-notice on stderr. Don't combine an alias with its canonical option.
-
 `--baseline <git-ref>` (synth, fpga) reruns the Flow at that commit for
 comparison. When the Project has a Paired Checkout, the baseline also needs
 the Booley Directory as it was then. Outside Goal Mode, Booley uses the

@@ -207,7 +207,7 @@ booley flow lint --target lint_structural
 - Add `lint_config` to other Verilator Targets only where the same waiver is
   intended.
 - `--mode elab-only-standalone` probes (see
-  [Elaboration Check](FLOW-SIM.md#elaboration-check-flowssim)) use their own HDL-only
+  [Elaboration checks](FLOW-SIM.md#elaboration-checks)) use their own HDL-only
   inputs and ignore Target waiver filesets.
 
 #### Verible lint Target

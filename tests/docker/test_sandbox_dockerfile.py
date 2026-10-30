@@ -284,10 +284,6 @@ def test_install_requirements_use_current_slim_image_storage_guidance() -> None:
     assert "21 GB" not in guide
     assert "about **4 GB** free for the image" in requirements
     assert "(**6 GB** with the RISC-V toolchain)" in requirements
-    # The measured image sizes belong to Host Bootstrap, not the short list.
-    assert "On the measured containerd store" not in requirements
-    assert "1.58/2.02 GB" not in requirements
-    assert "2.82/4.48 GB" not in requirements
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:

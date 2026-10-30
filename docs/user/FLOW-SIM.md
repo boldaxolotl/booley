@@ -232,7 +232,8 @@ When a simulation Goal is met: see
 `--mode elab-only` compiles, elaborates, and links the simulator without running
 tests. It is a fast "does it build?" check, and a later full run reuses the
 build. `--mode elab-only-standalone` adds a sweep that elaborates each reusable
-RTL module on its own and can satisfy `elaborate_standalone`.
+RTL module on its own and can satisfy `elaborate_standalone`. Only simulation
+Targets are eligible; synthesis Targets belong to `synth`.
 
 The Target build in either mode uses the shared
 [`build_timeout_ms`](#simulation-build-pre-sim-and-run-timeouts)

@@ -176,7 +176,7 @@ Agent's chat to finish.
 ```
 
 **Setup asks whether to keep Booley out of your git history.** Yes turns on
-[Stealth Mode](FEATURES.md#stealth-mode), which keeps Booley's files out of
+[Stealth Mode](STEALTH.md#stealth-mode), which keeps Booley's files out of
 your repository and cleans AI attribution out of commit messages. The commit
 hook doesn't force `type(scope):` subjects unless you set
 [`enforce_convention`](STEALTH.md#enforcing-the-subject-convention-enforce_convention).

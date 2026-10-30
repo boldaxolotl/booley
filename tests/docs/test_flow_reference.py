@@ -122,10 +122,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 @pytest.mark.parametrize("flow_type", FLOW_TYPES, ids=lambda flow_type: flow_type.name)
 def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> None:
     flow = flow_type()
-    # Hidden (help=SUPPRESS) deprecated aliases are deliberately undocumented.
+    # Read the person-facing parser: its hidden (help=SUPPRESS) compatibility
+    # aliases, such as --timeout-ms and --work-dir, are deliberately undocumented.
     parser_options = {
         option
-        for action in build_parser(flow)._actions
+        for action in build_parser(flow, human=True)._actions
         if action.help != argparse.SUPPRESS
         for option in action.option_strings
         if option.startswith("--")

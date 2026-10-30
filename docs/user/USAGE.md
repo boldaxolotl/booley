@@ -293,8 +293,10 @@ does, with either a **subscription** or an **API key**:
 
 Both work in Interactive Mode and Goal Mode.
 
-- **Subscription:** usage counts against your plan. When you hit a plan
-  limit, Claude calls wait and retry; Codex calls stop until the limit resets.
+- **Subscription:** usage counts against your plan. When you hit a Claude
+  rate limit, Booley waits and retries a Specialist call within its retry and
+  timeout budgets; a Codex call stops and must be invoked again after the
+  limit resets.
   Resume an interrupted Goal session with `goal_status(rules=true)`.
 
 - **API key:** you pay per token.

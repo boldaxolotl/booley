@@ -133,9 +133,8 @@ standard image-provisioned toolchain is functionally available from a native
 Windows checkout: you don't need to build Verilator, Yosys, or the rest
 natively, and you do not need to install a user-facing Ubuntu distribution.
 The normal Docker Desktop workflow bind-mounts that checkout into a Linux
-container. Filesystem-heavy EDA performance across that boundary is still
-being qualified and should not yet be assumed equivalent to Linux-native
-performance. A WSL-hosted checkout can be used as an optional advanced
+container, so filesystem-heavy EDA builds may be slower than on Linux-native
+storage. A WSL-hosted checkout can be used as an optional advanced
 workflow, but is not a prerequisite for Windows support.
 
 Host-provisioned commercial EDA is Linux x86-64 only. Docker Desktop runs Linux

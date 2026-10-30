@@ -198,7 +198,8 @@ def _changed_paths(raw: bytes) -> list[str]:
 def _documentation_categories(path: str) -> set[str]:
     if path == "docs/user/INSTALL.md":
         # The package-artifacts job runs this guide's install and upgrade
-        # commands (isolated_host_install_smoke.py), as it renders the README.
+        # commands (isolated_host_install_smoke.py). The "readme" category is
+        # the one that selects package-artifacts, so INSTALL.md reuses it.
         return {"docs", "site", "readme"}
     if path.startswith(("website/", "docs/user/")):
         # The project site shares pinned facts with the README (install

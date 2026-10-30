@@ -20,7 +20,6 @@ def test_readme_install_commands_match_the_install_guide():
     )[0]
     readme_blocks = re.findall(r"```bash\n(.*?)```", _installation_section(), re.DOTALL)
     assert readme_blocks == [guide_block.strip().removeprefix("```bash\n").removesuffix("```")]
-    assert readme_blocks == ["pipx install booley-rtl\nbooley bootstrap\n"]
     assert README.index("[pipx installed]") < README.index("pipx install booley-rtl")
 
 

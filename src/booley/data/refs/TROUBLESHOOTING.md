@@ -214,6 +214,9 @@ Windows path as a single-quoted TOML string so its backslashes stay literal.
 If Doctor instead fails with
 `cannot check running Sandboxes against host egress mode`, fix what it names.
 
+A stopped Sandbox that won't start after a switch to `"unproxied"` needs the
+same recreation: run `booley session down`, then `booley session up`.
+
 ### Docker disk still used after removing a Project
 
 Deleting a Project's directory leaves its Sandbox Images and agent state

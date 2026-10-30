@@ -38,8 +38,9 @@ Five first-run traps:
     booley init
     ```
 
-    `booley doctor` re-asks both repositories every run and identifies which one
-    is unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
+    `booley doctor` rechecks every run both the RTL repository and, when it is a
+    separate repository, the Booley Directory's, and names whichever one is
+    unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
     index metadata left by an earlier repair gets caught rather than surfacing as
     phantom diffs in the container.
 

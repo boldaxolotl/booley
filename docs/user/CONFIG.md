@@ -200,8 +200,9 @@ cap, independent tests run in parallel up to that cap.
 #### Job resource history
 
 Booley measures every command a Job runs in the Sandbox and records each run,
-by Target and Job phase, in `.booley/runtime/resources/history.json`. A record
-holds:
+by Target and Job phase, in `.booley/runtime/resources/history.json`. Git
+ignores the file, it survives restarts, and it keeps the newest 20 runs of each
+key (2,000 runs in all). A record holds:
 
 - peak memory
 - CPU time and wall-clock time
@@ -328,7 +329,10 @@ UI). A missing or empty `name` falls back to `Dev`, `email` to `dev@localhost`.
 
 It overrides any gitconfig in the Sandbox without touching the host checkout;
 `git -c`, `--author`, and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After
-changing `[agent.git]`, refresh and recreate the Sandbox.
+changing `[agent.git]`, refresh and recreate the Sandbox. The issued
+devcontainer spec carries it as `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and
+`GIT_CONFIG_VALUE_<n>`; a hand-written spec, such as one for GitHub Codespaces,
+must set the same variables.
 
 Doctor, run inside a Sandbox, warns when the identity Git would use differs
 from `[agent.git]` and names the fix.

@@ -254,8 +254,10 @@ contributing observations, so later runs do not change a saved package.
 ## Working with evidence
 
 The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
-every tool that accepts it; while a Goal is active, Flows, Specialists, and
-Goal tools refuse a call without it. Full list:
+every tool that accepts it. While any Goal Record occupies the Project, Booley
+Flows, Specialists, Goal tools, and `booley_report` refuse a call without
+`work_dir`, even a diagnostic call outside that worktree; `booley_targets` may
+omit it. Project-defined endpoints must declare `work_dir` to run. Full list:
 [MCP-TOOLS](../internals/MCP-TOOLS.md#work_dir-routing).
 
 Only Booley Flows and Specialists meet Goals. Shell output or the Developer Agent saying

@@ -69,8 +69,6 @@ After switching modes, run `booley init --seed`, then recreate the Sandbox
 if VS Code is running it). A running Sandbox keeps its previous mode until then;
 Doctor warns about it, see
 [Doctor reports a Sandbox whose egress mode differs from the host](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
-If a stopped Sandbox won't start after switching to `"unproxied"`, recreate it
-with `booley session down`, then `booley session up`.
 
 This policy is daemon-wide: it applies to every Project's Sandboxes on the
 Docker daemon, in Goal Mode and Interactive Mode. The timeout and session cap
@@ -254,7 +252,8 @@ in a hand-written spec, such as a Codespace.
 The spec's `postStartCommand` (and `postCreateCommand`, when the spec has one)
 must run Booley's registrar, the `booley.harness.incontainer_register` module.
 It makes the choice at every start, so a changed credential changes the app at
-the next start. If `[agent] provider` pins an app, set `BOOLEY_AGENT_APP` to
+the next start. In a Sandbox, `booley doctor` shows the app `auto` chose and
+why. If `[agent] provider` pins an app, set `BOOLEY_AGENT_APP` to
 that app (or remove the pin) so `auto` cannot pick a different one.
 
 `auto` outside a Sandbox is refused, and the message names the variable.
@@ -378,8 +377,10 @@ make -C sw/... RV_ISA=rv32im_zicsr    # CoreMark's variable name
 The right variable name is the project's own; grep its makefiles for `rv32i`.
 Keep the override at the call site (the `post-setup` hook).
 
-`booley init` pulls the image that matches your Booley version, or builds it
-locally when the pull fails; you don't fetch it yourself.
+An installed official Booley distribution pulls and verifies the image that
+matches your Booley version; a failed pull is an error, not a fallback to a
+local build. A source checkout instead builds it locally from compatible
+substrates. Either way, you don't fetch it yourself.
 
 When the Project also declares Python dependencies, keep the RISC-V selector
 and declare the requirements normally:
