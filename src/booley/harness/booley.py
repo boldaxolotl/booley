@@ -914,11 +914,11 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
         from booley.goals.ended_records import with_last_ended
-        from booley.goals.format import render_status
         from booley.goals.proposal_errors import ProposalError
         from booley.goals.state_store import GoalStateError
         from booley.goals.status import select_status
         from booley.goals.store import GoalStore, GoalStoreError
+        from booley.harness.goal_status_view import render_goal_status
         from booley.runtime.booley_dir import resolve_booley_dir
 
         try:
@@ -933,7 +933,9 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
                 schedule_goal_baselines(resolve_booley_dir(_project_root), view.record)
             short = True if args.short else False if args.long else None
             text = (
-                render_status(selection.views, short=short, project_wide=selection.project_wide)
+                render_goal_status(
+                    selection.views, short=short, project_wide=selection.project_wide
+                )
                 if selection.views
                 else "No active Goal Mode."
             )

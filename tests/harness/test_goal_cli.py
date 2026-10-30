@@ -1,15 +1,24 @@
 """Goal status CLI selects worktree context and honors long/short overrides."""
 
+import re
 from argparse import Namespace
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
+from booley.harness import colors
 from booley.harness.booley import _cmd_goal
 from tests.goals.conftest import (  # noqa: F401 — fixtures shared with Goal integration tests
     goal_mode,
     layout,
 )
+
+
+@pytest.fixture(autouse=True)
+def _colors_off(monkeypatch):
+    """Plain output unless a test turns color on (``FORCE_COLOR`` must not leak in)."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +146,209 @@ def second_goal(mode, monkeypatch):
     return other
 
 
+# The Goals `_status_view` shows: (name, status, evidence cell).
+ROWS = [
+    ("LINT:top", "met", "clean"),
+    ("SIM:top_long_name", "unmet", "0/1 tests — goal-test-run-failed: the run failed"),
+    ("SYNTH:top", "stale", "3 cells"),
+]
+
+
+def _status_view(mode, *, warning=""):
+    """One view with met, unmet and stale Goals plus every recoverable-proposal line."""
+    from booley.goals.changes import Approval, ChangeKind
+    from booley.goals.presentation import GoalPresentation
+    from booley.goals.proposals import Decision, ProposalView, new_proposal
+    from booley.goals.status import GoalStatus, GoalStatusView
+
+    goals = (
+        GoalStatus("lint", "met", "clean", presentation=GoalPresentation("LINT:top")),
+        GoalStatus(
+            "sim",
+            "unmet",
+            "0/1 tests",
+            reason="goal-test-run-failed: the run failed",
+            presentation=GoalPresentation("SIM:top_long_name"),
+            sim_transitions=({"transition": "pass -> fail", "name": "smoke"},),
+        ),
+        GoalStatus(
+            "synth",
+            "stale",
+            "3 cells",
+            presentation=GoalPresentation("SYNTH:top"),
+            synth_baseline={"status": "pending", "reason": ""},
+        ),
+    )
+    spec = mode.record.goals[0].spec
+    proposal = new_proposal(
+        mode.record,
+        kind=ChangeKind.ADD,
+        goal_key=spec.key,
+        before=None,
+        after=spec,
+        after_arg=None,
+        runtime_params={},
+        rationale="add this Goal",
+        session_key=None,
+    )
+    proposal = replace(proposal, id="p-1")  # a fixed id keeps colored and plain runs comparable
+    decision = Decision(
+        "approve",
+        "reviewed",
+        Approval.AGENT_RECORDED,
+        "approve",
+        "2026-10-19T00:00:00Z",
+        proposal.payload_digest,
+        None,
+    )
+    return GoalStatusView(
+        mode.record,
+        goals,
+        warning,
+        1,
+        (ProposalView(proposal, decision=decision),),
+        (("p-1", "stale revision"),),
+        ("op-1",),
+    )
+
+
+def _cli_status(mode, monkeypatch, capsys, *, short, color=False):
+    """Stdout of `booley goal status` for the `_status_view` view."""
+    from booley.goals.status import GoalStatusSelection
+
+    view = _status_view(mode, warning="evidence is old")
+    monkeypatch.setattr(
+        "booley.goals.status.select_status",
+        lambda *_args, **_kwargs: GoalStatusSelection((view,), project_wide=False),
+    )
+    monkeypatch.setattr(colors, "COLORS_ENABLED", color)
+    monkeypatch.chdir(mode.worktree)
+    args = Namespace(goal_command="status", short=short, long=not short)
+    assert _cmd_goal(args, mode.main) == 0
+    return capsys.readouterr().out
+
+
+def _table_lines(text):
+    """The header line's index in *text*'s lines, and the lines."""
+    lines = text.splitlines()
+    headers = [
+        i for i, line in enumerate(lines) if re.fullmatch(r"  Goal\s+Status\s+Evidence", line)
+    ]
+    assert len(headers) == 1, f"expected one table header in:\n{text}"
+    header = headers[0]
+    return lines, header
+
+
+SHORT_LONG = pytest.mark.parametrize("short", [True, False], ids=["short", "long"])
+
+
+@SHORT_LONG
+def test_goal_status_table_is_aligned(goal_mode, monkeypatch, capsys, short):  # noqa: F811 — shared fixture
+    lines, header = _table_lines(_cli_status(goal_mode, monkeypatch, capsys, short=short))
+    assert set(lines[header + 1].replace(" ", "")) == {"─"}
+    status_at, evidence_at = lines[header].index("Status"), lines[header].index("Evidence")
+    for name, status, evidence in ROWS:
+        row = next(line for line in lines[header + 2 :] if line.lstrip().startswith(name + " "))
+        assert row[status_at:].startswith(status + " ")
+        assert row[evidence_at:] == evidence
+    if short:
+        return
+    facts = lines[:header]
+    keys = [line for line in facts if re.match(r"  (Worktree|Branch|Pending proposals) {3}", line)]
+    assert len(keys) == 3
+    assert (
+        len({re.match(r"  (Worktree|Branch|Pending proposals) +", line).end() for line in keys})
+        == 1
+    )
+    trailing = "\n".join(lines[header + 2 + len(ROWS) :])
+    for expected in (
+        "Proposal ",
+        "  Conflict: stale revision",
+        "  agent-recorded: reviewed",
+        "Interrupted applies: op-1",
+    ):
+        assert expected in trailing
+
+
+@SHORT_LONG
+def test_goal_status_colors_status_only_on_tty(goal_mode, monkeypatch, capsys, short):  # noqa: F811 — shared fixture
+    plain = _cli_status(goal_mode, monkeypatch, capsys, short=short)
+    colored = _cli_status(goal_mode, monkeypatch, capsys, short=short, color=True)
+    assert colors.strip_ansi(plain) == plain
+    assert colors.strip_ansi(colored) == plain
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    for status, paint in (("met", colors.green), ("unmet", colors.red), ("stale", colors.amber)):
+        assert paint(status) in colored
+    assert all(
+        line.startswith("  " + name)
+        for name, _, _ in ROWS
+        for line in colored.splitlines()
+        if line.lstrip().startswith(name + " ")
+    )
+    if not short:
+        dim_start = colors.dim("x").split("x")[0]
+        assert next(line for line in colored.splitlines() if "Worktree" in line).startswith(
+            "  " + dim_start
+        )
+
+
+@SHORT_LONG
+def test_goal_status_plain_rows_begin_name_status(goal_mode, monkeypatch, capsys, short):  # noqa: F811 — shared fixture
+    lines, header = _table_lines(_cli_status(goal_mode, monkeypatch, capsys, short=short))
+    for name, status, _ in ROWS:
+        rows = [
+            line
+            for line in lines[header + 2 :]
+            if re.match(rf"\s*{re.escape(name)}\s+{status}(\s|$)", line)
+        ]
+        assert len(rows) == 1
+        assert not any(f"{name}: {status}" in line for line in lines)
+
+
+def _cli_baseline(views, short):
+    """Frozen expected CLI text: pads its own columns, independent of the shared renderer."""
+    from booley.goals.sim_transitions import transition_summary
+
+    out = []
+    compact = len(views) != 1 if short is None else short
+    for view in views:
+        out.append(
+            f"{view.record.id} ({view.record.state.value}) · {view.met}/{len(view.goals)} met"
+        )
+        if view.warning:
+            out.append(view.warning)
+        if not compact:
+            facts = [
+                ("Worktree", view.record.worktree_path),
+                ("Branch", view.record.branch),
+                ("Pending proposals", str(view.pending_proposals)),
+            ]
+            out += [f"  {key:<17}   {value}" for key, value in facts]
+        cells = [("Goal", "Status", "Evidence")] + [
+            (
+                g.presentation.text,
+                g.status,
+                g.evidence_summary
+                + (f" — {g.reason}" if g.status == "unmet" and g.reason else ""),
+            )
+            for g in view.goals
+        ]
+        wide = [max(len(cell[i]) for cell in cells) for i in (0, 1, 2)]
+        out.append("  " + "   ".join(("Goal".ljust(wide[0]), "Status".ljust(wide[1]), "Evidence")))
+        out.append("  " + "   ".join("─" * w for w in wide))
+        for goal, (name, status, evidence) in zip(view.goals, cells[1:], strict=True):
+            out.append(f"  {name.ljust(wide[0])}   {status.ljust(wide[1])}   {evidence}".rstrip())
+            if compact and goal.sim_transitions is not None:
+                summary = transition_summary(goal.sim_transitions)
+                out.append(f"  {name}: baseline -> current: {summary}")
+        if not compact:
+            from booley.goals.format import test_run_lines
+
+            runs = [line for goal in view.goals for line in test_run_lines(goal)]
+            out += (["Test Runs"] if runs else []) + [f"  {line}" for line in runs]
+    return "\n".join(out)
+
+
 # Windows CI observed 30.2 s; retain the required 50% timeout headroom.
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("detail", [None, True, False])
@@ -155,7 +367,6 @@ def test_goal_status_complete_bytes(
     from booley.goals.status import status_views
     from booley.goals.store import GoalStore
     from tests.goals.conftest import update_record
-    from tests.goals.test_format import baseline_render_status
 
     other = second_goal(goal_mode, monkeypatch) if multiple or caller == "abandoned" else None
     if caller == "abandoned":
@@ -178,7 +389,7 @@ def test_goal_status_complete_bytes(
         expected_ids.append(other.record.id)
     assert {view.record.id for view in views} == set(expected_ids)
     assert len(views) == len(expected_ids)
-    expected = baseline_render_status(views, short=detail)
+    expected = _cli_baseline(views, short=detail)
     if caller in {"main", "outside", "abandoned"}:
         expected = PREFIX + expected
     if caller == "abandoned":

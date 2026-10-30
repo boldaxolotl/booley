@@ -213,6 +213,13 @@ def format_met_goal_metric(key: str, entry: Any) -> str:
 # only counts the rest: a multi-seed Goal may hold up to a thousand seeds.
 _TEST_RUN_LIMIT = 16
 _RERUN_LIMIT = 8
+#: Printed above the views of the Project-wide fallback, by every status surface.
+PROJECT_WIDE_PREFIX = "No Goal Mode is active here. Active Goal Modes in this Project:"
+
+
+def goal_name(goal: GoalStatus) -> str:
+    """The Goal's human name, or the unavailable-record placeholder."""
+    return goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
 
 
 def test_run_lines(goal: GoalStatus) -> list[str]:
@@ -233,7 +240,7 @@ def test_run_lines(goal: GoalStatus) -> list[str]:
     )
     shown = ", ".join(f"{run.name} {run.outcome}" for run in runs[:_TEST_RUN_LIMIT])
     more = f", and {len(runs) - _TEST_RUN_LIMIT} more" if len(runs) > _TEST_RUN_LIMIT else ""
-    name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+    name = goal_name(goal)
     lines = [f"{name}: {len(runs)} Test Runs ({counts or 'none'}): {shown or '—'}{more}"]
     if judgement.pending:
         waiting = ", ".join(
@@ -258,7 +265,7 @@ def synth_baseline_lines(goal: GoalStatus) -> list[str]:
     """One line for a relative SYNTH Goal's baseline Job: pending, complete or unavailable."""
     if goal.synth_baseline is None:
         return []
-    name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+    name = goal_name(goal)
     reason = goal.synth_baseline["reason"]
     detail = f" ({reason})" if reason and goal.synth_baseline["status"] == "unavailable" else ""
     return [f"{name}: baseline: {goal.synth_baseline['status']}{detail}"]
@@ -268,13 +275,20 @@ def synth_baseline_lines(goal: GoalStatus) -> list[str]:
 test_run_lines.__test__ = False  # type: ignore[attr-defined]
 
 
+def test_run_section(view: GoalStatusView) -> list[str]:
+    """The ``Test Runs`` heading and indented lines of *view*'s Goals; empty without any."""
+    lines = [line for goal in view.goals for line in test_run_lines(goal)]
+    return ["Test Runs", *(f"  {line}" for line in lines)] if lines else []
+
+
+# Not a pytest test, although its name starts with ``test_``.
+test_run_section.__test__ = False  # type: ignore[attr-defined]
+
+
 def _print_test_runs(console: Console, view: GoalStatusView) -> None:
     """The frozen Test Runs of every Goal of *view* that is judged by them."""
-    lines = [line for goal in view.goals for line in test_run_lines(goal)]
-    if lines:
-        console.print("Test Runs")
-    for line in lines:
-        console.print(f"  {line}", soft_wrap=True)
+    for line in test_run_section(view):
+        console.print(line, soft_wrap=True)
 
 
 def render_status(
@@ -289,7 +303,7 @@ def render_status(
     stream = io.StringIO()
     console = Console(file=stream, color_system=None, width=120, markup=False, emoji=False)
     if project_wide and views:
-        console.print("No Goal Mode is active here. Active Goal Modes in this Project:")
+        console.print(PROJECT_WIDE_PREFIX)
     compact = len(views) != 1 if short is None else short
     for view in views:
         console.print(
@@ -299,7 +313,7 @@ def render_status(
             console.print(view.warning)
         if compact:
             for goal in view.goals:
-                name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+                name = goal_name(goal)
                 console.print(f"  {name}: {goal.status}")
                 for line in synth_baseline_lines(goal):
                     console.print(f"  {line}", soft_wrap=True)
@@ -329,16 +343,19 @@ def _render_long_status(console: Console, view: GoalStatusView) -> None:
         evidence = goal.evidence_summary
         if goal.status == "unmet" and goal.reason:
             evidence += f" — {goal.reason}"
-        table.add_row(
-            goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL,
-            goal.status,
-            evidence,
-        )
+        table.add_row(goal_name(goal), goal.status, evidence)
     console.print(table)
     _print_test_runs(console, view)
     for line in (line for goal in view.goals for line in synth_baseline_lines(goal)):
         console.print(line, soft_wrap=True)
     console.print(f"Pending proposals: {view.pending_proposals}")
+    for line in proposal_lines(view):
+        console.print(line)
+
+
+def proposal_lines(view: GoalStatusView) -> list[str]:
+    """Proposal, conflict, decision and interrupted-apply lines of *view*."""
+    lines: list[str] = []
     conflicts = dict(view.proposal_conflicts)
     for proposal_view in view.proposals:
         proposal = proposal_view.proposal
@@ -348,16 +365,17 @@ def _render_long_status(console: Console, view: GoalStatusView) -> None:
             if proposal.before is not None
             else after
         )
-        console.print(
+        lines.append(
             f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {change} · {proposal.rationale}"
         )
         if effect := proposal_presentation(proposal_view).get("review_retarget_effect"):
-            console.print(f"  {effect}")
+            lines.append(f"  {effect}")
         if proposal.id in conflicts:
-            console.print(f"  Conflict: {conflicts[proposal.id]}")
+            lines.append(f"  Conflict: {conflicts[proposal.id]}")
         if proposal_view.decision is not None:
-            console.print(
+            lines.append(
                 f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
             )
     if view.interrupted_applies:
-        console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))
+        lines.append("Interrupted applies: " + ", ".join(view.interrupted_applies))
+    return lines
