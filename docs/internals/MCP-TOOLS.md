@@ -993,7 +993,7 @@ entering severity counts, dispositions, or acceptance predicates.
 ## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
-path) and optional `instruction`. V3 or V4 input returns `booley.coverage-analysis/v2`
+path) and optional `instruction`. A Coverage Campaign (storage v5) returns `booley.coverage-analysis/v2`
 with the Campaign manifest and recorded point-store digest as observed evidence.
 The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
