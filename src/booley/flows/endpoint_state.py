@@ -47,6 +47,7 @@ from booley.runtime.endpoint_execution import (
 )
 
 if TYPE_CHECKING:
+    from booley.flows.terminal_progress import ProgressText
     from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,10 @@ class EndpointState(ABC):
         # Set for the duration of _run(); console publication reads it to avoid
         # echoing a verdict block the endpoint already printed itself (F-28).
         self._stdout_witness: endpoint_reporting._StdoutWitness | None = None
+        # A terminal rendition of the final report, set by an endpoint that wants
+        # it printed after the live progress rows close; its ``record_text`` is
+        # the plain report_text it stands for.
+        self._human_report: ProgressText | None = None
         self._pending_criteria_set: tuple[str, ...] | None = None
         # The underlying EDA tool that actually ran (e.g. "verilator",
         # "verible", "yosys", "vivado"). Endpoints set this at target-resolution

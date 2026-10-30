@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import ClassVar
@@ -2302,14 +2303,15 @@ class TestTruncationResilientReport:
         assert lines[-1].startswith("RESULT: FAIL")
         assert lines[-3] == f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
         # The headline block sits after ALL verbose per-test detail.
-        marker = lines.index("--- summary ---")
+        assert "--- summary (Sandbox) ---" in lines
+        marker = lines.index("--- summary (Sandbox) ---")
         assert "--- end error output ---" not in lines[marker:]
         tail = "\n".join(lines[marker:])
         # Both targets' verdicts and the passing target's cycle count survive
         # in the tail-truncation-protected block.
-        assert "[sim] lite (Sandbox): PASS (1/1 tests" in tail
-        assert "4,242 cycles" in tail
-        assert "[sim] full (Sandbox): FAIL (0/1 tests" in tail
+        assert "[sim] lite: PASS (1/1 tests" in tail
+        assert re.search(r"^  lite\s+PASS\s+4,242\s", tail, re.MULTILINE)
+        assert "[sim] full: FAIL (0/1 tests" in tail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)

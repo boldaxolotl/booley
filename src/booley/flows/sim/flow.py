@@ -104,6 +104,7 @@ from booley.flows.target_test_plan import (
     batch_test_runs,
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
+from booley.flows.terminal_progress import ProgressText
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     SeedCount,
@@ -114,6 +115,8 @@ from booley.flows.test_runs import (
     test_run_from_document,
 )
 from booley.fusesoc import fusesoc_registry
+from booley.harness import colors
+from booley.harness.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -352,6 +355,10 @@ _TRACE_CLEANUP_MARGIN_S = 90
 
 # Max error lines shown per test in the display box
 _MAX_DISPLAY_ERRORS = 3
+
+# Longest test name the terminal summary shows; longer ones end in an ellipsis.
+# Fixed, not terminal-width based, so the output never depends on the host.
+_TEST_NAME_CAP = 40
 
 # Lines of simulator output kept in a TestResult's error_tail. The report shows
 # a further-trimmed excerpt of it; the full output lives in run.log.
@@ -2435,26 +2442,70 @@ def _determine_pass_fail(
     return passed, inconclusive
 
 
-def _test_status_line(tr: TestResult) -> str:
-    """One-line test status (name, PASS/FAIL/INCO, cycle count, elapsed).
+def _report_elapsed(elapsed_s: float) -> str:
+    """Record duration: milliseconds below 1s, so 10-20ms cocotb tests stay distinct (F-39)."""
+    seconds = max(0.0, elapsed_s)
+    return f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
 
-    Shared between the streamed per-target detail and the end-of-report
-    headline block so the cycle-count lines survive tail-truncation verbatim.
+
+def _human_elapsed(elapsed_s: float) -> str:
+    """Terminal duration: ``1m 01s`` from one second up, milliseconds below it (F-39)."""
+    return format_duration(elapsed_s) if elapsed_s >= 1.0 else _report_elapsed(elapsed_s)
+
+
+def _verdict_word(*, inconclusive: bool, passed: bool) -> str:
+    """The verdict as shown in reports: PASS, FAIL, or INCONCLUSIVE."""
+    if inconclusive:
+        return "INCONCLUSIVE"
+    return "PASS" if passed else "FAIL"
+
+
+def _paint_verdict(word: str) -> str:
+    """Color a verdict word for the terminal: green, red, or amber."""
+    paint = {"PASS": colors.green, "FAIL": colors.red}.get(word, colors.amber)
+    return paint(word)
+
+
+def _test_table_lines(tests: Sequence[TestResult], *, human: bool) -> list[str]:
+    """The Test/Result/Cycles/Time/Build table for one Target's tests.
+
+    The record keeps full names and record durations; the human form colors
+    verdicts, caps long names, and reads durations like ``1m 01s``.
     """
-    if tr.inconclusive:
-        status = "INCO"
-    elif tr.passed:
-        status = "PASS"
-    else:
-        status = "FAIL"
+    duration = _human_elapsed if human else _report_elapsed
+    rows = []
+    for test in tests:
+        word = _verdict_word(inconclusive=test.inconclusive, passed=test.passed)
+        rows.append(
+            (
+                test.name,
+                _paint_verdict(word) if human else word,
+                f"{test.cycles:,}" if test.cycles is not None else "",
+                duration(test.elapsed_s),
+                (format_duration(test.build_s) if human else f"{test.build_s:.0f}s")
+                if test.build_s >= 1
+                else "",
+            )
+        )
+    return render_table(
+        ("Test", "Result", "Cycles", "Time", "Build"),
+        rows,
+        max_widths={0: _TEST_NAME_CAP} if human else None,
+    )
+
+
+def _test_status_line(tr: TestResult) -> str:
+    """One-line test status (name, PASS/FAIL/INCONCLUSIVE, cycle count, elapsed).
+
+    The streamed per-target detail line; the end-of-report summary renders the
+    same facts as a table (:func:`_test_table_lines`).
+    """
+    status = _verdict_word(inconclusive=tr.inconclusive, passed=tr.passed)
     cycles_str = f"{tr.cycles:>8,} cycles" if tr.cycles is not None else "             "
     # Keep the compact display silent for sub-second warm-cache builds; the
     # millisecond value remains available in structured phase telemetry.
     build_str = f"  (incl. {tr.build_s:.0f}s build)" if tr.build_s >= 1 else ""
-    # F-39: millisecond resolution below 1s, so 10-20ms cocotb tests stop all
-    # rendering as an indistinguishable "0.0s".
-    seconds = max(0.0, tr.elapsed_s)
-    elapsed_str = f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
+    elapsed_str = _report_elapsed(tr.elapsed_s)
     return f"  {tr.name:<20s} {status}   {cycles_str}  {elapsed_str:>7s}{build_str}"
 
 
@@ -6553,7 +6604,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             }
         return evidence
 
-    def _headline_lines(self, all_results: list[TargetResult]) -> list[str]:
+    def _headline_lines(
+        self, all_results: list[TargetResult], *, human: bool = False
+    ) -> list[str]:
         """Compact per-target verdict block, emitted at the END of report_text.
 
         The MCP server tail-truncates the EDA tool's stdout (keeping the end), so
@@ -6563,26 +6616,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         compact form after all verbose detail. A passing target stays clean:
         the pointer/build lines exist to be acted on, and a benchmark sweep
         showed agents shelling out for exactly this context only on failures.
+
+        The record (``human=False``, the default) is plain text. ``human=True``
+        is the terminal form: colored, with long test names cut.
         """
-        lines = ["", "--- summary ---"]
+        lines = ["", "--- summary (Sandbox) ---"]
         for r in all_results:
-            if r.inconclusive:
-                verdict = "INCONCLUSIVE"
-            else:
-                verdict = "PASS" if r.passed else "FAIL"
+            verdict = _verdict_word(inconclusive=r.inconclusive, passed=r.passed)
             tests_passed = sum(1 for t in r.tests if t.passed)
             sva_errors = sum(t.sva_errors for t in r.tests)
-            flags = f", sva_errors={sva_errors}"
+            flags = f", sva_errors={sva_errors}" if sva_errors else ""
             if any(t.timed_out for t in r.tests):
                 flags += ", TIMED OUT"
-            seconds = max(0.0, r.elapsed_s)
-            elapsed = f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
+            elapsed = _human_elapsed(r.elapsed_s) if human else _report_elapsed(r.elapsed_s)
+            name = colors.bold_accent(r.target) if human else r.target
             lines.append(
-                f"[sim] {r.target} (Sandbox): {verdict} "
-                f"({tests_passed}/{len(r.tests)} tests{flags}, "
-                f"{elapsed})"
+                f"[sim] {name}: {_paint_verdict(verdict) if human else verdict} "
+                f"({tests_passed}/{len(r.tests)} tests{flags}, {elapsed})"
             )
-            lines.extend(_test_status_line(t) for t in r.tests)
+            if r.tests:
+                lines.extend(_test_table_lines(r.tests, human=human))
             # F-35: the waveform's path+size must survive tail-truncation too —
             # it is the whole point of having asked for --trace.
             lines.extend(ln for ln in (_trace_line(t) for t in r.tests) if ln)
@@ -6596,7 +6649,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if pointer:
                 lines.append(f"  log: {pointer}")
             lines.extend(f"  {ln}" for ln in self._build_context_lines(r.target))
-        return lines
+        # render_table styles its own header and rule, so the record is stripped.
+        return lines if human else [colors.strip_ansi(ln) for ln in lines]
 
     def _build_context_lines(self, target: str) -> list[str]:
         """≤2 compact failure-card lines naming the build config (best-effort).
@@ -6683,13 +6737,46 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         very end — one chatty failing target can no longer push another
         target's verdict or cycle counts out of the surviving window.
         """
-        lines = [*output_lines, *self._headline_lines(all_results)]
         report_path = self._report_destination()
-        if report_path is not None:
-            lines.append(f"  report: {report_path}")
-        any_inconclusive = any(r.inconclusive for r in all_results)
-        targets_passed = sum(1 for r in all_results if r.passed)
-        if any_inconclusive:
+        tail = [f"  report: {report_path}"] if report_path is not None else []
+        result_line = self._result_line(all_results, overall_pass)
+        record = "\n".join(
+            [*output_lines, *self._headline_lines(all_results), *tail, "", result_line]
+        )
+        self._human_report = None
+        if self._human_terminal():
+            # Printed by endpoint_reporting once the live progress rows are closed.
+            paint = (
+                colors.bold_green if result_line.startswith("RESULT: PASS") else colors.bold_red
+            )
+            human = "\n".join(
+                [
+                    *output_lines,
+                    *self._headline_lines(all_results, human=True),
+                    *tail,
+                    "",
+                    paint(result_line),
+                ]
+            )
+            self._human_report = ProgressText(human, record_text=record)
+            return record
+        # Surface the summary (incl. the RESULT line) on stdout so a passing
+        # run is not silent. base.py only echoes report_text on failure, so
+        # without this the happy-path RESULT: PASS never reaches the user —
+        # elaborate/lint already print their summary the same way. The MCP
+        # renderer dedupes: it drops its own report_text section when this
+        # print already carries it verbatim, so keep the print.
+        print(record)
+        return record
+
+    def _human_terminal(self) -> bool:
+        """True when the CLI summary goes to a real terminal (never a pipe or MCP)."""
+        return self._console_publication_requested and sys.stdout.isatty()
+
+    @staticmethod
+    def _result_line(all_results: list[TargetResult], overall_pass: bool) -> str:
+        """The closing ``RESULT:`` line of the run."""
+        if any(r.inconclusive for r in all_results):
             # Report the reason the RUN recorded, never a fixed sentence: a
             # trace-verification failure and a missing sentinel are different
             # problems with different fixes (F-22).
@@ -6700,20 +6787,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 if t.inconclusive_reason
             }
             detail = "; ".join(sorted(reasons)) or _INCONCLUSIVE_NO_SENTINEL
-            lines.append(f"\nRESULT: INCONCLUSIVE — {detail}")
-        elif overall_pass:
-            lines.append(f"\nRESULT: PASS ({targets_passed}/{len(all_results)} targets)")
-        else:
-            lines.append(f"\nRESULT: FAIL ({targets_passed}/{len(all_results)} targets)")
-        report_text = "\n".join(lines)
-        # Surface the summary (incl. the RESULT line) on stdout so a passing
-        # run is not silent. base.py only echoes report_text on failure, so
-        # without this the happy-path RESULT: PASS never reaches the user —
-        # elaborate/lint already print their summary the same way. The MCP
-        # renderer dedupes: it drops its own report_text section when this
-        # print already carries it verbatim, so keep the print.
-        print(report_text)
-        return report_text
+            return f"RESULT: INCONCLUSIVE — {detail}"
+        targets_passed = sum(1 for r in all_results if r.passed)
+        word = "PASS" if overall_pass else "FAIL"
+        return f"RESULT: {word} ({targets_passed}/{len(all_results)} targets)"
 
     def _run_resolved_target(
         self,
@@ -6764,7 +6841,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             (outcome.target, pre_sim_document(item)) for item in outcome.pre_sim_runs
         )
         result = self._project_execution_outcome(outcome)
-        output_lines.append(f"[sim] {target} (Sandbox)")
+        output_lines.append(f"[sim] {target}")
         output_lines.extend(result.diagnostics)
         output_lines.extend(self._pre_sim_output_lines(outcome))
         for test in result.tests:
