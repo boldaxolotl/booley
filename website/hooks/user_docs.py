@@ -1,6 +1,6 @@
 """Publish the repository's user docs (docs/user/) on the project site.
 
-docs/user/*.md stays the only authored copy (ADR 0076). This MkDocs hook adds
+docs/user/*.md stays the only authored copy (ADR 0081). This MkDocs hook adds
 each file to the build as a virtual page ``docs/<NAME>.md`` served at
 ``/docs/<slug>/``, so the relative links between the user docs keep working
 and MkDocs validates their anchors. Strict-mode warnings therefore name the
