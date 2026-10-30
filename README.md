@@ -29,7 +29,7 @@ The [Features page](https://booley.dev/docs/features/) is the complete feature r
 Three ways in, ordered by how much you want to invest:
 
 1. **[Level 1: Watch](#level-1-watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Clone the configured demo, open it in VS Code, and type your first request to the agent.
+2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Open the configured demo in your browser or clone it, then type your first request to the agent.
 3. **[Level 3: Use it on your own project](#level-3-use-it-on-your-own-project).** Full integration on your own RTL.
 
 ### Level 1: Watch
@@ -39,6 +39,13 @@ Two videos on the [Videos page](https://booley.dev/videos/) show an engineer dri
 ### Level 2: Try the demo yourself
 
 **[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to try the demo, after you [install Booley](#installation).
+
+Or skip the install and run the demo in browser VS Code, macOS included:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)
+
+The Codespace uses your own GitHub Codespaces quota and your own Claude or
+ChatGPT account.
 
 ### Level 3: Use it on your own project
 

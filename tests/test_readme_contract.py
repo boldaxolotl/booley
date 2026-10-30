@@ -32,11 +32,21 @@ def test_try_the_demo_leads_with_the_demo_readme_link():
 
     contract = ROOT / ".github/contracts/picorv32-demo.toml"
     pin = tomllib.loads(contract.read_text())["project_ref"]
-    assert section.strip() == (
+    lead = section.strip().split("\n\n", 1)[0]
+    assert lead == (
         "**[Follow the demo repository's README]"
         f"(https://github.com/boldaxolotl/booley-prj-picorv32/blob/{pin}/README.md)** "
         "to try the demo, after you [install Booley](#installation)."
     )
+
+
+def test_try_the_demo_offers_the_codespaces_badge():
+    section = README.split("### Level 2: Try the demo yourself", 1)[1].split("\n### ", 1)[0]
+    # The badge opens the demo's own default branch, whose devcontainer pins the image.
+    assert (
+        "[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)]"
+        "(https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)"
+    ) in section
 
 
 def test_install_guide_names_host_agent_cli_prerequisite():
