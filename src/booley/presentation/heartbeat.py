@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
-
-def _dim(text: str) -> str:
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
-        return text
-    return f"\033[2m{text}\033[0m"
+from booley.harness.colors import dim
 
 
 def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
@@ -19,5 +14,10 @@ def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
 
 
 def render_heartbeat(description: str, elapsed: str, extra: str = "") -> None:
-    """Render one standalone progress line without Harness presentation state."""
-    print(_dim(format_heartbeat(description, elapsed, extra)), flush=True)
+    """Render one standalone progress line without Harness presentation state.
+
+    Dimmed through the shared color helpers, and only on a terminal so captured
+    flow stdout stays free of escape codes even when colors are forced on.
+    """
+    line = format_heartbeat(description, elapsed, extra)
+    print(dim(line) if sys.stdout.isatty() else line, flush=True)

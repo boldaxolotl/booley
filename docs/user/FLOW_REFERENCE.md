@@ -55,8 +55,8 @@ eligible Target cardinality rule below; Simulation resume restores manifest sele
 Direct built-in CLI calls (including `python3 -m booley.flows.<name>`) show
 progress on **stderr**. A capable terminal displays one status line and up to
 six recent output lines, refreshed at most four times per second. Status gives
-the Flow, Target, current work unit, invocation elapsed time, command elapsed
-time, and age of the last observed output. It fits the terminal when resized.
+the Flow, Target, current work unit, invocation elapsed time, and age of the
+last observed output. It fits the terminal when resized.
 Elapsed time advances during silent work; it is neither a percentage nor proof
 that the EDA process is healthy. EDA tools may buffer their output.
 
