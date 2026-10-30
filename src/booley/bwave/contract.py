@@ -43,6 +43,11 @@ EXIT_USAGE = 2
 # pattern(s) ..."). Compare against lowercased stderr and EXIT_USAGE.
 NO_MATCH_MARKER = "no signals match"
 
+# Substring of the suggestion the Rust total-miss diagnostic appends when a
+# glob matches below some scope boundary ("did you mean 'TOP.tb.dut.*'?").
+# Change together with the Rust pin in crates/bwave/src/cache.rs.
+DID_YOU_MEAN_MARKER = "did you mean"
+
 # Substring of the `value --at` diagnostic for a time past the end of the
 # trace ("ERROR: value time N is beyond simulation range", exit 2). `bwave
 # gui` clamps a --time end on it.

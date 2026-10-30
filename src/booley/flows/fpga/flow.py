@@ -50,6 +50,7 @@ from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import EdaFailure, classify_eda_failure
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
+from booley.flows.job_resources import resource_phase
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -769,6 +770,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             temporary=role == "baseline",
         )
 
+    def _run_vivado(self, target: str, run_cmd: list[str]) -> SubprocessResult:
+        """Run the FPGA implementation command under its resource-history label."""
+        with resource_phase(target, "fpga_impl"):
+            return self._execute_boundary(run_cmd, timeout=self._get_timeout())
+
     def _run_single_target(self, target: str) -> FpgaMetrics:
         """Configure, run, and interpret Vivado inside the Sandbox."""
         try:
@@ -803,7 +809,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # The command is not path-remapped: ``make -C <rel>`` resolves from the
         # shared Sandbox workspace.
         self._announce_vivado_run(prepared, target)
-        result = self._execute_boundary(run_cmd, timeout=self._get_timeout())
+        result = self._run_vivado(target, run_cmd)
         # The edalize project-mode vivado flow (launch_runs/wait_on_run) writes
         # its utilization/timing/DRC reports to *files*, not stdout — unlike the
         # legacy non-project tcl that printed report_* to the console. So the

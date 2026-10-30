@@ -16,6 +16,20 @@ Packaged release history starts at 0.2.7. For older changes, see
   "Text-only analysis requires the exact model in the Codex models cache" when
   the Codex models cache is missing or lacks the model. They now run without
   tools.
+- B-Wave `-s` globs now also match relative to the common scope that
+  `bwave list` prints, in every command and in `bwave gui`: with
+  `# scope: TOP.tb`, `-s 'dut.*'` finds `TOP.tb.dut.*` at any depth below
+  `dut`, and still nothing outside the scope. `*`-led globs and bare-name
+  suffix matches select what they did before; a full-path glob gains a signal
+  only when the scope's own name repeats below it. A glob that matches nothing
+  now adds `did you mean '<full-path glob>'?` to its error when it matches
+  below another scope.
+- `BOOLEY_AGENT_APP=auto` (hand-written Sandbox specs, such as a Codespace) now
+  picks the agent app from the user's credentials at every start: Claude, then
+  Codex, then a configured gateway, then Claude with its login offered. A user's
+  own credential beats the gateway. Specialists, the MCP server, `booley chat` and
+  Doctor follow the registrar's choice, Doctor reports it and why, and `auto`
+  outside a Sandbox is refused. Explicit `claude`, `codex` and `none` are unchanged.
 - Codex `gpt-6-astra` runs are now costed at Astra's own price instead of
   `gpt-5.6-sol`'s, so their cost readouts rise. Unknown GPT model ids now fall
   back to the Astra price.
@@ -427,17 +441,23 @@ Packaged release history starts at 0.2.7. For older changes, see
   Cocotb batch that is not the default suite at the Default Seed is written
   to `tests/batch-<hex>/`. Update scripts that build these paths; read them
   from `report.json` and `simulation.json` instead.
-- **Simulation Campaigns written by Booley 0.3.0 are no longer read** (#2342).
-  Booley no longer resumes, inspects, prunes, analyzes or uses as a Cycle Count
-  baseline a Simulation Campaign written by 0.3.0, and no longer reads its
-  results or `simulation.json`. (Coverage analysis is refused only through a
-  `coverage.json` reference into such a Simulation Campaign; nothing here is
-  about Coverage Campaign records.) Goal completion that selected evidence from
+- **Simulation and Coverage Campaigns written by Booley 0.3.0 are no longer read**
+  (#2342, #2421). Booley no longer resumes, inspects, prunes, analyzes or uses as a
+  Cycle Count baseline a Simulation Campaign written by 0.3.0, and no longer reads
+  its results or `simulation.json`. Goal completion that selected evidence from
   such a Campaign also stops, and Goal status reports that Campaign as
   unreadable with the same message. Each stops with an error such as `Simulation
   Campaign manifest booley.simulation-campaign-manifest/v1 was written by Booley
   0.3.0 and is no longer supported; delete the Simulation invocation directory
-  <path> by hand`. Delete that directory by hand. `.runtime/campaign-child-executions/`
+  <path> by hand`. Delete that directory by hand. Coverage analysis, retention
+  pruning and the other Coverage Campaign readers likewise stop on a Coverage
+  Campaign written by 0.3.0, with an error containing
+  `COV_SCHEMA_VERSION_UNSUPPORTED: Unsupported Coverage Campaign schema; delete the
+  Coverage Campaign directory <path> or recollect coverage with this Booley version`.
+  Delete the named directory by hand, or collect coverage again. A Coverage
+  Campaign that a 0.3.0 Simulation Campaign recorded through a `coverage.json`
+  reference is refused as `coverage_campaign storage contract is invalid`; delete
+  that Simulation invocation directory. `.runtime/campaign-child-executions/`
   under the Booley Directory is no longer used; you can delete it.
 - **Active Goal Modes need one more Simulation Flow run** (#1233). A Goal
   Record that is active across the upgrade has no frozen Test Runs. Booley

@@ -41,6 +41,7 @@ from booley.evidence.timing import (
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.job_resources import SYNTH_PHASES, resource_phase
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -1348,10 +1349,15 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             temporary=role == "baseline",
         )
         start = time.monotonic()
-        proc_result = self._execute_boundary(make_cmd, timeout=self._get_timeout())
+        proc_result = self._run_synth_make(target, make_cmd)
         elapsed = time.monotonic() - start
         metrics, output = self._interpret_boundary_run(target, plan, proc_result, elapsed)
         return self._attach_recipe_evidence(target, metrics), output
+
+    def _run_synth_make(self, target: str, make_cmd: list[str]) -> SubprocessResult:
+        """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
+        with resource_phase(target, "synth", split=SYNTH_PHASES):
+            return self._execute_boundary(make_cmd, timeout=self._get_timeout())
 
     def _attach_recipe_evidence(self, target: str, metrics: SynthMetrics) -> SynthMetrics:
         """Attach the recipe resolved before this run to its metrics."""
