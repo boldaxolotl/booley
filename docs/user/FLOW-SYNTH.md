@@ -45,6 +45,15 @@ known-benign warnings are counted with a rationale. `SYNTH:{target}` is
 satisfied only when synthesis completes, the final structural check ran, and
 every configured threshold passes.
 
+The run ends with one table with a row per Target: Area (in kGE), Crit path,
+Fmax, Setup slack, Time, and Status (`PASS`, or `FAIL`/`ERROR` with the reason).
+With `--baseline`, a `Δ` column after Area and one after Crit path give the
+change against the baseline. A metric the run did not produce shows `—`, and a
+Target name over 40 characters is cut with `…`. Notes (warnings, critical
+conditions, cell counts, log paths) are listed under the table, then
+`RESULT:`. On a terminal the table is coloured; the report, MCP and piped
+output carry the same text without colour codes.
+
 ## Configuration (`[flows.synth]`)
 
 ```toml

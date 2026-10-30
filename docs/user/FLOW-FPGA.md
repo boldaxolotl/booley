@@ -29,6 +29,15 @@ multi-driven nets). `FPGA:{target}` is satisfied only when metrics are
 complete, timing and configured thresholds pass, and no critical condition is
 present. Power is not measured.
 
+The run ends with one table with a row per Target: LUT, FF, BRAM, DSP, WNS,
+WHS, Fmax, Time, and Status (`PASS`, `FAIL` or `ERROR`). With `--baseline`, the
+change against the baseline is shown on a line under the Target's row (`Δ +1.0%`
+in the LUT, FF, BRAM, and DSP columns). A metric the run did not produce shows
+`—`, and a Target name over 40 characters is cut with `…`. Notes (critical
+conditions, subprocess output, log paths) are listed under the table, then
+`RESULT:`. On a terminal the table is coloured; the report, MCP and piped
+output carry the same text without colour codes.
+
 ## Configuration (`[flows.fpga]`)
 
 FPGA implementation runs through Vivado inside the Sandbox. The

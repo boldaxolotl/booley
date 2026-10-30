@@ -1069,6 +1069,14 @@ class TestStdoutWitness:
         assert sink.text == "RESULT: FAIL\n"
         assert witness.saw("RESULT: FAIL")
 
+    def test_styled_print_of_a_plain_block_counts(self):
+        """A coloured console copy of a plain report still counts as shown."""
+        sink = self._Sink()
+        witness = _StdoutWitness(sink)
+        witness.write("\x1b[1mTarget\x1b[0m   Status\n\x1b[32mRESULT: PASS\x1b[0m\n")
+        assert witness.saw("RESULT: PASS")
+        assert witness.saw("Target   Status\nRESULT: PASS")
+
     def test_writelines_is_witnessed(self):
         """File objects implement writelines natively, so a plain __getattr__
         delegation would let a whole verdict reach the terminal unseen."""

@@ -23,6 +23,7 @@ import copy
 import logging
 import os
 import re
+import sys
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -59,9 +60,18 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.result_table import (
+    MISSING,
+    TARGET_WIDTH,
+    note_line,
+    result_text,
+    status_cell,
+)
 from booley.flows.target_parameters import vlogparam_specs
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
+from booley.harness import colors
+from booley.harness.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
@@ -1376,7 +1386,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         failures: list[str] = []
         for target, metrics in baseline_results.items():
             if metrics.infra_error:
-                lines.append(f"[fpga] baseline {target}: ERROR -- {metrics.infra_error}")
+                lines.append(note_line(f"baseline {target}", "ERROR", metrics.infra_error))
                 failures.append(f"baseline {target}: infrastructure error")
         for target, report in reports.items():
             comparison = report.canonical.get("comparison")
@@ -1384,7 +1394,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             for message in errors:
                 if str(message).startswith("baseline infrastructure error:"):
                     continue
-                lines.append(f"[fpga] comparison {target}: ERROR -- {message}")
+                lines.append(note_line(f"comparison {target}", "ERROR", str(message)))
                 failures.append(f"comparison {target}: invalid evidence")
         return lines, failures
 
@@ -1409,52 +1419,119 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             implementation_reports,
             baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
         )
-        lines, failures = self._aggregate_head(short_sha, baseline_results, implementation_reports)
-        self._append_target_results(lines, failures, configs, current_results, baseline_results)
-        lines.append("")
+        notes, failures = self._aggregate_head(baseline_results, implementation_reports)
+        self._append_target_notes(notes, failures, configs, current_results)
         verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[implementation_aggregate.exit_code]
         suffix = f" ({'; '.join(failures)})" if failures else ""
-        lines.append(f"RESULT: {verdict}{suffix}")
+        header = [f"baseline: {short_sha}"] if self.args.baseline and short_sha else []
+        table = self._summary_table_lines(configs, current_results, baseline_results)
+        result = result_text(
+            [*header, *table, *([""] if notes else []), *notes, "", f"RESULT: {verdict}{suffix}"]
+        )
+        if sys.stdout.isatty():
+            # The terminal gets the coloured copy; anything else is handed the
+            # plain record by the console publisher (stdout on pass, stderr on fail).
+            print(result.console, flush=True)
         return EndpointOutcome(
             exit_code=implementation_aggregate.exit_code,
-            report_text="\n".join(lines),
+            report_text=result.record,
             display_lines=_first_valid_display(configs, current_results),
             detail=self._aggregate_detail(configs, current_results, implementation_aggregate),
         )
 
     def _aggregate_head(
         self,
-        short_sha: str | None,
         baseline_results: dict[str, FpgaMetrics],
         reports: dict[str, ImplementationReport],
     ) -> tuple[list[str], list[str]]:
-        lines: list[str] = []
-        if self.args.baseline and short_sha:
-            lines.append(f"[fpga] baseline: {short_sha}")
-        baseline_lines, baseline_failures = self._baseline_error_lines(baseline_results, reports)
-        lines.extend(baseline_lines)
-        return lines, baseline_failures
+        """Return the run-level notes (baseline and comparison errors) and failures."""
+        return self._baseline_error_lines(baseline_results, reports)
 
-    def _append_target_results(
+    def _append_target_notes(
         self,
         lines: list[str],
         failures: list[str],
         configs: list[str],
         current_results: dict[str, FpgaMetrics],
-        baseline_results: dict[str, FpgaMetrics],
     ) -> None:
+        """Append every Target's notes to *lines* and its failure summary to *failures*."""
         for cfg in configs:
             cur = current_results[cfg]
-            base = baseline_results.get(cfg)
-            lines.append(self._format_config_line(cfg, cur, base))
             if cur.has_critical:
                 lines.append(self._format_critical_line(cfg, cur))
             if cur.failure_output:
                 lines.append(self._format_failure_output(cfg, cur))
             if cur.log_path:
-                lines.append(f"[fpga] {cfg}: log: {cur.log_path}")
+                lines.append(f"  {cfg}: log: {cur.log_path}")
             if not cur.passed:
                 failures.append(self._format_failure_summary(cfg, cur))
+
+    def _summary_table_lines(
+        self,
+        configs: list[str],
+        current_results: dict[str, FpgaMetrics],
+        baseline_results: dict[str, FpgaMetrics],
+    ) -> list[str]:
+        """The per-Target table; baseline deltas sit on a dimmed row under their Target."""
+        headers = ["Target", "LUT", "FF", "BRAM", "DSP", "WNS", "WHS", "Fmax", "Time", "Status"]
+        rows: list[list[str]] = []
+        for cfg in configs:
+            cur = current_results[cfg]
+            rows.append(self._summary_row(cfg, cur))
+            delta_row = self._delta_row(cur, baseline_results.get(cfg))
+            if delta_row:
+                rows.append(delta_row)
+        return render_table(headers, rows, max_widths={0: TARGET_WIDTH})
+
+    @staticmethod
+    def _summary_row(cfg: str, cur: FpgaMetrics) -> list[str]:
+        """Cells of one Target's table row (``—`` for a metric the run lacks)."""
+        # One representative Fmax = the timing-worst clock (lowest Fmax), tagged
+        # with its name only for multi-clock designs. The authoritative per-clock
+        # breakdown is in the report.
+        worst = worst_clock(cur.per_clock)
+        fmax = MISSING
+        if worst is not None and worst.fmax_mhz is not None:
+            tag = f" [{worst.clock}]" if len(cur.per_clock) > 1 else ""
+            fmax = f"{worst.fmax_mhz:.1f} MHz{tag}"
+        if cur.infra_error:
+            status = "ERROR"
+        elif not cur.passed:
+            status = "FAIL"
+        else:
+            status = "PASS"
+        return [
+            cfg,
+            f"{cur.lut_count:,}" if cur.lut_count is not None else MISSING,
+            f"{cur.ff_count:,}" if cur.ff_count is not None else MISSING,
+            str(cur.bram_count) if cur.bram_count is not None else MISSING,
+            str(cur.dsp_count) if cur.dsp_count is not None else MISSING,
+            f"{cur.wns_ns:.3f} ns" if cur.wns_ns is not None else MISSING,
+            f"{cur.whs_ns:.3f} ns" if cur.whs_ns is not None else MISSING,
+            fmax,
+            "cached" if cur.cached else f"{cur.elapsed_s:.1f}s",
+            status_cell(status),
+        ]
+
+    @staticmethod
+    def _delta_row(cur: FpgaMetrics, base: FpgaMetrics | None) -> list[str]:
+        """Dimmed ``Δ +1.0%`` cells under LUT/FF/BRAM/DSP; empty without a baseline delta."""
+        if base is None:
+            return []
+        cells = ["", *([""] * 4)]
+        for index, (cur_val, base_val) in enumerate(
+            (
+                (cur.lut_count, base.lut_count),
+                (cur.ff_count, base.ff_count),
+                (cur.bram_count, base.bram_count),
+                (cur.dsp_count, base.dsp_count),
+            ),
+            start=1,
+        ):
+            pct = _delta_pct(cur_val, base_val)
+            if pct is not None:
+                cells[index] = colors.dim(f"Δ {pct:+.1f}%")
+        return cells if any(cells) else []
 
     @staticmethod
     def _aggregate_detail(
@@ -1542,13 +1619,13 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             parts.append(f"{cur.comb_loops} comb loops")
         if cur.multi_driven:
             parts.append(f"{cur.multi_driven} multi-driven")
-        return f"[fpga] {cfg}: CRITICAL -- {', '.join(parts)}"
+        return note_line(cfg, "CRITICAL", ", ".join(parts))
 
     @staticmethod
     def _format_failure_output(cfg: str, cur: FpgaMetrics) -> str:
         """Render the captured log/stderr tail under the config line."""
         indented = "\n".join(f"    {ln}" for ln in cur.failure_output.splitlines())
-        return f"[fpga] {cfg}: subprocess output:\n{indented}"
+        return f"  {cfg}: subprocess output:\n{indented}"
 
     @staticmethod
     def _format_failure_summary(cfg: str, cur: FpgaMetrics) -> str:

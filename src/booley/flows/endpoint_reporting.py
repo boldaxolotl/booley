@@ -18,6 +18,7 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
+from booley.harness.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -158,9 +159,13 @@ class _StdoutWitness:
         Requiring the text to occupy whole lines still recognises the
         ``print(report_text)`` this exists for (F-28), while a mention inside a
         longer line no longer silences the diagnostic.
+
+        The stdout tail is compared without ANSI codes: a Flow may print a
+        coloured console copy of its plain report on a terminal, and that copy
+        still counts as the report having been shown.
         """
         return _contains_whole_line_block(
-            "".join(self._chunks),
+            strip_ansi("".join(self._chunks)),
             text,
             leading_truncated=self._truncated,
         )
@@ -172,13 +177,20 @@ def _contains_whole_line_block(
     *,
     leading_truncated: bool = False,
 ) -> bool:
-    """Return whether *text* appears in *blob* as complete lines."""
+    """Return whether *text* appears in *blob* as complete lines.
+
+    A block that begins with an indented line (a table header) still starts
+    its line: the stripped needle may be preceded by that line's indentation.
+    """
     needle = (text or "").strip()
     if not needle:
         return False
     start = 0
     while (idx := blob.find(needle, start)) >= 0:
-        starts_line = blob[idx - 1] == "\n" if idx else not leading_truncated
+        line_start = blob.rfind("\n", 0, idx) + 1
+        starts_line = not blob[line_start:idx].strip() and (
+            line_start > 0 or not leading_truncated
+        )
         end = idx + len(needle)
         ends_line = end == len(blob) or blob[end] == "\n"
         if starts_line and ends_line:
