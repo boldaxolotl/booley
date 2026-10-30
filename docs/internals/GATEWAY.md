@@ -21,6 +21,10 @@ hand-written devcontainer. Booley-issued Sandboxes take their policy from
 | `BOOLEY_GATEWAY_TOKEN` | The bearer token. It is never written to a config file, and Codex shell tools do not receive it. |
 | `BOOLEY_GATEWAY_TOKEN_COMMAND` | A command that prints the current token, used instead of `BOOLEY_GATEWAY_TOKEN` when the token is short-lived. Set exactly one of the two. |
 
+With `BOOLEY_AGENT_APP=auto`, leave `BOOLEY_PRIMARY_AUTH` unset or `auto`:
+the gateway is then used only when the visitor has no Claude or Codex
+credential (see [the agent app](../user/SANDBOX.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
+
 `[agent] provider` must be `codex`. Codex Specialists use the gateway; no
 OpenAI or Anthropic credential and no Codex login reaches them. The gateway
 host must be reachable from the Sandbox. Text-only Codex Specialists such as
@@ -84,6 +88,11 @@ entry), keeping unrelated keys:
   After leaving `gateway`, remove `model_provider`, `model`,
   `features.fast_mode` and `[model_providers.booley_gateway]` from the Codex
   config yourself, or interactive Codex keeps routing to the gateway.
+  Under `BOOLEY_AGENT_APP=auto` the registrar does this for the routing
+  entries: when a start registers Codex on a non-gateway policy, it removes the
+  `booley_gateway` table, plus `model_provider` and `model` when they still
+  hold the gateway's values. `features.fast_mode` and the token exclusion stay.
+  A start that resolves to Claude leaves the Codex config untouched.
 
 Because Booley does not spawn this Codex, the in-memory cache and the 401 retry
 of Specialist runs do not apply. The `auth` helper runs

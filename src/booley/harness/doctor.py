@@ -2572,6 +2572,8 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     """Run credential checks when the invocation profile includes agents."""
     if not reporter.agent_check_enabled("agent credential checks"):
         return
+    if not _report_agent_app_choice(reporter):
+        return
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
     _warn_ignored_gateway_handoff(reporter)
@@ -2612,6 +2614,25 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
+
+
+def _report_agent_app_choice(reporter: _Reporter) -> bool:
+    """PASS the app ``BOOLEY_AGENT_APP=auto`` chose; FAIL when it cannot be honored.
+
+    Prints nothing for explicit values. Returns ``False`` after a FAIL, since
+    the remaining agent checks would only repeat it.
+    """
+    from booley.config import agent_app
+
+    try:
+        choice = agent_app.auto_choice()
+    except agent_app.AgentAppError as exc:
+        reporter.fail_(str(exc), check_id="agent.credential-policy", subject="BOOLEY_AGENT_APP")
+        return False
+    if choice is not None:
+        label = _AGENT_APP_LABELS[choice.app]
+        reporter.pass_(f"Agent app: {label} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
+    return True
 
 
 def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
@@ -2797,7 +2818,10 @@ def _configured_provider(project: ProjectAudit | None) -> str:
             declared = None
         if declared is not None:
             return declared
-    app_provider = (os.environ.get("BOOLEY_AGENT_APP") or "").strip()
+    from booley.config import agent_app
+
+    choice = agent_app.auto_choice()
+    app_provider = choice.app if choice else (os.environ.get("BOOLEY_AGENT_APP") or "").strip()
     if app_provider in _VALID_PROVIDERS:
         return app_provider
     return _DEFAULT_PROVIDER

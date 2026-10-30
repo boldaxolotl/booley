@@ -277,7 +277,10 @@ def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
         logger.info("Resolved provider=%s from project booley.toml", project.provider)
         return project.provider
 
-    app_provider = os.environ.get("BOOLEY_AGENT_APP")
+    from booley.config import agent_app
+
+    choice = agent_app.auto_choice()
+    app_provider = choice.app if choice else os.environ.get("BOOLEY_AGENT_APP")
     if app_provider in _VALID_PROVIDERS:
         logger.info(
             "Resolved provider=%s from BOOLEY_AGENT_APP (no developer "
@@ -471,7 +474,10 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
         booley_dir=booley_dir,
     )
     if provider is None:
-        provider = _DEFAULT_PROVIDER
+        from booley.config import agent_app
+
+        choice = agent_app.auto_choice()
+        provider = choice.app if choice else _DEFAULT_PROVIDER
     if gateway_handoff_active():
         # Env-only policy: it has no toml home, so it overrides the toml value.
         auth = GATEWAY_AUTH
@@ -594,11 +600,19 @@ def env_auth_handoff() -> str | None:
     The single reader of the variable, so a Specialist subprocess, the MCP
     server, Doctor and ``booley auth --status`` cannot disagree about spellings
     such as ``"gateway "``. Validity is judged by :func:`_env_auth`.
+
+    Under ``BOOLEY_AGENT_APP=auto`` the value is the policy the registrar
+    published for this start, and an unresolved or out-of-Sandbox ``auto``
+    raises :class:`~booley.config.agent_app.AgentAppError` (a
+    ``BackendConfigError``).
     """
     import os
 
-    raw = os.environ.get("BOOLEY_PRIMARY_AUTH") or ""
-    return raw.strip().lower() or None
+    from booley.config import agent_app
+
+    choice = agent_app.auto_choice()
+    raw = choice.policy if choice else os.environ.get("BOOLEY_PRIMARY_AUTH")
+    return (raw or "").strip().lower() or None
 
 
 def gateway_handoff_active() -> bool:
@@ -635,7 +649,9 @@ def resolve_auth_policy() -> str:
     hand-off into containers) beats the project's booley.toml; absent both,
     ``auto``. Never raises: an invalid toml value degrades to ``auto`` with a
     warning here — the loud ``BackendConfigError`` belongs to the config-load
-    path, not to a reporting/forwarding helper.
+    path, not to a reporting/forwarding helper. The one exception is
+    ``BOOLEY_AGENT_APP=auto`` outside a Sandbox or before the registrar
+    resolved it, which raises ``AgentAppError``.
     """
     import os
 

@@ -252,6 +252,42 @@ Doctor reports the mode in the Sandbox checks:
   [`doctor-waivers.toml`](DOCTOR.md#doctor-waivers-doctor-waiverstoml).
 - Any other value: FAIL naming the two valid values.
 
+## Agent app in a hand-written spec (`BOOLEY_AGENT_APP`)
+
+`BOOLEY_AGENT_APP` names the agent app whose user config gets the Booley MCP
+entry. `booley init` writes `claude` or `codex` for you; set it yourself only
+in a hand-written spec, such as a Codespace.
+
+| `BOOLEY_AGENT_APP` | Effect |
+|---|---|
+| `claude` or `codex` | Register that app. |
+| `none` | Register nothing. |
+| `auto` | Pick the app from the credentials the visitor brought, at every start. |
+
+`auto` takes the first match in this order:
+
+1. A Claude credential (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, a
+   stored `booley auth` token, or the Claude login file). Claude wins when a
+   Codex credential is also present.
+2. A Codex credential (`OPENAI_API_KEY`, a stored token, or the Codex login
+   file).
+3. A complete [gateway](../internals/GATEWAY.md) configuration, when
+   `BOOLEY_PRIMARY_AUTH` is unset or `auto`: Codex through the gateway. A
+   visitor's own credential always wins over the gateway.
+4. Otherwise Claude, with its login offered.
+
+The spec's `postStartCommand` must run Booley's in-container registrar, the
+`booley.harness.incontainer_register` module (the `postCreateCommand` too, when
+the spec has one). That hook resolves the
+choice, registers the app, and prints `app:<app>` and the reason in its status
+line; Specialists, the MCP server, `booley chat` and Doctor all follow the
+choice it made. Because it runs on every start, a changed credential changes
+the app at the next start. In a Sandbox `booley doctor` shows the app and why
+it was chosen, and WARNs when `[agent] provider` pins an app that `auto` might
+not pick; remove the pin or set `BOOLEY_AGENT_APP` to it.
+
+`auto` outside a Sandbox is refused, and the message names the variable.
+
 ## Custom sandbox image
 
 To add project-specific EDA tools to every sandbox container, hand-author a

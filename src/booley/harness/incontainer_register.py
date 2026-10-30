@@ -6,7 +6,9 @@ import os
 import sys
 from pathlib import Path
 
-from booley.runtime import incontainer_setup
+from booley.config import agent_app
+from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_settings_from_env
+from booley.runtime import atomic_files, auth_token, incontainer_setup
 from booley.runtime.booley_dir import resolve_booley_dir
 
 
@@ -72,9 +74,67 @@ def _hook_start_directory() -> Path:
     return cwd
 
 
+def resolve_auto_choice() -> agent_app.AgentAppChoice:
+    """Pick the agent app for ``BOOLEY_AGENT_APP=auto`` from this start's credentials.
+
+    Order: a Claude credential, a Codex credential, a complete gateway
+    configuration (Codex), then Claude with its login offered. A visitor's own
+    credential always beats the gateway, so ``BOOLEY_PRIMARY_AUTH=gateway``
+    counts as ``auto`` here: the gateway is only the fallback. Reasons name
+    credential sources (variables and paths), never values.
+    """
+    raw_policy = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip().lower() or None
+    policy = None if raw_policy == GATEWAY_AUTH else raw_policy
+    lookup = policy or "auto"
+    claude = auth_token.effective_credential(auth_token.APP_CLAUDE, lookup)
+    codex = auth_token.effective_credential(auth_token.APP_CODEX, lookup)
+    if claude is not None:
+        reason = f"Claude credential from {claude.source}"
+        if codex is not None:
+            reason += "; a Codex credential is also present, Claude is preferred"
+        return agent_app.AgentAppChoice(auth_token.APP_CLAUDE, policy, reason)
+    if codex is not None:
+        return agent_app.AgentAppChoice(
+            auth_token.APP_CODEX, policy, f"Codex credential from {codex.source}"
+        )
+    if lookup == "auto":
+        try:
+            gateway = gateway_settings_from_env()
+        except GatewayConfigError:
+            pass
+        else:
+            return agent_app.AgentAppChoice(
+                auth_token.APP_CODEX,
+                GATEWAY_AUTH,
+                f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
+            )
+    return agent_app.AgentAppChoice(
+        auth_token.APP_CLAUDE, policy, "no credential and no gateway; Claude's login is offered"
+    )
+
+
+def _publish_auto_choice() -> agent_app.AgentAppChoice | None:
+    """Resolve and publish this start's ``auto`` choice; ``None`` unless ``auto``.
+
+    The previous start's record goes first, so a failed resolution leaves none
+    and consumers refuse instead of trusting a stale choice.
+    """
+    if not agent_app.auto_requested():
+        return None
+    atomic_files.durable_unlink(agent_app.record_path())
+    choice = resolve_auto_choice()
+    atomic_files.atomic_replace_bytes(agent_app.record_path(), agent_app.encode(choice))
+    return choice
+
+
 def main() -> None:
     """Start mechanisms, apply registration, and launch advisory Harness policy."""
-    app = os.environ.get("BOOLEY_AGENT_APP", "none")
+    try:
+        choice = _publish_auto_choice()
+    except agent_app.AgentAppError as exc:
+        print(f"error: registration refused: {exc}", file=sys.stderr)
+        sys.exit(1)
+    app = choice.app if choice else os.environ.get("BOOLEY_AGENT_APP", "none")
     server = (
         "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
     )
@@ -88,8 +148,10 @@ def main() -> None:
         status = "refused"
     upgrade = observe_upgrade()
     health = launch_auto_doctor()
+    chosen = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})" if choice else ""
     print(
-        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{health} {status}",
+        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{health} "
+        f"{status}{chosen}",
         file=sys.stderr,
     )
     if status == "refused":
