@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from booley.harness.setup.git_hooks import worktree_policy_repositories
+from release_validation.host_doctor import doctor_reports_no_failures
 
 _GOOD = re.compile(r"sim self-test good case .* passes")
 _BAD = re.compile(r"sim self-test bad case .* correctly graded a failure")
@@ -57,7 +58,7 @@ def validate(
         raise RuntimeError("deep Doctor did not prove the good Simulation self-test")
     if _BAD.search(output) is None:
         raise RuntimeError("deep Doctor did not reject the bad runtime overlay")
-    if "0 failed." not in output:
+    if not doctor_reports_no_failures(output):
         raise RuntimeError("deep Doctor summary contains failures")
     return {
         "schema": 1,

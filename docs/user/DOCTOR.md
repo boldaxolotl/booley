@@ -199,18 +199,37 @@ Doctor WARNs with `workspace.legacy-source-stash` when an interrupted run left
 a source stash record for this worktree; see
 [manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run).
 
+## Reading Doctor output
+
+Doctor groups its checks under section headers such as `Host checks` and
+`Project checks`. Each row starts with one glyph:
+
+| Glyph | Meaning |
+|---|---|
+| `✓` | Passed |
+| `!` | Warning: an actionable failure mode |
+| `✗` | Failure: the only status that makes the exit code non-zero |
+| `~` | A warning accepted by a [waiver](#doctor-waivers-doctor-waiverstoml) |
+| `·` | A note or a skipped check; nothing to fix |
+| `▸` | A long `--deep` step has started |
+
+A check ID, when a row has one, is dimmed at the end of the line. A `→` line
+under a row says how to fix it. The run ends with a table of the failures and
+warnings, then a count for each status. Piped or `NO_COLOR` output has the same
+layout without color.
+
 ## Doctor waivers (`doctor-waivers.toml`)
 
 `booley doctor` reserves `WARN` for an actionable failure mode. A clean setup
 has no active warnings: fix the cause, or explicitly accept a deliberate
 project constraint in `.booley/doctor-waivers.toml`. Waived findings
-remain visible as `WAIVED` and are counted separately; the file does not hide
+remain visible as `~` rows and are counted separately; the file does not hide
 output or change failures.
 
 Each warning prints a stable identity at the end of its line:
 
 ```text
-WARN  trace unavailable for sim_fast [sim.trace-unavailable:sim_fast]
+  !  trace unavailable for sim_fast               sim.trace-unavailable:sim_fast
 ```
 
 The part before the colon is `check`; the part after it is the optional

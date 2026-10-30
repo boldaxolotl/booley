@@ -135,7 +135,7 @@ def test_missing_override_warns_with_check_id(sandbox_git, capsys):
     assert finding.subject is None
     assert "Visitor" in finding.message
     assert "global" in finding.message
-    assert f"[{OVERRIDE_ID}]" in capsys.readouterr().out
+    assert OVERRIDE_ID in capsys.readouterr().out
 
 
 def test_malformed_override_warns_with_git_error(sandbox_git):

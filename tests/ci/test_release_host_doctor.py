@@ -45,11 +45,28 @@ def _fake_booley(root: Path, *, init_output: str = "[OK] initialized") -> tuple[
         f"    print({init_output!r})\n"
         "elif sys.argv[1] == 'doctor':\n"
         "    print('MCP server exposes 17 MCP tool(s)')\n"
-        "    print('0 failed.')\n",
+        "    print('  ✗ failed     0')\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
     return executable, log
+
+
+@pytest.mark.parametrize("scenario", ["clean", "failing", "colored"])
+def test_no_failure_check_reads_real_doctor_counts(
+    scenario: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import colors, doctor
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", scenario == "colored")
+    reporter = doctor._Reporter.create()
+    reporter.pass_("fine")
+    if scenario == "failing":
+        reporter.fail_("broken")
+    reporter.finish()
+
+    output = capsys.readouterr().out
+    assert host_doctor.doctor_reports_no_failures(output) is (scenario != "failing")
 
 
 def test_host_doctor_isolates_xdg_config_home(

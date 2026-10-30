@@ -10,11 +10,21 @@ import subprocess
 from pathlib import Path
 
 _MCP_TOOLS = re.compile(r"MCP server exposes [0-9]+ MCP tool\(s\)")
+# Doctor's closing counts row for failures, e.g. "  ✗ failed     0".
+_FAILED_COUNT = re.compile(r"^\s*\S*\s*failed\s+(\d+)$", re.MULTILINE)
+# Color codes a FORCE_COLOR environment adds around Doctor's rows.
+_COLOR_CODES = re.compile(r"\x1b\[[0-9;]*m")
 # Status markers Project Initialization prints for a warning or a failure.
 _PROBLEM_MARKERS = ("[!!]", "[XX]")
 # Executables stubbed into the isolated home's bin for the duration of a run.
 _EDITOR_PROBE = "code"
 _AGENT_CLI_PROBE = "codex"
+
+
+def doctor_reports_no_failures(output: str) -> bool:
+    """True when Doctor's counts table says ``failed`` is 0 (color codes ignored)."""
+    match = _FAILED_COUNT.search(_COLOR_CODES.sub("", output))
+    return match is not None and match.group(1) == "0"
 
 
 def _inside(root: Path, path: Path, label: str) -> Path:
@@ -171,7 +181,7 @@ def validate(
             )
         checks.append({"id": "project-initialization.clean", "status": "pass"})
         doctor = _run([str(booley), "doctor"], project=project, env=env)
-        if "0 failed." not in doctor or _MCP_TOOLS.search(doctor) is None:
+        if not doctor_reports_no_failures(doctor) or _MCP_TOOLS.search(doctor) is None:
             raise RuntimeError("plain host Doctor did not prove the issued-image MCP seam")
         checks.append({"id": "host-doctor.plain-issued-image", "status": "pass"})
     finally:
