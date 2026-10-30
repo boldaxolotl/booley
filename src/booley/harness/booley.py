@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
-from booley.harness import cheatsheet, upgrade_cli, upgrade_review
+from booley.harness import cheatsheet, resources_cli, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
@@ -86,6 +86,7 @@ COMMAND_LOCATIONS = {
     "projects": CommandLocation.HOST,
     "upgrade": CommandLocation.EITHER,
     "targets": CommandLocation.EITHER,
+    "resources": CommandLocation.EITHER,
     "flow": CommandLocation.SESSION_RUNTIME,
     "specialist": CommandLocation.SESSION_RUNTIME,
     "feedback": CommandLocation.EITHER,
@@ -125,6 +126,7 @@ COMMAND_PROJECT_BINDINGS = {
     "projects": ProjectBinding.INDEPENDENT,
     "upgrade": ProjectBinding.REQUIRED,
     "targets": ProjectBinding.REQUIRED,
+    "resources": ProjectBinding.REQUIRED,
     "flow": ProjectBinding.REQUIRED,
     "specialist": ProjectBinding.REQUIRED,
     "feedback": ProjectBinding.FEEDBACK,
@@ -848,6 +850,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_flow_subparser(sub)
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
+    resources_cli.add_subparser(sub)
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
@@ -1802,6 +1805,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "shell": _cmd_shell,
     "session": _cmd_session,
     "targets": _cmd_targets,
+    "resources": resources_cli.run,
     "worktree": run_worktree,
     "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,

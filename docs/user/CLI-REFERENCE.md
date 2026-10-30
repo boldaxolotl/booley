@@ -17,7 +17,7 @@ the host inside an initialized Project.
 | Location | Public commands, in order |
 |---|---|
 | Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
-| Either | `cheat`, `doctor`, `help`, `targets` |
+| Either | `cheat`, `doctor`, `help`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `init`, `projects` |
 
 Commands used by skills remain available but are omitted from top-level help.
@@ -47,6 +47,10 @@ booley doctor --concise           # show only problems
 booley doctor --deep              # also run short real sims, lints, and syntheses
 booley doctor --deep --skip-agent-checks   # CI: skip the login checks
 booley --version                  # version, plus commit and its UTC commit date when known
+
+# Job resources
+booley resources                  # peak memory and run time per Target and Job phase
+booley resources --json           # the same statistics, machine-readable
 
 # Projects on this machine (host)
 booley projects                   # list known projects
