@@ -26,8 +26,8 @@ status: accepted
 
 ## Consequences
 
-Readers accept only the V5 storage schema; any other schema, including V4 from Booley 0.3.0, fails
-with `COV_SCHEMA_VERSION_UNSUPPORTED` naming the Campaign directory to delete or recollect.
+Readers accept only the V5 storage schema; any other schema fails with
+`COV_SCHEMA_VERSION_UNSUPPORTED` naming the Campaign directory to delete or recollect.
 One uncompressed point-store ceiling applies on write and read, plus the manifest ceiling. The writer no
 longer caps the point count, so a Campaign over the Analyst session's 1M-point ceiling publishes and is
 refused at analysis. Persistence schema belongs
