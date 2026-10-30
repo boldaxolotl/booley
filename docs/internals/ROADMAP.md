@@ -102,6 +102,15 @@ the Analyst. The [release gate](coverage-release-gate.md) records cross-mode and
 real-tool verification status. Native FSM and covergroup records
 remain unscored evidence in V1. B-Wave has no coverage measurement role.
 
+## Deterministic Mutation Testing
+
+**Planned.** Today the [Mutation Tester](../user/FEATURES.md#mutation-testing)
+is an LLM Specialist: it proposes the mutations, and Booley applies, compiles,
+and runs each one. That is a temporary design. Mutation testing will become
+fully deterministic, with no LLM involved: the same RTL and configuration
+always produce the same mutations, so kill rates are reproducible, comparable
+across runs, and free of LLM cost.
+
 ## Continuous Integration (`booley ci`)
 
 **Planned.** `booley ci` runs a named set of Criteria against the current
