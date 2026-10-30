@@ -44,7 +44,7 @@ document: Evaluation designs
     <li><span>Open it in VS Code.</span></li>
     <li><span>Type a request to the agent, such as your own change to the design.</span></li>
   </ol>
-  <p class="proc__f">Booley must be installed first: <code>pipx install booley-rtl</code>, then <code>booley bootstrap</code>. See the <a href="https://github.com/boldaxolotl/booley#installation">installation guide</a>.</p>
+  <p class="proc__f">Booley must be installed first: <code>pipx install booley-rtl</code>, then <code>booley bootstrap</code>. See the <a href="../docs/install/">installation guide</a>.</p>
 </section>
 
 <section aria-labelledby="s3">

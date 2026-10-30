@@ -13,7 +13,9 @@
     "was removed",
     "were removed",
     "has been removed",
-    "have been removed"
+    "have been removed",
+    "deprecation",
+    "compatibility release"
   ],
   "version_prefixes": [
     "since",
@@ -135,6 +137,14 @@
     {
       "text": "before vv0.2",
       "history": false
+    },
+    {
+      "text": "after a deprecation period",
+      "history": true
+    },
+    {
+      "text": "for one compatibility\nrelease",
+      "history": true
     }
   ]
 }

@@ -62,8 +62,8 @@ def _assert_guidance_names(text, available, source):
 
 
 def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
-    usage = (REPO_ROOT / "docs/user/GOAL-MODE.md").read_text(encoding="utf-8")
-    table = usage.split("Built-in MCP worktree routing:\n\n", 1)[1].split("\n\n")[0]
+    mcp_tools_doc = (REPO_ROOT / "docs/internals/MCP-TOOLS.md").read_text(encoding="utf-8")
+    table = mcp_tools_doc.split("Built-in MCP worktree routing:\n\n", 1)[1].split("\n\n")[0]
     documented = {}
     for row in table.splitlines()[2:]:
         for accepts, cell in zip((True, False), row.strip("|").split("|"), strict=True):
@@ -81,8 +81,8 @@ def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
         assert "work_dir" not in tool.input_schema["properties"]
         with pytest.raises(AssertionError, match=name):
             _assert_guidance_names(f"MCP tool `{name}`", set(live), "unqualified")
-    assert "only when diagnostic tools are enabled" in usage
-    assert "only in the Coverage Analyst's nested server" in usage
+    assert "only when diagnostic tools are enabled" in mcp_tools_doc
+    assert "only in the Coverage Analyst's nested server" in mcp_tools_doc
 
 
 def test_current_instructions_never_require_work_dir_on_every_call():

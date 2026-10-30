@@ -12,7 +12,8 @@ The Booley user guide. The first time, read **Get started** in order.
 <table>
 <thead><tr><th>Section</th><th>Page</th><th>What it covers</th></tr></thead>
 <tbody>
-<tr><th scope="rowgroup" rowspan="4">Get started</th><td><a href="features/">Features</a></td><td>Everything Booley does, and why.</td></tr>
+<tr><th scope="rowgroup" rowspan="5">Get started</th><td><a href="features/">Features</a></td><td>Everything Booley does, and why.</td></tr>
+<tr><td><a href="install/">Install</a></td><td>Install Booley and prepare your machine.</td></tr>
 <tr><td><a href="setup/">Setup</a></td><td>Connect an installed Booley to your RTL project.</td></tr>
 <tr><td><a href="usage/">Usage</a></td><td>Day-to-day work with the Developer Agent and waveforms.</td></tr>
 <tr><td><a href="goal-mode/">Goal Mode</a></td><td>Evidence-backed Goals, Goalsets, and review.</td></tr>

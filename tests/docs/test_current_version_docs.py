@@ -56,12 +56,6 @@ class ExceptionRule:
 
 ALLOWLIST = (
     ExceptionRule(
-        "docs/user/CONFIG.md",
-        "Doctor and `booley init` report retired or deprecated settings with the exact fix.",
-        "The single general pointer to user-visible migration diagnostics.",
-        2,
-    ),
-    ExceptionRule(
         "docs/user/FLOW-SIM.md",
         "legacy-per-test",
         "A supported literal value selecting per-test build access.",

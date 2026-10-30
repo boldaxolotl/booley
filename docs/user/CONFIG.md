@@ -8,10 +8,6 @@ them. You do not fill these files by hand: the `booley-setup` skill authors them
 interactively, and `booley doctor` validates them. When a step needs the
 meaning of a field, it links here.
 
-**Audience:** humans and Developer Agents. A human can read this to understand the
-config surface; a Claude Code or Codex session running the setup skill dereferences these anchors as it
-fills each file.
-
 **Read this first.** This is a reference, not a tutorial. It assumes you have
 skimmed the [README](../../README.md) overview and know Booley's controlled
 vocabulary: terms used here without definition — **Target**, **Booley Flow**,
@@ -46,8 +42,6 @@ tell the `/booley-feedback` skill in your Developer Agent chat. See
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
-Doctor and `booley init` report retired or deprecated settings with the exact fix.
-
 ## booley.toml
 
 Project identity, Flow selection, and Developer Agent and Specialist configuration live in
@@ -59,22 +53,20 @@ separate clone of your Booley Directory. The directory it points to must contain
 `/booley-project` and `/work/.booley` reach it. Cores you keep there still load only from
 its `cores/` folder.
 
-`booley init` pins that link: it records the directory the link resolves to, plus its
-device and inode, in host-private state. Sandbox issuance and host commands refuse a linked
-entry that has no pin, now resolves elsewhere, or points at a directory that was replaced in
-place; Doctor reports one `project.booley-dir-pin` FAIL and stops. A Project that already
-uses a linked entry needs one `booley init` after upgrading to create the pin. After you move
-the link on purpose, run `booley init --repin-booley-dir`, or answer `y` at the interactive
-re-pin prompt; a non-interactive run without the flag leaves the pin unchanged and fails.
-The same flag replaces an unreadable pin. If you did not move it, point `.booley` back at
-the pinned target. A Sandbox that is already running keeps its previous mount until you
-restart it with `booley session refresh`. One gap remains: starting an existing container
-directly with `docker start` bypasses the container-start validation hook, so the pin is not
-checked on that path.
+`booley init` pins where a linked `.booley` points. If you move the link on purpose, run
+`booley init --repin-booley-dir` (or answer `y` at the prompt); otherwise point it back.
+Doctor reports `project.booley-dir-pin` when they disagree. A running Sandbox keeps its previous
+mount until `booley session refresh`. Start Sandboxes with `booley session up` or VS Code;
+a raw `docker start` skips this check.
 
-`[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
-[Per-Target environment](TESTS.md#per-target-environment-env) for the last one, which is
-about testbench file-existence checks rather than identity. The sections below
+`[project]` carries the project `name`, `protected_inputs`, and `preflight_checks`.
+
+Before a run, Booley checks that each Target's files exist on disk.
+`[sources.testbench].preflight_checks = false` (default `true`) skips the check
+for testbench files, for example when the TB is written during the run.
+`[project].preflight_checks = false` skips it for all files, design and TB.
+
+The sections below
 cover the shared settings, starting with `enabled` for Booley Flows and
 Specialists; per-Flow tables are on the pages listed in
 [Where each setting lives](#where-each-setting-lives).
@@ -153,22 +145,7 @@ Specialists. The same switch filters project-defined Specialists.
 Specialist model selection belongs in `[models.roles]` (see
 [Model selection](#model-selection-models)).
 
-Specialist sections must be tables, and `enabled` must be a TOML boolean
-(`true` or `false`, without quotes). Doctor and discovery reject unknown
-Specialist names, including Flow names or direct MCP endpoints placed under
-`[specialists]`. Malformed or unreadable configuration stops endpoint discovery
-and Project checks rather than enabling every capability by default.
-
-Protocol utility endpoints such as `booley_poll` have no Project
-`enabled` switch; MCP server filters control their visibility.
-Custom direct `McpTool` subclasses also have no Project enable switch. To
-disable discovery, prefix the implementation filename with `_`, for example
-rename `mcp_tools/project_check.py` to `mcp_tools/_project_check.py`. Custom
-`BooleyFlow` and `Specialist` subclasses use their respective tables.
-
-The Target selects the concrete EDA tool. For an approved commercial tool, the
-Project can request only a provisioning source; the host owns the installation,
-mount, wrapper, environment, and any License Profile.
+`enabled` must be a TOML boolean; Doctor rejects unknown Specialist names.
 
 ### Explicit Flow Targets and Doctor selection
 
@@ -210,98 +187,30 @@ max_light   = 3   # Specialists (model-API-bound: reviewer, mutation_tester)
 queue_max   = 8   # per-class queue depth; a full queue is the only BLOCKED response
 ```
 
-`booley doctor --deep` performs a real end-to-end synthesis of every Target
-whose `flow_options.booley.doctor` includes `synth`. It records each synthesis
-boundary's EDA process-tree peak RSS, retains the largest selected-target
-measurement, and applies 15% rounded-up headroom to the HEAVY reservation. A later plain
-Doctor run warns when `[sandbox].memory` cannot admit the calibrated peak plus
-Developer Agent memory and fixed session headroom. An OOM or timeout is an
-incomplete calibration, never a successful PPA result.
+`booley doctor --deep` measures synthesis peak memory and calibrates the HEAVY
+reservation; plain Doctor then warns when `[sandbox].memory` is too small. An
+OOM or timeout means calibration did not complete.
 
 The slot store is per-project. It does not arbitrate separate Projects' shared
 host resources such as commercial-license seats.
 
-A Simulation Campaign borrows the already-admitted Simulation Job's heavy slot
-as its first lane; it does not acquire a second slot for the same work. At
-`max_heavy = 1`, Campaign work is serial. With a larger cap, ready independent
-work items may acquire child heavy slots up to that same Project-wide cap.
-Literal `run_cwd` collisions still serialize locally, while distinct templated
-attempt directories may overlap. Cancellation withdraws queued child claims.
-Losing the lease on one of the additional child slots stops only the test using
-it; the other tests finish, and the run then reports the lost lease. Losing the
-Simulation Job's own slot still cancels the whole run. Each occupied slot stays
-held until the matching supervised process tree is terminal, so stale capacity
-is never treated as free while an EDA child is still alive.
-
-Each admitted holder has a renewable recovery lease that is separate from its
-optional work timeout. A Job launched through an explicit Sandbox Attachment
-command inherits that execution's opaque ID; zero or many Job leases may link
-to the same execution. When an owner disappears or a lease expires, recovery
-atomically changes the lease from `active` to `cancelling` and requests scoped
-execution cancellation. The slot remains occupied until the supervisor has
-reaped the complete execution tree and published a terminal record. If that
-supervisor or its record is lost, a later reaper recovers only processes that
-carry the same opaque execution identity, checks their durable PID identities
-before signaling, and publishes terminality only after no running process with
-that identity remains. A dead root PID therefore cannot free capacity while
-EDA descendants still run, and a failed supervisor cannot leave the holder
-permanently cancelling.
-
-Callers without an execution identity are process-owned. Their
-entries use the same renewable lease plus PID namespace, process start time,
-zombie state, and the existing argv/work-timeout guards where available. A
-missing work timeout or promotion stamp falls back to the finite recovery lease;
-records without a promotion stamp anchor that lease at their creation stamp.
-An expired live owner
-is identity-checked and its current descendant tree is cancelled before the
-slot is released. Process-owned leases cannot recover descendants that escaped
-after the owner died, so the stronger durable identity guarantee still applies
-only to execution-owned leases.
-Unknown future slot schemas and indeterminate same-user process observations
-fail closed rather than freeing capacity.
-Complete execution records are retained for seven days; an active Job lease
-pins its referenced record, and nonterminal or unfamiliar records are never
-garbage-collected automatically.
+A Simulation Campaign runs its tests serially at `max_heavy = 1`; with a higher
+cap, independent tests run in parallel up to that cap.
 
 #### Job resource history
 
-Booley measures every command a Job runs in the Sandbox and keeps a
-per-Project history in `.booley/runtime/resources/history.json`. Git ignores
-it, it survives restarts, and it keeps the newest 20 runs of each key (2,000
-runs in all). Measurement only observes: it never changes a Job's verdict,
-queue position or exit code, and the `[jobs]` settings above are unchanged.
+Booley measures every command a Job runs in the Sandbox and records each run,
+by Target and Job phase, in `.booley/runtime/resources/history.json`. Git
+ignores the file, it survives restarts, and it keeps the newest 20 runs of each
+key (2,000 runs in all). A record holds:
 
-Each record is keyed by Target, phase, instrumentation flags (`coverage`,
-`trace`) and Test Run. Phases are `sim_prepare`, `sim_build`,
-`sim_run`, `sim_postprocess`, `lint`, `fpga_impl` and `synth`; any other
-command is keyed by its Flow's name. A synthesis also records its `sv2v`,
-`yosys` and `openroad` processes as separate phases, each with the outcome of
-the whole synthesis; a tool that finishes between two samples gets no phase
-record. Pre-sim commands and other child processes a Flow starts itself count
-toward the enclosing command's peak, not as a record of their own. A record holds:
+- peak memory
+- CPU time and wall-clock time
+- the outcome
 
-- peak memory: process-tree RSS plus the files in the command's own
-  temporary directory (`TMPDIR`), which live on the Sandbox's tmpfs and count
-  against its memory limit
-- CPU time (user and system) and wall-clock time
-- the exit outcome, the cgroup OOM-kill count during the run, and the
-  sampling interval (0.25 s)
-- for a run with no other Job in the Sandbox, the container's cgroup memory
-  peak above its starting level, to compare with RSS plus `TMPDIR`. It also
-  includes processes that are not Jobs, such as the Developer Agent.
-
-A value Booley cannot measure, such as RSS on a non-Linux host, is recorded as
-absent, never as zero. When the same Job runs two commands at once, and for
-the phases inside a synthesis, CPU time comes from the 0.25 s samples and
-misses each process's last interval; a command shorter than one interval
-shows only its first sample. Files a tool writes outside `TMPDIR`, for example
-to a hardcoded `/tmp` path, are not counted.
-
-`booley resources` prints, for each key, the run count, the minimum, median
-and maximum peak memory and wall-clock time, each max/median ratio, and for
-solo runs the minimum, median and maximum of container peak divided by RSS plus
-`TMPDIR`, taken run by run.
-`--json` prints the same statistics.
+Measurement never changes a Job's result. `booley resources` summarizes the
+history per Target and Job phase: run count and the minimum, median and maximum
+peak memory and wall-clock time. `--json` prints the same statistics.
 
 ### Feedback (`[feedback]`)
 
@@ -316,13 +225,8 @@ working session. The skill decides how to classify and record what you said:
 | Friction | nothing broke, but it was confusing | where it happened and what you expected instead |
 | Impression | what you think of Booley — praise, gripes, wishes | one sentence |
 
-**Impressions are the feedback nobody thinks to give, and they decide what gets
-built.** Bug
-reports say what is broken; they never say whether the thing is worth using.
-"Best part is the waveform flow", "the setup grill is exhausting", "I want
-per-Target coverage", "this replaced three days of manual work" — all of it is
-wanted, all of it rides the same redaction and the same offer. The skill sorts
-the sentiment without making you learn a reporting interface.
+Impressions matter as much as bug reports: "the setup grill is exhausting" or
+"this replaced three days of manual work" both shape what gets built.
 
 The skill keeps one persistent report from that log:
 
@@ -387,12 +291,8 @@ or Codex:
 provider = "claude"   # or "codex"
 ```
 
-`booley init` records this choice before it seeds the Sandbox. A TTY
-offers `claude` and `auto` as the defaults; unattended initialization applies
-the same defaults unless flags override them (for example,
-`--provider codex --auth subscription`). Existing explicit `[agent]` values are
-preserved on re-run. A Project with only `provider` configured receives the documented
-`auto` policy on its next init, which is then recorded in the project config.
+`booley init` asks for the provider (default `claude`, auth `auto`); `--provider`
+and `--auth` set them non-interactively. Existing values are preserved on re-run.
 
 #### Pinning what bills (`[agent] auth`)
 
@@ -427,28 +327,15 @@ This is the default author and committer for every Git command in an
 Interactive Mode or Goal Mode Sandbox (agents, the terminal, the editor's Git
 UI). A missing or empty `name` falls back to `Dev`, `email` to `dev@localhost`.
 
-The issued devcontainer spec sets it as command-scope Git settings
-(`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`) in
-`containerEnv` and `remoteEnv`. These beat any gitconfig and leave the host
-checkout untouched; a hand-written spec, such as one for GitHub Codespaces,
-must set the same variables. `git -c`, `git commit --author`, and
-`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After changing `[agent.git]`,
-refresh and recreate the Sandbox. Sandbox creation and startup remove a
-complete worktree identity pair matching the current settings or
-`Dev <dev@localhost>`; a different custom identity and other Git settings are
-kept.
+It overrides any gitconfig in the Sandbox without touching the host checkout;
+`git -c`, `--author`, and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After
+changing `[agent.git]`, refresh and recreate the Sandbox. The issued
+devcontainer spec carries it as `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and
+`GIT_CONFIG_VALUE_<n>`; a hand-written spec, such as one for GitHub Codespaces,
+must set the same variables.
 
-Doctor, run inside a Sandbox, warns with:
-
-- `sandbox.git-identity-override` when the override is missing, partial,
-  malformed, or differs from `[agent.git]`, naming what Git would use instead,
-  if anything. A throwaway shell container has no override, so it warns there.
-- `sandbox.gitconfig-identity` when system or global gitconfig sets another
-  identity, such as a copied host `~/.gitconfig`; Git falls back to it whenever
-  the override is missing. The image's own `Dev <dev@localhost>` does not count.
-
-Either can be waived in `doctor-waivers.toml`; an active warning keeps Doctor
-from recording a clean run.
+Doctor, run inside a Sandbox, warns when the identity Git would use differs
+from `[agent.git]` and names the fix.
 
 ### Model selection (`[models]`)
 
@@ -504,12 +391,8 @@ Set `dashboard = false` to disable automatic opening. You can always open the
 Dashboard manually with `booley dashboard` in the Sandbox. For opt-outs and
 startup problems, see [Dashboard troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
-`quiet_after` is a finite number of seconds from 60 through 604800, default
-7200 (two hours). Quiet thread and worktree-fallback presence expires at this
-threshold; process presence is removed only when its captured identity is
-observably gone, reused, or a zombie. Unknown liveness is retained. Quiet-session
-Doctor warnings describe the absence of recent attributable Booley calls;
-they do not establish client inactivity or abandonment and never end Goal Mode.
+`quiet_after` (seconds, 60–604800, default 7200) is how long a Goal session can
+go without Booley calls before Doctor calls it quiet. Quiet never ends Goal Mode.
 
 ## Advanced setups
 
@@ -524,18 +407,17 @@ hatches that remain, and what each is for:
   MCP tool](../internals/MCP-TOOLS.md) — it adds an MCP tool alongside the built-ins, never a
   side door into `SIM:{target}`.
 
-A simulator outside the built-in matrix is out of scope for Goal Mode by
-declared boundary; widening the matrix is the sanctioned extension axis
-(per EDA tool: Edalize wiring → output parser → criteria-map row → Doctor probe).
 The current matrix — image-bundled plus authorized host-provisioned EDA tools — is in
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md), and it grows over time.
-
-**Language:** Booley drives SystemVerilog/Verilog only — VHDL is unsupported in
-every Flow (see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md)).
 
 ### Custom MCP tools
 
 Project-specific MCP tools can be added via `.booley/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+
+Custom `McpTool` subclasses have no `enabled` switch. To disable one, prefix its
+filename with `_`, for example rename `mcp_tools/project_check.py` to
+`mcp_tools/_project_check.py`. Custom `BooleyFlow` and `Specialist` subclasses
+use their `[flows.<name>]` and `[specialists.<name>]` tables.
 
 ### Worktree setup hooks
 
@@ -545,7 +427,3 @@ needs from that worktree before entry. The command creates the worktree and
 Worktree Booley Directory; it does not invoke these scripts automatically. Keep generated
 build outputs ignored and commit deliberate Project inputs before Goal entry.
 Hooks are Protected Inputs during Goal Mode.
-
-Stealth Project configuration is outside the outer Git history. Back it up or
-version it separately together with `FUSESOC_IGNORE`; a fresh clone cannot
-reconstruct hidden configuration that was never exported.

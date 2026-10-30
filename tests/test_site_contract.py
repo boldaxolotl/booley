@@ -1,7 +1,8 @@
 """Project site wording contracts, and the facts it must share with the README.
 
-The site (website/docs/) and the README share the feature list word for word,
-the install commands, and the pinned PicoRV32 demo revision.
+The site (website/docs/) and the README share the feature list word for word
+and the pinned PicoRV32 demo revision; the home page's quick start repeats the
+Install guide's install commands.
 These tests fail when either copy drifts from the other, when a README link
 points at a site section or page that no longer exists, or when the generated
 home-page illustration is stale.
@@ -24,6 +25,7 @@ WEBSITE = ROOT / "website"
 SITE = (WEBSITE / "docs/index.md").read_text(encoding="utf-8")
 DEMOS = (WEBSITE / "docs/demos.md").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
+INSTALL_GUIDE = (ROOT / "docs/user/INSTALL.md").read_text(encoding="utf-8")
 
 
 def _plain(markup: str) -> str:
@@ -76,16 +78,16 @@ def test_inline_goal_examples_match_the_real_goal_presentation():
         assert f"<code>{goal_presentation(goal).text}</code>" in features
 
 
-def test_quick_start_commands_match_the_readme_install_block():
-    readme_block = README.split("<!-- booley-smoke:install -->", 1)[1].split(
+def test_quick_start_commands_match_the_install_guide_block():
+    guide_block = INSTALL_GUIDE.split("<!-- booley-smoke:install -->", 1)[1].split(
         "<!-- /booley-smoke:install -->", 1
     )[0]
-    readme_commands = re.findall(r"^(?!```)(\S.*)$", readme_block, flags=re.MULTILINE)
+    guide_commands = re.findall(r"^(?!```)(\S.*)$", guide_block, flags=re.MULTILINE)
     site_commands = re.findall(
         r'<span class="p">\$ </span>([^<\n]+)', _site_section("description")
     )
 
-    assert site_commands == readme_commands == ["pipx install booley-rtl", "booley bootstrap"]
+    assert site_commands == guide_commands == ["pipx install booley-rtl", "booley bootstrap"]
 
 
 def test_description_is_the_readme_intro_paragraph():
