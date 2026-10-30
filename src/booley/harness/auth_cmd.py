@@ -77,6 +77,7 @@ def _report_gateway_status(app: str | None) -> int:
 
 def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
     """Report the launching process's credential under the selected Project policy."""
+    from booley.config import agent_app
     from booley.config.agent import (
         env_auth_handoff,
         gateway_handoff_active,
@@ -86,6 +87,9 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
 
     banner("Agent auth status")
     policy = "auto"
+    # Under BOOLEY_AGENT_APP=auto the registrar's choice names the app; it also
+    # refuses (AgentAppError) outside a Sandbox.
+    app = app or agent_app.resolved_app(None)
     if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
         provider, policy = project_credential_policy(project_root)
         app = app or provider
