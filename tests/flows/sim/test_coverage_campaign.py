@@ -1050,12 +1050,6 @@ def _name_run(run: dict[str, object], variant: str | None, seed: int | None) -> 
     run.update(test_run=name, variant=variant, seed=seed)
 
 
-def _strip_identity(run: dict[str, object]) -> None:
-    """Make *run* a run recorded before runs named their Test Run."""
-    for field in ("test_run", "variant", "seed", "fingerprint"):
-        del run[field]
-
-
 def _with_second_run(
     document: dict[str, object], variant: str | None = None, seed: int | None = None
 ) -> dict[str, object]:
@@ -1113,32 +1107,6 @@ def test_a_test_run_must_be_a_run_of_its_test() -> None:
         document["tests"]["runs"][0]["test_run"] = name
 
         assert _codes(document) == [("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")]
-
-
-@pytest.mark.parametrize("field", ["test_run", "variant", "seed", "fingerprint"])
-def test_a_run_records_its_whole_test_run_identity_together(field: str) -> None:
-    document = _valid_document()
-    del document["tests"]["runs"][0][field]
-
-    assert ("COV_TEST_RUN_IDENTITY_INCOMPLETE", "/tests/runs/0") in _codes(document)
-
-
-def test_a_run_recorded_before_test_runs_is_the_bare_test() -> None:
-    document = _valid_document()
-    _strip_identity(document["tests"]["runs"][0])
-
-    run = decode_coverage_campaign(document, _TARGET).runs[0]
-
-    assert (run.test_run, run.fingerprint) == ("reset", NO_DECLARED_INPUTS_FINGERPRINT)
-    assert (run.variant, run.seed) == (None, None)
-
-
-def test_two_unnamed_runs_of_one_test_recorded_before_test_runs_are_refused() -> None:
-    document = _with_second_run(_valid_document(), "ignored")
-    for run in document["tests"]["runs"]:
-        _strip_identity(run)
-
-    assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
 
 
 @pytest.mark.parametrize(
@@ -1218,10 +1186,6 @@ def test_decoding_never_coerces_or_defaults_a_recorded_identity() -> None:
     )
 
     base = {"id": "run:1", "test": "reset", "simulation_verdict": "pass", "collection": "included"}
-    # Storage older than v5: the bare Test with no declared inputs, set by the decoder.
-    legacy = _decode_run(base)
-    assert (legacy.test_run, legacy.fingerprint) == ("reset", NO_DECLARED_INPUTS_FINGERPRINT)
-    assert (legacy.variant, legacy.seed) == (None, None)
     named = {
         **base,
         "test_run": "reset+soak@7",

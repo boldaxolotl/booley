@@ -214,6 +214,7 @@ def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path
         (("coverage_campaign", "sha256"), "sha256:" + "0" * 63),
         (("coverage_campaign", "campaign_id"), ""),
         (("coverage_campaign", "schema"), "booley.coverage-campaign/v2"),
+        (("coverage_campaign", "schema"), "booley.coverage-campaign/v4"),
     ],
 )
 def test_reference_codec_rejects_boundary_and_identity_substitutions(
