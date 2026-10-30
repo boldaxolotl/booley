@@ -3156,3 +3156,25 @@ def test_symlinked_booley_dir_coverage_resume_supersedes_origin_progress(tmp_pat
     progress = json.loads((reports / "sim/1/progress.json").read_text())
     assert progress["phase"] == "superseded"
     assert progress["superseded_by"]["invocation"] == 2
+
+
+def test_coverage_analysis_refuses_a_campaign_written_by_booley_0_3_0(tmp_path):
+    from booley.flows.sim.coverage_analysis_input import (
+        CoverageAnalysisError,
+        read_coverage_campaign,
+    )
+    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
+    from tests.flows.sim.test_campaign_retention import campaign
+
+    outcome = campaign(tmp_path)
+    manifest = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    rewrite_manifest_as_v4(manifest)
+    outcome.campaign_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageAnalysisError) as error:
+        read_coverage_campaign(outcome.campaign_path)
+
+    message = str(error.value)
+    assert message.startswith(f"Cannot analyze Campaign at {outcome.campaign_path}")
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED" in message
+    assert str(outcome.campaign_path.parent) in message
