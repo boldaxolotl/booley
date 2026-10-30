@@ -420,17 +420,23 @@ Packaged release history starts at 0.2.7. For older changes, see
   Cocotb batch that is not the default suite at the Default Seed is written
   to `tests/batch-<hex>/`. Update scripts that build these paths; read them
   from `report.json` and `simulation.json` instead.
-- **Simulation Campaigns written by Booley 0.3.0 are no longer read** (#2342).
-  Booley no longer resumes, inspects, prunes, analyzes or uses as a Cycle Count
-  baseline a Simulation Campaign written by 0.3.0, and no longer reads its
-  results or `simulation.json`. (Coverage analysis is refused only through a
-  `coverage.json` reference into such a Simulation Campaign; nothing here is
-  about Coverage Campaign records.) Goal completion that selected evidence from
+- **Simulation and Coverage Campaigns written by Booley 0.3.0 are no longer read**
+  (#2342, #2421). Booley no longer resumes, inspects, prunes, analyzes or uses as a
+  Cycle Count baseline a Simulation Campaign written by 0.3.0, and no longer reads
+  its results or `simulation.json`. Goal completion that selected evidence from
   such a Campaign also stops, and Goal status reports that Campaign as
   unreadable with the same message. Each stops with an error such as `Simulation
   Campaign manifest booley.simulation-campaign-manifest/v1 was written by Booley
   0.3.0 and is no longer supported; delete the Simulation invocation directory
-  <path> by hand`. Delete that directory by hand. `.runtime/campaign-child-executions/`
+  <path> by hand`. Delete that directory by hand. Coverage analysis, retention
+  pruning and the other Coverage Campaign readers likewise stop on a Coverage
+  Campaign written by 0.3.0, with an error containing
+  `COV_SCHEMA_VERSION_UNSUPPORTED: Unsupported Coverage Campaign schema; delete the
+  Coverage Campaign directory <path> or recollect coverage with this Booley version`.
+  Delete the named directory by hand, or collect coverage again. A Coverage
+  Campaign that a 0.3.0 Simulation Campaign recorded through a `coverage.json`
+  reference is refused as `coverage_campaign storage contract is invalid`; delete
+  that Simulation invocation directory. `.runtime/campaign-child-executions/`
   under the Booley Directory is no longer used; you can delete it.
 - **Active Goal Modes need one more Simulation Flow run** (#1233). A Goal
   Record that is active across the upgrade has no frozen Test Runs. Booley

@@ -69,7 +69,7 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
     owned.mkdir()
     (owned / ".qa-coverage-fault-copy").touch()
     manifest = owned / "coverage.json"
-    manifest.write_text(json.dumps({"$schema": "booley.coverage-campaign/v4"}))
+    manifest.write_text(json.dumps({"$schema": "booley.coverage-campaign/v5"}))
     with pytest.raises(ValueError, match=r"Target coverage\.json"):
         faults.mutate(manifest, owned, "wrong-evaluation")
 
