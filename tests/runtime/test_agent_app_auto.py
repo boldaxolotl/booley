@@ -202,7 +202,9 @@ def _explicit_files(home: Path) -> dict[str, str]:
     return {name: _read(home / name).replace(str(home), "<HOME>") for name in names}
 
 
-@pytest.mark.parametrize("kind", ["claude-api-key", "codex-api-key", "gateway"])
+@pytest.mark.parametrize(
+    "kind", ["claude-api-key", "codex-api-key", "gateway"], ids=["claude", "codex", "gateway"]
+)
 def test_auto_registration_matches_the_explicit_app(sandbox, monkeypatch, capsys, tmp_path, kind):
     app, policy = _CASES[kind]
     _give(kind, sandbox.home, monkeypatch)
