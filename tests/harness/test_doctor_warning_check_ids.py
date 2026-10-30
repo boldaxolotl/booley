@@ -105,7 +105,7 @@ def test_warning_reaches_real_reporter_with_check_id(
         f for f in reporter.findings if f.severity is Severity.WARN and f.check_id == check_id
     ]
     assert [f.subject for f in warns] == [subject]
-    tag = f"[{check_id}:{subject}]" if subject else f"[{check_id}]"
+    tag = f"{check_id}:{subject}" if subject else check_id
     assert tag in capsys.readouterr().out
 
 
