@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from argparse import Namespace
@@ -137,7 +138,7 @@ def test_chat_parser_and_dispatch_are_registered():
     assert args.command == "chat"
     assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
     help_text = parser.format_help()
-    assert "[Sandbox] Open this Project's configured agent" in help_text
+    assert "Open this Project's configured agent" in help_text
 
 
 def _parse_argv(monkeypatch, *argv):
@@ -943,16 +944,13 @@ class TestEnforceVenue:
             "projects",
         } == tlr._HOST_ONLY_COMMANDS
 
-    def test_top_level_help_labels_every_advertised_command_location(self):
+    def test_top_level_help_drops_per_command_location_tags(self):
+        """The group header carries the location; command rows carry none."""
         help_text = tlr._build_parser().format_help()
 
-        assert "dashboard" in help_text and "[Sandbox]" in help_text
-        assert "projects" in help_text and "[host]" in help_text
-        assert "doctor" in help_text and "[either]" in help_text
-        assert "flow" in help_text and "[Sandbox]" in help_text
-        assert "targets" in help_text and "[either]" in help_text
-        assert "[mixed]" not in help_text
-        assert "Locations:" in help_text
+        assert not re.search(r"\[(Sandbox|either|host|mixed)\]", help_text)
+        assert "Locations:" not in help_text
+        assert "Open this Project's configured agent CLI" in help_text
 
     def test_runtime_guards_are_derived_from_command_location_catalog(self):
         assert (
@@ -1089,7 +1087,7 @@ class TestCmdShell:
 
     def test_shell_hidden_from_help(self):
         """ADR 0028 Decision 2: `shell` keeps working but is stripped from
-        `booley --help` (no help=, subparsers metavar hides the choice)."""
+        `booley --help` (absent from the grouped listing and the advertised metavar)."""
         parser = tlr._build_parser()
         assert "shell" not in parser.format_help()
         # ...while remaining fully functional.

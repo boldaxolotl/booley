@@ -16,11 +16,13 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
 import os
 import shlex
 import subprocess
 import sys
+import textwrap
 import warnings
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -49,7 +51,7 @@ from booley.harness.init_cmd import run_init
 from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
-from booley.harness.terminal_status import section_header
+from booley.harness.terminal_status import MAX_WIDTH, section_header
 from booley.harness.terminal_table import render_table, width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
@@ -76,8 +78,9 @@ class CommandLocation(Enum):
     EITHER = "either"
 
     @property
-    def label(self) -> str:
-        return f"[{self.value}]"
+    def heading(self) -> str:
+        """The top-level help section that lists this location's commands."""
+        return {"host": "Host", "Sandbox": "Sandbox", "either": "Host or Sandbox"}[self.value]
 
 
 COMMAND_LOCATIONS = {
@@ -444,30 +447,61 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     return endpoint.main(argv, **kwargs)
 
 
+_MIN_WRAP_WIDTH = 11
+_ROOT_DESCRIPTION = "Booley — RTL development harness."
+_ROOT_FOOTER = (
+    "Run bare `booley` on the host for help, or inside the Sandbox to open this "
+    "Project's configured agent CLI. See `booley cheat --skills` for guided agent workflows."
+)
+
+
+def _help_width() -> int:
+    """Columns top-level help wraps at: the terminal's, capped at ``MAX_WIDTH``.
+
+    A pipe has no terminal, so it wraps at the cap and the same run always prints
+    the same bytes. The 2 is argparse's right margin.
+    """
+    return min(width_budget() or MAX_WIDTH, MAX_WIDTH) - 2
+
+
+def _wrap(text: str, width: int, indent: str = "") -> list[str]:
+    """Wrap *text* at *width* without cutting or splitting a word."""
+    return textwrap.wrap(
+        text,
+        max(width - len(indent), _MIN_WRAP_WIDTH),  # argparse's own floor
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+class _RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Top-level help: prewrapped command groups and footer, lines within ``MAX_WIDTH``."""
+
+    def __init__(self, prog: str) -> None:
+        super().__init__(prog, width=_help_width())
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands + legacy flags."""
     parser = argparse.ArgumentParser(
         prog="booley",
-        description="Booley — RTL development harness.",
-        epilog=(
-            "Run bare `booley` on the host for help, or inside the Sandbox to open "
-            "this Project's configured agent CLI. "
-            "Locations: [Sandbox] inside the Sandbox only; [either] host or Sandbox; "
-            "[host] host terminal only. "
-            "See `booley cheat --skills` for guided agent workflows."
-        ),
+        usage="booley [options] <command> [args]",
+        formatter_class=_RootHelpFormatter,
     )
     parser.add_argument(
         "--version",
         action=_PrintVersion,
         help="Show the Booley version, plus its commit and UTC commit date when known, and exit",
     )
-    # metavar hides unadvertised subcommands (e.g. the debugging-only `shell`,
-    # ADR 0028 Decision 2: kept working, stripped from help/docs) from the
-    # usage line; subparsers added without `help=` stay out of the listing.
+    # metavar is the parser's advertised command set, read by the docs guards and
+    # argparse's invalid-choice error. Hidden commands (skill adapters, and the
+    # debugging-only `shell`, ADR 0028 Decision 2) are absent from it and from
+    # the grouped listing built by `_describe_commands`.
     sub = parser.add_subparsers(
         dest="command",
         metavar=f"{{{','.join(command_locations())}}}",
+        help=argparse.SUPPRESS,  # The description lists commands by location instead.
+        prog="booley",  # Not the custom usage: subcommand usage stays `booley <command>`.
     )
 
     help_parser = sub.add_parser(
@@ -489,18 +523,33 @@ def _build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
 
     _install_project_options(parser)
-    _decorate_command_help(sub)
+    _describe_commands(parser, sub)
 
     return parser
 
 
-def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
-    """Hide skill commands and order public summaries by execution location."""
+def _describe_commands(
+    parser: argparse.ArgumentParser, subparsers: argparse._SubParsersAction
+) -> None:
+    """Advertise public commands only, grouped under one header per location.
+
+    Descriptions wrap under one shared column and are never cut: agents read
+    this help through a pipe.
+    """
     locations = command_locations()
     advertised = {action.dest: action for action in subparsers._choices_actions}
     subparsers._choices_actions[:] = [advertised[name] for name in locations]
-    for action in subparsers._choices_actions:
-        action.help = f"{locations[action.dest].label} {action.help}"
+    width = _help_width()
+    indent = " " * (2 + max(map(len, locations)) + 2)
+    lines = [_ROOT_DESCRIPTION]
+    # command_locations() is ordered by location, so each location is one run.
+    for location, names in itertools.groupby(locations, key=locations.__getitem__):
+        lines += ["", section_header(location.heading)]
+        for name in names:
+            first, *rest = _wrap(str(advertised[name].help), width, indent)
+            lines += [f"  {name}".ljust(len(indent)) + first, *(indent + part for part in rest)]
+    parser.description = "\n".join(lines)
+    parser.epilog = "\n".join(_wrap(_ROOT_FOOTER, width))
 
 
 def _project_root_parent(dest: str) -> argparse.ArgumentParser:
@@ -811,8 +860,8 @@ def _add_session_subparser(sub) -> None:
 
 def _add_shell_subparser(sub) -> None:
     """Add the deliberately undocumented host debugging shell."""
-    # `booley shell` is deliberately undocumented (no `help=`, hidden via the
-    # subparsers metavar): a host-side debugging hatch, kept working but out
+    # `booley shell` is deliberately undocumented (no `help=`, left out of
+    # the grouped top-level listing): a host-side debugging hatch, kept working but out
     # of the advertised Sandbox workflow (ADR 0028).
     shell_p = sub.add_parser(
         "shell",
@@ -1051,11 +1100,12 @@ def _normalize_args(
     if args.command is None:
         if not runtime_context.inside_session_runtime():
             parser.print_help()
-            print(
-                "\nGetting started: run `booley bootstrap`, then `booley init` in your RTL "
+            getting_started = (
+                "Getting started: run `booley bootstrap`, then `booley init` in your RTL "
                 "repo, and open the Project in its devcontainer. "
                 f"See `booley --help` and {docs_url('SETUP.md')}"
             )
+            print("\n" + "\n".join(_wrap(getting_started, _help_width())))
             parser.exit(0)
         else:
             args.command = "chat"
