@@ -1,6 +1,7 @@
 """Goal recording keeps simulation truth independent of coverage evaluation."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,14 +9,20 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.goals.apply import ChangeEnvironment
 from booley.goals.entry import EntryRequest, enter_goal_mode
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.model import parse_goal_args
+from booley.goals.paths import record_paths
+from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
+from booley.harness.dashboard.model import project_goal
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
-from tests.goals.conftest import bind, entry_environment, git
+from tests.goals.conftest import bind, campaign_facts, entry_environment, git, run_row
+from tests.goals.test_test_run_evidence import _replayed, _state_file, _status
+from tests.goals.test_test_run_goal_changes import _change
 
 # Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
 pytestmark = pytest.mark.timeout(120)
@@ -61,6 +68,11 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     assert "goal-test-run-" not in status.reason
     assert result.exit_code == (0 if simulation == "pass" else 1), result.outcome
     assert len(saved.acceptance_transactions) == 1
+    # Only a measured coverage miss is a failure the Goal observed (AC5).
+    assert entry.ever_failed is (coverage == "fail")
+    mode = SimpleNamespace(**vars(layout), record=record)
+    replayed = _replayed(mode, "coverage_top")
+    assert replayed.ever_failed is (coverage == "fail")
 
 
 def _enter(layout, monkeypatch, goals):
@@ -135,10 +147,7 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
 @pytest.mark.parametrize("grade", ["pass", "fail"])
 def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monkeypatch, grade):
     """After the campaign measured the Goal, a frozen run's outcome elsewhere decides nothing."""
-    from types import SimpleNamespace
-
-    from tests.goals.conftest import run_row
-    from tests.goals.test_test_run_evidence import _record, _shown, _state_file, _status
+    from tests.goals.test_test_run_evidence import _record, _shown
 
     goals = [{"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}}]
     root, record = _enter(layout, monkeypatch, goals)
@@ -249,3 +258,106 @@ def test_unpublished_coverage_results_before_publication_and_of_another_campaign
     started.manifest_path.write_bytes(b"{not a campaign")
     with pytest.raises(ValueError, match="cannot be authenticated"):
         read_unpublished_results(started.manifest_path, started.manifest_sha256)
+
+
+def _plain_run(layout, record, route, grade):
+    """What a plain sim run (no coverage) records for a SIM and a COVERAGE Goal on ``top``.
+
+    It grades the frozen Test Runs of both Goals. The SIM Goal's verdict is judged from
+    the runs; the coverage Goal gets the outcomes-only change a non-coverage run produces.
+    """
+    sim_rows = [
+        run_row(run, grade) for run in record.test_run_resolutions["sim_pass_top"].test_runs
+    ]
+    cov_rows = [
+        run_row(run, grade) for run in record.test_run_resolutions["coverage_top"].test_runs
+    ]
+    recorder = GoalEvidenceRecorder(bind(layout, f"plain-{route}-{grade}"))
+    state = DevelopmentState.load(
+        record_paths(layout.control, record.id).state_file, recorder.state_persistence()
+    )
+    sim_detail = {"test_runs": sim_rows}
+    cov_detail = {"test_runs": cov_rows, OUTCOMES_ONLY_DETAIL_KEY: True}
+    if route == "v1":
+        changes = [
+            *state.set_criterion("sim_pass_top", grade == "pass", detail=sim_detail),
+            *state.set_criterion("coverage_top", False, detail=cov_detail),
+        ]
+        recorder.record_changes(state, changes, invocation_id="ignored", producer="sim")
+        state.save()
+    else:
+        shadow = DevelopmentState.from_json_object(state.to_dict())
+        changes = [
+            *shadow.set_criterion("sim_pass_top", grade == "pass", detail=sim_detail),
+            *shadow.set_criterion("coverage_top", False, detail=cov_detail),
+        ]
+        recorder.record_or_verify_transaction(
+            state, changes, acceptance_facts=campaign_facts(), identity={}
+        )
+
+
+def _label(layout, record, key):
+    """The dashboard's status label for Goal *key*."""
+    view = project_goal(GoalStore(layout.control), record)
+    return next(goal.state for goal in view.goals if goal.key == key)
+
+
+@pytest.mark.parametrize("grade", ["pass", "fail"])
+@pytest.mark.parametrize("route", ["v1", "v2"])
+def test_a_plain_run_that_grades_a_coverage_goals_frozen_run_never_latches_ever_failed(
+    layout, monkeypatch, route, grade
+):
+    """A plain run measured no coverage, so the coverage Goal has not failed (AC1, AC4)."""
+    goals = [
+        {"family": "SIM", "target": "top"},
+        {"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}},
+    ]
+    root, record = _enter(layout, monkeypatch, goals)
+    mode = SimpleNamespace(**vars(layout), record=record)
+    _plain_run(layout, record, route, grade)
+
+    live = DevelopmentState.load(_state_file(mode)).criteria
+    assert live["coverage_top"].met is False
+    assert live["coverage_top"].ever_failed is False
+    # A SIM Goal on the same Target does latch from a failed frozen run.
+    assert live["sim_pass_top"].ever_failed is (grade == "fail")
+    assert "did not measure the Goal" in live["coverage_top"].detail["goal_contract_violation"]
+    assert _label(layout, record, "coverage_top") == "not yet run"
+    assert _replayed(mode, "coverage_top").ever_failed is False
+
+    # The measuring run that meets the floors leaves the Criterion met, never failed.
+    _result, state = _coverage_run(layout, root, "measuring")
+    entry = state.criteria["coverage_top"]
+    assert entry.met is True and entry.ever_failed is False
+    assert _label(layout, record, "coverage_top") != "failing"
+    assert _replayed(mode, "coverage_top").ever_failed is False
+
+
+def test_an_approved_change_never_turns_a_pending_goal_into_a_failure(layout, monkeypatch):
+    """Re-deriving a sibling's unjudged verdict keeps it unjudged (AC6)."""
+    goals = [
+        {"family": "SIM", "target": "top", "test": "reset@x3"},
+        {"family": "SIM", "target": "top", "test": "later"},
+    ]
+    _root, record = _enter(layout, monkeypatch, goals)
+    layout.record = record
+    sim_key = next(key for key in record.test_run_resolutions if key.endswith("_x"))
+    later = "sim_pass_top_run_6c61746572_d"
+    recorder = GoalEvidenceRecorder(bind(layout, "pending-sibling"))
+    state = DevelopmentState.load(
+        record_paths(layout.control, record.id).state_file, recorder.state_persistence()
+    )
+    shadow = DevelopmentState.from_json_object(state.to_dict())
+    rows = [run_row(run, "pass") for run in record.test_run_resolutions[sim_key].test_runs]
+    changes = [
+        *shadow.set_criterion(sim_key, True, detail={"test_runs": rows}),
+        *shadow.set_criterion(later, False, detail={"test_runs": rows[:1]}),
+    ]
+    recorder.record_or_verify_transaction(
+        state, changes, acceptance_facts=campaign_facts(), identity={}
+    )
+    assert _replayed(layout, later).ever_failed is False
+
+    env = ChangeEnvironment(entry_environment(layout))
+    _change(layout, env, "relax", sim_key, {"family": "SIM", "target": "top", "test": "reset@x2"})
+    assert _replayed(layout, later).ever_failed is False

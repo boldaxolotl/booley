@@ -509,6 +509,9 @@ class _LockedStateFile:
             return declared_goal_state(self._record, self._record.worktree_path)
         return state
 
+    def projects_judged_evidence(self) -> None:
+        """Marker (``JudgedEvidenceProjection``): ``save`` reprojects the judged ledger."""
+
     def loaded(self, state: DevelopmentState) -> None:
         """Nothing to capture: every save writes the whole state."""
 

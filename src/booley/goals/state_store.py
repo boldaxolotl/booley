@@ -379,6 +379,9 @@ class GoalStatePersistence:
                 f"state file {path} does not belong to Goal Mode {self._binding.record_id}"
             )
 
+    def projects_judged_evidence(self) -> None:
+        """Marker (``JudgedEvidenceProjection``): ``save`` reprojects the judged ledger."""
+
     def loaded(self, state: DevelopmentState) -> None:
         """Capture *state* as loaded: the baseline its saves merge against."""
         state.persistence_baseline = state_snapshot(state)

@@ -14,6 +14,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.test_runs import TestRun, build_test_run
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
+from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatus, build_status
 from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import (
@@ -79,6 +80,19 @@ def _record(
     recorder.record_changes(state, changes, invocation_id="ignored", producer="sim")
     state.save()
     return state.criteria[key].detail
+
+
+def _replayed(layout: SimpleNamespace, key: str) -> Any:
+    """Criterion *key* with its latches rebuilt from the evidence ledger alone.
+
+    The stored ``ever_failed`` flags are cleared first, so what the state reads back
+    is what projecting the ledger's rows (every Goal state read) derives.
+    """
+    stored = DevelopmentState.load(_state_file(layout))
+    for entry in stored.criteria.values():
+        entry.ever_failed = False
+    stored.save()
+    return load_goal_state(GoalStore(layout.control), layout.record).criteria[key]
 
 
 def _transaction(
@@ -734,3 +748,19 @@ def test_record_time_and_status_agree_after_transaction_recovery(two: SimpleName
     assert not state.criteria[SIM_KEY].met and _status(two).status == "unmet"
     assert _shown(_status(two)) == {"a@1": "failed", "b@1": "passed"}
     assert "test_run_ledger" not in detail
+
+
+def test_a_pending_goal_never_latches_ever_failed(layout: SimpleNamespace) -> None:
+    record = enter_goals(
+        layout,
+        [{"family": "SIM", "target": "top", "test": "later"}],
+        tests_toml=b'[top]\ntests = ["a"]\nskip = ["a"]\n',
+    )
+    mode = SimpleNamespace(**vars(layout), record=record)
+    later = "sim_pass_top_run_6c61746572_d"
+    # What a producer claims while the Goal's Test Run does not exist yet.
+    _record(mode, "run-1", [run_row(A)], key=later, met=False)
+    assert _status(mode, later).reason.startswith("goal-test-run-pending: ")
+    live = DevelopmentState.load(_state_file(mode)).criteria[later]
+    assert live.met is False and live.ever_failed is False
+    assert _replayed(mode, later).ever_failed is False

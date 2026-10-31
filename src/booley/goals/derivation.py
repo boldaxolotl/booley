@@ -16,6 +16,7 @@ from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
+from booley.evidence.fields import UNJUDGED_REASONS
 from booley.evidence.review_receipt import REVIEW_DETAIL_VERSION
 from booley.goals.evidence_projection import selected_candidates
 from booley.goals.freshness import (
@@ -200,7 +201,16 @@ def _derived(
             }
         ],
     }
+    # A verdict that judged nothing stays unjudged: relabelling it would latch ever_failed.
+    unjudged = not met and row["reason"] in UNJUDGED_REASONS
     return Derivation(
-        CriterionChange(goal.key, met, "approved Goal change", detail, True, params),
+        CriterionChange(
+            goal.key,
+            met,
+            row["reason"] if unjudged else "approved Goal change",
+            detail,
+            True,
+            params,
+        ),
         row["recorded_at"],
     )
