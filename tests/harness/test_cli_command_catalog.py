@@ -40,12 +40,12 @@ GROUPS = {
 
 @pytest.fixture
 def plain(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Plain output at a fixed width: no palette, no argparse color, COLUMNS=100."""
+    """Plain piped output: no palette, no argparse color, no terminal (wraps at the cap)."""
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("PYTHON_COLORS", raising=False)
-    monkeypatch.setenv("COLUMNS", "100")
+    monkeypatch.setattr(cli, "width_budget", lambda: None)
 
 
 def _grouped_rows(help_text: str) -> tuple[dict[str, list[str]], set[int]]:
@@ -109,16 +109,17 @@ def test_root_help_headers_use_the_accent_only_on_a_tty(
     assert any("\x1b[" in line for line in lines) is tty
 
 
-@pytest.mark.parametrize("columns", [80, 200])
+@pytest.mark.parametrize("columns", [80, 200, None], ids=["80", "200", "pipe"])
 def test_root_help_fits_the_width_without_cutting(
-    columns: int, plain, monkeypatch: pytest.MonkeyPatch, capsys
+    columns: int | None, plain, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    monkeypatch.setenv("COLUMNS", str(columns))
+    """A terminal of *columns* (None: a pipe) never sees a line past 100, or a cut word."""
+    monkeypatch.setattr(cli, "width_budget", lambda: columns)
     parser = cli._build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     for argv in (["--help"], []):
         out = _run_cli(monkeypatch, capsys, *argv)
-        assert max(map(len, out.splitlines())) <= min(columns, 100)
+        assert max(map(len, out.splitlines())) <= min(columns or 100, 100)
         flat = " ".join(out.split())
         assert "…" not in flat
         for action in sub._choices_actions:

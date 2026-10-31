@@ -20,7 +20,6 @@ import itertools
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import textwrap
@@ -440,6 +439,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     return endpoint.main(argv, **kwargs)
 
 
+_MIN_WRAP_WIDTH = 11
 _ROOT_DESCRIPTION = "Booley — RTL development harness."
 _ROOT_FOOTER = (
     "Run bare `booley` on the host for help, or inside the Sandbox to open this "
@@ -448,15 +448,19 @@ _ROOT_FOOTER = (
 
 
 def _help_width() -> int:
-    """Columns top-level help wraps at: argparse's, capped at ``MAX_WIDTH``."""
-    return min(shutil.get_terminal_size().columns, MAX_WIDTH) - 2
+    """Columns top-level help wraps at: the terminal's, capped at ``MAX_WIDTH``.
+
+    A pipe has no terminal, so it wraps at the cap and the same run always prints
+    the same bytes. The 2 is argparse's right margin.
+    """
+    return min(width_budget() or MAX_WIDTH, MAX_WIDTH) - 2
 
 
 def _wrap(text: str, width: int, indent: str = "") -> list[str]:
     """Wrap *text* at *width* without cutting or splitting a word."""
     return textwrap.wrap(
         text,
-        max(width - len(indent), 11),
+        max(width - len(indent), _MIN_WRAP_WIDTH),  # argparse's own floor
         break_long_words=False,
         break_on_hyphens=False,
     )
@@ -848,8 +852,8 @@ def _add_session_subparser(sub) -> None:
 
 def _add_shell_subparser(sub) -> None:
     """Add the deliberately undocumented host debugging shell."""
-    # `booley shell` is deliberately undocumented (no `help=`, hidden via the
-    # subparsers metavar): a host-side debugging hatch, kept working but out
+    # `booley shell` is deliberately undocumented (no `help=`, left out of
+    # the grouped top-level listing): a host-side debugging hatch, kept working but out
     # of the advertised Sandbox workflow (ADR 0028).
     shell_p = sub.add_parser(
         "shell",
