@@ -138,7 +138,7 @@ def test_columns_and_cuts_count_terminal_cells(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("tty", "columns", "expected"), [(False, 72, 100), (True, 72, 72)], ids=["pipe", "tty"]
+    ("tty", "columns", "expected"), [(False, 72, None), (True, 72, 72)], ids=["pipe", "tty"]
 )
 def test_width_budget(monkeypatch, tty, columns, expected):
     module = importlib.import_module("booley.harness.terminal_table")

@@ -114,11 +114,11 @@ def section_help(slug: str) -> str:
     return _BY_SLUG[slug].help
 
 
-def render_index(width: int) -> list[str]:
+def render_index(width: int | None) -> list[str]:
     """The section index: one ``--flag`` row each, descriptions aligned and wrapped.
 
-    Rows fit *width* cells; a wrapped description hangs under its column.
-    Backticks in help text render as inline code.
+    Rows fit *width* cells; a wrapped description hangs under its column. With
+    ``None`` no row wraps. Backticks in help text render as inline code.
     """
     flags = {slug: section_flags(slug) for slug in section_slugs()}
     column = 2 + max(len(f"--{names[0]}") for names in flags.values()) + 2
@@ -127,5 +127,9 @@ def render_index(width: int) -> list[str]:
         alias_note = f" (alias: {', '.join(f'--{name}' for name in aliases)})" if aliases else ""
         lead = f"  {accent(f'--{flag}')}"
         first = lead + " " * (column - len_visible(lead))
-        rows.extend(wrap(inline(section_help(slug) + alias_note), width, first, " " * column))
+        text = inline(section_help(slug) + alias_note)
+        if width is None:
+            rows.append(first + text)
+        else:
+            rows.extend(wrap(text, width, first, " " * column))
     return rows

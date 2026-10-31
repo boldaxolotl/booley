@@ -20,15 +20,19 @@ from .colors import bold_accent, char_width, chrome, len_visible, strip_ansi
 _INDENT = "  "
 _GAP = "   "
 _ELLIPSIS = "…"
-#: Line width off a terminal (pipes, captures), so the same run prints the same bytes.
-DEFAULT_WIDTH = 100
+#: Columns assumed when a terminal reports no size.
+_FALLBACK_WIDTH = 100
 
 
-def width_budget() -> int:
-    """Columns a line may use: the terminal's on a TTY, else :data:`DEFAULT_WIDTH`."""
+def width_budget() -> int | None:
+    """Columns a line may use: the terminal's on a TTY, else ``None``.
+
+    Piped output has no budget, so readers of a pipe (agents, scripts) get every
+    cell in full.
+    """
     if not sys.stdout.isatty():
-        return DEFAULT_WIDTH
-    return shutil.get_terminal_size((DEFAULT_WIDTH, 24)).columns
+        return None
+    return shutil.get_terminal_size((_FALLBACK_WIDTH, 24)).columns
 
 
 def _cap(cell: str, cap: int | None) -> str:

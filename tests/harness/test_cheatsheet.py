@@ -240,19 +240,12 @@ class TestCheatCommand:
         return capsys.readouterr().out.splitlines()
 
     @pytest.mark.parametrize(
-        ("section", "term"),
-        [
-            pytest.param(section, term, id=f"{section}-{term}")
-            for section in (*cheatsheet.section_slugs(), "all")
-            for term in ("pipe", "tty80")
-            # The commands tables already fit 100 columns; tty80 and "all" cover them.
-            if (section, term) != ("commands", "pipe")
-        ],
+        "section",
+        [pytest.param(name, id=f"{name}-tty80") for name in (*cheatsheet.section_slugs(), "all")],
     )
-    def test_every_section_fits_the_width_budget(self, capsys, monkeypatch, section, term):
-        piped = term == "pipe"
-        budget = 100 if piped else 80
-        self._stub_terminal(monkeypatch, tty=not piped, columns=budget, color=not piped)
+    def test_every_section_fits_the_width_budget(self, capsys, monkeypatch, section):
+        budget = 80
+        self._stub_terminal(monkeypatch, tty=True, columns=budget, color=True)
 
         lines = self._cheat_lines(capsys, f"--{section}")
 
@@ -273,6 +266,19 @@ class TestCheatCommand:
             if line in headings:
                 assert lines[index + 1] == ""
                 assert lines[index + 2] != ""
+
+    def test_piped_output_is_never_cut_or_wrapped(self, capsys, monkeypatch):
+        """Off a TTY every cell and line keeps its full text, whatever the terminal size."""
+        self._stub_terminal(monkeypatch, tty=False, columns=40)
+
+        everything = self._cheat_lines(capsys, "--all")
+        index = self._cheat_lines(capsys)
+
+        assert not any("\u2026" in line for line in (*everything, *index))
+        assert max(map(colors.len_visible, everything)) > 100  # nothing was fitted
+        rows = [i for i, line in enumerate(index) if line.startswith("  --")]
+        assert len(rows) == len(cheatsheet.section_slugs())
+        assert all(not index[i + 1].startswith("   ") for i in rows)
 
     @pytest.mark.parametrize("columns", (60, 100), ids=("tty60", "tty100"))
     def test_index_is_an_aligned_two_column_list(self, capsys, monkeypatch, columns):
