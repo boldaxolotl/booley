@@ -1,6 +1,6 @@
 # Pinned site toolchain; CI (pages.yml and test.yml's site-build job) installs exactly these.
 mkdocs==1.6.1
-mkdocs-material==9.7.7
+mkdocs-material==9.8.0
 # Heading IDs (the public doc anchors) come from its slugifier.
 pymdown-extensions==12.3
 # Site search index; "extended" bundles the binary for every platform.
