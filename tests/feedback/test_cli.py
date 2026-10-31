@@ -39,9 +39,15 @@ def run(project):
     booley_dir_mod.reset_cache()
 
     def _run(*argv):
+        from booley.harness import feedback_view
+
         parser = argparse.ArgumentParser()
         cli.add_subparser(parser.add_subparsers(dest="command"))
-        return cli.run(parser.parse_args(["feedback", *argv]), project)
+        return cli.run(
+            parser.parse_args(["feedback", *argv]),
+            project,
+            list_view=feedback_view.render_listing,
+        )
 
     yield _run
     # And again on the way out: a tmp path left in the cache would follow the
@@ -76,7 +82,9 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
     parser = argparse.ArgumentParser()
     cli.add_subparser(parser.add_subparsers(dest="command"))
 
-    assert cli.run(parser.parse_args(["feedback", "add", "--title", "boom"]), source) == 0
+    args = parser.parse_args(["feedback", "add", "--title", "boom"])
+
+    assert cli.run(args, source, list_view=lambda _log, _entries: "") == 0
 
     state = source / ".git" / "booley-feedback"
     assert read_log(state).entries[0].title == "boom"
@@ -324,32 +332,6 @@ class TestReporting:
     def test_removed_transmission_commands_are_not_registered(self, run, command):
         with pytest.raises(SystemExit):
             run(command)
-
-
-class TestList:
-    def test_it_flags_filed_entries_instead_of_nagging_for_evidence(self, run, capsys):
-        run("add", "--title", "boom", "--bucket", "booley")
-        run("filed", "F-1", "--url", "https://example.invalid/3")
-        capsys.readouterr()
-        run("list")
-        out = capsys.readouterr().out
-        assert "[filed: https://example.invalid/3]" in out
-        assert "needs evidence" not in out
-
-    def test_the_counts_add_up(self, run, capsys):
-        """Bugs, friction, impressions and wins are separate tallies — one bug
-        plus one friction is not 'two findings, one of which is a blocker'."""
-        run("add", "--title", "boom", "--severity", "blocker", "--bucket", "booley")
-        run("friction", "--title", "confusing", "--component", "doctor", "--expected", "x")
-        run("say", "genuinely useful on a real SoC", "--sentiment", "praise")
-        run("win", "--title", "doctor was clean")
-        capsys.readouterr()
-        run("list")
-        out = capsys.readouterr().out
-        assert "1 finding(s)" in out
-        assert "💬 1 friction" in out
-        assert "📣 1 impression(s)" in out
-        assert "1 win(s)" in out
 
 
 @pytest.mark.parametrize("origin", ["setup", "bug"])

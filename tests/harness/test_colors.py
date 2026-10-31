@@ -214,3 +214,28 @@ class TestAnsiRegex:
 
     def test_no_match_plain(self):
         assert _ANSI_RE.search("plain text") is None
+
+
+class TestColorPolicy:
+    """NO_COLOR and TERM=dumb switch color off even on a TTY stdout."""
+
+    @pytest.fixture(autouse=True)
+    def tty_stdout(self, monkeypatch):
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        monkeypatch.setattr(colors_mod.sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr(colors_mod.sys, "platform", "linux")
+
+    def test_no_color_disables_color(self, monkeypatch):
+        monkeypatch.setenv("TERM", "xterm")
+        monkeypatch.setenv("NO_COLOR", "1")
+        assert colors_mod._color_supported() is False
+
+    def test_dumb_terminal_disables_color(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "dumb")
+        assert colors_mod._color_supported() is False
+
+    def test_capable_terminal_enables_color(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "xterm")
+        assert colors_mod._color_supported() is True

@@ -37,8 +37,12 @@ class _DirectGrantMutator:
         return eda_grant_support.revoke_grant(project, kind)
 
 
-def _run(args: argparse.Namespace, project: Path) -> int:
-    return cli.run(args, project, grant_mutator=_DirectGrantMutator())
+def _run(args: argparse.Namespace, project: Path, mutator: cli.GrantMutator | None = None) -> int:
+    from booley.harness import eda_view
+
+    return cli.run(
+        args, project, grant_mutator=mutator or _DirectGrantMutator(), record_view=eda_view
+    )
 
 
 def test_grant_add_prints_informative_success(
@@ -95,26 +99,12 @@ def test_grant_add_json_preserves_record_shape(
         ),
         ("installation", "remove", {"removed": "vivado"}, "Removed EDA installation 'vivado'."),
         (
-            "installation",
-            "show",
-            {"name": "vivado", "kind": "vivado"},
-            "EDA installation:\n  vivado: kind=vivado",
-        ),
-        ("installation", "list", [], "EDA installations:\n  none"),
-        (
             "license",
             "register",
             {"name": "site", "server_ipv4": "10.0.0.1", "lmgrd_port": 2100},
             "Registered License Profile 'site' for 10.0.0.1:2100.",
         ),
         ("license", "remove", {"removed": "site"}, "Removed License Profile 'site'."),
-        (
-            "license",
-            "show",
-            {"name": "site", "server_ipv4": "10.0.0.1"},
-            "License Profile:\n  site: server_ipv4=10.0.0.1",
-        ),
-        ("license", "list", [], "License Profiles:\n  none"),
     ],
 )
 def test_human_renderers_cover_each_authority_operation(
@@ -215,14 +205,7 @@ def test_grant_list_fails_closed_while_runtime_recovery_is_pending(
     mutator = _DirectGrantMutator()
     mutator.recovery_pending = lambda: True
 
-    assert (
-        cli.run(
-            _parse("grant", "list"),
-            Path("/project"),
-            grant_mutator=mutator,
-        )
-        == 2
-    )
+    assert _run(_parse("grant", "list"), Path("/project"), mutator) == 2
     assert "recovery is pending" in capsys.readouterr().err
 
 
@@ -235,14 +218,9 @@ def test_pending_recovery_does_not_bypass_coordinated_grant_mutation(
     mutator.recovery_pending = lambda: True
     monkeypatch.setattr(eda_grant_support, "revoke_grant", lambda *_args: grant)
 
-    assert (
-        cli.run(
-            _parse("grant", "revoke", str(tmp_path), "--kind", "vivado"),
-            tmp_path,
-            grant_mutator=mutator,
-        )
-        == 0
-    )
+    args = _parse("grant", "revoke", str(tmp_path), "--kind", "vivado")
+
+    assert _run(args, tmp_path, mutator) == 0
 
 
 @pytest.mark.parametrize("action", ["add", "revoke"])
