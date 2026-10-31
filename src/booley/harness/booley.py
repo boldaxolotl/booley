@@ -41,6 +41,7 @@ from booley.harness.init_cmd import run_init
 from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
+from booley.harness.terminal_table import width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
@@ -1261,13 +1262,7 @@ def _cheat_criteria_params_reference(text: str) -> str:
 
 def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     if _cheat_lists_sections(args):
-        for slug in cheatsheet.section_slugs():
-            aliases = cheatsheet.section_flags(slug)[1:]
-            alias_names = ", ".join(f"--{name}" for name in aliases)
-            alias_note = f" (alias: {alias_names})" if aliases else ""
-            print(
-                f"  --{cheatsheet.section_flags(slug)[0]:<14}{cheatsheet.section_help(slug)}{alias_note}"
-            )
+        print("\n".join(cheatsheet.render_index(width_budget())))
         print(
             "\nExample: booley cheat --commands --project-files\n"
             "Use booley cheat --all for the whole cheatsheet."
@@ -1295,7 +1290,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # Drop the HTML-comment markers so they don't reach the terminal.
     text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("<!--"))
 
-    print(render(text), end="")
+    print(render(text, width=width_budget()), end="")
     return 0
 
 

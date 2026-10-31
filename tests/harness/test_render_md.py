@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import inspect
+import re
 from unittest.mock import patch
 
 import booley.harness.colors as colors_mod
+from booley.harness import render_md
 from booley.harness.render_md import (
-    _inline,
     _is_separator,
     _parse_table_row,
     render,
 )
 
 # ---------------------------------------------------------------------------
-# _inline
+# inline
 # ---------------------------------------------------------------------------
 
 
@@ -21,26 +23,26 @@ class TestInline:
     def test_bold(self):
         """**text** should trigger bold styling."""
         with patch.object(colors_mod, "COLORS_ENABLED", False):
-            assert _inline("**bold**") == "bold"
+            assert render_md.inline("**bold**") == "bold"
 
     def test_italic(self):
         """*text* should trigger dim styling."""
         with patch.object(colors_mod, "COLORS_ENABLED", False):
-            assert _inline("*italic*") == "italic"
+            assert render_md.inline("*italic*") == "italic"
 
     def test_backtick(self):
         """`code` should trigger cyan styling."""
         with patch.object(colors_mod, "COLORS_ENABLED", False):
-            assert _inline("`code`") == "code"
+            assert render_md.inline("`code`") == "code"
 
     def test_mixed(self):
         with patch.object(colors_mod, "COLORS_ENABLED", False):
-            result = _inline("**bold** and `code`")
+            result = render_md.inline("**bold** and `code`")
             assert "bold" in result
             assert "code" in result
 
     def test_no_formatting(self):
-        assert _inline("plain text") == "plain text"
+        assert render_md.inline("plain text") == "plain text"
 
 
 # ---------------------------------------------------------------------------
@@ -177,3 +179,38 @@ class TestRender:
     def test_trailing_newline(self):
         result = self._render_plain("hello")
         assert result.endswith("\n")
+
+    def test_heading_is_followed_by_one_blank_line(self):
+        assert self._render_plain("### H\n\nbody") == "\nH\n\nbody\n"
+        assert self._render_plain("text\n### H\nbody") == "text\n\nH\n\nbody\n"
+        assert self._render_plain("text\n\n### H\n\n\nbody") == "text\n\nH\n\nbody\n"
+
+    def _render_wrapped(self, md: str, width: int) -> list[str]:
+        assert "width" in inspect.signature(render).parameters, "render has no width"
+        return render(md, width=width).splitlines()
+
+    def test_prose_and_bullets_wrap_within_width(self):
+        prose = "alpha beta gamma delta epsilon zeta eta theta iota kappa"
+        md = f"{prose}\n  indented {prose}\n- {prose}\n  - {prose}\nshort\n{'x' * 30}"
+        with patch.object(colors_mod, "COLORS_ENABLED", False):
+            lines = self._render_wrapped(md, 24)
+
+        assert all(len(line) <= 24 for line in lines)
+        assert " ".join(lines[0:3]) == prose
+        assert lines[3].startswith("  indented") and lines[4].startswith("  ")
+        bullets = [i for i, line in enumerate(lines) if "•" in line]
+        assert lines[bullets[0] + 1].startswith("    ") and "•" not in lines[bullets[0] + 1]
+        assert lines[bullets[1]].startswith("    •")  # nested bullet keeps its indent
+        assert "short" in lines
+        assert lines[-2:] == ["x" * 24, "x" * 6]  # a word wider than the line splits
+
+    def test_wrap_closes_and_reopens_style_across_breaks(self):
+        assert "width" in inspect.signature(render).parameters, "render has no width"
+        with patch.object(colors_mod, "COLORS_ENABLED", True):
+            lines = render("  `one two three four` end", width=12).splitlines()
+        assert len(lines) == 3
+        assert all(colors_mod.len_visible(line) <= 12 for line in lines)
+        assert all(colors_mod.active_style(line) == "" for line in lines)  # no bleed
+        # The span continues on line 2, so it reopens after the indent; "end" is outside it.
+        assert re.match(r"  \x1b\[[0-9;]*mthree four", lines[1])
+        assert lines[2] == "  end"
