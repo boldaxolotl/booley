@@ -9,6 +9,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.goals.apply import ChangeEnvironment
 from booley.goals.entry import EntryRequest, enter_goal_mode
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.model import parse_goal_args
@@ -21,6 +22,7 @@ from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.goals.conftest import bind, campaign_facts, entry_environment, git, run_row
 from tests.goals.test_test_run_evidence import _replayed, _state_file, _status
+from tests.goals.test_test_run_goal_changes import _change
 
 # Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
 pytestmark = pytest.mark.timeout(120)
@@ -145,10 +147,7 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
 @pytest.mark.parametrize("grade", ["pass", "fail"])
 def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monkeypatch, grade):
     """After the campaign measured the Goal, a frozen run's outcome elsewhere decides nothing."""
-    from types import SimpleNamespace
-
-    from tests.goals.conftest import run_row
-    from tests.goals.test_test_run_evidence import _record, _shown, _state_file
+    from tests.goals.test_test_run_evidence import _record, _shown
 
     goals = [{"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}}]
     root, record = _enter(layout, monkeypatch, goals)
@@ -332,3 +331,33 @@ def test_a_plain_run_that_grades_a_coverage_goals_frozen_run_never_latches_ever_
     assert entry.met is True and entry.ever_failed is False
     assert _label(layout, record, "coverage_top") != "failing"
     assert _replayed(mode, "coverage_top").ever_failed is False
+
+
+def test_an_approved_change_never_turns_a_pending_goal_into_a_failure(layout, monkeypatch):
+    """Re-deriving a sibling's unjudged verdict keeps it unjudged (AC6)."""
+    goals = [
+        {"family": "SIM", "target": "top", "test": "reset@x3"},
+        {"family": "SIM", "target": "top", "test": "later"},
+    ]
+    _root, record = _enter(layout, monkeypatch, goals)
+    layout.record = record
+    sim_key = next(key for key in record.test_run_resolutions if key.endswith("_x"))
+    later = "sim_pass_top_run_6c61746572_d"
+    recorder = GoalEvidenceRecorder(bind(layout, "pending-sibling"))
+    state = DevelopmentState.load(
+        record_paths(layout.control, record.id).state_file, recorder.state_persistence()
+    )
+    shadow = DevelopmentState.from_json_object(state.to_dict())
+    rows = [run_row(run, "pass") for run in record.test_run_resolutions[sim_key].test_runs]
+    changes = [
+        *shadow.set_criterion(sim_key, True, detail={"test_runs": rows}),
+        *shadow.set_criterion(later, False, detail={"test_runs": rows[:1]}),
+    ]
+    recorder.record_or_verify_transaction(
+        state, changes, acceptance_facts=campaign_facts(), identity={}
+    )
+    assert _replayed(layout, later).ever_failed is False
+
+    env = ChangeEnvironment(entry_environment(layout))
+    _change(layout, env, "relax", sim_key, {"family": "SIM", "target": "top", "test": "reset@x2"})
+    assert _replayed(layout, later).ever_failed is False

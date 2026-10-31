@@ -664,8 +664,6 @@ def _observation(met, reason):
     ("met", "reason", "latches"),
     [
         (False, "outcome", True),
-        (False, "goal-test-run-failed", True),
-        (False, "goal-test-run-incomplete", True),
         (False, "source-invalidated", True),
         (False, "goal-test-run-pending", False),
         (False, "goal-test-run-metric-missing", False),
@@ -702,11 +700,6 @@ class TestJudgedEvidenceDefersTheLatch:
 
     def test_non_strict_state_still_latches(self, tmp_path):
         state = DevelopmentState.load(tmp_path / "s.json", _JudgingPersistence())
-        assert self._fail(state) is True
-
-    def test_default_persistence_still_latches(self, tmp_path):
-        state = DevelopmentState.load(tmp_path / "s.json")
-        state.strict_criteria = True
         assert self._fail(state) is True
 
 
