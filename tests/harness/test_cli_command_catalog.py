@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from booley.harness import booley as cli
+from booley.harness import colors
+from booley.harness.terminal_status import section_header
 
 PUBLIC_COMMANDS: list[str] = [
     "chat",
@@ -29,21 +31,100 @@ PUBLIC_COMMANDS: list[str] = [
 ]
 
 
-def test_help_groups_public_commands_by_location() -> None:
+GROUPS = {
+    "Sandbox": PUBLIC_COMMANDS[:5],
+    "Host or Sandbox": PUBLIC_COMMANDS[5:10],
+    "Host": PUBLIC_COMMANDS[10:],
+}
+
+
+@pytest.fixture
+def plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plain piped output: no palette, no argparse color, no terminal (wraps at the cap)."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("PYTHON_COLORS", raising=False)
+    monkeypatch.setattr(cli, "width_budget", lambda: None)
+
+
+def _grouped_rows(help_text: str) -> tuple[dict[str, list[str]], set[int]]:
+    """Command names under each column-0 header, and the column descriptions start at."""
+    groups: dict[str, list[str]] = {}
+    columns: set[int] = set()
+    header = None
+    for line in help_text.splitlines():
+        if line in GROUPS:
+            header = line
+            groups[header] = []
+        elif not line:
+            header = None
+        elif header is not None and (row := re.match(r"  (\w+)( +)\S", line)):
+            groups[header].append(row[1])
+            columns.add(len(row[0]) - 1)
+    return groups, columns
+
+
+def _run_cli(monkeypatch: pytest.MonkeyPatch, capsys, *argv: str) -> str:
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr("sys.argv", ["booley", *argv])
+    with pytest.raises(SystemExit) as exc:
+        cli._parse_cli()
+    assert exc.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_help_groups_public_commands_by_location(plain) -> None:
+    help_text = cli._build_parser().format_help()
+    groups, columns = _grouped_rows(help_text)
+    assert groups == GROUPS
+    assert len(columns) == 1, "descriptions start at one shared column"
+    assert "{" not in help_text and "positional arguments" not in help_text
+    assert max(map(len, help_text.splitlines())) <= 100, "a pipe wraps at the cap"
+    for hidden in ("feedback", "cleanup", "upgrade", "session", "goal", "shell"):
+        assert not re.search(rf"^  {hidden}\s", help_text, re.M)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["--help"], ["-h"], ["help"], ["help", "-h"], []],
+    ids=["--help", "-h", "help", "help -h", "bare-host"],
+)
+def test_root_help_is_the_same_for_every_entry_point(
+    argv: list[str], plain, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    out = _run_cli(monkeypatch, capsys, *argv)
+    help_text = cli._build_parser().format_help()
+    assert out.startswith(help_text)
+    assert _grouped_rows(out)[0] == GROUPS
+
+
+@pytest.mark.parametrize("tty", [True, False], ids=["tty", "pipe"])
+def test_root_help_headers_use_the_accent_only_on_a_tty(
+    tty: bool, plain, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(colors, "COLORS_ENABLED", tty)
+    lines = cli._build_parser().format_help().splitlines()
+    for title in GROUPS:
+        assert section_header(title) in lines
+    assert any("\x1b[" in line for line in lines) is tty
+
+
+@pytest.mark.parametrize("columns", [80, 200])
+def test_root_help_fits_the_width_without_cutting(
+    columns: int, plain, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """A terminal of *columns* never sees a line past 100, or a cut word."""
+    monkeypatch.setattr(cli, "width_budget", lambda: columns)
     parser = cli._build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    assert str(sub.metavar) == "{" + ",".join(PUBLIC_COMMANDS) + "}"
-    assert [action.dest for action in sub._choices_actions] == PUBLIC_COMMANDS
-    rows = re.findall(r"^ +(\w+)\s+\[(Sandbox|either|host)\]", parser.format_help(), re.M)
-    assert rows == [
-        (command, location)
-        for commands, location in [
-            (PUBLIC_COMMANDS[:5], "Sandbox"),
-            (PUBLIC_COMMANDS[5:10], "either"),
-            (PUBLIC_COMMANDS[10:], "host"),
-        ]
-        for command in commands
-    ]
+    for argv in (["--help"], []):
+        out = _run_cli(monkeypatch, capsys, *argv)
+        assert max(map(len, out.splitlines())) <= min(columns, 100)
+        flat = " ".join(out.split())
+        assert "…" not in flat
+        for action in sub._choices_actions:
+            assert " ".join(action.help.split()) in flat
 
 
 def test_cli_reference_has_the_same_public_inventory() -> None:

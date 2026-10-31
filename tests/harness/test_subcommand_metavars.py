@@ -51,14 +51,15 @@ def test_top_level_subcommand_metavar_matches_public_subparsers(
     )
 
 
-def test_top_level_usage_includes_every_public_command(parser: argparse.ArgumentParser) -> None:
-    usage_commands = _metavar_tokens(_get_subparsers_action(parser))
-    usage = parser.format_usage()
-    assert "specialist" in usage_commands
-    assert "shell" not in usage_commands
-    assert "shell" not in usage
-    for command in tlr.command_locations():
-        assert command in usage
+def test_top_level_usage_is_short(
+    parser: argparse.ArgumentParser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The command listing replaces the choices list in the usage line."""
+    # Python 3.14 argparse colours `usage:` by itself; pin plain output.
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("PYTHON_COLORS", raising=False)
+    assert parser.format_usage() == "usage: booley [options] <command> [args]\n"
 
 
 @pytest.mark.parametrize(
