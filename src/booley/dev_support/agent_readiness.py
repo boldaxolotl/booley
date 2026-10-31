@@ -33,7 +33,7 @@ PINNED_RUNNERS = {
     "pytest-xdist": "3.8.0",
     "pytest-timeout": "2.4.0",
     "pytest-cov": "7.1.0",
-    "ruff": "0.17.0",
+    "ruff": "0.17.2",
 }
 # Names the cache root, so checkouts speaking another receipt schema build under
 # another directory and lock and never overwrite or race this one.
