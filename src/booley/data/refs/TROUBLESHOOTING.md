@@ -144,8 +144,8 @@ code --install-extension /usr/local/libexec/booley/live-server-0.4.20.vsix
 ```
 
 Then run **Developer: Reload Window**. If a file does not exist, refresh the
-Sandbox Image. Both extensions need VS Code 1.109 or newer; a VS Code below
-that rejects the file. VS Code does not auto-update an extension installed
+Sandbox Image. Live Preview needs VS Code 1.109 or newer (the minimum in
+INSTALL.md); an older VS Code rejects that file. VS Code does not auto-update an extension installed
 from a file. If Doctor reports devcontainer drift, refresh the Sandbox so its
 spec installs the bundled files.
 

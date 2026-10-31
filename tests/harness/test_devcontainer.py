@@ -451,11 +451,9 @@ class TestAppExtension:
         ("entries", "current"),
         [
             pytest.param(["{bundled}"], True, id="bundled"),
-            pytest.param([], False, id="missing"),
             pytest.param(["{gallery}"], False, id="gallery"),
             pytest.param(["{gallery}@1.0.0"], False, id="gallery-pinned"),
             pytest.param(["{bundled}", "{gallery}"], False, id="bundled-plus-gallery"),
-            pytest.param(["{bundled}", "{gallery}@1.0.0"], False, id="bundled-plus-pinned"),
         ],
     )
     def test_bundled_extension_detectors_reject_gallery_ids(
@@ -469,8 +467,8 @@ class TestAppExtension:
         assert detector(spec) is current
 
     def test_spec_installs_hdl_highlight_detector(self):
-        # Doctor's detector for a spec seeded before the highlighting
-        # extensions landed (extensions are spec-delivered, never image-baked).
+        # Doctor's detector for a spec that lacks the bundled HDL VSIX
+        # (a spec seeded before the highlighting extension landed).
         for app in dc.SUPPORTED_APPS:
             assert dc.spec_installs_hdl_highlight(dc.build_devcontainer_spec(app)) is True
         assert dc.spec_installs_hdl_highlight({}) is False

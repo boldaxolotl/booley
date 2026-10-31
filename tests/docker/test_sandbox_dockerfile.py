@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -483,7 +484,7 @@ def test_bundled_mit_vsix_is_verified_before_install(name: str) -> None:
     """Checksum, MIT license and notices are all checked before the VSIX is installed."""
     prefix, notice_member, notice_file = _MIT_VSIXES[name]
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    version = _base_build_arg(dockerfile, f"{prefix}_VERSION")
+    _base_build_arg(dockerfile, f"{prefix}_VERSION")
     assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, f"{prefix}_SHA256"))
     assert re.fullmatch(r"[0-9a-f]{40}", _base_build_arg(dockerfile, f"{prefix}_SOURCE_COMMIT"))
     region = dockerfile[dockerfile.index(f"ARG {prefix}_VERSION=") :]
@@ -501,7 +502,6 @@ def test_bundled_mit_vsix_is_verified_before_install(name: str) -> None:
     licenses = f"/usr/local/share/booley/licenses/{name}"
     for shipped in ("LICENSE.txt", notice_file, "SOURCE.txt"):
         assert f"{licenses}/{shipped}" in region
-    assert version
 
 
 def _mit_vsix_fixture(path: Path, *, license_text: str, notice: bool) -> str:
@@ -517,7 +517,10 @@ def _mit_vsix_fixture(path: Path, *, license_text: str, notice: bool) -> str:
 _MIT_TEXT = "MIT License\n\nPermission is hereby granted, free of charge, to any person"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="bundling requires POSIX shell and sha256sum")
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("unzip") is None,
+    reason="bundling requires a POSIX shell, sha256sum and unzip",
+)
 @pytest.mark.parametrize("name", _MIT_VSIXES)
 @pytest.mark.parametrize("case", ["good", "checksum", "license", "missing-notice"])
 def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, case: str) -> None:

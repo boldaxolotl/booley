@@ -982,9 +982,8 @@ class TestDevcontainerSpecStaleness:
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
     def test_spec_without_live_preview_warns(self, tmp_path, monkeypatch):
-        # Live Preview is spec-delivered, so a project seeded before it landed
-        # cannot render review HTML in its attached container window.
-
+        # Without the bundled Live Preview VSIX in the spec, the attached
+        # container window cannot render review HTML.
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
         dc.write_devcontainer(tmp_path, spec)

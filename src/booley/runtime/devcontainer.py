@@ -552,8 +552,9 @@ def spec_installs_live_preview(spec: dict) -> bool:
 
     Live Preview is the VSIX bundled in the Sandbox Image and installed by
     path from the devcontainer spec (:data:`LIVE_PREVIEW_VSIX`); a gallery ID
-    is drift, since an egress-locked Sandbox cannot install it. Restored remote-port tunnels can retain Live Preview's
-    default ports without a live server, producing a blank embedded preview.
+    is drift, since an egress-locked Sandbox cannot install it. Restored
+    remote-port tunnels can retain Live Preview's default ports without a
+    live server, producing a blank embedded preview.
     The health check uses this detector to identify projects whose spec either
     predates rendered HTML reports or still restores stale forwarded ports.
     """
