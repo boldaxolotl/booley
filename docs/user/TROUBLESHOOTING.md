@@ -131,6 +131,24 @@ For any other missing MCP tool:
 4. Check whether the MCP server was deliberately narrowed for a Specialist or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
+### RTL opens as plain text, or Live Preview is missing
+
+The Sandbox Image bundles the Verilog-HDL (highlighting) and Live Preview
+extensions, and the generated devcontainer spec installs them from those files,
+so they need no network. If one is missing in the attached window, install it
+from the attached remote window's terminal:
+
+```sh
+code --install-extension /usr/local/libexec/booley/veriloghdl-1.29.0.vsix
+code --install-extension /usr/local/libexec/booley/live-server-0.4.20.vsix
+```
+
+Then run **Developer: Reload Window**. If a file does not exist, refresh the
+Sandbox Image. Both extensions need VS Code 1.109 or newer; a VS Code below
+that rejects the file. VS Code does not auto-update an extension installed
+from a file. If Doctor reports devcontainer drift, refresh the Sandbox so its
+spec installs the bundled files.
+
 ### `No space left on device` during an image build
 
 The image recipe outgrew Booley's disk estimate. Free Docker space, for example

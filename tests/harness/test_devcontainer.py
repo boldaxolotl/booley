@@ -307,8 +307,8 @@ class TestAppExtension:
         vscode = dc.build_devcontainer_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
-            "mshr-h.veriloghdl",
-            "ms-vscode.live-server",
+            dc.HDL_VSIX,
+            dc.LIVE_PREVIEW_VSIX,
             VSIX_PATH,
         ]
         assert "remote.extensionKind" not in vscode["settings"]
@@ -322,8 +322,8 @@ class TestAppExtension:
         vscode = dc.build_devcontainer_spec(dc.APP_CODEX)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
-            "mshr-h.veriloghdl",
-            "ms-vscode.live-server",
+            dc.HDL_VSIX,
+            dc.LIVE_PREVIEW_VSIX,
             VSIX_PATH,
         ]
         assert "remote.extensionKind" not in vscode["settings"]
@@ -353,8 +353,8 @@ class TestAppExtension:
         vscode = dc.build_devcontainer_spec(dc.APP_NONE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
-            "mshr-h.veriloghdl",
-            "ms-vscode.live-server",
+            dc.HDL_VSIX,
+            dc.LIVE_PREVIEW_VSIX,
             VSIX_PATH,
         ]
 
@@ -386,13 +386,6 @@ class TestAppExtension:
         for app in dc.SUPPORTED_APPS:
             extensions = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["extensions"]
             assert [e for e in extensions if "vaporview" in e.lower()] == [vaporview.BUNDLED_VSIX]
-
-    def test_generated_spec_lists_no_versioned_gallery_ids(self):
-        # An egress-locked Sandbox relays gallery installs to the client,
-        # which cannot resolve an `id@version` entry and silently skips it.
-        for app in dc.SUPPORTED_APPS:
-            extensions = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["extensions"]
-            assert [e for e in extensions if "@" in e] == []
 
     @pytest.mark.parametrize(
         ("entries", "current"),
@@ -437,6 +430,44 @@ class TestAppExtension:
         ] + entries
         assert dc.spec_installs_vaporview(spec) is current
 
+    @pytest.mark.parametrize(
+        ("detector", "gallery_id", "bundled"),
+        [
+            pytest.param(
+                dc.spec_installs_hdl_highlight,
+                "mshr-h.veriloghdl",
+                "/usr/local/libexec/booley/veriloghdl-1.29.0.vsix",
+                id="hdl",
+            ),
+            pytest.param(
+                dc.spec_installs_live_preview,
+                "ms-vscode.live-server",
+                "/usr/local/libexec/booley/live-server-0.4.20.vsix",
+                id="live-preview",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("entries", "current"),
+        [
+            pytest.param(["{bundled}"], True, id="bundled"),
+            pytest.param([], False, id="missing"),
+            pytest.param(["{gallery}"], False, id="gallery"),
+            pytest.param(["{gallery}@1.0.0"], False, id="gallery-pinned"),
+            pytest.param(["{bundled}", "{gallery}"], False, id="bundled-plus-gallery"),
+            pytest.param(["{bundled}", "{gallery}@1.0.0"], False, id="bundled-plus-pinned"),
+        ],
+    )
+    def test_bundled_extension_detectors_reject_gallery_ids(
+        self, detector, gallery_id, bundled, entries, current
+    ):
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        extensions = spec["customizations"]["vscode"]["extensions"]
+        spec["customizations"]["vscode"]["extensions"] = [
+            e for e in extensions if e not in (gallery_id, bundled)
+        ] + [entry.format(bundled=bundled, gallery=gallery_id) for entry in entries]
+        assert detector(spec) is current
+
     def test_spec_installs_hdl_highlight_detector(self):
         # Doctor's detector for a spec seeded before the highlighting
         # extensions landed (extensions are spec-delivered, never image-baked).
@@ -451,7 +482,7 @@ class TestAppExtension:
         ]
         assert dc.spec_installs_hdl_highlight(legacy) is False
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"].remove("mshr-h.veriloghdl")
+        spec["customizations"]["vscode"]["extensions"].remove(dc.HDL_VSIX)
         assert dc.spec_installs_hdl_highlight(spec) is False
 
     def test_spec_installs_live_preview_detector(self):
@@ -462,7 +493,7 @@ class TestAppExtension:
             assert dc.spec_installs_live_preview(dc.build_devcontainer_spec(app)) is True
         assert dc.spec_installs_live_preview({}) is False
         legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        legacy["customizations"]["vscode"]["extensions"].remove("ms-vscode.live-server")
+        legacy["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
         assert dc.spec_installs_live_preview(legacy) is False
         for value in (None, True):
             stale = dc.build_devcontainer_spec(dc.APP_CLAUDE)

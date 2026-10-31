@@ -94,8 +94,14 @@ _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
 # OFF by default, so it adds highlighting without competing with Booley's own
 # lint flow. Installed for every app — reading RTL isn't tied to which agent
-# is attached.
-_HDL_EXTENSION = "mshr-h.veriloghdl"
+# is attached. Like VaporView it is the pinned VSIX bundled in the Sandbox
+# Image and installed by path: an egress-locked Sandbox cannot reach a gallery,
+# and VS Code pins a VSIX install so auto-update leaves it there.
+# ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
+_HDL_VERSION = "1.29.0"
+HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
+# The Marketplace ID older specs listed; Doctor flags a spec that still does.
+_HDL_GALLERY_ID = "mshr-h.veriloghdl"
 
 # VS Code entries older Booley specs installed and no current spec carries:
 # the Claude Code / Codex agent extensions (the agent CLI is the only agent
@@ -108,8 +114,11 @@ _RETIRED_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
 # VS Code tab. Installed for every app so human-facing reports (including the
 # review HTML under the separately mounted Booley Directory) are viewable
-# without a browser in the sandbox.
-_LIVE_PREVIEW_EXTENSION = "ms-vscode.live-server"
+# without a browser in the sandbox. Bundled in the Sandbox Image and installed
+# by path, like the HDL extension above.
+_LIVE_PREVIEW_VERSION = "0.4.20"
+LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
+_LIVE_PREVIEW_GALLERY_ID = "ms-vscode.live-server"
 
 # Live Preview exposes its in-container HTTP/WebSocket servers through VS
 # Code's remote-port tunnel. VS Code's long-lived local process can retain a
@@ -466,21 +475,42 @@ def spec_installs_vaporview(spec: dict) -> bool:
     return _post_attach_has(spec, vaporview_patch_command())
 
 
+def _installs_only_bundled(extensions: list, gallery_id: str, vsix: str) -> bool:
+    """Whether *extensions* requests an extension exactly once, as the bundled *vsix*.
+
+    Counts the entries that equal *vsix* or name the extension's *gallery_id*
+    (any ``@version``, any case). A gallery ID is drift: an egress-locked
+    Sandbox cannot install it. A stale bundled path left from an earlier image
+    version is drift too, since it leaves the current *vsix* unrequested.
+    """
+    requested = [
+        entry
+        for entry in extensions
+        if isinstance(entry, str)
+        and (entry == vsix or entry.lower().partition("@")[0] == gallery_id)
+    ]
+    return requested == [vsix]
+
+
 def spec_installs_hdl_highlight(spec: dict) -> bool:
     """Whether *spec* installs the Verilog/SystemVerilog highlighting extension.
 
-    Like VaporView, the grammar reaches an attached window only through the
-    generated spec's ``customizations`` — never via the sandbox image — so a
-    spec seeded before it landed renders RTL as plain text until a re-seed.
+    The grammar reaches an attached window only through the generated spec's
+    ``customizations``, as the VSIX bundled in the Sandbox Image
+    (:data:`HDL_VSIX`). A spec that lacks it, or that lists the gallery ID
+    instead, renders RTL as plain text until a re-seed.
     The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
-    mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required. ``booley doctor`` reads this to surface the drift.
+    mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required.
+    ``booley doctor`` reads this to surface the drift.
     """
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     if not isinstance(vscode, dict):
         return False
     extensions = vscode.get("extensions")
-    return isinstance(extensions, list) and _HDL_EXTENSION in extensions
+    return isinstance(extensions, list) and _installs_only_bundled(
+        extensions, _HDL_GALLERY_ID, HDL_VSIX
+    )
 
 
 def spec_retired_vscode_entries(spec: dict) -> list[str]:
@@ -520,8 +550,9 @@ def spec_retired_vscode_entries(spec: dict) -> list[str]:
 def spec_installs_live_preview(spec: dict) -> bool:
     """Whether *spec* installs and safely configures the HTML report viewer.
 
-    Live Preview is delivered by VS Code from the devcontainer spec, not by the
-    Sandbox Image. Restored remote-port tunnels can retain Live Preview's
+    Live Preview is the VSIX bundled in the Sandbox Image and installed by
+    path from the devcontainer spec (:data:`LIVE_PREVIEW_VSIX`); a gallery ID
+    is drift, since an egress-locked Sandbox cannot install it. Restored remote-port tunnels can retain Live Preview's
     default ports without a live server, producing a blank embedded preview.
     The health check uses this detector to identify projects whose spec either
     predates rendered HTML reports or still restores stale forwarded ports.
@@ -534,7 +565,7 @@ def spec_installs_live_preview(spec: dict) -> bool:
     settings = vscode.get("settings")
     return (
         isinstance(extensions, list)
-        and _LIVE_PREVIEW_EXTENSION in extensions
+        and _installs_only_bundled(extensions, _LIVE_PREVIEW_GALLERY_ID, LIVE_PREVIEW_VSIX)
         and isinstance(settings, dict)
         and all(settings.get(key) == value for key, value in _LIVE_PREVIEW_SETTINGS.items())
         and _post_attach_has(spec, live_preview_port_command())
@@ -1109,12 +1140,12 @@ def build_devcontainer_spec(
     # so the customizations block is unconditional now.
     vscode: dict = {
         "extensions": [
-            # The verified build bundled in the image, installed by path: the
-            # egress-locked Sandbox cannot reach a gallery, and VS Code pins a
-            # VSIX install so auto-update leaves it there.
+            # Builds bundled in the image, installed by path: the egress-locked
+            # Sandbox cannot reach a gallery, and VS Code pins a VSIX install
+            # so auto-update leaves it there.
             _vaporview.BUNDLED_VSIX,
-            _HDL_EXTENSION,
-            _LIVE_PREVIEW_EXTENSION,
+            HDL_VSIX,
+            LIVE_PREVIEW_VSIX,
         ],
         "settings": {
             **_VAPORVIEW_PRESENTATION_SETTINGS,
