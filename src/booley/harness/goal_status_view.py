@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 from booley.goals.format import (
     PROJECT_WIDE_PREFIX,
+    goal_evidence,
     goal_name,
     proposal_lines,
     synth_baseline_lines,
@@ -34,13 +35,6 @@ _HEADERS = ("Goal", "Status", "Evidence")
 #: Gap between a fact's key and value (the table's column gap).
 _FACT_GAP = "   "
 _INDENT = "  "
-
-
-def _evidence(goal: GoalStatus) -> str:
-    """The evidence summary, with the reason an unmet Goal is unmet."""
-    return goal.evidence_summary + (
-        f" — {goal.reason}" if goal.status == "unmet" and goal.reason else ""
-    )
 
 
 def _facts_block(view: GoalStatusView) -> list[str]:
@@ -71,10 +65,12 @@ def _view_lines(view: GoalStatusView, compact: bool) -> list[str]:
         lines.append(view.warning)
     if not compact:
         lines += _facts_block(view)
+    # Cells are single-line (a `render_table` precondition) and never cut: agents read
+    # this output piped and need the whole text.
     table = render_table(
         _HEADERS,
         [
-            (goal_name(goal), _STATUS_STYLE[goal.status](goal.status), _evidence(goal))
+            (goal_name(goal), _STATUS_STYLE[goal.status](goal.status), goal_evidence(goal))
             for goal in view.goals
         ],
     )

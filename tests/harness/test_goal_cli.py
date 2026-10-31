@@ -229,7 +229,7 @@ def _cli_status(mode, monkeypatch, capsys, *, short, color=False):
 
 
 def _table_lines(text):
-    """The header line's index in *text*'s lines, and the lines."""
+    """The lines of *text* and the index of its one table header line."""
     lines = text.splitlines()
     headers = [
         i for i, line in enumerate(lines) if re.fullmatch(r"  Goal\s+Status\s+Evidence", line)

@@ -1,4 +1,8 @@
-"""Shared evidence metrics and Rich rendering for Goal status."""
+"""Shared evidence metrics and the Rich rendering of Goal status.
+
+The Rich rendering is the agent-facing (MCP) text; ``booley goal status`` prints its
+own terminal view (``booley.harness.goal_status_view``) from the same helpers.
+"""
 
 from __future__ import annotations
 
@@ -222,6 +226,13 @@ def goal_name(goal: GoalStatus) -> str:
     return goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
 
 
+def goal_evidence(goal: GoalStatus) -> str:
+    """The evidence summary, with the reason an unmet Goal is unmet."""
+    if goal.status == "unmet" and goal.reason:
+        return f"{goal.evidence_summary} — {goal.reason}"
+    return goal.evidence_summary
+
+
 def test_run_lines(goal: GoalStatus) -> list[str]:
     """What status shows of a Goal's frozen Test Runs (ADR 0072); empty for other Goals.
 
@@ -340,10 +351,7 @@ def _render_long_status(console: Console, view: GoalStatusView) -> None:
     table.add_column("Status", no_wrap=True)
     table.add_column("Evidence")
     for goal in view.goals:
-        evidence = goal.evidence_summary
-        if goal.status == "unmet" and goal.reason:
-            evidence += f" — {goal.reason}"
-        table.add_row(goal_name(goal), goal.status, evidence)
+        table.add_row(goal_name(goal), goal.status, goal_evidence(goal))
     console.print(table)
     _print_test_runs(console, view)
     for line in (line for goal in view.goals for line in synth_baseline_lines(goal)):
