@@ -6,13 +6,12 @@ covers the workflow.
 
 ## Commands
 
-`booley help` and `booley --help` show the same public commands, grouped as
-`[Sandbox]` first, `[either]` next, and `[host]` last. Sandbox commands
-run in a container terminal. `[either]` commands work on the host and inside the
-Sandbox. Target listing works in either location, but full detail resolution
-requires the Sandbox. Flow and Specialist listing and
-execution are Sandbox-only; their `-h` / `--help` pages also work on
-the host inside an initialized Project.
+`booley help` and `booley --help` show the same public commands. Sandbox
+commands run in a container terminal. The Either commands in the table below
+work on the host and inside the Sandbox. Target listing works in either
+location, but full detail resolution requires the Sandbox. Flow and
+Specialist listing and execution are Sandbox-only; their `-h` / `--help`
+pages also work on the host inside an initialized Project.
 
 | Location | Public commands, in order |
 |---|---|
