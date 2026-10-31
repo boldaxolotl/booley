@@ -310,3 +310,51 @@ def test_project_wide_prefix_preserves_baseline(goal_mode, short, count, long_pa
     assert render_status(views, short=short) == expected
     prefix = "No Goal Mode is active here. Active Goal Modes in this Project:\n" if count else ""
     assert render_status(views, short=short, project_wide=True) == prefix + expected
+
+
+def test_long_status_proposal_lines_are_frozen(goal_mode):
+    """The agent-facing (MCP) text keeps its proposal, conflict, decision and apply lines."""
+    from booley.goals.changes import Approval, ChangeKind
+    from booley.goals.proposals import Decision, ProposalView, new_proposal
+
+    spec = goal_mode.record.goals[0].spec
+    proposal = replace(
+        new_proposal(
+            goal_mode.record,
+            kind=ChangeKind.ADD,
+            goal_key=spec.key,
+            before=None,
+            after=spec,
+            after_arg=None,
+            runtime_params={},
+            rationale="add this Goal",
+            session_key=None,
+        ),
+        id="p-1",
+    )
+    decision = Decision(
+        "approve",
+        "reviewed",
+        Approval.AGENT_RECORDED,
+        "approve",
+        "2026-10-19T00:00:00Z",
+        proposal.payload_digest,
+        None,
+    )
+    view = GoalStatusView(
+        goal_mode.record,
+        (),
+        "",
+        1,
+        (ProposalView(proposal, decision=decision),),
+        (("p-1", "stale revision"),),
+        ("op-1",),
+    )
+    lines = render_status((view,), short=False).splitlines()
+    assert lines[-5:] == [
+        "Pending proposals: 1",
+        "Proposal p-1: pending · add LINT:top (no unwaived findings) · add this Goal",
+        "  Conflict: stale revision",
+        "  agent-recorded: reviewed",
+        "Interrupted applies: op-1",
+    ]
