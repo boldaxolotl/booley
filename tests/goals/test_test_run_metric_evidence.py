@@ -28,6 +28,7 @@ from tests.goals.test_test_run_evidence import (
     _evidence_file,
     _outcomes,
     _record,
+    _replayed,
     _shown,
     _state_file,
     _status,
@@ -103,6 +104,40 @@ def test_outcomes_only_pass_keeps_a_measured_verdict_and_a_failure_unmeets_it(
     assert status.status == "unmet" and status.reason.startswith(REASON_FAILED)
     _record(cycle, "run-4", [run_row(PINNED)], key=CYCLE_KEY, extra=_cycles(800))
     assert _status(cycle, CYCLE_KEY).status == "unmet"
+
+
+def _ever_failed(mode: SimpleNamespace, key: str) -> tuple[bool, bool]:
+    """``ever_failed`` of Criterion *key* in the live state and as replayed from the ledger."""
+    live = DevelopmentState.load(_state_file(mode)).criteria[key].ever_failed
+    return live, _replayed(mode, key).ever_failed
+
+
+def test_a_cycle_count_goal_recorded_not_measured_never_latches_ever_failed(
+    cycle: SimpleNamespace,
+) -> None:
+    detail = _record(
+        cycle, "run-1", [run_row(PINNED)], key=CYCLE_KEY, met=False, extra=OUTCOMES_ONLY
+    )
+    assert detail["goal_contract_violation"].startswith("this run did not measure the Goal")
+    assert _status(cycle, CYCLE_KEY).status == "unmet"
+    assert _ever_failed(cycle, CYCLE_KEY) == (False, False)
+
+
+def test_a_repeated_unmeasured_cycle_count_run_stays_not_measured(
+    cycle: SimpleNamespace,
+) -> None:
+    for run_id in ("run-1", "run-2"):
+        _record(cycle, run_id, [run_row(PINNED)], key=CYCLE_KEY, met=False, extra=OUTCOMES_ONLY)
+    # The second run adds nothing but a non-measurement: it is not a restated outcome.
+    for sequence in (1, 2):
+        row = json.loads(_evidence_file(cycle, sequence).read_text())
+        assert row["reason"] == "goal-test-run-metric-missing"
+    assert _ever_failed(cycle, CYCLE_KEY) == (False, False)
+
+
+def test_a_measured_cycle_count_miss_latches_ever_failed(cycle: SimpleNamespace) -> None:
+    _record(cycle, "run-1", [run_row(PINNED)], key=CYCLE_KEY, met=False, extra=_cycles(1500))
+    assert _ever_failed(cycle, CYCLE_KEY) == (True, True)
 
 
 @pytest.fixture

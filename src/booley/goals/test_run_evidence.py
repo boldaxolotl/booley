@@ -15,7 +15,11 @@ from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json
 from booley.criteria.state import CriterionChange
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.fields import (
+    GOAL_TEST_RUN_NOT_MEASURED_REASON,
+    GOAL_TEST_RUN_PENDING_REASON,
+    SOURCE_FINGERPRINT_DETAIL_KEY,
+)
 from booley.flows.frozen_test_runs import (
     OUTCOMES_ONLY_DETAIL_KEY,
     FrozenTestRuns,
@@ -33,13 +37,13 @@ from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_resolution import SUITE_SLOT, TestRunResolution
 
 # Named reasons a Goal that is judged by Test Runs is unmet.
-REASON_PENDING = "goal-test-run-pending"
+REASON_PENDING = GOAL_TEST_RUN_PENDING_REASON
 REASON_EMPTY = "goal-simulation-suite-empty"
 REASON_FAILED = "goal-test-run-failed"
 REASON_INCOMPLETE = "goal-test-run-incomplete"
 REASON_MISSING = "goal-test-run-missing"
 REASON_CHANGED = "goal-test-run-changed"
-REASON_NOT_MEASURED = "goal-test-run-metric-missing"
+REASON_NOT_MEASURED = GOAL_TEST_RUN_NOT_MEASURED_REASON
 REASON_UNRESOLVABLE = "goal-test-run-unresolvable"
 
 # What to run so that one invocation measures a Goal's metric, by family.
@@ -251,7 +255,7 @@ def judged_change(
     frozen = goal_test_runs(goal, resolution)
     detail = dict(change.detail)
     detail.pop("test_run_ledger", None)
-    measured = not detail.get(OUTCOMES_ONLY_DETAIL_KEY) and frozen.measured_by(_rows(detail))
+    measured = _measured(detail, frozen)
     own = matching_rows(detail, frozen.runs)
     detail["test_runs"] = own
     scope = HistoryScope.of(record, goal)
@@ -302,15 +306,19 @@ def _adds_nothing(
 ) -> bool:
     """An unmeasured change must preserve an unchanged verdict or coverage measurement."""
     detail = selected["detail"]
+    if not _measured(detail, frozen):
+        # Restating a non-measurement would record it as an observed outcome.
+        return False
     if scope.accumulates:
         return outcomes == run_outcomes(
             scope, frozen.runs, detail, history, before=selected["sequence"]
         )
-    return (
-        not detail.get(OUTCOMES_ONLY_DETAIL_KEY)
-        and frozen.measured_by(_rows(detail))
-        and "goal_contract_violation" not in detail
-    )
+    return "goal_contract_violation" not in detail
+
+
+def _measured(detail: Mapping[str, Any], frozen: GoalTestRuns) -> bool:
+    """Whether the observation *detail* itself measured the Goal's metric."""
+    return not detail.get(OUTCOMES_ONLY_DETAIL_KEY) and frozen.measured_by(_rows(detail))
 
 
 def _restated(change: CriterionChange, selected: Mapping[str, Any]) -> CriterionChange:
