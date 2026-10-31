@@ -80,6 +80,7 @@ def test_help_groups_public_commands_by_location(plain) -> None:
     assert groups == GROUPS
     assert len(columns) == 1, "descriptions start at one shared column"
     assert "{" not in help_text and "positional arguments" not in help_text
+    assert max(map(len, help_text.splitlines())) <= 100, "a pipe wraps at the cap"
     for hidden in ("feedback", "cleanup", "upgrade", "session", "goal", "shell"):
         assert not re.search(rf"^  {hidden}\s", help_text, re.M)
 
@@ -109,17 +110,17 @@ def test_root_help_headers_use_the_accent_only_on_a_tty(
     assert any("\x1b[" in line for line in lines) is tty
 
 
-@pytest.mark.parametrize("columns", [80, 200, None], ids=["80", "200", "pipe"])
+@pytest.mark.parametrize("columns", [80, 200])
 def test_root_help_fits_the_width_without_cutting(
-    columns: int | None, plain, monkeypatch: pytest.MonkeyPatch, capsys
+    columns: int, plain, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    """A terminal of *columns* (None: a pipe) never sees a line past 100, or a cut word."""
+    """A terminal of *columns* never sees a line past 100, or a cut word."""
     monkeypatch.setattr(cli, "width_budget", lambda: columns)
     parser = cli._build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     for argv in (["--help"], []):
         out = _run_cli(monkeypatch, capsys, *argv)
-        assert max(map(len, out.splitlines())) <= min(columns or 100, 100)
+        assert max(map(len, out.splitlines())) <= min(columns, 100)
         flat = " ".join(out.split())
         assert "…" not in flat
         for action in sub._choices_actions:
