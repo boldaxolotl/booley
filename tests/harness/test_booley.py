@@ -1243,6 +1243,21 @@ class TestCmdFlow:
         assert "A fake Flow" in out
         assert "must not be shown" not in out
 
+    def test_piped_listing_keeps_a_long_description_whole(self, monkeypatch, capsys):
+        """Piped output is never cut or ellipsized (maintainer rule from #2433)."""
+        from booley.mcp.registry import McpToolInfo
+
+        long_lead = "Lead sentence " + "that keeps going " * 12 + "to the very end"
+        info = McpToolInfo(
+            name="fakeflow", path="flows/fakeflow.py", description=long_lead, kind="flow"
+        )
+        monkeypatch.setattr(tlr, "_discover_project_mcp_tools", lambda _root: [info])
+
+        tlr._cmd_flow(self._args(["flow"]), Path("/work"))
+        out = capsys.readouterr().out
+        assert long_lead in out
+        assert "…" not in out
+
     def test_unloadable_endpoint_errors_without_running(self, monkeypatch, capsys):
         monkeypatch.setattr(tlr, "_load_mcp_tool_class", lambda _info: None)
         rc = tlr._cmd_flow(self._args(["flow", "fakeflow"]), Path("/work"))

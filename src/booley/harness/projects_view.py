@@ -1,9 +1,9 @@
 """Terminal view of the ``booley projects forget`` leftovers.
 
 The table lives in the harness, not in :mod:`booley.projects`, because the shared
-table renderer and the colour palette are harness modules and the source
-dependency contract (rule D33) forbids ``booley.projects`` from importing the
-harness. The harness injects :func:`render_leftovers` into
+table renderer and the colour palette are harness modules, and ``booley.projects``
+is a separated package that must not join the harness import cycle (see
+``tests/architecture/test_config_eda_runtime_separation.py``). The harness injects :func:`render_leftovers` into
 ``booley.projects.cli.run`` as its ``leftovers_view``.
 """
 

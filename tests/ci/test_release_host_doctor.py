@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.harness import colors
+from booley.harness import terminal_status as ts
+
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 
@@ -236,3 +239,25 @@ def test_no_failure_check_uses_the_closing_counts_row() -> None:
 
     assert host_doctor.doctor_reports_no_failures(echoed) is True
     assert host_doctor.doctor_reports_no_failures("  ✗ failed     0\n  ✗ failed     2\n") is False
+
+
+@pytest.mark.parametrize(
+    ("status", "is_problem"),
+    [
+        (ts.LineStatus.WARN, True),
+        (ts.LineStatus.FAIL, True),
+        (ts.LineStatus.PASS, False),
+        (ts.LineStatus.CURRENT, False),
+        (ts.LineStatus.PENDING, False),
+        (ts.LineStatus.SKIP, False),
+        (ts.LineStatus.NOTE, False),
+    ],
+)
+def test_problem_row_matches_exactly_the_warning_and_failure_rows(
+    status: ts.LineStatus, is_problem: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate's regex tracks the rows ``terminal_status`` prints, glyph and gap."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    row = ts.status_line(status, "init row")
+    assert bool(host_doctor._PROBLEM_ROW.match(row)) is is_problem
+    assert host_doctor._PROBLEM_ROW.match(ts.hint_line("remedy text")) is None

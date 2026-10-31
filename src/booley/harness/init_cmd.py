@@ -76,7 +76,7 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
-from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
+from booley.harness.colors import bold_amber, green, red, yellow
 from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
@@ -746,7 +746,7 @@ def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -
         return
     ok(f"using {effective.source}")
     for loser in effective.overridden:
-        info(f"{loser} is present but NOT used — {effective.source} takes precedence")
+        hint(f"{loser} is present but not used; the line above wins")
 
 
 def _step_auth(

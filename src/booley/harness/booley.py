@@ -1595,18 +1595,14 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     return None
 
 
-_FLOW_BLURB_CHARS = 72
-
-
 def _flow_blurb(description: str) -> str:
-    """Return one terminal line from a Flow description.
+    """Return the first sentence of a Flow description, on one line.
 
-    Endpoint descriptions can run to paragraphs; the CLI listing stays terse.
+    Endpoint descriptions can run to paragraphs; the listing shows the lead
+    sentence whole. Width fitting belongs to the table (TTY only), so piped
+    output is never cut mid-sentence.
     """
-    first = " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
-    if len(first) > _FLOW_BLURB_CHARS:
-        first = first[: _FLOW_BLURB_CHARS - 1].rstrip() + "…"
-    return first
+    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
 
 
 def _flow_listing(flows: list[McpToolInfo]) -> str:
@@ -1617,7 +1613,7 @@ def _flow_listing(flows: list[McpToolInfo]) -> str:
         [colors.accent(flow.name), _flow_blurb(flow.description)]
         for flow in sorted(flows, key=lambda item: item.name)
     ]
-    return "\n".join(render_table(["Name", "Description"], rows))
+    return "\n".join(render_table(["Name", "Description"], rows, width=width_budget()))
 
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
