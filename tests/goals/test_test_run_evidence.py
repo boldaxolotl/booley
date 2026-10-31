@@ -578,6 +578,11 @@ def test_status_shows_frozen_runs_outcomes_and_a_rerun_command_per_failing_seed(
     ]
     text = render_status((view,))
     assert "Test Runs\n" in text
+    # The heading and its indented lines, byte for byte.
+    block = ["Test Runs", *(f"  {line}" for line in test_run_lines(goal))]
+    lines = text.splitlines()
+    start = lines.index("Test Runs")
+    assert lines[start : start + len(block)] == block
     assert f"rerun a@{second}: booley flow sim --target top --test=a@{second}" in text
     assert "goal-test-run-failed" in text
 
