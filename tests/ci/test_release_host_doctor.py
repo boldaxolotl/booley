@@ -242,22 +242,22 @@ def test_no_failure_check_uses_the_closing_counts_row() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "is_problem"),
+    ("status_name", "is_problem"),
     [
-        (ts.LineStatus.WARN, True),
-        (ts.LineStatus.FAIL, True),
-        (ts.LineStatus.PASS, False),
-        (ts.LineStatus.CURRENT, False),
-        (ts.LineStatus.PENDING, False),
-        (ts.LineStatus.SKIP, False),
-        (ts.LineStatus.NOTE, False),
+        ("WARN", True),
+        ("FAIL", True),
+        ("PASS", False),
+        ("CURRENT", False),
+        ("PENDING", False),
+        ("SKIP", False),
+        ("NOTE", False),
     ],
 )
 def test_problem_row_matches_exactly_the_warning_and_failure_rows(
-    status: ts.LineStatus, is_problem: bool, monkeypatch: pytest.MonkeyPatch
+    status_name: str, is_problem: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The gate's regex tracks the rows ``terminal_status`` prints, glyph and gap."""
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    row = ts.status_line(status, "init row")
+    row = ts.status_line(getattr(ts.LineStatus, status_name), "init row")
     assert bool(host_doctor._PROBLEM_ROW.match(row)) is is_problem
     assert host_doctor._PROBLEM_ROW.match(ts.hint_line("remedy text")) is None
