@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
 from collections.abc import Callable
 
 
@@ -159,9 +160,36 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def char_width(char: str) -> int:
+    """Terminal cells one character takes: 0 (combining, joiner), 1, or 2 (wide)."""
+    if unicodedata.category(char) in {"Mn", "Me", "Cf"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
 def len_visible(text: str) -> int:
-    """Length of *text* ignoring ANSI escape sequences."""
-    return len(strip_ansi(text))
+    """Terminal cells *text* occupies, ignoring ANSI escape sequences."""
+    return sum(map(char_width, strip_ansi(text)))
+
+
+_SGR_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def active_style(text: str, active: str = "") -> str:
+    """The SGR codes still in effect after *text*, given *active* before it.
+
+    Only SGR style codes are tracked (not OSC 8 hyperlinks). A reset clears the
+    state, so callers can close a style at a line break and reopen it on the
+    next line.
+    """
+    for code in _SGR_RE.findall(text):
+        active = "" if code in {_RESET, "\033[m"} else active + code
+    return active
+
+
+def close_style(active: str) -> str:
+    """The reset that ends the style *active* (empty when nothing is open)."""
+    return _RESET if active else ""
 
 
 def hyperlink(text: str, uri: str) -> str:

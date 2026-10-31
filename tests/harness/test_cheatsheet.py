@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import itertools
+import os
 import re
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
 from booley.harness import booley as tlr
-from booley.harness import cheatsheet
+from booley.harness import cheatsheet, colors
 from booley.runtime.paths import cheatsheet_path, skills_dir
 
 SAMPLE = """## Booley: Quick Reference
@@ -222,12 +226,85 @@ class TestCheatCommand:
         assert "Target campaign with target + scope" in specialists_out
         assert "\n  sim " not in specialists_out
 
-    @pytest.mark.parametrize("section", ("commands", "goals", "project", "skills"))
-    def test_compact_tables_fit_120_columns(self, capsys, section):
-        """Keep the fixed-width table from wrapping its separator or rows."""
-        assert tlr._cmd_cheat(self._parse(["cheat", f"--{section}"]), Path.cwd()) == 0
-        out = capsys.readouterr().out
-        assert max(map(len, out.splitlines())) <= 120
+    def _stub_terminal(self, monkeypatch, *, tty: bool, columns: int = 100, color: bool = False):
+        """Fix TTY, colour, and width detection; the host terminal never leaks in."""
+        monkeypatch.setenv("COLUMNS", "300")  # misleading: the stubbed size must win
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: tty)
+        monkeypatch.setattr(
+            shutil, "get_terminal_size", lambda *_: os.terminal_size((columns, 24))
+        )
+        monkeypatch.setattr(colors, "COLORS_ENABLED", color)
+
+    def _cheat_lines(self, capsys, *flags: str) -> list[str]:
+        assert tlr._cmd_cheat(self._parse(["cheat", *flags]), Path.cwd()) == 0
+        return capsys.readouterr().out.splitlines()
+
+    @pytest.mark.parametrize(
+        "section",
+        [pytest.param(name, id=f"{name}-tty80") for name in (*cheatsheet.section_slugs(), "all")],
+    )
+    def test_every_section_fits_the_width_budget(self, capsys, monkeypatch, section):
+        budget = 80
+        self._stub_terminal(monkeypatch, tty=True, columns=budget, color=True)
+
+        lines = self._cheat_lines(capsys, f"--{section}")
+
+        assert lines
+        widest = max(colors.len_visible(line) for line in lines)
+        assert widest <= budget, f"--{section} has a {widest}-column line (budget {budget})"
+
+    @pytest.mark.parametrize("section", (*cheatsheet.section_slugs(), "all"))
+    def test_no_trailing_whitespace_or_blank_runs(self, capsys, monkeypatch, section):
+        self._stub_terminal(monkeypatch, tty=False)
+
+        lines = self._cheat_lines(capsys, f"--{section}")
+
+        assert all(line == line.rstrip() for line in lines)
+        assert not any(not a and not b for a, b in itertools.pairwise(lines))
+        headings = {sec.heading for sec in cheatsheet.SECTIONS}
+        for index, line in enumerate(lines):
+            if line in headings:
+                assert lines[index + 1] == ""
+                assert lines[index + 2] != ""
+
+    def test_piped_output_is_never_cut_or_wrapped(self, capsys, monkeypatch):
+        """Off a TTY every cell and line keeps its full text, whatever the terminal size."""
+        self._stub_terminal(monkeypatch, tty=False, columns=40)
+
+        everything = self._cheat_lines(capsys, "--all")
+        index = self._cheat_lines(capsys)
+
+        assert not any("\u2026" in line for line in (*everything, *index))
+        assert max(map(colors.len_visible, everything)) > 100  # nothing was fitted
+        rows = [i for i, line in enumerate(index) if line.startswith("  --")]
+        assert len(rows) == len(cheatsheet.section_slugs())
+        assert all(not index[i + 1].startswith("   ") for i in rows)
+
+    @pytest.mark.parametrize("columns", (60, 100), ids=("tty60", "tty100"))
+    def test_index_is_an_aligned_two_column_list(self, capsys, monkeypatch, columns):
+        self._stub_terminal(monkeypatch, tty=True, columns=columns, color=True)
+        assert tlr._cmd_cheat(self._parse(["cheat"]), None) == 0
+        raw = capsys.readouterr().out
+        lines = [colors.strip_ansi(line) for line in raw.splitlines()]
+
+        assert "`" not in raw
+        assert colors.accent("booley targets") in raw
+        flags = [cheatsheet.section_flags(slug)[0] for slug in cheatsheet.section_slugs()]
+        column = 2 + len("--") + max(map(len, flags)) + 2
+        rows = [i for i, line in enumerate(lines) if line.startswith("  --")]
+        assert len(rows) == len(flags)
+        for index, flag in zip(rows, flags, strict=True):
+            assert colors.accent(f"--{flag}") in raw
+            assert lines[index][:column] == f"  --{flag}".ljust(column)
+            assert lines[index][column] != " "
+        assert all(colors.len_visible(line) <= columns for line in lines)
+
+        sandbox = rows[-1]
+        continuation = lines[sandbox + 1].startswith(" " * column)
+        if columns == 100:
+            assert not continuation  # the styled flag does not make the row wrap early
+        else:
+            assert continuation and lines[sandbox + 1][column] != " "
 
     def test_commands_lists_every_public_top_level_command(self, capsys):
         parser = tlr._build_parser()
