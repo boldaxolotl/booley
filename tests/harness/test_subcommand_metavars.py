@@ -51,14 +51,9 @@ def test_top_level_subcommand_metavar_matches_public_subparsers(
     )
 
 
-def test_top_level_usage_includes_every_public_command(parser: argparse.ArgumentParser) -> None:
-    usage_commands = _metavar_tokens(_get_subparsers_action(parser))
-    usage = parser.format_usage()
-    assert "specialist" in usage_commands
-    assert "shell" not in usage_commands
-    assert "shell" not in usage
-    for command in tlr.command_locations():
-        assert command in usage
+def test_top_level_usage_is_short(parser: argparse.ArgumentParser) -> None:
+    """The command listing replaces the choices list in the usage line."""
+    assert parser.format_usage() == "usage: booley [options] <command> [args]\n"
 
 
 @pytest.mark.parametrize(
