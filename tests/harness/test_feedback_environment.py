@@ -51,7 +51,9 @@ def test_feedback_dispatch_reads_stamp_only_for_rendering_commands(
         "resolve_feedback_environment",
         lambda path: reads.append(path) or environment,
     )
-    monkeypatch.setattr(booley.feedback_cli, "run", lambda _args, _root, *, env: int(env is None))
+    monkeypatch.setattr(
+        booley.feedback_cli, "run", lambda _args, _root, *, env, list_view: int(env is None)
+    )
 
     result = booley._cmd_feedback(Namespace(feedback_command=command), tmp_path)
 

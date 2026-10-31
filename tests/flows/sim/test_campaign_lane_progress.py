@@ -218,6 +218,7 @@ def test_one_lane_command_start_keeps_other_lane_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
     now = [0.0]
     screen = Screen(tty=True)
     sink = TerminalProgress(
@@ -255,9 +256,9 @@ def test_one_lane_command_start_keeps_other_lane_tail(
 
     assert "beta tail line" in frame[0], "alpha's command start cleared beta's tail"
     rows = frame[0].splitlines()
-    lane_rows = [index for index, row in enumerate(rows) if f"lane={labels['beta']} " in row]
+    lane_rows = [index for index, row in enumerate(rows) if row.startswith(f"  {labels['beta']}")]
     assert lane_rows, f"no row for beta's lane in frame: {rows}"
-    assert rows[lane_rows[0] + 1 : lane_rows[0] + 2] == ["beta tail line"]
+    assert rows[lane_rows[0] + 1 : lane_rows[0] + 2] == ["    beta tail line"]
 
 
 def test_closed_lane_output_is_not_dropped_before_the_final_drain(tmp_path: Path) -> None:

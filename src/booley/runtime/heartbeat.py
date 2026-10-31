@@ -78,7 +78,7 @@ class Heartbeat:
     """Prints elapsed time every `interval` seconds while active.
 
     Usage:
-        hb = Heartbeat("Yosys synthesis", render=render_heartbeat, interval=60)
+        hb = Heartbeat("Yosys synthesis", render=partial(render_heartbeat, style=dim), interval=60)
         hb.start()
         subprocess.run(...)  # blocks for a long time
         hb.stop()

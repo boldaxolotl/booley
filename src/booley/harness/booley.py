@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
-from booley.harness import cheatsheet, resources_cli, upgrade_cli, upgrade_review
+from booley.harness import cheatsheet, feedback_view, resources_cli, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
@@ -1789,7 +1789,7 @@ def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
     env = None
     if feedback_cli.requires_environment(args):
         env = resolve_feedback_environment(feedback_storage_dir(project_root))
-    return feedback_cli.run(args, project_root, env=env)
+    return feedback_cli.run(args, project_root, env=env, list_view=feedback_view.render_listing)
 
 
 _EARLY_COMMANDS: dict[str, Callable] = {
@@ -1816,9 +1816,10 @@ from booley.eda import cli as _eda_cli
 
 
 def _cmd_eda(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import eda_view
     from booley.harness.eda_grants import COORDINATOR
 
-    return _eda_cli.run(args, project_root, grant_mutator=COORDINATOR)
+    return _eda_cli.run(args, project_root, grant_mutator=COORDINATOR, record_view=eda_view)
 
 
 _EARLY_COMMANDS["eda"] = _cmd_eda
