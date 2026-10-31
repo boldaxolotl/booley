@@ -26,6 +26,7 @@ from booley.harness.bootstrap import (
 )
 from booley.harness.setup.common import (
     InitContext,
+    current,
     info,
     note,
     ok,
@@ -504,8 +505,8 @@ def _step_worktree_link_policy(
         repo for repo in repositories if read_local_config(repo, WORKTREE_RELATIVE_KEY) != desired
     ]
     if not pending:
-        skip(f"{WORKTREE_RELATIVE_KEY} already '{desired}'")
-        ctx.record("worktree_link_policy", "skip", f"already {desired}")
+        current(f"{WORKTREE_RELATIVE_KEY} already '{desired}'")
+        ctx.record("worktree_link_policy", "current", f"already {desired}")
         return
     if ctx.check_only:
         warn(
@@ -579,8 +580,8 @@ def _step_worktree_prune_guard(ctx: InitContext, *, booley_dir: Path | None = No
         if read_worktree_prune_expire(repository) != WORKTREE_PRUNE_VALUE
     ]
     if not pending:
-        skip(f"{WORKTREE_PRUNE_KEY} already '{WORKTREE_PRUNE_VALUE}'")
-        ctx.record("worktree_prune_guard", "skip", "already set")
+        current(f"{WORKTREE_PRUNE_KEY} already '{WORKTREE_PRUNE_VALUE}'")
+        ctx.record("worktree_prune_guard", "current", "already set")
         return
 
     if ctx.check_only:

@@ -76,7 +76,7 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
-from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
+from booley.harness.colors import bold_amber, green, red, yellow
 from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
@@ -85,8 +85,10 @@ from booley.harness.setup.common import (
     WriteOutcome,
     banner,
     configure_progress_output,
+    current,
     err,
     guarded_write,
+    hint,
     info,
     ok,
     skip,
@@ -135,6 +137,7 @@ from booley.harness.setup.project_git_hook_reconcile import (
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
+from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import auth_token, doctor_stamp, project_repositories
 from booley.runtime import devcontainer as dc
@@ -377,7 +380,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
             else:
                 target.chmod(0o700)
                 ok(f"secured Booley Directory permissions on {target} to 0700")
-        skip(f"Booley Directory found at {target}")
+        current(f"Booley Directory found at {target}")
         _backfill_config_skeletons(target, ctx)
         _backfill_project_gitignore(target, ctx)
         _backfill_fusesoc_ignore(target, ctx)
@@ -385,7 +388,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
         if permissions_pending:
             ctx.record("booley_dir", "warn", "permissions need 0700")
         elif not any(r.name == "booley_dir" and r.status == "warn" for r in ctx.results):
-            ctx.record("booley_dir", "skip", "already present")
+            ctx.record("booley_dir", "current", "already present")
         return
 
     if ctx.check_only:
@@ -487,8 +490,8 @@ def _step_core_projections(ctx: InitContext) -> None:
             warn(f"would reconcile projected cores: {', '.join(issues)}")
             ctx.record("core_projections", "warn", f"{len(issues)} change(s)")
         else:
-            skip("stealth core projections already reconciled")
-            ctx.record("core_projections", "skip", "current")
+            current("stealth core projections already reconciled")
+            ctx.record("core_projections", "current", "current")
         return
 
     # Explicit Stealth also hides the Booley Directory itself, so the hidden
@@ -522,8 +525,8 @@ def _step_goalsets(ctx: InitContext) -> None:
     outcomes = seed_goalsets(booley_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
     added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
     if not added:
-        skip("Goalsets already present")
-        ctx.record("goalsets", "skip", "already present")
+        current("Goalsets already present")
+        ctx.record("goalsets", "current", "already present")
     elif ctx.check_only:
         warn(f"{added} missing Goalsets (would create)")
         ctx.record("goalsets", "warn", f"{added} files missing")
@@ -743,7 +746,7 @@ def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -
         return
     ok(f"using {effective.source}")
     for loser in effective.overridden:
-        info(f"{loser} is present but NOT used — {effective.source} takes precedence")
+        hint(f"{loser} is present but not used; the line above wins")
 
 
 def _step_auth(
@@ -932,8 +935,8 @@ def _step_image_lifecycle(
         ok("reconciled Sandbox Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
     elif not result.cleanup.removed:
-        skip(f"Sandbox Image {result.selected_reference} is current")
-        ctx.record("docker_image", "skip", "current")
+        current(f"Sandbox Image {result.selected_reference} is current")
+        ctx.record("docker_image", "current", "current")
     return result
 
 
@@ -1321,8 +1324,8 @@ def _report_interactive_state(
         warn(detail)
         ctx.record("interactive", "warn", detail)
         return
-    skip("Interactive Mode specification, issuance, and exclusions are current")
-    ctx.record("interactive", "skip", "current")
+    current("Interactive Mode specification, issuance, and exclusions are current")
+    ctx.record("interactive", "current", "current")
 
 
 def _report_interactive_changes(
@@ -1331,8 +1334,8 @@ def _report_interactive_changes(
     changes: interactive_init.InteractiveInitChanges,
 ) -> None:
     if not changes.changed:
-        skip("Interactive Mode specification, issuance, and exclusions are current")
-        ctx.record("interactive", "skip", "current")
+        current("Interactive Mode specification, issuance, and exclusions are current")
+        ctx.record("interactive", "current", "current")
         return
     if changes.issued:
         path = dc.devcontainer_path(ctx.project_root)
@@ -1799,7 +1802,7 @@ def _print_incomplete_advisory(failed: list[str]) -> None:
     info("The remaining steps still ran (every step is idempotent), but this project")
     info("is NOT ready for the booley-setup skill yet.")
     print()
-    info("  * Fix the [XX] step(s) reported in the summary below")
+    info("  * Fix the failed step(s) reported in the summary below")
     info("  * Re-run `booley init` — completed steps are no-ops on a second pass")
     info("  * Only then start the booley-setup skill (Step 0, the plan phase)")
 
@@ -1878,7 +1881,7 @@ def _step_project_trackability(ctx: InitContext) -> None:
     inspection = inspect_project_trackability(ctx.project_root, selected)
     for group in inspection.ignored:
         warn(group.message)
-        info(f"  fix: {FIX}")
+        hint(FIX)
     for error in inspection.errors:
         warn(error)
     problems = len(inspection.ignored) + len(inspection.errors)
@@ -1924,14 +1927,21 @@ def _print_check_verdict(ctx: InitContext) -> None:
         print(green("Checked initialization: nothing pending"))
 
 
+_SUMMARY_STATUS = {
+    "ok": LineStatus.PASS,
+    "current": LineStatus.CURRENT,
+    "skip": LineStatus.SKIP,
+    "warn": LineStatus.WARN,
+    "err": LineStatus.FAIL,
+}
+
+
 def _print_summary(ctx: InitContext) -> int:
     banner("Summary")
     exit_code = 0
-    _STATUS_FN = {"ok": green, "skip": accent, "warn": yellow, "err": red}
     for r in ctx.results:
-        glyph = {"ok": "[OK]", "skip": "[--]", "warn": "[!!]", "err": "[XX]"}[r.status]
         suffix = f" — {r.detail}" if r.detail else ""
-        print(f"  {_STATUS_FN[r.status](glyph)} {r.name}{suffix}")
+        print(status_line(_SUMMARY_STATUS[r.status], f"{r.name}{suffix}"))
         if r.status == "err":
             exit_code = 2
         elif r.status == "warn" and ctx.check_only and exit_code == 0:
@@ -2079,7 +2089,7 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
             )
         return _print_summary(ctx)
     if not ctx.check_only and sys.stdout.isatty():
-        print(bold_chrome(f"  Seeding Interactive Mode for {ctx.project_root}"))
+        print(section_header(f"Seeding Interactive Mode for {ctx.project_root}"))
         print()
     if "BOOLEY_DIR" not in os.environ and not (ctx.project_root / ".booley").is_dir():
         _step_interactive(ctx, agent_app=selection.provider)
@@ -2094,7 +2104,7 @@ def _print_init_banner(ctx: InitContext) -> None:
     if ctx.check_only or not sys.stdout.isatty():
         return
     print(BOOLEY_MASCOT)
-    print(bold_chrome("  Booley project setup"))
+    print(section_header("Booley project setup"))
     print()
     info(f"Project Root  : {ctx.project_root}")
     info(f"version       : {__version__}")
@@ -2212,8 +2222,8 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
             ok(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "ok", finding.detail)
         elif ctx.verbose:
-            skip(f"{finding.resource}: {finding.detail}")
-            ctx.record(name, "skip", finding.detail)
+            current(f"{finding.resource}: {finding.detail}")
+            ctx.record(name, "current", finding.detail)
 
 
 def _project_config_migration_preflight(ctx: InitContext, path: Path) -> bool:

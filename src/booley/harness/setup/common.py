@@ -20,7 +20,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from booley.harness.colors import accent, bold_chrome, chrome, green, red, yellow
+from booley.harness import terminal_status as ts
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
 
 # Public surface of this module (defined here + re-exported above). Listing the
@@ -31,8 +31,10 @@ __all__ = [
     "WriteOutcome",
     "banner",
     "configure_progress_output",
+    "current",
     "err",
     "guarded_write",
+    "hint",
     "info",
     "note",
     "ok",
@@ -56,29 +58,39 @@ def info(msg: str) -> None:
 
 
 def ok(msg: str) -> None:
-    print(f"  {green('[OK]')} {msg}")
+    print(ts.status_line(ts.LineStatus.PASS, msg))
+
+
+def current(msg: str) -> None:
+    """Report a resource that is already as init would leave it."""
+    print(ts.status_line(ts.LineStatus.CURRENT, msg))
 
 
 def skip(msg: str) -> None:
-    print(f"  {accent('[--]')} {msg}")
+    print(ts.status_line(ts.LineStatus.SKIP, msg))
 
 
 def note(msg: str) -> None:
     """Print an advisory that needs no action -- weaker than :func:`warn`."""
-    print(f"  {chrome('[ii]')} {msg}")
+    print(ts.status_line(ts.LineStatus.NOTE, msg))
 
 
 def warn(msg: str) -> None:
-    print(f"  {yellow('[!!]')} {msg}")
+    print(ts.status_line(ts.LineStatus.WARN, msg))
 
 
 def err(msg: str) -> None:
-    print(f"  {red('[XX]')} {msg}")
+    print(ts.status_line(ts.LineStatus.FAIL, msg))
+
+
+def hint(msg: str) -> None:
+    """Print the remedy for the row above, hanging under its message."""
+    print(ts.hint_line(msg))
 
 
 def banner(msg: str) -> None:
     print()
-    print(bold_chrome(f"=== {msg} ==="))
+    print(ts.section_header(msg))
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +101,7 @@ def banner(msg: str) -> None:
 @dataclass
 class StepResult:
     name: str
-    status: str  # "ok", "skip", "warn", "err"
+    status: str  # "ok", "current", "skip", "warn", "err"
     detail: str = ""
 
 

@@ -33,7 +33,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
-from booley.harness import cheatsheet, feedback_view, resources_cli, upgrade_cli, upgrade_review
+from booley.harness import (
+    cheatsheet,
+    colors,
+    feedback_view,
+    projects_view,
+    resources_cli,
+    upgrade_cli,
+    upgrade_review,
+)
 from booley.harness.auth_cmd import run_auth
 from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
@@ -44,7 +52,7 @@ from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.terminal_status import MAX_WIDTH, section_header
-from booley.harness.terminal_table import width_budget
+from booley.harness.terminal_table import render_table, width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
@@ -1497,7 +1505,7 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     try:
         return handler(args, project_root)
     except DockerCapacityError as exc:
-        print(f"[XX] image-capacity: {exc}", file=sys.stderr)
+        print(f"ERROR: image-capacity: {exc}", file=sys.stderr)
         return 2
     except sr.SessionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -1639,29 +1647,25 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     return None
 
 
-_FLOW_BLURB_CHARS = 72
-
-
 def _flow_blurb(description: str) -> str:
-    """Return one terminal line from a Flow description.
+    """Return the first sentence of a Flow description, on one line.
 
-    Endpoint descriptions can run to paragraphs; the CLI listing stays terse.
+    Endpoint descriptions can run to paragraphs; the listing shows the lead
+    sentence whole. Width fitting belongs to the table (TTY only), so piped
+    output is never cut mid-sentence.
     """
-    first = description.split(". ", maxsplit=1)[0].strip()
-    if len(first) > _FLOW_BLURB_CHARS:
-        first = first[: _FLOW_BLURB_CHARS - 1].rstrip() + "…"
-    return first
+    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
 
 
 def _flow_listing(flows: list[McpToolInfo]) -> str:
     """Render available Flows for the CLI."""
     if not flows:
         return "  (none discovered)"
-    width = max(len(flow.name) for flow in flows)
-    return "\n".join(
-        f"  {flow.name:<{width}}  {_flow_blurb(flow.description)}"
+    rows = [
+        [colors.accent(flow.name), _flow_blurb(flow.description)]
         for flow in sorted(flows, key=lambda item: item.name)
-    )
+    ]
+    return "\n".join(render_table(["Name", "Description"], rows, width=width_budget()))
 
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
@@ -1672,7 +1676,7 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
     heading = "Flows" if kind == "flow" else "Specialists"
     raw_name = getattr(args, "endpoint_name", None)
     if raw_name is None:
-        print(f"Available {heading}:\n{_flow_listing(choices)}")
+        print(f"{section_header(f'Available {heading}')}\n{_flow_listing(choices)}")
         return 0
     name = canonical(raw_name) if kind == "flow" else raw_name
     info = next((item for item in choices if item.name == name), None)
@@ -1682,9 +1686,10 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
         _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
+    # Colour follows stdout, so the stderr listing is printed plain.
+    listing = colors.strip_ansi(f"Available {heading}\n{_flow_listing(choices)}")
     print(
-        f"ERROR: {name!r} is not a {kind} for booley {kind}.{suggestion}"
-        f"\n\nAvailable {heading}:\n{_flow_listing(choices)}",
+        f"ERROR: {name!r} is not a {kind} for booley {kind}.{suggestion}\n\n{listing}",
         file=sys.stderr,
     )
     return 2
@@ -2181,7 +2186,11 @@ def _dispatch_selected(
     if command == "projects":
         from booley.runtime import image_keepers as runtime_image_keepers
 
-        return project_inventory_cli.run(args, keeper_operations=runtime_image_keepers)
+        return project_inventory_cli.run(
+            args,
+            keeper_operations=runtime_image_keepers,
+            leftovers_view=projects_view.render_leftovers,
+        )
 
     # Project and runtime-location guards precede runtime mutation and screen clearing.
     # docker-exec entry drops the spec's remoteEnv — self-heal the proxy env

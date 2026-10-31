@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from booley.harness import projects_view
+from booley.harness.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
@@ -19,7 +21,17 @@ from booley.runtime.session_issuance import keeper_image
 
 
 def _run(args: argparse.Namespace) -> int:
-    return project_inventory_cli.run(args, keeper_operations=runtime_image_keepers)
+    return project_inventory_cli.run(
+        args,
+        keeper_operations=runtime_image_keepers,
+        leftovers_view=projects_view.render_leftovers,
+    )
+
+
+def _run_without_keepers(argv: list[str]) -> int:
+    return project_inventory_cli.run(
+        _parser().parse_args(argv), leftovers_view=projects_view.render_leftovers
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -161,10 +173,11 @@ def test_forget_lists_leftovers_with_sizes_and_tags(
     image = "sha256:" + "a" * 64
     keeper_host.tags.update({f"{project_image_name(project)}:latest": image, "mirror:x": image})
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
-    assert (
-        f"Left behind for this Project:\n  image {image} 1GB [shared] tags: "
-        f"mirror:x, {project_image_name(project)}:latest\n"
-    ) in capsys.readouterr().out
+    table = render_table(
+        ["Kind", "Name", "Size", "Reason", "Tags"],
+        [["image", image, "1GB", "shared", f"mirror:x, {project_image_name(project)}:latest"]],
+    )
+    assert "Left behind for this Project:\n" + "\n".join(table) + "\n" in capsys.readouterr().out
 
 
 def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
@@ -871,7 +884,12 @@ def test_human_keeper_outcomes_identify_image_and_retained_tags(
     release = image_keepers.KeeperRelease("retained-in-use", "keeper", image)
     assert (
         project_inventory_cli._render_forgotten(
-            Path("/project"), release, None, (), json_output=False
+            Path("/project"),
+            release,
+            None,
+            (),
+            json_output=False,
+            leftovers_view=projects_view.render_leftovers,
         )
         == 0
     )
@@ -941,7 +959,7 @@ def test_missing_keeper_adapter_refuses_before_observation(
     )
     if action == "confirm":
         flags.extend(["--confirm", "digest"])
-    assert project_inventory_cli.run(_parser().parse_args(flags)) == 2
+    assert _run_without_keepers(flags) == 2
     assert capsys.readouterr().err.strip() == (
         "ERROR: Project keeper access requires host lifecycle coordination"
     )
@@ -1064,13 +1082,8 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     project = tmp_path / "discover"
     (project / ".booley").mkdir(parents=True)
     (project / ".git").mkdir()
-    assert project_inventory_cli.run(_parser().parse_args(["projects", "--json"])) == 0
+    assert _run_without_keepers(["projects", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["projects"] == []
-    assert (
-        project_inventory_cli.run(
-            _parser().parse_args(["projects", "discover", str(project), "--json"])
-        )
-        == 0
-    )
+    assert _run_without_keepers(["projects", "discover", str(project), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["discovered"] == [str(project)]
     assert keeper_host.calls == []

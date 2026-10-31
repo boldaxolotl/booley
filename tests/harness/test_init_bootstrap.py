@@ -361,7 +361,7 @@ def test_init_capacity_refusal_returns_two_without_image_or_spec_adoption(
     monkeypatch.setattr(init_cmd, "_run_project_init_steps", image_steps)
     assert init_cmd.run_init(_args(force=True), tmp_path) == 2
     captured = capsys.readouterr()
-    assert "[XX] image-capacity:" in captured.out
+    assert "✗  image-capacity:" in captured.out
     assert "only 1 GiB available" in captured.out
     assert "Traceback" not in captured.out + captured.err
     assert intents == [Intent.REFRESH]

@@ -17,6 +17,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from booley.harness import colors
+from booley.harness import terminal_status as ts
+from booley.harness.setup import common
 from booley.harness.setup.common import (
     InitContext,
     WriteOutcome,
@@ -36,6 +39,40 @@ def test_progress_output_flushes_each_redirected_line(monkeypatch: pytest.Monkey
     print("Sandbox Image build started")
 
     assert raw.getvalue().decode("utf-8").splitlines() == ["Sandbox Image build started"]
+
+
+@pytest.mark.parametrize(
+    ("helper", "status"),
+    [
+        ("ok", ts.LineStatus.PASS),
+        ("skip", ts.LineStatus.SKIP),
+        ("note", ts.LineStatus.NOTE),
+        ("warn", ts.LineStatus.WARN),
+        ("err", ts.LineStatus.FAIL),
+    ],
+    ids=["ok", "skip", "note", "warn", "err"],
+)
+def test_setup_helpers_print_doctor_status_rows(
+    helper: str,
+    status: ts.LineStatus,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+    getattr(common, helper)("a message")
+
+    assert capsys.readouterr().out == ts.status_line(status, "a message") + "\n"
+
+
+def test_banner_is_the_doctor_section_header(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+
+    common.banner("A title")
+
+    assert capsys.readouterr().out == "\n" + ts.section_header("A title") + "\n"
 
 
 # ---------------------------------------------------------------------------

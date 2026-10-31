@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
 from booley.harness.setup import docker_image as idi
-from booley.harness.setup.common import InitContext
+from booley.harness.setup.common import InitContext, StepResult
 from booley.runtime import project_image as pi
 from booley.runtime.dockerfile_syntax import build_context_imports
 
@@ -360,3 +360,15 @@ class TestBaseImageNote:
         )
 
         assert "layers on" not in capsys.readouterr().out
+
+
+def test_up_to_date_flavor_is_recorded_as_current(tmp_path, monkeypatch):
+    monkeypatch.setattr(idi, "_image_is_stale", lambda *_args: False)
+    ctx = InitContext(project_root=tmp_path)
+
+    changed = idi._prepare_flavor_without_build(
+        ctx, FLAVOR, exists=True, fingerprint="abc", expected_version="1", allow_pull=False
+    )
+
+    assert changed is False
+    assert ctx.results[-1] == StepResult("project_image", "current", f"flavor {FLAVOR} current")

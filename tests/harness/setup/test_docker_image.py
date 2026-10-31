@@ -610,7 +610,7 @@ def test_pip_install_skips_image_from_matching_release(
 
     ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
 
-    assert ctx.results[-1].status == "skip"
+    assert ctx.results[-1].status == "current"
     assert not any(command[:2] == ["docker", "pull"] for command in docker.commands)
 
 
@@ -1205,3 +1205,11 @@ def test_build_timeout_uses_human_duration_and_preserves_record(
     assert init_docker_image._docker_build_image(ctx, spec) is None
     assert "timed out after 1h 01m" in capsys.readouterr().out
     assert ctx.results[-1].detail == "build timed out"
+
+
+def test_check_only_records_a_present_image_as_current(tmp_path):
+    ctx = InitContext(project_root=tmp_path, check_only=True)
+
+    init_docker_image._docker_check_only(ctx, True)
+
+    assert ctx.results[-1].status == "current"

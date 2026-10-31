@@ -146,6 +146,24 @@ def test_auth_status_gateway_complete_config_exits_zero(gateway_env, capsys):
     assert _TOKEN not in captured.out + captured.err
 
 
+def test_auth_status_states_the_policy_in_words_with_one_glyph_per_line(
+    gateway_env, monkeypatch, capsys
+):
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+    _code, captured = _auth_status(gateway_env, capsys)
+
+    lines = captured.out.splitlines()
+    assert lines[:3] == [
+        "",
+        "Agent auth status",
+        "  \u00b7  auth policy 'gateway'; credentials come from the environment this command inherited",
+    ]
+    assert lines[3].startswith(f"  \u2713  codex: agents run on the gateway at {_URL}")
+
+
 def test_gateway_with_claude_provider_fails_doctor_and_status(gateway_env, capsys):
     findings = _doctor_findings(gateway_env, provider="claude")
     (gateway_env / ".booley" / "booley.toml").write_text(
@@ -208,3 +226,17 @@ def test_auto_keeps_anthropic_auth_token_for_claude_but_never_forwards_it(
     assert "ANTHROPIC_AUTH_TOKEN" in plan.allowed_env
     assert "ANTHROPIC_AUTH_TOKEN" not in dict(plan.values)
     assert _BEARER not in repr(plan)
+
+
+def test_auth_status_notes_a_gateway_policy_it_ignores(gateway_env, monkeypatch, capsys):
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+
+    _code, captured = _auth_status(gateway_env, capsys, app="claude")
+
+    assert (
+        "  \u00b7  BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it"
+        in captured.out
+    )

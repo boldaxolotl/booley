@@ -277,18 +277,10 @@ The shipped base and flavor images finish as the unprivileged `agent` user.
 Switch to `root` only for OS-package installation, then restore `agent` before
 the image is used as a Sandbox.
 
-```console
-$ booley init
-[--] manual edits detected in docker/{Dockerfile} and image
-     'myproj-booley-sandbox-<root-digest>' is not built — using your files as the build
-     input (leaving them untouched)
-[OK] built myproj-booley-sandbox-<root-digest>
-```
-
-That is one pass, not a recipe: init builds the image **from your file
-verbatim** and re-seeds the devcontainer spec later in the same run. Booley
-names the image for you; you don't need `[sandbox].image` for this. Set it only
-for a genuinely custom name or a Booley flavor image.
+`booley init` builds the image **from your file verbatim** and re-seeds the
+devcontainer spec later in the same run. Booley names the image for you; you
+don't need `[sandbox].image` for this. Set it only for a genuinely custom name
+or a Booley flavor image.
 
 What init decides, and how to steer it:
 

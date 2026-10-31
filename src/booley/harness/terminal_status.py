@@ -1,6 +1,6 @@
 """Shared status-line presentation: one glyph per row, section headers, hints.
 
-Doctor prints its rows with these helpers. A status row is::
+Doctor, init, bootstrap and auth print their rows with these helpers. A status row is::
 
       ✓  message text                                         dimmed.check.id
 
@@ -38,6 +38,8 @@ class LineStatus(Enum):
     NOTE = "note"
     WAIVED = "waived"
     RUNNING = "running"
+    CURRENT = "current"
+    PENDING = "pending"
 
 
 #: status -> (single-character glyph, style applied to it)
@@ -49,6 +51,8 @@ _GLYPHS: dict[LineStatus, tuple[str, Callable[[str], str]]] = {
     LineStatus.NOTE: ("·", dim),
     LineStatus.WAIVED: ("~", lilac),
     LineStatus.RUNNING: ("▸", accent),
+    LineStatus.CURRENT: ("=", dim),
+    LineStatus.PENDING: ("+", amber),
 }
 
 # The message column: indent + one glyph + the gap after it.

@@ -738,7 +738,7 @@ class TestInitInteractive:
         ctx = self._ctx(tmp_path)
         init_cmd._step_interactive(ctx, agent_app="none")
 
-        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].status == "current"
         assert ctx.results[-1].detail == "current"
 
     def test_check_only_writes_nothing(self, tmp_path, monkeypatch):
@@ -946,7 +946,7 @@ class TestInitInteractive:
         )
         init_cmd._step_interactive(ctx)
 
-        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].status == "current"
         assert ctx.results[-1].detail == "current"
         assert {
             path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mode)

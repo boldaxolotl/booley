@@ -151,7 +151,7 @@ class TestWorktreePruneGuardStep:
 
         _step_worktree_prune_guard(ctx)
 
-        assert ctx.results[-1].status == "skip"
+        assert ctx.results[-1].status == "current"
         assert ctx.results[-1].detail == "already set"
 
     def test_overwrites_wrong_value(self, tmp_path: Path):
@@ -601,7 +601,7 @@ class TestProjectGitHookMigration:
         ctx = _ctx(tmp_path, check_only=True)
         step_project_git_hooks(ctx)
 
-        assert (ctx.results[-1].status, ctx.results[-1].detail) == ("skip", "current")
+        assert (ctx.results[-1].status, ctx.results[-1].detail) == ("current", "current")
         assert _tree_snapshot(tmp_path) == before
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
@@ -1009,8 +1009,8 @@ class TestLineEndingsStep:
         assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "dirty tree"
         output = capsys.readouterr().out
-        assert "[!!] 1 tracked file(s) are checked out with CRLF" in output
-        assert "[ii] detected core.autocrlf=true" in output
+        assert "!  1 tracked file(s) are checked out with CRLF" in output
+        assert "·  detected core.autocrlf=true" in output
 
     def test_failed_autocrlf_update_blocks_readiness(self, tmp_path: Path, capsys):
         from booley.harness.setup import line_endings as init_git_hooks
@@ -1040,8 +1040,8 @@ class TestLineEndingsStep:
         assert ctx.results[-1].status == "err"
         assert ctx.results[-1].detail == "autocrlf update failed"
         output = capsys.readouterr().out
-        assert "[!!] core.autocrlf=true" in output
-        assert "[ii] detected core.autocrlf=true" not in output
+        assert "!  core.autocrlf=true" in output
+        assert "·  detected core.autocrlf=true" not in output
 
     def test_crlf_matching_the_index_is_not_a_phantom_diff(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -1440,9 +1440,9 @@ class TestLineEndingsAutoFix:
         assert not (tmp_path / ".gitattributes").exists()
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
         output = capsys.readouterr().out
-        assert "[!!] 1 tracked file(s) are checked out with CRLF" in output
-        assert "[!!] core.autocrlf=true" in output
-        assert "[ii]" not in output
+        assert "!  1 tracked file(s) are checked out with CRLF" in output
+        assert "!  core.autocrlf=true" in output
+        assert "·  detected" not in output
         assert "would normalize 1 tracked file(s) to LF atomically" in output
         assert "--fix-line-endings" not in output
 
@@ -1471,9 +1471,9 @@ class TestLineEndingsAutoFix:
         assert staged_diff.returncode == 0
         assert ctx.results[-1].status == "ok"
         output = capsys.readouterr().out
-        assert "[ii] detected 1 tracked file(s) are checked out with CRLF" in output
-        assert "[ii] detected core.autocrlf=true" in output
-        assert "[!!]" not in output
+        assert "·  detected 1 tracked file(s) are checked out with CRLF" in output
+        assert "·  detected core.autocrlf=true" in output
+        assert "!  " not in output
 
     def test_fix_flag_rechecks_out_as_lf(self, tmp_path: Path):
         from booley.harness.setup.git_hooks import _step_line_endings

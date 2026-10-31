@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.harness import colors
+from booley.harness import terminal_status as ts
+
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 
@@ -178,14 +181,16 @@ def test_host_doctor_names_the_initialization_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A warning fails the gate, and the error carries the offending line itself."""
-    booley, log = _fake_booley(tmp_path, init_output="[!!] host-agent-cli: something drifted")
+    booley, log = _fake_booley(
+        tmp_path, init_output="  \x1b[33m!\x1b[0m  host-agent-cli: something drifted"
+    )
     project = tmp_path / "project"
     home = tmp_path / "home"
     project.mkdir()
     home.mkdir()
     monkeypatch.setenv("COMMAND_LOG", str(log))
 
-    with pytest.raises(RuntimeError, match=r"\[!!\] host-agent-cli: something drifted"):
+    with pytest.raises(RuntimeError, match=r"!  host-agent-cli: something drifted"):
         host_doctor.validate(
             allowed_root=tmp_path,
             project=project,
@@ -234,3 +239,25 @@ def test_no_failure_check_uses_the_closing_counts_row() -> None:
 
     assert host_doctor.doctor_reports_no_failures(echoed) is True
     assert host_doctor.doctor_reports_no_failures("  ✗ failed     0\n  ✗ failed     2\n") is False
+
+
+@pytest.mark.parametrize(
+    ("status_name", "is_problem"),
+    [
+        ("WARN", True),
+        ("FAIL", True),
+        ("PASS", False),
+        ("CURRENT", False),
+        ("PENDING", False),
+        ("SKIP", False),
+        ("NOTE", False),
+    ],
+)
+def test_problem_row_matches_exactly_the_warning_and_failure_rows(
+    status_name: str, is_problem: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate's regex tracks the rows ``terminal_status`` prints, glyph and gap."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    row = ts.status_line(getattr(ts.LineStatus, status_name), "init row")
+    assert bool(host_doctor._PROBLEM_ROW.match(row)) is is_problem
+    assert host_doctor._PROBLEM_ROW.match(ts.hint_line("remedy text")) is None
