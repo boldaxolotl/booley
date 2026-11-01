@@ -478,6 +478,25 @@ async def test_refresh_tick_after_shutdown_is_a_no_op(reader_fails):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["highlighted", "selected"])
+async def test_row_message_after_shutdown_is_a_no_op(message):
+    current = snapshot(1)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(130, 30)) as pilot:
+        await pilot.pause()
+        table = app.query_one(DataTable)
+        navigation = app.navigation
+
+    # A row message queued while the table existed can be handled after
+    # shutdown has removed it (seen as a Windows CI flake on the highlight path).
+    if message == "highlighted":
+        app.on_data_table_row_highlighted(DataTable.RowHighlighted(table, 0, None))
+    else:
+        app.on_data_table_row_selected(DataTable.RowSelected(table, 0, None))
+    assert app.navigation == navigation
+
+
+@pytest.mark.asyncio
 async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
     current = snapshot(1)
     extra = tuple(
