@@ -152,6 +152,7 @@ def test_icarus_marks_raw_trace_as_fallback_after_postprocess(tmp_path: Path, ca
         image=tmp_path / "sim",
         command=[],
         trace=NonQueryableTrace(),
+        declared_before={},
     )
 
     output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=0), [])
@@ -187,6 +188,7 @@ def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
         image=tmp_path / "sim",
         command=[],
         trace=NonQueryableTrace(),
+        declared_before={},
     )
 
     output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=1), [])
@@ -217,6 +219,7 @@ def test_icarus_names_trace_files_when_declared_patterns_matched_nothing(tmp_pat
         image=tmp_path / "sim",
         command=[],
         trace=NoTrace(),
+        declared_before={},
     )
 
     _output, result = ir._finalize_icarus_trace(
@@ -619,3 +622,116 @@ def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
     )
     _, _, termination = ir._stream_output(["fake"], tmp_path, 30, max_rundir_bytes=8)
     assert termination.kind == prior
+
+
+class _FakeTraceSession:
+    """Trace seam stub: discovery returns the first existing candidate, so
+    the outcome depends only on whether the adapter trusts that file."""
+
+    def __init__(self, work_dir: Path, find_candidates: list[Path]):
+        self._work_dir = work_dir
+        self._find_candidates = find_candidates
+
+    def reset_for_run(self, _paths):
+        return None
+
+    def postprocess(self, _path):
+        return None
+
+    def find(self):
+        return next((path for path in self._find_candidates if path.exists()), None)
+
+    def inspect(self, path):
+        return TraceInspection(SimpleNamespace(path=path))
+
+    def write_incident(self, reason, *, sim_proc):
+        incident = self._work_dir / "trace_incident.txt"
+        incident.write_text(reason, encoding="utf-8")
+        return incident
+
+
+def _run_traced_icarus(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    trace_files: list[str],
+    stale_dirs: tuple[str, ...],
+    find_in: tuple[str, ...],
+    vvp_body: str,
+    shared_dir: bool = False,
+) -> str:
+    """Run the full traced Icarus path with stale declared files pre-created."""
+    build_dir = tmp_path / "build"
+    run_cwd = tmp_path / "run"
+    work_dir = run_cwd if shared_dir else tmp_path / "work"
+    for directory in (build_dir, run_cwd, work_dir):
+        directory.mkdir(exist_ok=True)
+    (build_dir / "sim_cfg.scr").write_text("")
+    (build_dir / "sim_cfg").write_text("")
+    for name in stale_dirs:
+        (tmp_path / name / "tb_dump.fst").write_text("stale", encoding="utf-8")
+    fake_vvp = tmp_path / "fake_vvp"
+    fake_vvp.write_text(f"#!/bin/sh\n{vvp_body}\necho '[SIM_RESULT] PASSED'\n")
+    fake_vvp.chmod(0o755)
+    monkeypatch.setattr(ir, "_find_vvp", lambda: str(fake_vvp))
+    session = _FakeTraceSession(work_dir, [tmp_path / name / "tb_dump.fst" for name in find_in])
+    monkeypatch.setattr(ir, "_new_trace_session", lambda *_args: session)
+    return ir.run_icarus_image(
+        build_dir=build_dir,
+        run_cwd=run_cwd,
+        work_dir=work_dir,
+        vcd=True,
+        timeout=30,
+        trace_files=trace_files,
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
+@pytest.mark.parametrize(
+    ("trace_files", "stale_dirs", "find_in", "vvp_body", "shared_dir"),
+    [
+        pytest.param(["tb_dump.fst"], ("run",), (), "true", False, id="run_cwd"),
+        pytest.param(["tb_dump.fst"], ("work",), ("work",), "true", False, id="work_dir"),
+        pytest.param(["tb_dump.fst"], ("run", "work"), ("work",), "true", False, id="shadowed"),
+        pytest.param(
+            ["tb_dump.vcd", "tb_dump.fst"],
+            ("run",),
+            ("run",),
+            "echo fresh > tb_dump.vcd",
+            True,
+            id="adoption_find",
+        ),
+    ],
+)
+def test_icarus_never_adopts_unchanged_declared_trace(
+    tmp_path: Path, monkeypatch, trace_files, stale_dirs, find_in, vvp_body, shared_dir
+):
+    """A declared trace left by an earlier run must not earn TRACE_OK."""
+    output = _run_traced_icarus(
+        tmp_path,
+        monkeypatch,
+        trace_files=trace_files,
+        stale_dirs=stale_dirs,
+        find_in=find_in,
+        vvp_body=vvp_body,
+        shared_dir=shared_dir,
+    )
+
+    assert "TRACE_INCIDENT" in output
+    assert f"[flows.sim].trace_files {trace_files}" in output
+    assert "TRACE_OK" not in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
+def test_icarus_adopts_declared_trace_rewritten_by_run(tmp_path: Path, monkeypatch):
+    """A declared trace the run rewrites is this run's trace."""
+    output = _run_traced_icarus(
+        tmp_path,
+        monkeypatch,
+        trace_files=["tb_dump.fst"],
+        stale_dirs=("run",),
+        find_in=(),
+        vvp_body="printf 'fresh longer content' > tb_dump.fst",
+    )
+
+    assert f"TRACE_OK: {(tmp_path / 'run').resolve() / 'tb_dump.fst'}" in output
