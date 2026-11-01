@@ -352,7 +352,7 @@ async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
     monkeypatch.setattr(server, "_job_record", lambda _: record)
     monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
     monkeypatch.setattr(server.jobrec.time, "time", lambda: 1791453601)
-    monkeypatch.setattr(server, "_format_job_running_poll", lambda _: "RUNNING: sim")
+    monkeypatch.setattr(server, "_format_job_running_poll", lambda *_: "RUNNING: sim")
     monkeypatch.setattr(server, "_running_progress", lambda _: {"run_id": "run"})
 
     async def wait(*_):
@@ -413,7 +413,7 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
     admitted = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
 
-    async def submit(_name, _cmd, _timeout, _jobs, *, context):
+    async def submit(_name, _cmd, _timeout, _jobs, *, context, caller=None):
         server._JobManager._stamp_context(admitted, context)
         return [TextContent(type="text", text="RUNNING")]
 

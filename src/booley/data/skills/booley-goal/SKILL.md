@@ -20,7 +20,10 @@ Use it for human-steered or unattended work inside the Sandbox.
    Goal Record occupies the Project, calls without it are refused (only
    `booley_targets` may omit it), and Project-defined endpoints must declare
    `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
-   and `bwave` accept no `work_dir`.
+   and `bwave` accept no `work_dir`. With several Jobs running, call `booley_poll`
+   with no `run_id` and handle whichever of your Jobs finishes first; pass a
+   `run_id` only to wait for one specific Job. Never wait for a Job with `sleep`
+   loops or log tails.
 3. Read the selected `*.md` Goalsets from `goalsets/` in the Main Booley Directory: `BOOLEY_DIR` in the Sandbox, the same directory
    where entry checks `default.md`. Never read them from a Worktree Booley Directory inside `work_dir`; a `default.md` present only there does not
    apply. If `BOOLEY_DIR` is unset or points inside `work_dir`, stop
