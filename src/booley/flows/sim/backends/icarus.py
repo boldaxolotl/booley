@@ -412,7 +412,7 @@ def _finalize_icarus_trace(
         return "", None
 
     def _current(path: Path | None) -> Path | None:
-        """Drop a declared file that is byte-for-byte what an earlier run left."""
+        """Drop a declared file whose stamp is unchanged since before vvp started."""
         if path is None:
             return None
         stamp = run.declared_before.get(path.resolve())

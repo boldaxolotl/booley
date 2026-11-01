@@ -628,18 +628,22 @@ class _FakeTraceSession:
     """Trace seam stub: discovery returns the first existing candidate, so
     the outcome depends only on whether the adapter trusts that file."""
 
-    def __init__(self, work_dir: Path, find_candidates: list[Path]):
+    def __init__(self, work_dir: Path, find_candidates: list[Path], published: Path | None = None):
         self._work_dir = work_dir
         self._find_candidates = find_candidates
+        # Where a successful VCD conversion publishes its waveform store.
+        self._published = published
 
     def reset_for_run(self, _paths):
         return None
 
-    def postprocess(self, _path):
-        return None
+    def postprocess(self, path):
+        if self._published is not None and path.exists():
+            self._published.write_text("converted", encoding="utf-8")
 
     def find(self):
-        return next((path for path in self._find_candidates if path.exists()), None)
+        candidates = [*self._find_candidates, *([self._published] if self._published else [])]
+        return next((path for path in candidates if path.exists()), None)
 
     def inspect(self, path):
         return TraceInspection(SimpleNamespace(path=path))
@@ -659,6 +663,8 @@ def _run_traced_icarus(
     find_in: tuple[str, ...],
     vvp_body: str,
     shared_dir: bool = False,
+    stale_name: str = "tb_dump.fst",
+    converts_to_store: bool = False,
 ) -> str:
     """Run the full traced Icarus path with stale declared files pre-created."""
     build_dir = tmp_path / "build"
@@ -669,12 +675,16 @@ def _run_traced_icarus(
     (build_dir / "sim_cfg.scr").write_text("")
     (build_dir / "sim_cfg").write_text("")
     for name in stale_dirs:
-        (tmp_path / name / "tb_dump.fst").write_text("stale", encoding="utf-8")
+        (tmp_path / name / stale_name).write_text("stale", encoding="utf-8")
     fake_vvp = tmp_path / "fake_vvp"
     fake_vvp.write_text(f"#!/bin/sh\n{vvp_body}\necho '[SIM_RESULT] PASSED'\n")
     fake_vvp.chmod(0o755)
     monkeypatch.setattr(ir, "_find_vvp", lambda: str(fake_vvp))
-    session = _FakeTraceSession(work_dir, [tmp_path / name / "tb_dump.fst" for name in find_in])
+    session = _FakeTraceSession(
+        work_dir,
+        [tmp_path / name / "tb_dump.fst" for name in find_in],
+        published=work_dir / "trace.fst" if converts_to_store else None,
+    )
     monkeypatch.setattr(ir, "_new_trace_session", lambda *_args: session)
     return ir.run_icarus_image(
         build_dir=build_dir,
@@ -691,6 +701,7 @@ def _run_traced_icarus(
     ("trace_files", "stale_dirs", "find_in", "vvp_body", "shared_dir"),
     [
         pytest.param(["tb_dump.fst"], ("run",), (), "true", False, id="run_cwd"),
+        # run_cwd holds no tb_dump.fst here: only work_dir has the stale copy.
         pytest.param(["tb_dump.fst"], ("work",), ("work",), "true", False, id="work_dir"),
         pytest.param(["tb_dump.fst"], ("run", "work"), ("work",), "true", False, id="shadowed"),
         pytest.param(
@@ -720,6 +731,25 @@ def test_icarus_never_adopts_unchanged_declared_trace(
     assert "TRACE_INCIDENT" in output
     assert f"[flows.sim].trace_files {trace_files}" in output
     assert "TRACE_OK" not in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
+def test_icarus_never_converts_unchanged_declared_vcd(tmp_path: Path, monkeypatch):
+    """Converting a stale declared VCD would publish a fresh-looking store."""
+    output = _run_traced_icarus(
+        tmp_path,
+        monkeypatch,
+        trace_files=["tb_dump.vcd"],
+        stale_dirs=("run",),
+        find_in=(),
+        vvp_body="true",
+        stale_name="tb_dump.vcd",
+        converts_to_store=True,
+    )
+
+    assert "TRACE_INCIDENT" in output
+    assert "TRACE_OK" not in output
+    assert (tmp_path / "run" / "tb_dump.vcd").read_text(encoding="utf-8") == "stale"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
